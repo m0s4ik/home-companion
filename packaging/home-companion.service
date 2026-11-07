@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+# home-companion on the ThinkSmart View (thinksmart-view-debian). Layout: packaging/README.md.
+# First version (M1): no automatic rollback yet (M2b).
+[Unit]
+Description=Home Companion (voice satellite and screen)
+Wants=network-online.target
+After=network-online.target thinksmart-audio.service sound.target
+
+[Service]
+Type=simple
+User=home-companion
+Group=home-companion
+SupplementaryGroups=audio video input tty
+# "Casa" (Home Assistant's frontend, [web]) sets the CPU governor to performance while it is shown
+# and back when hidden: group video may write the governors (as root, before the body starts)
+ExecStartPre=-+/bin/sh -c 'for g in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do chgrp video "$g" && chmod g+w "$g"; done'
+# Settings -> Suspend (crates/home-companion/src/suspend.rs): group home-companion may suspend the system and set the RTC wake alarm
+# (no polkit, no sudo; as root, before the body starts)
+ExecStartPre=-+/bin/sh -c 'for f in /sys/power/state /sys/class/rtc/rtc0/wakealarm; do chgrp home-companion "$f" && chmod g+w "$f"; done'
+# Automatic brightness (crates/home-companion/src/ui/light.rs): group home-companion may use the I2C bus of the light sensor (the
+# VCNL4200's light part is read directly, so its proximity IR LED stays off)
+ExecStartPre=-+/bin/sh -c 'd=$(grep -l "^vcnl4000$" /sys/bus/iio/devices/iio:device*/name | head -n 1) && b=$(basename "$(dirname "$(dirname "$(readlink -f "$(dirname "$d")")")")") && chgrp home-companion "/dev/$b" && chmod g+rw "/dev/$b"'
+ExecStart=/opt/home-companion/home-companion --config /etc/home-companion/home-companion.toml
+# give the console back to text mode if home-companion died while drawing
+ExecStopPost=-/opt/home-companion/home-companion --reset-console
+# KDSETMODE on /dev/tty0 (graphics mode while drawing) needs CAP_SYS_TTY_CONFIG
+AmbientCapabilities=CAP_SYS_TTY_CONFIG
+CapabilityBoundingSet=CAP_SYS_TTY_CONFIG
+# SCHED_FIFO for the audio threads ([audio] realtime = true)
+LimitRTPRIO=10
+StateDirectory=home-companion
+# UxPlay's debug log, in RAM (crates/home-companion/src/airplay.rs)
+RuntimeDirectory=home-companion
+RuntimeDirectoryPreserve=yes
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

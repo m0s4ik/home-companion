@@ -1,0 +1,119 @@
+# SPDX-License-Identifier: CC0-1.0
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+#
+# Alfred, the butler: the first character (format: ../README.md).
+
+format = 1
+id = "alfred"
+name = "Alfred"
+license = "CC0-1.0"
+authors = ["Andrea Mattera"]
+languages = ["en", "it"]
+wake_word = "Okay Alfred"
+
+# The figure stands in x 212-812 of the 1024x1024 poses; in the deck chair it is wider.
+crop = [212, 0, 812, 1024]
+# Mouth and moustache in idle.png, a little larger than the drawing so a finger hits it.
+mouth = [470, 150, 570, 210]
+
+[crop_override]
+offline = [128, 0, 888, 1024]
+
+[colors]
+background = "#03050d"
+idle = "#5a6e8c"
+listening = "#28c8e6"
+thinking = "#966ef0"
+speaking = "#f5aa3c"
+error = "#eb4646"
+
+[phrases.en]
+idle = "Say \"Okay Alfred\""
+listening = "I'm listening…"
+thinking = "Let me think…"
+error = "I didn't understand"
+offline = "I'm on a break: I can't reach home"
+
+[phrases.it]
+idle = "Di' «Okay Alfred»"
+listening = "Ti ascolto…"
+thinking = "Ci penso…"
+error = "Non ho capito"
+offline = "Sono in pausa: non riesco a parlare con casa"
+
+# Animations (format: ../README.md, "Animations"), made with tools/make-animation.py from the frames
+# of the previous Python screen (440x760, 16 fps). The loading clip contains the idle loop
+# (frames 0-63) and the wake-up (96-175), so the three share one sheet.
+[animations.loading]
+file = "animations/loading.png"
+size = [288, 604]
+frames = [0, 208]
+fps = 16
+rect = [292.4, 40.2, 742.7, 985.1]
+
+[animations.idle]
+file = "animations/loading.png"
+size = [288, 604]
+frames = [0, 64]
+fps = 16
+pause = 5
+rect = [292.4, 40.2, 742.7, 985.1]
+
+[animations.wake]
+file = "animations/loading.png"
+size = [288, 604]
+frames = [96, 176]
+fps = 16
+rect = [292.4, 40.2, 742.7, 985.1]
+
+[animations.listening]
+file = "animations/listening.png"
+size = [254, 572]
+frames = [0, 64]
+fps = 16
+rect = [297.4, 41.9, 717.1, 986.4]
+
+[animations.thinking]
+file = "animations/thinking.png"
+size = [194, 605]
+frames = [0, 64]
+fps = 16
+rect = [368.3, 41.8, 672.1, 989.1]
+
+[animations.speaking]
+file = "animations/speaking.png"
+size = [289, 611]
+frames = [0, 64]
+fps = 16
+rect = [228.9, 29.3, 681.5, 986.0]
+
+[animations.error]
+file = "animations/error.png"
+size = [398, 604]
+frames = [0, 64]
+fps = 16
+rect = [203.9, 40.3, 827.1, 986.0]
+
+# The night (../README.md, "Animations"): one sheet, fall asleep (0-79), sleep (80-143, once a
+# minute), wake up (144-223); 60 % bright like poses/sleeping.png.
+[animations.fall_asleep]
+file = "animations/night.png"
+size = [403, 631]
+frames = [0, 80]
+fps = 16
+rect = [229.9, 1.0, 860.0, 988.2]
+
+[animations.sleeping]
+file = "animations/night.png"
+size = [403, 631]
+frames = [80, 144]
+fps = 16
+pause = 60
+rect = [229.9, 1.0, 860.0, 988.2]
+
+[animations.wake_from_sleep]
+file = "animations/night.png"
+size = [403, 631]
+frames = [144, 224]
+fps = 16
+rect = [229.9, 1.0, 860.0, 988.2]

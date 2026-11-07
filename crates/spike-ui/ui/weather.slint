@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+// The weather of the home screen, self-contained so the home's layout can place and style it:
+// the condition's icon (Material Design Icons path data, Apache-2.0, chosen by the body from
+// Home Assistant's condition), the current temperature and today's maximum / minimum. The
+// body shows it only with real data from Home Assistant (`if weather-shown: WeatherBox`);
+// without it the box is not there at all. All text comes formatted and localized from Rust.
+
+export component WeatherBox inherits Rectangle {
+    // MDI path data of the condition (24x24 viewbox).
+    in property <string> icon: "M6,19A5,5 0 0,1 1,14A5,5 0 0,1 6,9C7,6.65 9.3,5 12,5C15.43,5 18.24,7.66 18.5,11.03L19,11A4,4 0 0,1 23,15A4,4 0 0,1 19,19H6M19,13H17V12A5,5 0 0,0 12,7C9.5,7 7.45,8.82 7.06,11.19C6.73,11.07 6.37,11 6,11A3,3 0 0,0 3,14A3,3 0 0,0 6,17H19A2,2 0 0,0 21,15A2,2 0 0,0 19,13Z";
+    // "13.7°C" / "13,7°C".
+    in property <string> temperature: "13.7°C";
+    // Today's maximum and minimum ("15°", "8°"); empty when Home Assistant has no forecast.
+    in property <string> high: "15°";
+    in property <string> low: "8°";
+    // The condition in words ("Cloudy"), localized; not drawn here yet (accessibility, and
+    // for a layout that wants it).
+    in property <string> condition: "Cloudy";
+    in property <length> font-size: 26px;
+    in property <length> icon-size: 30px;
+    in property <color> text-color: #8e8f92;
+    in property <color> range-color: self.text-color.with-alpha(0.75);
+
+    accessible-role: text;
+    accessible-label: root.condition + " " + root.temperature;
+    HorizontalLayout {
+        spacing: 10px;
+        Path {
+            width: root.icon-size;
+            height: root.icon-size;
+            y: (parent.height - self.height) / 2;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: root.icon;
+            fill: root.text-color;
+            stroke-width: 0;
+        }
+        Text {
+            text: root.temperature;
+            font-size: root.font-size;
+            font-weight: 500;
+            color: root.text-color;
+            vertical-alignment: center;
+        }
+        if root.high != "" || root.low != "": Text {
+            text: root.high + (root.high != "" && root.low != "" ? " / " : "") + root.low;
+            font-size: root.font-size * 0.85;
+            font-weight: 400;
+            color: root.range-color;
+            vertical-alignment: center;
+        }
+    }
+}

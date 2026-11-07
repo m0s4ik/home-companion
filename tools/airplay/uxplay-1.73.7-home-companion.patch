@@ -1,0 +1,322 @@
+diff --git a/lib/raop_rtp.c b/lib/raop_rtp.c
+index 64eb7fb..c7b621f 100644
+--- a/lib/raop_rtp.c
++++ b/lib/raop_rtp.c
+@@ -390,6 +390,11 @@ raop_rtp_thread_udp(void *arg)
+     /* initial audio stream has no data */    
+     unsigned char no_data_marker[] = {0x00, 0x68, 0x34, 0x00 };
+ 
++    /* iOS pauses by just no longer sending (no FLUSH, no TEARDOWN most of the time), while about
++     * 1.75 s of audio waits in the pipeline for its time: a gap in the data is a pause, flush. */
++    const uint64_t pause_gap = 350000000;   /* ns; packets come every 8 ms */
++    uint64_t last_data = 0;
++
+     assert(raop_rtp);
+     bool logger_debug = (logger_get_level(raop_rtp->logger) >= LOGGER_DEBUG);
+     bool logger_debug_data = (logger_get_level(raop_rtp->logger) >= LOGGER_DEBUG_DATA);
+@@ -420,6 +425,13 @@ raop_rtp_thread_udp(void *arg)
+         if (raop_rtp_process_events(raop_rtp, NULL)) {
+             break;
+         }
++        if (last_data && raop_ntp_get_local_time() - last_data > pause_gap) {
++            last_data = 0;
++            logger_log(raop_rtp->logger, LOGGER_DEBUG, "raop_rtp: no audio data for %u ms, flush", (unsigned) (pause_gap / 1000000));
++            if (raop_rtp->callbacks.audio_flush) {
++                raop_rtp->callbacks.audio_flush(raop_rtp->callbacks.cls);
++            }
++        }
+ 
+         /* Set timeout value to 5ms */
+         tv.tv_sec = 0;
+@@ -557,6 +569,7 @@ raop_rtp_thread_udp(void *arg)
+ 
+ 
+         if (FD_ISSET(raop_rtp->dsock, &rfds)) {
++            last_data = raop_ntp_get_local_time();
+             if (!raop_rtp->initial_sync && !video_arrival_offset) {
+                 video_arrival_offset = raop_ntp_get_video_arrival_offset(raop_rtp->ntp);
+             }
+diff --git a/renderers/audio_renderer.c b/renderers/audio_renderer.c
+index ddcd14e..30c0864 100644
+--- a/renderers/audio_renderer.c
++++ b/renderers/audio_renderer.c
+@@ -381,6 +381,15 @@ void audio_renderer_set_volume(double volume) {
+ }
+ 
+ void audio_renderer_flush() {
++    /* With timestamps (-async, or mirroring with -vsync) the pipeline holds audio waiting for its
++     * time, about 2 s ahead in ALAC mode: a pause must not play it out. Flush events sent to appsrc
++     * go downstream (queue and sink drop what they hold); appsrc also drops its own queue. The
++     * running time is kept: the timestamps stay valid. */
++    if (!renderer || !sync) {
++        return;
++    }
++    gst_element_send_event(renderer->appsrc, gst_event_new_flush_start());
++    gst_element_send_event(renderer->appsrc, gst_event_new_flush_stop(FALSE));
+ }
+ 
+ void audio_renderer_destroy() {
+diff --git a/renderers/video_renderer.c b/renderers/video_renderer.c
+index 6f4a5ff..b150b8e 100644
+--- a/renderers/video_renderer.c
++++ b/renderers/video_renderer.c
+@@ -22,6 +22,7 @@
+ 
+ #include <gst/gst.h>
+ #include <gst/app/gstappsrc.h>
++#include <gst/video/video.h>
+ #include "video_renderer.h"
+ 
+ #define SECOND_IN_NSECS 1000000000UL
+@@ -180,6 +181,17 @@ void video_renderer_size(float *f_width_source, float *f_height_source, float *f
+     logger_log(logger, LOGGER_DEBUG, "begin video stream wxh = %dx%d; source %dx%d", width, height, width_source, height_source);
+ }
+ 
++/* unixfdsink (frames to another process as dma-bufs): the decoder must be told that the
++ * receiver reads GstVideoMeta (plane offsets and strides), or a decoder with padded planes
++ * (venus: height aligned to 32) copies every frame into the sink's shared memory instead. */
++static GstPadProbeReturn unixfdsink_allocation_probe(GstPad *pad, GstPadProbeInfo *info, gpointer data) {
++    GstQuery *query = GST_PAD_PROBE_INFO_QUERY(info);
++    if (GST_QUERY_TYPE(query) == GST_QUERY_ALLOCATION) {
++        gst_query_add_allocation_meta(query, GST_VIDEO_META_API_TYPE, NULL);
++    }
++    return GST_PAD_PROBE_OK;
++}
++
+ GstElement *make_video_sink(const char *videosink, const char *videosink_options) {
+     /* used to build a videosink for playbin, using the user-specified string "videosink" */ 
+     GstElement *video_sink = gst_element_factory_make(videosink, "videosink");
+@@ -376,7 +388,9 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
+                 append_videoflip(launch, &videoflip[0], &videoflip[1]);
+                 g_string_append(launch, converter);
+                 g_string_append(launch, " ! ");
+-                g_string_append(launch, "videoscale ! ");
++                if (strcmp(videosink, "unixfdsink")) {
++                    g_string_append(launch, "videoscale ! ");
++                }
+                 if (jpeg_pipeline) {
+                     g_string_append(launch, " imagefreeze allow-replace=TRUE ! textoverlay name=metadata_overlay ! ");
+                 }
+@@ -421,6 +435,20 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
+                 g_clear_error (&error);
+             }
+             g_assert (renderer_type[i]->pipeline);
++            if (!strcmp(videosink, "unixfdsink")) {
++                GstIterator *it = gst_bin_iterate_sinks(GST_BIN(renderer_type[i]->pipeline));
++                GValue item = G_VALUE_INIT;
++                while (gst_iterator_next(it, &item) == GST_ITERATOR_OK) {
++                    GstPad *pad = gst_element_get_static_pad(GST_ELEMENT(g_value_get_object(&item)), "sink");
++                    if (pad) {
++                        gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_QUERY_DOWNSTREAM, unixfdsink_allocation_probe, NULL, NULL);
++                        gst_object_unref(pad);
++                    }
++                    g_value_reset(&item);
++                }
++                g_value_unset(&item);
++                gst_iterator_free(it);
++            }
+             GstClock *clock = gst_system_clock_obtain();
+             g_object_set(clock, "clock-type", GST_CLOCK_TYPE_REALTIME, NULL);
+             gst_pipeline_use_clock(GST_PIPELINE_CAST(renderer_type[i]->pipeline), clock);
+diff --git a/uxplay.cpp b/uxplay.cpp
+index fad6c1e..ccf3e0e 100644
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -166,6 +166,30 @@ static unsigned short pin = 0;
+ static std::string keyfile = "";
+ static std::string mac_address = "";
+ static std::string dacpfile = "";
++
++/* -hc <dir>: events for a parent program (home-companion) as "@hc ..." lines on stdout;
++ * the sender's volume is reported there and not applied to the audio. */
++static bool hc_events = false;
++static std::string hc_dir = "";
++
++static std::string hc_clean(const char *text, size_t len) {
++    std::string out(text, len);
++    for (char &c : out) {
++        if (c == '\n' || c == '\r') c = ' ';
++    }
++    return out;
++}
++
++static void hc_event(const char *fmt, ...) {
++    if (!hc_events) return;
++    char line[1024];
++    va_list ap;
++    va_start(ap, fmt);
++    vsnprintf(line, sizeof(line), fmt, ap);
++    va_end(ap);
++    printf("@hc %s\n", line);
++    fflush(stdout);
++}
+ static bool registration_list = false;
+ static std::string pairing_register = "";
+ static std::vector <std::string> registered_keys;
+@@ -994,6 +1018,8 @@ static void print_info (char *name) {
+     printf("          if mac xx:xx:xx:xx:xx:xx is not given, a random MAC is used\n");
+     printf("-key [fn] Store private key in $HOME/.uxplay.pem (or in file \"fn\")\n");
+     printf("-dacp [fn]Export client DACP information to file $HOME/.uxplay.dacp\n");
++    printf("-hc dir  Events for a parent program as \"@hc ...\" lines on stdout;\n");
++    printf("          the sender's volume is reported, not applied; cover art in dir\n");
+     printf("          (option to use file \"fn\" instead); used for client remote\n");
+     printf("-ble [fn] For BluetoothLE beacon: write data to file ~/.uxplay.ble\n");
+     printf("          optional: write to file \"fn\" (\"fn\" = \"off\" to cancel)\n");
+@@ -1652,6 +1678,14 @@ static void parse_arguments (int argc, char *argv[]) {
+             } else {
+                 pin_pw = 3;  //a random password (pin) will be displayed at each connection
+             }
++        } else if (arg == "-hc") {
++            if (i < argc - 1 && *argv[i+1] != '-') {
++                hc_dir = argv[++i];
++                hc_events = true;
++            } else {
++                fprintf(stderr, "option -hc must be followed by a directory for cover art\n");
++                exit(1);
++            }
+         } else if (arg == "-dacp") {
+             dacpfile.erase();
+             if (i < argc - 1 && *argv[i+1] != '-') {
+@@ -1862,6 +1896,9 @@ static void process_metadata(int count, const char *dmap_tag, const unsigned cha
+         }
+     }
+ 
++    if (dmap_type == 9 && (!strcmp(dmap_tag, "minm") || !strcmp(dmap_tag, "asar") || !strcmp(dmap_tag, "asal"))) {
++        hc_event("meta %s %s", dmap_tag, hc_clean((const char *) metadata, datalen).c_str());
++    }
+     if (dmap_type == 9) {
+         char *str = (char *) calloc(datalen + 1, sizeof(char));
+         if (!str) {
+@@ -2116,6 +2153,9 @@ static bool check_blocked_client(char *deviceid) {
+ //to be simplified
+ 
+ extern "C" void video_reset(void *cls, reset_type_t type) {
++    if (type != RESET_TYPE_ON_VIDEO_PLAY) {
++        hc_event("mirror stop");
++    }
+     switch (type) {
+     case RESET_TYPE_NOHOLD:
+         LOGD("video_reset: type = NoHold");
+@@ -2183,6 +2223,7 @@ extern "C" int video_set_codec(void *cls, video_codec_t codec) {
+     if (!use_video) {
+         return 0;
+     }
++    hc_event("mirror start");
+     return video_renderer_choose_codec(false, video_is_h265);
+ }
+ 
+@@ -2211,6 +2252,7 @@ extern "C" const char *passwd(void *cls, int *len){
+ }
+ 
+ extern "C" void export_dacp(void *cls, const char *active_remote, const char *dacp_id) {
++    hc_event("dacp %s %s", dacp_id, active_remote);
+       if (dacpfile.length()) {
+         FILE *fp = fopen(dacpfile.c_str(), "w");
+         if (fp) {
+@@ -2233,6 +2275,7 @@ extern "C" void conn_destroy (void *cls) {
+     open_connections--;
+     LOGD("Open connections: %i", open_connections);
+     if (open_connections == 0) {
++        hc_event("end");
+         remote_clock_offset = 0;
+         if (use_audio) {
+             audio_renderer_stop();
+@@ -2286,6 +2329,9 @@ extern "C" void report_client_request(void *cls, char *deviceid, char * model, c
+         *admit = false;
+         LOGI("*** attempt to connect by blocked client (clientID %s): DENIED\n", deviceid);
+     }
++    if (*admit && name) {
++        hc_event("client %s", hc_clean(name, strlen(name)).c_str());
++    }
+     // Pass device model to renderer for device frame display
+     if (*admit && use_video) {
+         video_renderer_set_device_model(model, name);
+@@ -2341,8 +2387,12 @@ extern "C" void video_process (void *cls, raop_ntp_t *ntp, video_decode_struct *
+         }
+         int count = 0;
+         uint64_t pts_mismatch = 0;
++        /* home-companion: every try starts from the sender's own time. Upstream added the offset to the
++         * already shifted time again on a retry: the first frame (the keyframe) was then due the clock
++         * difference between sender and receiver later, and every frame after it waited behind it. */
++        uint64_t ntp_time_sender = data->ntp_time_remote;
+         do {
+-            data->ntp_time_remote = data->ntp_time_remote + remote_clock_offset;
++            data->ntp_time_remote = ntp_time_sender + remote_clock_offset;
+             pts_mismatch = video_renderer_render_buffer(data->data, &(data->data_len), &(data->nal_count), &(data->ntp_time_remote));
+             if (pts_mismatch) {
+                 LOGI("adjust timestamps by %8.6f secs", (double) pts_mismatch / SECOND_IN_NSECS);
+@@ -2376,6 +2426,7 @@ extern "C" void video_resume (void *cls) {
+ 
+ 
+ extern "C" void audio_flush (void *cls) {
++    hc_event("flush");
+     if (use_audio) {
+         audio_renderer_flush();
+     }
+@@ -2396,6 +2447,13 @@ extern "C" void audio_set_volume (void *cls, float volume) {
+     if (!use_audio) {
+       return;
+     }
++    if (hc_events) {
++        /* the parent sets its own volume from the sender's slider */
++        hc_event("volume %.6f", volume);
++        audio_renderer_set_volume(1.0);
++        video_renderer_hls_set_volume(1.0);
++        return;
++    }
+     /* convert from AirPlay dB  volume in range {-30dB : 0dB}, to GStreamer volume */
+     if (volume == -144.0f) {   /* AirPlay "mute" signal */
+         frac = 0.0;
+@@ -2474,12 +2532,31 @@ extern "C" void audio_get_format (void *cls, unsigned char *ct, unsigned short *
+ }
+ 
+ extern "C" void video_report_size(void *cls, float *width_source, float *height_source, float *width, float *height) {
++    /* the sender's real picture: the decoded frame may be padded to whole macroblocks (an iPad
++     * upright: 556 wide in a 560 frame), the parent crops to this aspect ratio */
++    hc_event("mirror-size %.0f %.0f %.0f %.0f", *width_source, *height_source, *width, *height);
+     if (use_video) {
+         video_renderer_size(width_source, height_source, width, height);
+     }
+ }
+ 
+ extern "C" void audio_set_coverart(void *cls, const void *buffer, int buflen) {
++    if (hc_events) {
++        if (!buffer || buflen <= 0) {
++            hc_event("cover");
++            return;
++        }
++        const unsigned char *b = (const unsigned char *) buffer;
++        bool png = buflen > 4 && b[0] == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G';
++        std::string path = hc_dir + (png ? "/cover.png" : "/cover.jpg");
++        std::string tmp = hc_dir + "/.cover.tmp";
++        if (write_coverart(tmp.c_str(), buffer, buflen) == (size_t) buflen && rename(tmp.c_str(), path.c_str()) == 0) {
++            hc_event("cover %s", path.c_str());
++        } else {
++            LOGE("cover art: cannot write %s", path.c_str());
++        }
++        return;
++    }
+     if (buffer && coverart_filename.length()) {
+         write_coverart(coverart_filename.c_str(), buffer, buflen);
+         LOGI("coverart size %d written to %s", buflen,  coverart_filename.c_str());
+@@ -2491,6 +2568,12 @@ extern "C" void audio_set_coverart(void *cls, const void *buffer, int buflen) {
+ }
+ 
+ extern "C" void audio_stop_coverart_rendering(void *cls) {
++    /* Called at the audio stream's TEARDOWN, which is how iOS pauses: the audio waiting in the
++     * pipeline for its time (about 2 s with -async) must not play out after the pause. */
++    if (hc_events && use_audio) {
++        audio_renderer_flush();
++    }
++    hc_event("stop");
+     if (render_coverart) {
+         video_reset(cls, RESET_TYPE_RTP_SHUTDOWN);
+     }
+@@ -2540,6 +2623,7 @@ extern "C" void audio_set_metadata(void *cls, const void *buffer, int buflen) {
+         buflen -= datalen;
+     }
+     LOGI("%s", metadata_text.c_str());
++    hc_event("meta-end");
+     if (metadata_filename.length()) {
+         write_metadata(metadata_filename.c_str(), metadata_text.c_str());
+     }

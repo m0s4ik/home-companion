@@ -1,0 +1,18 @@
+{
+  "type": "micro",
+  "wake_word": "Basta",
+  "author": "Alfred (addestramento locale microWakeWord)",
+  "website": "",
+  "model": "basta.tflite",
+  "trained_languages": [
+    "it"
+  ],
+  "version": 2,
+  "micro": {
+    "probability_cutoff": 0.9,
+    "feature_step_size": 10,
+    "sliding_window_size": 2,
+    "tensor_arena_size": 30000,
+    "minimum_esphome_version": "2024.7.0"
+  }
+}

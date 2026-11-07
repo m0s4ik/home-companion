@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+[package]
+name = "reflex"
+description = "Local reflexes: the closed Vosk grammar of a language, the acceptance rule, the body <-> helper protocol, and the home-companion-reflex helper (libvosk)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+# The helper links the prebuilt libvosk.so (Apache-2.0): only with `--features vosk`, so the body
+# and the tests never need it.
+[[bin]]
+name = "home-companion-reflex"
+path = "src/bin/home_companion_reflex.rs"
+required-features = ["vosk"]
+
+[features]
+vosk = []
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"

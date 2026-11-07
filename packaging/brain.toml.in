@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+#
+# /etc/home-companion/brain.toml, written by install.sh on the first install (never overwritten).
+# Every key with its default: /opt/home-companion/home-companion-brain --print-config
+# After a change: systemctl restart home-companion-brain
+
+# MCP tools for Home Assistant's AI: http://<device>:10701/mcp (set up in Home Assistant by the
+# device itself after the QR link)
+listen = "0.0.0.0:10701"
+# Who may connect: empty = Home Assistant's own address (from [home_assistant] url, and the addresses
+# the device learns after the QR link)
+allow = []
+character_dir = "/opt/home-companion/characters/alfred"
+@LANG_SET@language = "@LANGUAGE@"
+
+# The memory jobs think through Home Assistant's AI task: "" = the one chosen in Home Assistant's
+# settings, else the first ai_task.* there is. No API key on the device.
+[ai]
+task_entity = ""
+
+[home_assistant]
+# Home Assistant's address; commented out = the one the device hands over after the QR link
+@URL_SET@url = "@HA_URL@"
+# Optional: a long-lived token (mode 600, owner home-companion-brain), used only until the device hands
+# the brain its own (the QR link's)
+token_file = "/etc/home-companion/brain-ha-token"
+
+[memory]
+dir = "/var/lib/home-companion-brain"
+# The nightly tidy-up of the memory (local time; "" = off)
+consolidate_at = "03:30"
+
+[jobs]
+# Home Assistant says unanswered reminders on this satellite ("" = cards only), e.g. "assist_satellite.<device>"
+satellite_entity = ""
+voice_after_seconds = 120
+quiet_start = "23:00"
+quiet_end = "07:00"
+
+[briefing]
+# "07:30" = a morning summary card ("" = off)
+at = ""
+weather_entity = ""
+calendars = []
+
+[lists]
+# "todo.<entity>": the shopping list by voice (the same key in home-companion.toml)
+shopping = ""

@@ -1,0 +1,8 @@
+.private-patterns
+target/
+# produced locally by each spike's scripts; never committed
+crates/*/fixtures/generated/
+crates/*/third_party/
+crates/*/models/
+crates/*/out/
+/out/

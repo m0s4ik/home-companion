@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+#
+# home-companion's inbound firewall rules, for thinksmart-view-debian's /etc/nftables.d/ (rule lines of its
+# input chain; $LAN_V4 and $LAN_V6 are the local network of the image's config.env). Install as
+# /etc/nftables.d/home-companion.nft, then `nft -c -f /etc/nftables.conf && systemctl reload nftables`.
+# Only from the LAN; a port nobody listens on answers nothing.
+
+# The Home Assistant link (QR, [home_assistant] link_port), the Wyoming satellite, home-companion-brain's MCP.
+ip saddr $LAN_V4 tcp dport { 8124, 10700, 10701 } accept comment "home-companion: link, satellite, brain"
+ip6 saddr $LAN_V6 tcp dport { 8124, 10700, 10701 } accept comment "home-companion: link, satellite, brain (IPv6)"
+
+# AirPlay ([airplay], only while it is on): UxPlay with `-p 6010` ([airplay] port). TCP 6010 is the
+# mirrored screen's video, TCP 6011 the RTSP/HTTP server the sender connects to; UDP 6010, 6011 and
+# 6012 are the timing, control and audio ports of a session (UxPlay asks for TCP 6012 too but never
+# binds it). Discovery is mDNS (UDP 5353), opened by the system image itself for avahi.
+ip saddr $LAN_V4 tcp dport 6010-6011 accept comment "home-companion: AirPlay"
+ip saddr $LAN_V4 udp dport 6010-6012 accept comment "home-companion: AirPlay"
+ip6 saddr $LAN_V6 tcp dport 6010-6011 accept comment "home-companion: AirPlay (IPv6)"
+ip6 saddr $LAN_V6 udp dport 6010-6012 accept comment "home-companion: AirPlay (IPv6)"

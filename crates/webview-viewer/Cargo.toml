@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+[package]
+name = "webview-viewer"
+description = "Test viewer for the web view protocol: KMS + EGL on GBM, imports the frames' dma-bufs as GL textures, rotated to the panel, forwards evdev touch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+webview-proto = { path = "../webview-proto" }
+libc = "0.2"
+# The same versions Slint's linuxkms backend already uses (Cargo.lock); no Wayland import.
+gbm = { version = "0.18", default-features = false, features = ["drm-support"] }
+drm = "0.14"

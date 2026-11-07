@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+#
+# The end-to-end test (tools/run-e2e.sh): file audio (the wake word and the question come from
+# a WAV, everything played goes to a WAV), the headless renderer, JSON logs. Paths are relative
+# to this file.
+version = 1
+
+[satellite]
+name = "home-companion e2e"
+bind = "127.0.0.1:10700"
+allowed = ["127.0.0.1"]
+
+[audio]
+backend = "file"
+capture_channels = 1
+capture_file = "../fixtures/e2e-okay-alfred-what-time.wav"
+playback_file = "../out/e2e-out.wav"
+# As fast as there is something to play, idle periods paced like a card: the fake Home
+# Assistant's timing rules hold and audio-stop -> played measures the code path, not the card.
+file_realtime = false
+realtime = false
+
+[ui]
+renderer = "headless"
+
+[timers]
+bell_repeats = 2
+bell_gap_seconds = 0.5
+
+[paths]
+state_dir = "../out/e2e-state"
+
+[log]
+level = "debug"
+format = "json"
+file = "../out/e2e-home-companion.log"

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+[package]
+name = "locale"
+description = "The body's own words per language (locales/<code>.toml, format in locales/README.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+character = { path = "../character" }

@@ -1,0 +1,40 @@
+{
+  "asr": [],
+  "tts": [],
+  "handle": [],
+  "intent": [],
+  "wake": [
+    {
+      "name": "home-companion-wake",
+      "attribution": {"name": "home-companion", "url": "https://github.com/m0s4ik/home-companion"},
+      "installed": true,
+      "description": "microWakeWord on the device",
+      "version": "0.1.0",
+      "models": [
+        {
+          "name": "okay_alfred",
+          "attribution": {"name": "Tater Totterson", "url": "https://github.com/TaterTotterson/Tater-Wake-Words"},
+          "installed": true,
+          "description": null,
+          "version": null,
+          "languages": ["en"],
+          "phrase": "okay alfred"
+        }
+      ]
+    }
+  ],
+  "mic": [],
+  "snd": [],
+  "satellite": {
+    "name": "ThinkSmart View",
+    "attribution": {"name": "home-companion", "url": "https://github.com/m0s4ik/home-companion"},
+    "installed": true,
+    "description": "ThinkSmart View",
+    "version": "0.1.0",
+    "area": null,
+    "has_vad": false,
+    "active_wake_words": ["okay_alfred"],
+    "max_active_wake_words": 1,
+    "supports_trigger": null
+  }
+}

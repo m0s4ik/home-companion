@@ -1,0 +1,3594 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+// The companion's screen in landscape (1280x800), for any character (characters/README.md), in
+// the "quiet desk" layout. Two zones: the character's stage on the left (x 0..512),
+// never drawn over, and the desk on the right, where every screen is the same three bands: the
+// top (the time, or a page header), the middle (context cards, a page's content, the
+// conversation) and the action band at the bottom (three slots; the middle one is the gold
+// primary). Home Assistant's own view ("Casa", casa.slint) is the only full-screen screen.
+//
+// The character gives the poses, its colours and its phrases; fonts, icons, words and the rest
+// belong to the body. Fonts: Inter (OFL 1.1), subsets in ../fixtures/fonts ("Inter Tnum": the
+// same with tabular digits). Icons: design/icons.slint (Material Design Icons, Apache-2.0).
+// Everything shown comes from Rust (crates/home-companion/src/ui/); the defaults are the live preview's.
+
+import "../fixtures/fonts/Inter-Light-subset.ttf";
+import "../fixtures/fonts/Inter-Regular-subset.ttf";
+import "../fixtures/fonts/Inter-Medium-subset.ttf";
+import "../fixtures/fonts/Inter-Light-tnum-subset.ttf";
+import "../fixtures/fonts/Inter-Regular-tnum-subset.ttf";
+import { Theme, Grid } from "design/tokens.slint";
+import { Icons } from "design/icons.slint";
+import {
+    Icon, BareButton, PrimaryButton, PillButton, InfoCard, TimerCard, NowPlayingCard, PageHeader,
+    Tile, SectionTitle, Row, Group, TimerLine, AlarmLine, ChatUser, ChatCharacter, ChatSeparator,
+    Step, Stepper, Chip, Dialog, Separator, VolumeHud, GlyphButton, ControlTile, LevelBar, Feedback
+} from "design/components.slint";
+import { CasaScreen, CasaBridge } from "casa.slint";
+export { CasaBridge, CasaMenuRow } from "casa.slint";
+export { Feedback } from "design/components.slint";
+
+// A card of the home's middle band, in priority order (Rust picks at most three):
+// "status" (the body's own problem), "setup" (Home Assistant needs the user), "message", "reminder" (due, OK), "timer", "more" (more
+// timers), "alarm", "upcoming" (next reminder), "shopping", "music",
+// "answer" (the last long answer).
+// One tile of the control center: `key` picks its icon ("wifi", "bluetooth", "airplay", "mic",
+// "night", "ha"); the words come from the body (crates/home-companion/src/ui/control.rs).
+export struct ControlRow {
+    key: string,
+    label: string,
+    status: string,
+    on: bool,
+    enabled: bool,
+    tappable: bool,
+}
+
+export struct CardRow {
+    kind: string,
+    title: string,
+    text: string,
+    left: string,
+    remaining: float,
+    paused: bool,
+}
+
+// A timer of the timers page.
+export struct TimerRow {
+    id: string,
+    name: string,
+    detail: string,
+    left: string,
+    remaining: float,
+    paused: bool,
+}
+
+// An alarm: `days` as a sentence ("Lunedì – venerdì").
+export struct AlarmRow {
+    id: int,
+    time: string,
+    days: string,
+    on: bool,
+}
+
+// A line of the conversations page: "sep" (a session: "Oggi · 14:02 · Home Assistant"),
+// "user" or "character".
+export struct ChatRow {
+    kind: string,
+    text: string,
+}
+
+// A fact Alfred remembers ("Ricordi"): its text and the day it was written ("5 nov").
+export struct MemoryRow {
+    id: int,
+    text: string,
+    date: string,
+}
+
+// A reminder still to come ("Ricordi"): "domani 18:00", what.
+export struct JobRow {
+    id: int,
+    when: string,
+    text: string,
+}
+
+// An open item of the shopping list (Home Assistant's `todo` entity).
+export struct ShopRow {
+    uid: string,
+    text: string,
+}
+
+// A check of Settings → Home Assistant: level 0 ok, 1 warn, 2 bad, 3 skipped, 4 not checked;
+// `repair` = a "Repair" on the row (it puts back a choice changed in Home Assistant).
+export struct HaRow {
+    id: string,
+    label: string,
+    detail: string,
+    level: int,
+    repair: bool,
+}
+
+// A language of the first start's welcome page: its code and its name in itself.
+export struct WelcomeRow {
+    code: string,
+    name: string,
+}
+
+// A Home Assistant found on the network (first start): the name it announces, its address.
+export struct FindRow {
+    name: string,
+    url: string,
+}
+
+export struct LanguageRow {
+    code: string,
+    name: string,
+    selected: bool,
+}
+
+// The body's words in the user's language (locales/*.toml, `[text]`, same names).
+export struct Words {
+    ha_short: string,
+    talk: string,
+    stop: string,
+    ok: string,
+    more: string,
+    conversations: string,
+    music: string,
+    timers_alarms: string,
+    settings: string,
+    language: string,
+    new_timer: string,
+    new_alarm: string,
+    start: string,
+    save: string,
+    cancel: string,
+    close: string,
+    retry: string,
+    later: string,
+    start_over: string,
+    clear: string,
+    clear_question: string,
+    clear_text: string,
+    chat_empty: string,
+    timers_section: string,
+    alarms_section: string,
+    timers_empty: string,
+    alarms_empty: string,
+    minutes: string,
+    undo: string,
+    plus_minute: string,
+    timer_finished: string,
+    touch_to_stop: string,
+    section_device: string,
+    brains: string,
+    save_conversations: string,
+    volume: string,
+    screen: string,
+    info: string,
+    suspend: string,
+    suspend_row: string,
+    suspend_hint: string,
+    suspend_question: string,
+    suspend_text: string,
+    night_mode: string,
+    night_from: string,
+    night_to: string,
+    night_hint: string,
+    setup_title: string,
+    setup_subtitle: string,
+    setup_step1: string,
+    setup_step2: string,
+    setup_step3: string,
+    ha_unavailable: string,
+    ha_unavailable_text: string,
+    error_hint: string,
+    alarm: string,
+    memories: string,
+    memories_row: string,
+    memories_about: string,
+    memories_notes: string,
+    memories_facts: string,
+    memories_empty: string,
+    reminders_section: string,
+    reminders: string,
+    reminders_empty: string,
+    delete_question: string,
+    forget_all: string,
+    forget_question: string,
+    forget_text: string,
+    shopping: string,
+    shopping_empty: string,
+    ha_intro: string,
+    ha_configure: string,
+    ha_check: string,
+    ha_repair: string,
+    ha_unlink: string,
+    ha_unlink_question: string,
+    ha_working_short: string,
+    mirror: string,
+    mirror_back: string,
+    mirror_waiting: string,
+    mirror_stop: string,
+    first_welcome: string,
+    find_title: string,
+    find_searching: string,
+    find_found: string,
+    find_none: string,
+    find_again: string,
+}
+
+// A check of Settings → Home Assistant: a coloured dot, what, the detail; "Repair" when the row
+// differs because of a choice made in Home Assistant.
+component HaCheck inherits Rectangle {
+    in property <HaRow> check;
+    in property <string> repair-label;
+    in property <bool> enabled: true;
+    callback repair();
+    height: max(76px, label.preferred-height + detail.preferred-height + 32px);
+    border-radius: 16px;
+    background: Theme.surface;
+    Rectangle {
+        x: 24px;
+        y: 24px;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: root.check.level == 0 ? Theme.ok : root.check.level == 1 ? Theme.warn
+            : root.check.level == 2 ? Theme.danger : transparent;
+        border-width: root.check.level >= 3 ? 2px : 0px;
+        border-color: Theme.text-3;
+    }
+    label := Text {
+        x: 60px;
+        y: 12px;
+        width: parent.width - self.x - (root.check.repair ? 176px : 24px);
+        text: root.check.label;
+        font-size: 24px;
+        color: root.check.level >= 3 ? Theme.text-2 : Theme.text;
+        wrap: word-wrap;
+    }
+    detail := Text {
+        x: 60px;
+        y: 12px + label.preferred-height + 4px;
+        width: label.width;
+        text: root.check.detail;
+        font-size: 20px;
+        color: Theme.text-3;
+        wrap: word-wrap;
+    }
+    if root.check.repair: PillButton {
+        x: parent.width - 12px - self.width;
+        y: (parent.height - self.height) / 2;
+        width: 152px;
+        label: root.repair-label;
+        clicked => {
+            if root.enabled {
+                root.repair();
+            }
+        }
+    }
+}
+
+// A line of the "Ricordi" page with a delete control: the first tap on the cross asks
+// "Elimina?" in the row itself, the second deletes (no modal).
+component DeletableRow inherits Rectangle {
+    in property <string> text;
+    in property <string> detail;
+    in property <string> ask: "Delete?";
+    callback delete();
+    property <bool> asking: false;
+    height: max(76px, title.preferred-height + (root.detail != "" ? 30px : 0px) + 28px);
+    border-radius: 16px;
+    background: Theme.surface;
+    title := Text {
+        x: 24px;
+        y: 14px;
+        width: parent.width - 24px - 152px;
+        text: root.text;
+        font-size: 24px;
+        color: Theme.text;
+        wrap: word-wrap;
+    }
+    if root.detail != "": Text {
+        x: 24px;
+        y: 14px + title.preferred-height + 4px;
+        text: root.detail;
+        font-size: 20px;
+        color: Theme.text-3;
+    }
+    if !root.asking: GlyphButton {
+        x: parent.width - 8px - 64px;
+        y: (parent.height - 64px) / 2;
+        icon: Icons.close-36;
+        clicked => {
+            root.asking = true;
+        }
+    }
+    if root.asking: PillButton {
+        x: parent.width - 12px - self.width;
+        y: (parent.height - self.height) / 2;
+        width: 136px;
+        label: root.ask;
+        clicked => {
+            root.asking = false;
+            root.delete();
+        }
+    }
+}
+
+// An item of the shopping list: a tap ticks it (bought).
+component ShopItem inherits Rectangle {
+    in property <string> text;
+    callback done();
+    height: max(76px, label.preferred-height + 28px);
+    border-radius: 16px;
+    background: touch.pressed ? Theme.surface-2 : Theme.surface;
+    Rectangle {
+        x: 24px;
+        y: (parent.height - 32px) / 2;
+        width: 32px;
+        height: 32px;
+        border-radius: 16px;
+        border-width: 2px;
+        border-color: Theme.text-2;
+    }
+    label := Text {
+        x: 80px;
+        y: (parent.height - self.preferred-height) / 2;
+        width: parent.width - 104px;
+        text: root.text;
+        font-size: 26px;
+        color: Theme.text;
+        wrap: word-wrap;
+    }
+    touch := TouchArea {
+        clicked => {
+            root.done();
+        }
+    }
+}
+
+// A row of the setup page: an icon on the first line, the text wrapping under itself.
+component SetupRow inherits HorizontalLayout {
+    in property <image> icon;
+    in property <string> text;
+    in property <color> color;
+    // Words for sentences; anywhere for an address (a DNS name is one long word).
+    in property <TextWrap> wrap: word-wrap;
+    spacing: 12px;
+    VerticalLayout {
+        alignment: start;
+        padding-top: 4px;
+        Icon {
+            width: 28px;
+            height: 28px;
+            source: root.icon;
+            color: root.color;
+        }
+    }
+    Text {
+        horizontal-stretch: 1;
+        text: root.text;
+        font-size: 24px;
+        color: root.color;
+        wrap: root.wrap;
+        min-height: 36px;
+        vertical-alignment: center;
+    }
+}
+
+// The way home over the mirrored screen: Home Assistant's view's home button (gold ring, deep
+// fill, white house), a size smaller (72 px against 96).
+component MirrorHomeButton inherits Rectangle {
+    callback clicked;
+    in property <bool> enabled-touch: true;
+    width: 72px;
+    height: 72px;
+    border-radius: self.width / 2;
+    background: home-touch.pressed ? Theme.accent-deep.brighter(0.5) : Theme.accent-deep;
+    border-color: Theme.accent.with-alpha(0.9);
+    border-width: 2px;
+    Icon {
+        x: 19px;
+        y: 19px;
+        width: 34px;
+        height: 34px;
+        source: Icons.home-44;
+        color: Theme.text;
+    }
+    home-touch := TouchArea {
+        enabled: root.enabled-touch;
+        clicked => {
+            Feedback.back();
+            root.clicked();
+        }
+    }
+}
+
+export component CompanionWindow inherits Window {
+    width: 1280px;
+    height: 800px;
+    title: root.character-name;
+    default-font-family: "Inter";
+    background: root.character-background;
+
+    // "home", "listening", "thinking", "speaking", "error" or "ringing".
+    in-out property <string> state: "home";
+    // From the character: the pose of the current state, already cropped (drawn 740 px tall, so
+    // every pose keeps the same scale; dimmed by Rust at night), colours, phrases.
+    in property <image> pose;
+    // The error pose (the notice when Home Assistant's view cannot open).
+    in property <image> error-pose;
+    // An animation frame of the character, drawn instead of the pose while it is set (Rust
+    // places it where the animation's rect falls on the pose; only this box redraws).
+    in property <image> frame;
+    in property <length> frame-x;
+    in property <length> frame-y;
+    in property <length> frame-width;
+    in property <length> frame-height;
+    in property <string> character-name: "Alfred";
+    in property <color> character-background: #03050d;
+    in property <color> color-listening: #28c8e6;
+    in property <color> color-thinking: #966ef0;
+    in property <color> color-speaking: #f5aa3c;
+    in property <color> color-error: #eb4646;
+    in property <string> phrase-listening: "I'm listening…";
+    in property <string> phrase-thinking: "Let me think…";
+    in property <string> phrase-error: "I didn't understand";
+    // Shown in the home when there is nothing alive.
+    in property <string> phrase-idle: "Say \"Okay Alfred\"";
+    in property <string> phrase-starting: "Starting…";
+    in property <Words> t: {
+        ha-short: "HA", talk: "Talk", stop: "Stop", ok: "OK", more: "More",
+        conversations: "Conversations", music: "Music", timers-alarms: "Timers and alarms",
+        settings: "Settings", language: "Language", new-timer: "New timer", new-alarm: "New alarm",
+        start: "Start", save: "Save", cancel: "Cancel", close: "Close", retry: "Retry",
+        later: "Later", start-over: "Start over", clear: "Clear",
+        clear-question: "Clear the conversations?",
+        clear-text: "What you said to Alfred and his answers go away from this device.",
+        chat-empty: "Nothing yet: say \"Okay Alfred\" and ask something.",
+        timers-section: "TIMERS", alarms-section: "ALARMS",
+        timers-empty: "No timers: say \"set a timer for 5 minutes\".", alarms-empty: "No alarms.",
+        minutes: "min", undo: "Undo", plus-minute: "+1 minute", timer-finished: "Timer finished",
+        touch-to-stop: "Touch anywhere to stop", section-device: "DEVICE", brains: "Brains",
+        save-conversations: "Keep conversations", volume: "Volume", screen: "Screen",
+        info: "About", suspend: "Suspend", suspend-row: "Suspend Alfred",
+        suspend-hint: "wakes with Vol+ / Vol–", suspend-question: "Suspend Alfred?",
+        suspend-text: "He won't listen or play until you press Vol+ or Vol–. A running timer wakes him by itself.",
+        night-mode: "Night mode", night-from: "From", night-to: "To",
+        night-hint: "At night only the clock shows, dim. A touch shows the home.",
+        setup-title: "Let's link Home Assistant", setup-subtitle: "It takes a minute, from your phone.",
+        setup-step1: "Scan the code with your phone: Home Assistant opens",
+        setup-step2: "Log in if asked, then allow Alfred",
+        setup-step3: "Done: Alfred links by itself, no token to copy",
+        ha-unavailable: "Home Assistant's view\nis not available",
+        ha-unavailable-text: "Home Assistant is not answering. I retry by myself; timers and alarms keep working.",
+        error-hint: "Say it again? Just say \"Okay Alfred\"",
+        alarm: "Alarm",
+        memories: "Memories", memories-row: "Alfred's memories",
+        memories-about: "WHAT I KNOW ABOUT YOU", memories-notes: "NOTES", memories-facts: "MEMORIES",
+        memories-empty: "Nothing yet: say \"Okay Alfred, remember that…\".",
+        reminders-section: "REMINDERS", reminders: "Reminders",
+        reminders-empty: "No reminders coming: say \"Okay Alfred, remind me…\".",
+        delete-question: "Delete?", forget-all: "Forget all",
+        forget-question: "Forget everything?",
+        forget-text: "What Alfred knows about you, his notes and the past conversations go away for good.",
+        shopping: "Shopping", shopping-empty: "The list is empty.",
+    };
+    // The character's languages, each named in itself (Settings → Language).
+    in property <[LanguageRow]> languages: [
+        { code: "en", name: "English", selected: true },
+        { code: "it", name: "Italiano", selected: false },
+    ];
+    // The first start (no language chosen yet): one button per language, each named in itself,
+    // and "Welcome" in each of them.
+    in property <[WelcomeRow]> welcome-rows: [
+        { code: "en", name: "English" },
+        { code: "it", name: "Italiano" },
+    ];
+    in property <string> welcome-title: "Welcome · Benvenuto";
+    // The first start without Home Assistant's address: "searching", "found", "none" (nothing,
+    // or the search could not run: find-line says why) or "saving" (picked: restarting).
+    in property <string> find-state: "searching";
+    in property <[FindRow]> find-rows: [];
+    in property <string> find-line: "";
+    // The desk page: "home", "altro", "chat", "timers", "settings", "language", "screen",
+    // "music", "setup" or "notice". A conversation and a ringing timer are drawn over any page
+    // and leave it as it was.
+    in-out property <string> page: "home";
+    // Where Settings → Language goes back to: Settings, or the page that opened it (the link
+    // page, the first start's Home Assistant page).
+    in-out property <string> language-back: "settings";
+    // Where "back" goes from Ricordi and Spesa: the page they were opened from.
+    in-out property <string> page-back: "home";
+    // A dialog over the desk: "", "suspend", "new-timer", "new-alarm", "clear", "forget".
+    in-out property <string> dialog: "";
+    // Kept for the body (Settings open = the settings page).
+    in-out property <bool> settings-open: false;
+    // Simulator only: the sample notifications are hidden (key N).
+    in-out property <bool> notifications-hidden: false;
+    // The mouth on screen (from the character's `mouth`, scaled like the pose).
+    in property <length> mouth-x: 270px;
+    in property <length> mouth-y: 138px;
+    in property <length> mouth-width: 72px;
+    in property <length> mouth-height: 43px;
+    in property <string> clock: "14:25";
+    in property <string> date: "tuesday 3 november";
+    // The weather, only with real data from Home Assistant: its condition (Home Assistant's
+    // name: "partlycloudy") and the temperature ("14°").
+    in property <bool> weather-shown: true;
+    in property <string> weather-kind: "partlycloudy";
+    in property <string> weather-condition: "Partly cloudy";
+    in property <string> temperature: "14°";
+    // The middle band of the home: at most three, the most urgent first.
+    in property <[CardRow]> cards: [{ kind: "timer", title: "Pasta", left: "07:42", remaining: 0.77 }];
+    // Home Assistant is not connected (the HA action is dimmed; a status card says so).
+    in property <bool> offline: false;
+    // Start-up: the character's loading animation, its name, "Starting…"; no clock.
+    in property <bool> starting: false;
+    // Nothing moves by itself (the golden screenshots): the start-up line, the ringing ring.
+    in property <bool> still: false;
+    // Night mode: the clock alone, dim; its one line (the next alarm, a running timer).
+    in property <bool> night: false;
+    in property <string> night-line: "";
+    in property <bool> night-alarm: false;
+    // A conversation.
+    in property <string> heard: "";
+    in property <string> answer: "Done: the living room blind is up. It is 14 degrees outside and cloudy.";
+    // Bar heights 0..1, left to right (72 bars).
+    in property <[float]> wave: [0.05, 0.1, 0.2, 0.35, 0.5, 0.35, 0.2, 0.1, 0.05];
+    // A finished timer: its name, how long ago ("Ready for 0:12").
+    in property <string> ringing-name: "Pasta";
+    in property <string> ringing-since: "";
+    // An alarm rings, not a timer.
+    in property <bool> ringing-alarm: false;
+    // A reminder that is due, full screen (the card stays on the home until its OK).
+    in property <bool> notice-shown: false;
+    in property <string> notice-title: "Promemoria";
+    in property <string> notice-text: "";
+    in property <string> notice-when: "";
+    in property <string> notice-later: "Fra 10 min";
+    // Conversations, timers and alarms (their pages).
+    in property <[ChatRow]> chat: [];
+    in property <[TimerRow]> timer-rows: [];
+    in property <[AlarmRow]> alarm-rows: [];
+    // The days of the week, Monday first, one letter or two ("L", "M"…).
+    in property <[string]> day-letters: ["M", "T", "W", "T", "F", "S", "S"];
+    // A timer or alarm just removed: the chip with "Undo" for 5 s ("" = none).
+    in property <string> undo-text: "";
+    // Altro: what is going on in each place.
+    in property <string> tile-chat: "";
+    in property <string> tile-timers: "";
+    in property <string> tile-settings: "";
+    // Music (AirPlay later): nothing plays yet, so its tile, card and page stay hidden.
+    in property <bool> music-playing: false;
+    in property <string> music-title: "";
+    in property <string> music-artist: "";
+    in property <string> music-album: "";
+    in property <string> music-source: "";
+    // The cover (a sample drawing until something really plays).
+    in property <image> music-cover: @image-url("design/cover-sample.png");
+
+    // ---- Screen mirroring (AirPlay from a phone or a tablet; crates/home-companion/src/ui/mirror.rs): a
+    // session is on, the sender's name, its video (set by the transport on the UI thread) and
+    // that video's size in pixels (the sender's aspect ratio, at most 1280x800; it changes when
+    // the sender rotates). The page is `page == "mirror"`.
+    in property <bool> mirror-active: false;
+    in property <string> mirror-source;
+    in property <image> mirror-frame;
+    in property <length> mirror-frame-width: 368px;
+    in property <length> mirror-frame-height: 800px;
+    // The controls over a video that fills the screen are shown (Rust hides them 4 s after the
+    // last touch: mirror-poked).
+    in-out property <bool> mirror-chrome: false;
+    // The demos: the opening frozen at this point (0..1), animated below 0.
+    in property <float> mirror-freeze: -1;
+    // The character's face (the conversation bar over the mirrored video).
+    in property <image> face;
+    // Memories (home-companion-brain): present = its control socket answers (the tile, the row).
+    in property <bool> brain-present: false;
+    in property <string> memories-status: "";
+    in property <string> memories-profile: "";
+    in property <string> memories-notes: "";
+    in property <[MemoryRow]> memory-rows: [];
+    in property <[JobRow]> job-rows: [];
+    // The shopping list (`[lists] shopping`): on = configured; its open items.
+    in property <bool> shopping-on: false;
+    in property <[ShopRow]> shop-rows: [];
+    in property <string> tile-shopping: "";
+    // Settings → Home Assistant: the checks, a status line, working, set up once.
+    in property <[HaRow]> ha-rows: [];
+    in property <string> ha-line: "";
+    in property <bool> ha-busy: false;
+    // The run asked on the screen ended well: "All set" and an OK to close it.
+    in property <bool> ha-done: false;
+    in property <bool> ha-configured: false;
+    in property <bool> ha-linked: false;
+    in property <string> tile-memories: "";
+    in property <string> tile-reminders: "";
+    // Settings.
+    in property <string> language-name: "English";
+    in property <string> brains: "Home Assistant";
+    in property <string> ha-status: "";
+    in property <string> version: "";
+    in property <string> screen-status: "";
+    in property <bool> save-chat: true;
+    in property <bool> night-on: true;
+    in property <int> night-start: 23;
+    in property <int> night-end: 7;
+    // Setup: what the body sees (Wi-Fi, where Home Assistant is).
+    in property <string> setup-wifi: "";
+    in property <string> setup-ha: "";
+    // The link's QR code (crates/home-companion/src/ha/link.rs), drawn by the body; until it is there (or
+    // without Home Assistant's address) the sample picture.
+    in property <image> setup-qr: @image-url("design/qr-setup.png");
+    // A line under the steps: linked (gold) or what went wrong (danger); "" = none.
+    in property <string> setup-status: "";
+    in property <bool> setup-linked: false;
+    // The volume (percent) and whether its HUD is on screen (Rust hides it after 2 s).
+    in property <int> volume: 40;
+    in property <bool> volume-shown: false;
+
+    callback screenshot-requested();
+    // The state changed (keys, buttons or Rust): Rust sets the matching pose.
+    callback state-changed(string);
+    // The page changed (Rust returns home after a minute alone, and fills the page).
+    callback page-changed(string);
+    callback talk-clicked();
+    // A tap on the character (wakes the screen; on the device any touch does).
+    callback character-touched();
+    callback home-assistant-clicked();
+    callback stop-clicked();
+    // ---- The control center (pulled down from the top of the desk).
+    in-out property <bool> control-open: false;
+    in property <[ControlRow]> control-tiles: [];
+    in property <int> brightness: 50;
+    in property <bool> brightness-auto: true;
+    in property <string> brightness-label: "Auto";
+    callback control-tile(string);
+    // Opened by the pull from the top (the body fills the tiles then).
+    callback control-opened();
+    in property <bool> music-paused: false;
+    callback control-volume(int);
+    callback control-brightness(int);
+    callback control-brightness-auto();
+    callback music-toggle();
+    // A touch on the mirroring page: its controls come up (or stay) for a while.
+    callback mirror-poked();
+    callback music-next();
+    callback mirror-stop();
+    callback ready-dismissed();
+    callback music-previous();
+    callback message-ok(int);
+    callback language-chosen(string);
+    callback suspend-confirmed();
+    // Timers and alarms by touch.
+    callback timer-start(int);
+    callback timer-pause(string);
+    callback timer-cancel(string);
+    callback undo-clicked();
+    callback alarm-save(int, int, int);
+    callback alarm-toggled(int, bool);
+    callback alarm-delete(int);
+    // A ringing timer: one more minute.
+    callback snooze();
+    // The due reminder: OK (done), later (again in ten minutes).
+    callback notice-ok();
+    callback notice-snooze();
+    // Conversations: forget the context; delete the history.
+    callback chat-new();
+    callback chat-clear();
+    callback save-chat-toggled(bool);
+    callback night-changed(bool, int, int);
+    callback setup-later();
+    // The first start: search Home Assistant again; one picked (its address).
+    callback find-search();
+    callback find-pick(string);
+    // Settings → Home Assistant: "Set up" / "Check and repair", a row's "Repair", "Unlink".
+    callback ha-check();
+    callback ha-repair(string);
+    callback ha-unlink();
+    callback ha-ok();
+    // Memories: delete one fact, forget everything (confirmed), cancel a reminder.
+    callback memory-delete(int);
+    callback memories-forget();
+    callback job-cancel(int);
+    // The shopping list: an item bought (ticked).
+    callback shop-done(string);
+    // Keys + and - in the simulator: the volume keys (+1 up, -1 down).
+    callback volume-key(int);
+    // Key N in the simulator: hide or show the sample notifications.
+    callback notifications-toggled();
+
+    property <color> state-color: root.state == "listening" ? root.color-listening
+        : root.state == "thinking" ? root.color-thinking
+        : root.state == "speaking" ? root.color-speaking
+        // Only an error is red: back at rest (the bar still sliding away) it keeps the answer's colour.
+        : root.state == "error" ? root.color-error : root.color-speaking;
+    // A conversation owns the desk, over any page.
+    property <bool> conversation: root.state == "listening" || root.state == "thinking"
+        || root.state == "speaking" || root.state == "error";
+    property <bool> ringing: root.state == "ringing";
+    // What the desk shows when nothing takes it over.
+    property <bool> noticing: root.notice-shown && !root.conversation && !root.ringing && !root.starting;
+    property <bool> desk: !root.conversation && !root.ringing && !root.starting && !root.noticing;
+    property <bool> night-home: root.night && root.desk && root.desk-page == "home";
+
+    // The mirrored screen is on: only a ringing timer, a due reminder or the start-up take its
+    // place (a conversation is drawn over it, small).
+    property <bool> mirroring: root.mirror-active && root.page == "mirror" && !root.ringing
+        && !root.noticing && !root.starting;
+    // How far the page has come in (0 = away below the screen, 1 = in place): up from the bottom
+    // edge in 400 ms with Home Assistant's view curve, the home stepping back under it; down
+    // the same way when it closes or the user goes home.
+    property <float> mirror-in: root.mirroring ? 1 : 0;
+    animate mirror-in {
+        duration: 400ms;
+        easing: cubic-bezier(0.05, 0.7, 0.1, 1.0);
+    }
+    property <float> mirror-t: root.mirror-freeze >= 0 ? root.mirror-freeze : root.mirror-in;
+    // The video centred, as large as it fits without distortion (whole pixels).
+    property <float> mirror-scale: min(root.width / max(1px, root.mirror-frame-width),
+        root.height / max(1px, root.mirror-frame-height));
+    property <length> mirror-w: round(root.mirror-frame-width * root.mirror-scale / 1px) * 1px;
+    property <length> mirror-h: round(root.mirror-frame-height * root.mirror-scale / 1px) * 1px;
+    // Each black band at the sides. A portrait sender leaves wide ones (an upright phone 456 px,
+    // a tablet 340 px): the character and the controls stay there. A landscape one fills the
+    // screen: the controls come up on a tap, the conversation as Home Assistant's bar.
+    property <length> mirror-band: (root.width - root.mirror-w) / 2;
+    property <bool> mirror-sides: root.mirror-band >= 300px;
+    // How much of Alfred's own screen is covered (it steps back under Casa or the mirror).
+    property <float> covered: max(root.casa-cover, root.mirror-t);
+    changed state => {
+        root.dialog = "";
+        root.state-changed(root.state);
+    }
+    changed page => {
+        if (root.page != "mirror") {
+            root.page-under = root.page;
+        }
+        root.page-changed(root.page);
+    }
+    // The desk page drawn under the mirrored screen is the one it opened over: the home steps
+    // back as it was while the mirror comes in (and comes forward as it is), not an empty desk.
+    property <string> page-under: "home";
+    property <string> desk-page: root.page == "mirror" ? root.page-under : root.page;
+    changed settings-open => {
+        if (root.settings-open) {
+            root.page = "settings";
+        } else if (root.page == "settings") {
+            root.page = "home";
+        }
+    }
+
+    // The stage's geometry (Rust reads it to place the mouth).
+    out property <length> character-cx: Grid.stage-width / 2;
+    out property <length> character-top: 30px;
+    out property <length> character-height: 740px;
+    // The action band's slots (x of each 160 px wide slot).
+    property <length> slot-left: Grid.col-cx - Grid.slot-dx - Grid.slot-width / 2;
+    property <length> slot-mid: Grid.col-cx - Grid.slot-width / 2;
+    property <length> slot-right: Grid.col-cx + Grid.slot-dx - Grid.slot-width / 2;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == "s" || event.text == "S") {
+                root.screenshot-requested();
+                return accept;
+            }
+            if (event.text == "1") { root.state = "home"; return accept; }
+            if (event.text == "2") { root.state = "listening"; return accept; }
+            if (event.text == "3") { root.state = "thinking"; return accept; }
+            if (event.text == "4") { root.state = "speaking"; return accept; }
+            if (event.text == "5") { root.state = "error"; return accept; }
+            if (event.text == "n" || event.text == "N") { root.notifications-toggled(); return accept; }
+            if (event.text == "+" || event.text == "=") { root.volume-key(1); return accept; }
+            if (event.text == "-") { root.volume-key(-1); return accept; }
+            reject
+        }
+    }
+    init => {
+        keys.focus();
+    }
+
+    // How much of the screen Home Assistant's view covers (0 = not shown, 1 = in place): the
+    // same way in and out as casa.slint, animated with the same duration and curve.
+    property <length> casa-len: CasaBridge.edge == "left" || CasaBridge.edge == "right" ? root.width : root.height;
+    property <length> casa-away: CasaBridge.slide;
+    animate casa-away {
+        duration: CasaBridge.slide-animated ? 400ms : 0ms;
+        easing: cubic-bezier(0.05, 0.7, 0.1, 1.0);
+    }
+    property <float> casa-cover: CasaBridge.visible ? clamp(1 - max(CasaBridge.pull, root.casa-away) / root.casa-len, 0, 1) : 0;
+
+    // ---- Everything of Alfred's own screen, in one layer: while the view comes in it steps back
+    // (scaled to 94 % around the centre, under a dark veil), and comes forward as it leaves or
+    // follows the finger of the swipe. Not drawn at all while the view covers it.
+    home-layer := Rectangle {
+        width: root.width;
+        height: root.height;
+        visible: root.covered < 0.999;
+        transform-scale: 1 - 0.06 * root.covered;
+
+    // ---- The stage: the character, 740 px tall, centred in x 0..512. Nothing else is drawn here.
+    Image {
+        x: root.character-cx - self.width / 2;
+        y: root.character-top;
+        height: root.character-height;
+        width: root.pose.height > 0 ? self.height * root.pose.width / root.pose.height : 0px;
+        source: root.pose;
+        image-fit: fill;
+        visible: root.frame.width == 0;
+    }
+    Image {
+        x: root.frame-x;
+        y: root.frame-y;
+        width: root.frame-width;
+        height: root.frame-height;
+        source: root.frame;
+        image-fit: fill;
+        visible: root.frame.width > 0;
+    }
+    TouchArea {
+        width: Grid.stage-width;
+        height: root.height;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.character-touched();
+            }
+        }
+    }
+    // A double tap on the mouth opens the settings.
+    if root.desk && root.desk-page == "home" && !root.night: TouchArea {
+        x: root.mouth-x;
+        y: root.mouth-y;
+        width: root.mouth-width;
+        height: root.mouth-height;
+        double-clicked => {
+            root.page = "settings";
+        }
+    }
+
+    // ---- Start-up: the character's loading animation, its name, "Starting…". No clock (the time
+    // may not be set yet).
+    if root.starting && !root.conversation && !root.ringing: Rectangle {
+        Text {
+            x: Grid.col-x;
+            y: 300px;
+            width: Grid.col-width;
+            text: root.character-name;
+            font-size: 96px;
+            font-weight: 300;
+            color: Theme.text;
+            horizontal-alignment: center;
+        }
+        Text {
+            x: Grid.col-x;
+            y: 432px;
+            width: Grid.col-width;
+            text: root.phrase-starting;
+            font-size: 28px;
+            color: Theme.text-2;
+            horizontal-alignment: center;
+        }
+        // An indeterminate line: a short gold segment sliding along a hairline (start-up only).
+        Rectangle {
+            x: Grid.col-cx - 120px;
+            y: 496px;
+            width: 240px;
+            height: 4px;
+            border-radius: 2px;
+            background: Theme.line;
+            clip: true;
+            Rectangle {
+                x: root.still ? 80px : (mod(animation-tick() / 1ms, 1400) / 1400) * (parent.width + self.width) - self.width;
+                width: 80px;
+                height: 4px;
+                border-radius: 2px;
+                background: Theme.accent;
+            }
+        }
+    }
+
+    // ---- Night: the clock alone, dim, where it is by day; its one line under it. No gold, no
+    // cards, no actions: a touch shows the home for a few seconds.
+    if root.night-home: Rectangle {
+        Text {
+            x: Grid.col-x;
+            y: 48px;
+            width: Grid.col-width;
+            text: root.clock;
+            font-family: "Inter Tnum";
+            font-size: 160px;
+            font-weight: 300;
+            letter-spacing: -2px;
+            color: Theme.night;
+            horizontal-alignment: center;
+        }
+        if root.night-line != "": HorizontalLayout {
+            x: Grid.col-cx - self.width / 2;
+            y: 244px;
+            width: self.preferred-width;
+            height: 44px;
+            spacing: 12px;
+            Rectangle {
+                width: 28px;
+                Icon {
+                    y: 8px;
+                    width: 28px;
+                    height: 28px;
+                    source: root.night-alarm ? Icons.alarm-28 : Icons.timer-24;
+                    color: Theme.night;
+                }
+            }
+            Text {
+                text: root.night-line;
+                font-family: "Inter Tnum";
+                font-size: 34px;
+                color: Theme.night;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    // ---- Home: the time, the context cards, the actions.
+    if root.desk && root.desk-page == "home" && !root.night: Rectangle {
+        Text {
+            x: Grid.col-x;
+            y: 48px;
+            width: Grid.col-width;
+            text: root.clock;
+            font-family: "Inter Tnum";
+            font-size: 160px;
+            font-weight: 300;
+            letter-spacing: -2px;
+            color: Theme.text;
+            horizontal-alignment: center;
+        }
+        // One line: the date, then (only with real data) a gold dot, the sky and the temperature.
+        HorizontalLayout {
+            x: Grid.col-cx - self.width / 2;
+            y: 240px;
+            width: min(self.preferred-width, Grid.col-width);
+            height: 44px;
+            spacing: 14px;
+            Text {
+                text: root.date;
+                font-size: 34px;
+                color: Theme.text-2;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            if root.weather-shown: Rectangle {
+                width: 6px;
+                Rectangle {
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 3px;
+                    background: Theme.accent;
+                }
+            }
+            if root.weather-shown: Rectangle {
+                width: 32px;
+                accessible-role: text;
+                accessible-label: root.weather-condition;
+                Icon {
+                    y: 6px;
+                    width: 32px;
+                    height: 32px;
+                    color: Theme.text;
+                    source: root.weather-kind == "sunny" ? Icons.weather-sunny-32
+                        : root.weather-kind == "clear-night" ? Icons.weather-night-32
+                        : root.weather-kind == "partlycloudy" ? Icons.weather-partly-cloudy-32
+                        : root.weather-kind == "cloudy" ? Icons.weather-cloudy-32
+                        : root.weather-kind == "rainy" ? Icons.weather-rainy-32
+                        : root.weather-kind == "pouring" ? Icons.weather-pouring-32
+                        : root.weather-kind == "snowy" ? Icons.weather-snowy-32
+                        : root.weather-kind == "snowy-rainy" ? Icons.weather-snowy-rainy-32
+                        : root.weather-kind == "fog" ? Icons.weather-fog-32
+                        : root.weather-kind == "hail" ? Icons.weather-hail-32
+                        : root.weather-kind == "lightning" ? Icons.weather-lightning-32
+                        : root.weather-kind == "lightning-rainy" ? Icons.weather-lightning-rainy-32
+                        : root.weather-kind == "windy" ? Icons.weather-windy-32
+                        : root.weather-kind == "windy-variant" ? Icons.weather-windy-variant-32
+                        : Icons.alert-circle-32;
+                }
+            }
+            if root.weather-shown: Text {
+                text: root.temperature;
+                font-size: 34px;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+        }
+
+        // Nothing alive: the invitation, quiet, in the middle of the band.
+        if root.cards.length == 0 || root.notifications-hidden: Text {
+            x: Grid.col-x;
+            y: Grid.cards-y;
+            width: Grid.col-width;
+            height: 288px;
+            text: root.phrase-idle;
+            font-size: 24px;
+            color: Theme.text-3;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        // The context band: at most three cards, the most urgent first.
+        if !root.notifications-hidden: VerticalLayout {
+            x: Grid.col-x;
+            y: Grid.cards-y;
+            width: Grid.col-width;
+            height: 288px;
+            spacing: Grid.card-gap;
+            alignment: start;
+            for c[i] in root.cards: Rectangle {
+                height: Grid.card-height;
+                if c.kind == "timer": TimerCard {
+                    name: c.title;
+                    detail: c.text;
+                    left: c.left;
+                    remaining: c.remaining;
+                    paused: c.paused;
+                    tapped => {
+                        root.page = "timers";
+                    }
+                }
+                if c.kind == "music": NowPlayingCard {
+                    cover: root.music-cover;
+                    title: c.title;
+                    detail: c.text;
+                    playing: !c.paused;
+                    tapped => {
+                        root.page = "music";
+                    }
+                    play-pause => {
+                        root.music-toggle();
+                    }
+                    next => {
+                        root.music-next();
+                    }
+                }
+                if c.kind != "timer" && c.kind != "music": InfoCard {
+                    icon: c.kind == "status" ? Icons.cloud-off-32
+                        : c.kind == "setup" ? Icons.view-dashboard-32
+                        : c.kind == "message" ? Icons.bell-32
+                        : c.kind == "reminder" ? Icons.calendar-clock-32
+                        : c.kind == "more" ? Icons.timer-32
+                        : c.kind == "shopping" ? Icons.cart-32
+                        : c.kind == "upcoming" ? Icons.calendar-clock-32
+                        : c.kind == "alarm" ? Icons.alarm-32
+                        : c.kind == "mirror" ? Icons.cast-connected-32
+                        : c.kind == "ready" ? Icons.check-circle-32
+                        : Icons.forum-32;
+                    icon-color: c.kind == "status" ? Theme.danger
+                        : c.kind == "more" || c.kind == "answer" ? Theme.text-2 : Theme.accent;
+                    title: c.title;
+                    text: c.text;
+                    action: c.kind == "message" || c.kind == "reminder" ? root.t.ok : "";
+                    closable: c.kind == "mirror" || c.kind == "ready";
+                    action-clicked => {
+                        root.message-ok(i);
+                    }
+                    close-clicked => {
+                        if (c.kind == "ready") {
+                            root.ready-dismissed();
+                        } else {
+                            root.mirror-stop();
+                        }
+                    }
+                    tapped => {
+                        if (c.kind == "more") {
+                            root.page = "timers";
+                        } else if (c.kind == "setup") {
+                            root.page-back = "home";
+                            root.page = "ha";
+                        } else if (c.kind == "answer") {
+                            root.page = "chat";
+                        } else if (c.kind == "shopping") {
+                            root.page-back = "home";
+                            root.page = "shopping";
+                        } else if (c.kind == "alarm") {
+                            root.page = "timers";
+                        } else if (c.kind == "mirror") {
+                            root.page = "mirror";
+                        } else if (c.kind == "ready") {
+                            root.ready-dismissed();
+                            root.home-assistant-clicked();
+                        } else if (c.kind == "upcoming" || c.kind == "reminder") {
+                            root.page-back = "home";
+                            root.page = "reminders";
+                        }
+                    }
+                }
+            }
+        }
+
+        BareButton {
+            x: root.slot-left;
+            y: Grid.band-y;
+            icon: Icons.view-dashboard-48;
+            label: root.t.ha-short;
+            enabled: !root.offline;
+            clicked => {
+                root.home-assistant-clicked();
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.microphone-44;
+            label: root.t.talk;
+            clicked => {
+                root.talk-clicked();
+            }
+        }
+        BareButton {
+            x: root.slot-right;
+            y: Grid.band-y;
+            icon: Icons.dots-horizontal-48;
+            label: root.t.more;
+            clicked => {
+                root.page = "altro";
+            }
+        }
+    }
+
+    // ---- A conversation: the wave in the character's colour of the state, the words, "Ferma"
+    // (in error the gold "Parla" stays, to try again).
+    if root.conversation: Rectangle {
+        for v[i] in root.wave: Rectangle {
+            x: Grid.col-cx - 300px + i * (600px / root.wave.length) + (600px / root.wave.length - self.width) / 2;
+            y: 240px - self.height / 2;
+            width: 4px;
+            height: 6px + v * 168px;
+            border-radius: 2px;
+            background: root.state-color.with-alpha(0.35 + 0.65 * min(1, v * 1.6));
+        }
+        if root.state != "speaking": Text {
+            x: Grid.col-x;
+            y: root.state == "thinking" && root.heard != "" ? 356px : 376px;
+            width: Grid.col-width;
+            text: root.state == "listening" ? root.phrase-listening
+                : root.state == "thinking" ? root.phrase-thinking : root.phrase-error;
+            font-size: 48px;
+            color: Theme.text;
+            horizontal-alignment: center;
+        }
+        if root.state == "thinking" && root.heard != "": Text {
+            x: Grid.col-x + 24px;
+            y: 432px;
+            width: Grid.col-width - 48px;
+            height: 80px;
+            text: "«" + root.heard + "»";
+            font-size: 28px;
+            color: Theme.text-2;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+        if root.state == "error": Text {
+            x: Grid.col-x + 24px;
+            y: 448px;
+            width: Grid.col-width - 48px;
+            text: root.t.error-hint;
+            font-size: 24px;
+            color: Theme.text-2;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        if root.state == "speaking" && root.heard != "": Text {
+            x: Grid.col-x;
+            y: 348px;
+            width: Grid.col-width;
+            text: "«" + root.heard + "»";
+            font-size: 20px;
+            color: Theme.text-3;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+        if root.state == "speaking": Text {
+            x: Grid.col-x;
+            y: 392px;
+            width: Grid.col-width;
+            height: 212px;
+            text: root.answer;
+            font-size: 34px;
+            color: Theme.text;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+        if root.state != "error": PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            stop: true;
+            label: root.t.stop;
+            tint: root.state-color;
+            fill: Theme.bg.mix(root.state-color, 0.82);
+            clicked => {
+                root.stop-clicked();
+            }
+        }
+        if root.state == "error": PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.microphone-44;
+            label: root.t.talk;
+            clicked => {
+                root.talk-clicked();
+            }
+        }
+    }
+
+    // ---- A timer has finished: it takes over everything (the Home Assistant view included).
+    // Its name large, how long ago, "Ferma"; a touch anywhere stops it too, "+1 minuto" is the
+    // one exception.
+    if root.ringing: Rectangle {
+        TouchArea {
+            x: Grid.stage-width;
+            width: root.width - Grid.stage-width;
+            clicked => {
+                root.stop-clicked();
+            }
+        }
+        HorizontalLayout {
+            x: Grid.col-cx - self.width / 2;
+            y: 128px;
+            width: self.preferred-width;
+            height: 40px;
+            spacing: 12px;
+            Rectangle {
+                width: 32px;
+                Icon {
+                    y: 4px;
+                    width: 32px;
+                    height: 32px;
+                    source: root.ringing-alarm ? Icons.alarm-32 : Icons.timer-32;
+                    color: Theme.accent;
+                }
+            }
+            Text {
+                text: root.ringing-alarm ? root.t.alarm : root.t.timer-finished;
+                font-size: 28px;
+                color: Theme.accent;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            x: Grid.col-x;
+            y: 180px;
+            width: Grid.col-width;
+            text: root.ringing-name;
+            font-size: 96px;
+            font-weight: 300;
+            color: Theme.text;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+        Text {
+            x: Grid.col-x;
+            y: 312px;
+            width: Grid.col-width;
+            text: root.ringing-since;
+            font-family: "Inter Tnum";
+            font-size: 34px;
+            color: Theme.text-2;
+            horizontal-alignment: center;
+        }
+        Text {
+            x: Grid.col-x;
+            y: 548px;
+            width: Grid.col-width;
+            text: root.t.touch-to-stop;
+            font-size: 24px;
+            color: Theme.text-3;
+            horizontal-alignment: center;
+        }
+        // The gold disc breathes while it rings: one ring, alpha only.
+        breath := Rectangle {
+            property <bool> strong: false;
+            x: root.slot-mid + 20px;
+            y: Grid.band-y - 12px;
+            width: 120px;
+            height: 120px;
+            border-radius: 60px;
+            border-width: 2px;
+            border-color: Theme.accent.with-alpha(self.strong ? 0.45 : 0.15);
+            animate border-color { duration: 800ms; easing: ease-in-out; }
+        }
+        Timer {
+            interval: 800ms;
+            running: !root.still;
+            triggered => {
+                breath.strong = !breath.strong;
+            }
+        }
+        BareButton {
+            x: root.slot-left;
+            y: Grid.band-y;
+            icon: Icons.plus-48;
+            label: root.t.plus-minute;
+            clicked => {
+                root.snooze();
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            stop: true;
+            label: root.t.stop;
+            clicked => {
+                root.stop-clicked();
+            }
+        }
+    }
+
+    // ---- A reminder is due: it takes the desk (not a conversation or a ringing timer). Its
+    // words large, when it was for, "OK" (done) and "in ten minutes"; no touch elsewhere stops
+    // it, so a passing hand does not lose it.
+    if root.noticing: Rectangle {
+        // The time now, small at the top right as on the pages: "Ore 16:00" reads against it.
+        Text {
+            x: Grid.col-x + Grid.col-width - self.width;
+            y: Grid.header-y;
+            width: self.preferred-width;
+            height: 64px;
+            text: root.clock;
+            font-family: "Inter Tnum";
+            font-size: 28px;
+            color: Theme.text-2;
+            vertical-alignment: center;
+        }
+        HorizontalLayout {
+            x: Grid.col-cx - self.width / 2;
+            y: 112px;
+            width: self.preferred-width;
+            height: 40px;
+            spacing: 12px;
+            Rectangle {
+                width: 32px;
+                Icon {
+                    y: 4px;
+                    width: 32px;
+                    height: 32px;
+                    source: Icons.calendar-clock-32;
+                    color: Theme.accent;
+                }
+            }
+            Text {
+                text: root.notice-title;
+                font-size: 28px;
+                color: Theme.accent;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            x: Grid.col-x;
+            y: 172px;
+            width: Grid.col-width;
+            height: 264px;
+            text: root.notice-text;
+            font-size: root.notice-text.character-count > 60 ? 48px : 64px;
+            font-weight: 400;
+            color: Theme.text;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+        Text {
+            x: Grid.col-x;
+            y: 452px;
+            width: Grid.col-width;
+            text: root.notice-when;
+            font-family: "Inter Tnum";
+            font-size: 30px;
+            color: Theme.text-2;
+            horizontal-alignment: center;
+        }
+        // The gold disc breathes, like a ringing timer but slower: it waits, it does not ring.
+        notice-breath := Rectangle {
+            property <bool> strong: false;
+            x: root.slot-mid + 20px;
+            y: Grid.band-y - 12px;
+            width: 120px;
+            height: 120px;
+            border-radius: 60px;
+            border-width: 2px;
+            border-color: Theme.accent.with-alpha(self.strong ? 0.45 : 0.12);
+            animate border-color { duration: 1400ms; easing: ease-in-out; }
+        }
+        Timer {
+            interval: 1400ms;
+            running: !root.still;
+            triggered => {
+                notice-breath.strong = !notice-breath.strong;
+            }
+        }
+        BareButton {
+            x: root.slot-left;
+            y: Grid.band-y;
+            icon: Icons.timer-plus-48;
+            label: root.notice-later;
+            clicked => {
+                root.notice-snooze();
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.check-44;
+            label: root.t.ok;
+            clicked => {
+                root.notice-ok();
+            }
+        }
+    }
+
+    // ---- "Altro": every place that is not alive right now, as tiles; Home Assistant stays in
+    // the left slot, where it is on the home.
+    if root.desk && root.desk-page == "altro": altro-page := Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.more;
+            clock: root.clock;
+            back => {
+                root.page = "home";
+            }
+        }
+        // Two columns; five or six tiles: three rows of compact ones. Six at most: what plays
+        // gives its tile up when everything else is there (it has its card on the home).
+        // Seven or eight: four rows of dense ones.
+        property <int> n-fixed: 4 + (root.brain-present ? 2 : 0) + (root.shopping-on ? 1 : 0);
+        property <bool> music-tile: root.music-playing && self.n-fixed < 8;
+        property <int> n-tiles: self.n-fixed + (self.music-tile ? 1 : 0);
+        property <bool> compact: self.n-tiles > 4;
+        property <bool> dense: self.n-tiles > 6;
+        property <length> row-step: self.dense ? 124px : self.compact ? 160px : 220px;
+        property <int> i-settings: self.music-tile ? 3 : 2;
+        property <int> i-ha: self.i-settings + 1;
+        property <int> i-memories: self.i-ha + 1;
+        property <int> i-reminders: self.i-memories + 1;
+        property <int> i-shopping: self.i-memories + (root.brain-present ? 2 : 0);
+        Tile {
+            x: Grid.col-x;
+            y: 128px;
+            compact: parent.compact;
+            dense: parent.dense;
+            icon: Icons.forum-48;
+            label: root.t.conversations;
+            status: root.tile-chat;
+            clicked => {
+                root.page = "chat";
+            }
+        }
+        Tile {
+            x: Grid.col-x + 348px;
+            y: 128px;
+            compact: parent.compact;
+            dense: parent.dense;
+            icon: Icons.timer-48;
+            label: root.t.timers-alarms;
+            status: root.tile-timers;
+            clicked => {
+                root.page = "timers";
+            }
+        }
+        if altro-page.music-tile: Tile {
+            x: Grid.col-x;
+            y: 128px + parent.row-step;
+            compact: parent.compact;
+            dense: parent.dense;
+            icon: Icons.music-note-48;
+            label: root.t.music;
+            status: root.music-title;
+            clicked => {
+                root.page = "music";
+            }
+        }
+        Tile {
+            x: Grid.col-x + mod(parent.i-settings, 2) * 348px;
+            y: 128px + floor(parent.i-settings / 2) * parent.row-step;
+            compact: parent.compact;
+            dense: parent.dense;
+            icon: Icons.cog-48;
+            label: root.t.settings;
+            status: root.tile-settings;
+            clicked => {
+                root.page = "settings";
+            }
+        }
+        // Home Assistant: the setup's checks (linked), else the QR code.
+        Tile {
+            x: Grid.col-x + mod(parent.i-ha, 2) * 348px;
+            y: 128px + floor(parent.i-ha / 2) * parent.row-step;
+            compact: parent.compact;
+            dense: parent.dense;
+            icon: Icons.view-dashboard-48;
+            label: "Home Assistant";
+            status: root.ha-status;
+            clicked => {
+                root.page-back = "altro";
+                root.page = root.ha-linked ? "ha" : "setup";
+            }
+        }
+        if root.brain-present: Tile {
+            x: Grid.col-x + mod(parent.i-memories, 2) * 348px;
+            y: 128px + floor(parent.i-memories / 2) * parent.row-step;
+            compact: parent.compact;
+            dense: parent.dense;
+            icon: Icons.brain-48;
+            label: root.t.memories;
+            status: root.tile-memories;
+            clicked => {
+                root.page-back = "altro";
+                root.page = "memories";
+            }
+        }
+        if root.brain-present: Tile {
+            x: Grid.col-x + mod(parent.i-reminders, 2) * 348px;
+            y: 128px + floor(parent.i-reminders / 2) * parent.row-step;
+            compact: parent.compact;
+            dense: parent.dense;
+            icon: Icons.calendar-clock-48;
+            label: root.t.reminders;
+            status: root.tile-reminders;
+            clicked => {
+                root.page-back = "altro";
+                root.page = "reminders";
+            }
+        }
+        if root.shopping-on: Tile {
+            x: Grid.col-x + mod(parent.i-shopping, 2) * 348px;
+            y: 128px + floor(parent.i-shopping / 2) * parent.row-step;
+            compact: parent.compact;
+            dense: parent.dense;
+            icon: Icons.cart-48;
+            label: root.t.shopping;
+            status: root.tile-shopping;
+            clicked => {
+                root.page-back = "altro";
+                root.page = "shopping";
+            }
+        }
+        BareButton {
+            x: root.slot-left;
+            y: Grid.band-y;
+            icon: Icons.view-dashboard-48;
+            label: root.t.ha-short;
+            enabled: !root.offline;
+            clicked => {
+                root.home-assistant-clicked();
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.microphone-44;
+            label: root.t.talk;
+            clicked => {
+                root.talk-clicked();
+            }
+        }
+    }
+
+    // ---- Conversations: what was said, newest at the bottom; it scrolls inside the middle band.
+    if root.desk && root.desk-page == "chat": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.conversations;
+            clock: root.clock;
+            back => {
+                root.page = "altro";
+            }
+        }
+        if root.chat.length == 0: Text {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: Grid.page-height;
+            text: root.t.chat-empty;
+            font-size: 24px;
+            color: Theme.text-3;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+        chat-list := Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: Grid.page-height;
+            content-height: max(self.height, lines.preferred-height);
+            // Newest at the bottom: starts scrolled to the end (a flick replaces this binding).
+            content-y: min(0px, self.height - self.content-height);
+            lines := VerticalLayout {
+                y: max(0px, chat-list.height - self.preferred-height);
+                width: chat-list.width;
+                spacing: 16px;
+                for line in root.chat: Rectangle {
+                    height: line.kind == "sep" ? 40px : line.kind == "user" ? user.height : char.height;
+                    if line.kind == "sep": ChatSeparator {
+                        width: parent.width;
+                        text: line.text;
+                    }
+                    user := ChatUser {
+                        width: parent.width;
+                        visible: line.kind == "user";
+                        text: line.kind == "user" ? line.text : "";
+                    }
+                    char := ChatCharacter {
+                        width: parent.width;
+                        visible: line.kind == "character";
+                        text: line.kind == "character" ? line.text : "";
+                    }
+                }
+            }
+        }
+        // Older lines fade out under the header (one small gradient, not over the whole list).
+        Rectangle {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: 48px;
+            background: @linear-gradient(180deg, Theme.bg 0%, Theme.bg.with-alpha(0) 100%);
+        }
+        BareButton {
+            x: root.slot-left;
+            y: Grid.band-y;
+            icon: Icons.message-plus-48;
+            label: root.t.start-over;
+            clicked => {
+                root.chat-new();
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.microphone-44;
+            label: root.t.talk;
+            clicked => {
+                root.talk-clicked();
+            }
+        }
+        BareButton {
+            x: root.slot-right;
+            y: Grid.band-y;
+            icon: Icons.delete-48;
+            label: root.t.clear;
+            enabled: root.chat.length > 0;
+            clicked => {
+                root.dialog = "clear";
+            }
+        }
+    }
+
+    // ---- Timers and alarms: what runs and what is set; new ones by touch or by voice.
+    if root.desk && root.desk-page == "timers": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.timers-alarms;
+            clock: root.clock;
+            back => {
+                root.page = "altro";
+            }
+        }
+        Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: Grid.page-height;
+            content-height: max(self.height, timers-col.preferred-height);
+            timers-col := VerticalLayout {
+                alignment: start;
+                spacing: 8px;
+                SectionTitle {
+                    x: 8px;
+                    text: root.t.timers-section;
+                }
+                if root.timer-rows.length == 0: Text {
+                    height: 56px;
+                    text: root.t.timers-empty;
+                    font-size: 24px;
+                    color: Theme.text-3;
+                    vertical-alignment: center;
+                }
+                if root.timer-rows.length > 0: Group {
+                    height: root.timer-rows.length * 96px;
+                    for tr[i] in root.timer-rows: TimerLine {
+                        y: i * 96px;
+                        width: parent.width;
+                        first: i == 0;
+                        name: tr.name;
+                        detail: tr.detail;
+                        left: tr.left;
+                        remaining: tr.remaining;
+                        paused: tr.paused;
+                        pause-resume => {
+                            root.timer-pause(tr.id);
+                        }
+                        cancel => {
+                            root.timer-cancel(tr.id);
+                        }
+                    }
+                }
+                Rectangle {
+                    height: 8px;
+                }
+                SectionTitle {
+                    text: root.t.alarms-section;
+                }
+                if root.alarm-rows.length == 0: Text {
+                    height: 56px;
+                    text: root.t.alarms-empty;
+                    font-size: 24px;
+                    color: Theme.text-3;
+                    vertical-alignment: center;
+                }
+                if root.alarm-rows.length > 0: Group {
+                    height: root.alarm-rows.length * 88px;
+                    for a[i] in root.alarm-rows: AlarmLine {
+                        y: i * 88px;
+                        width: parent.width;
+                        first: i == 0;
+                        time: a.time;
+                        days: a.days;
+                        on: a.on;
+                        toggled(v) => {
+                            root.alarm-toggled(a.id, v);
+                        }
+                        delete => {
+                            root.alarm-delete(a.id);
+                        }
+                    }
+                }
+            }
+        }
+        BareButton {
+            x: root.slot-left;
+            y: Grid.band-y;
+            icon: Icons.timer-plus-48;
+            label: root.t.new-timer;
+            clicked => {
+                root.dialog = "new-timer";
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.microphone-44;
+            label: root.t.talk;
+            clicked => {
+                root.talk-clicked();
+            }
+        }
+        BareButton {
+            x: root.slot-right;
+            y: Grid.band-y;
+            icon: Icons.alarm-plus-48;
+            label: root.t.new-alarm;
+            clicked => {
+                root.dialog = "new-alarm";
+            }
+        }
+    }
+
+    // ---- Settings: grouped rows; Language and Screen open their own page, Suspend a question.
+    if root.desk && root.desk-page == "settings": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.settings;
+            clock: root.clock;
+            back => {
+                root.page = "home";
+            }
+        }
+        Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            // No action band here: the rows go down to the bottom of the screen.
+            height: root.height - Grid.page-y - 16px;
+            content-height: max(self.height, settings-col.preferred-height);
+            settings-col := VerticalLayout {
+                alignment: start;
+                spacing: 8px;
+                SectionTitle {
+                    text: root.character-name.to-uppercase();
+                }
+                Group {
+                    height: 3 * 76px;
+                    Row {
+                        y: 152px;
+                        width: parent.width;
+                        icon: Icons.brain-28;
+                        label: root.t.memories-row;
+                        value: root.tile-memories;
+                        clicked => {
+                            root.page-back = "settings";
+                            root.page = "memories";
+                        }
+                    }
+
+                    Row {
+                        y: 0;
+                        width: parent.width;
+                        first: true;
+                        icon: Icons.translate-28;
+                        label: root.t.language;
+                        value: root.language-name;
+                        clicked => {
+                            root.language-back = "settings";
+                            root.page = "language";
+                        }
+                    }
+                    Row {
+                        y: 76px;
+                        width: parent.width;
+                        kind: "toggle";
+                        icon: Icons.forum-32;
+                        label: root.t.save-conversations;
+                        on: root.save-chat;
+                        toggled(v) => {
+                            root.save-chat-toggled(v);
+                        }
+                    }
+                }
+                Rectangle {
+                    height: 8px;
+                }
+                SectionTitle {
+                    text: root.t.section-device;
+                }
+                Group {
+                    height: 4 * 76px;
+                    Row {
+                        y: 0;
+                        width: parent.width;
+                        first: true;
+                        kind: "";
+                        icon: Icons.volume-high-28;
+                        label: root.t.volume;
+                        value: root.volume + "%";
+                    }
+                    Row {
+                        y: 76px;
+                        width: parent.width;
+                        icon: Icons.brightness-6-28;
+                        label: root.t.screen;
+                        value: root.screen-status;
+                        clicked => {
+                            root.page = "screen";
+                        }
+                    }
+                    Row {
+                        y: 152px;
+                        width: parent.width;
+                        kind: "";
+                        icon: Icons.information-28;
+                        label: root.t.info;
+                        value: root.version;
+                    }
+                    Row {
+                        y: 228px;
+                        width: parent.width;
+                        icon: Icons.power-sleep-28;
+                        label: root.t.suspend-row;
+                        value: root.t.suspend-hint;
+                        clicked => {
+                            root.dialog = "suspend";
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- Settings → Home Assistant: one row per check of the setup after the QR link.
+    if root.desk && root.desk-page == "ha": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: "Home Assistant";
+            clock: root.clock;
+            back => {
+                root.page = root.page-back;
+            }
+        }
+        Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: Grid.page-height;
+            content-height: max(self.height, ha-col.preferred-height);
+            ha-col := VerticalLayout {
+                alignment: start;
+                spacing: 8px;
+                if !root.ha-done: Text {
+                    text: root.ha-line != "" ? root.ha-line : root.t.ha-intro;
+                    font-size: 22px;
+                    color: root.ha-busy ? Theme.accent : Theme.text-2;
+                    wrap: word-wrap;
+                }
+                // The final OK: a green line that cannot be missed.
+                if root.ha-done: Rectangle {
+                    height: 72px;
+                    border-radius: 16px;
+                    background: Theme.ok.with-alpha(0.16);
+                    border-width: 2px;
+                    border-color: Theme.ok;
+                    Icon {
+                        x: 20px;
+                        y: 22px;
+                        width: 28px;
+                        height: 28px;
+                        source: Icons.check-28;
+                        color: Theme.ok;
+                    }
+                    Text {
+                        x: 60px;
+                        width: parent.width - 80px;
+                        height: parent.height;
+                        text: root.ha-line;
+                        font-size: 26px;
+                        font-weight: 500;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                for r in root.ha-rows: HaCheck {
+                    check: r;
+                    repair-label: root.t.ha-repair;
+                    enabled: !root.ha-busy;
+                    repair => {
+                        root.ha-repair(r.id);
+                    }
+                }
+            }
+        }
+        BareButton {
+            x: root.slot-left;
+            y: Grid.band-y;
+            icon: Icons.close-48;
+            label: root.t.ha-unlink;
+            enabled: !root.ha-busy;
+            clicked => {
+                root.dialog = "unlink";
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            spinning: root.ha-busy;
+            enabled: !root.ha-busy;
+            icon: root.ha-busy || (root.ha-configured && !root.ha-done) ? Icons.refresh-44 : Icons.check-44;
+            label: root.ha-busy ? root.t.ha-working-short : root.ha-done ? root.t.ok
+                : root.ha-configured ? root.t.ha-check : root.t.ha-configure;
+            clicked => {
+                if root.ha-done {
+                    root.ha-ok();
+                } else if !root.ha-busy {
+                    root.ha-check();
+                }
+            }
+        }
+    }
+
+    // ---- Memories (home-companion-brain): reminders still to come, what Alfred knows about the user, his
+    // notes and the facts he remembers, each deletable; "Dimentica tutto" in the action band.
+    if root.desk && root.desk-page == "memories": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.memories;
+            clock: root.clock;
+            back => {
+                root.page = root.page-back;
+            }
+        }
+        Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: Grid.page-height;
+            content-height: max(self.height, mem-col.preferred-height);
+            mem-col := VerticalLayout {
+                alignment: start;
+                spacing: 8px;
+                Text {
+                    text: root.memories-status;
+                    font-size: 20px;
+                    color: Theme.text-3;
+                    wrap: word-wrap;
+                }
+                if root.memories-profile != "": SectionTitle {
+                    text: root.t.memories-about;
+                }
+                if root.memories-profile != "": Rectangle {
+                    height: profile-text.preferred-height + 28px;
+                    border-radius: 16px;
+                    background: Theme.surface;
+                    profile-text := Text {
+                        x: 24px;
+                        y: 14px;
+                        width: parent.width - 48px;
+                        text: root.memories-profile;
+                        font-size: 22px;
+                        color: Theme.text-2;
+                        wrap: word-wrap;
+                    }
+                }
+                if root.memories-notes != "": SectionTitle {
+                    text: root.t.memories-notes;
+                }
+                if root.memories-notes != "": Rectangle {
+                    height: notes-text.preferred-height + 28px;
+                    border-radius: 16px;
+                    background: Theme.surface;
+                    notes-text := Text {
+                        x: 24px;
+                        y: 14px;
+                        width: parent.width - 48px;
+                        text: root.memories-notes;
+                        font-size: 22px;
+                        color: Theme.text-2;
+                        wrap: word-wrap;
+                    }
+                }
+                if root.memory-rows.length > 0: SectionTitle {
+                    text: root.t.memories-facts;
+                }
+                for m in root.memory-rows: DeletableRow {
+                    text: m.text;
+                    detail: m.date;
+                    ask: root.t.delete-question;
+                    delete => {
+                        root.memory-delete(m.id);
+                    }
+                }
+                if root.brain-present && root.memory-rows.length == 0 && root.memories-profile == ""
+                    && root.memories-notes == "": Text {
+                    height: 120px;
+                    text: root.t.memories-empty;
+                    font-size: 24px;
+                    color: Theme.text-3;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.microphone-44;
+            label: root.t.talk;
+            clicked => {
+                root.talk-clicked();
+            }
+        }
+        BareButton {
+            x: root.slot-right;
+            y: Grid.band-y;
+            icon: Icons.delete-48;
+            label: root.t.forget-all;
+            enabled: root.brain-present && (root.memory-rows.length > 0 || root.memories-profile != ""
+                || root.memories-notes != "");
+            clicked => {
+                root.dialog = "forget";
+            }
+        }
+    }
+
+    // ---- Promemoria: home-companion-brain's reminders still to come (a reminder is not a memory, nor a timer
+    // or an alarm: its own page), soonest first; a row asks before it is deleted.
+    if root.desk && root.desk-page == "reminders": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.reminders;
+            clock: root.clock;
+            back => {
+                root.page = root.page-back;
+            }
+        }
+        Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: Grid.page-height;
+            content-height: max(self.height, rem-col.preferred-height);
+            rem-col := VerticalLayout {
+                alignment: start;
+                spacing: 8px;
+                for j in root.job-rows: DeletableRow {
+                    text: j.text;
+                    detail: j.when;
+                    ask: root.t.delete-question;
+                    delete => {
+                        root.job-cancel(j.id);
+                    }
+                }
+                if root.job-rows.length == 0: Text {
+                    height: 120px;
+                    text: root.t.reminders-empty;
+                    font-size: 24px;
+                    color: Theme.text-3;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.microphone-44;
+            label: root.t.talk;
+            clicked => {
+                root.talk-clicked();
+            }
+        }
+    }
+
+    // ---- The shopping list (Home Assistant's `todo` entity): open items, a tap ticks one.
+    if root.desk && root.desk-page == "shopping": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.shopping;
+            clock: root.clock;
+            back => {
+                root.page = root.page-back;
+            }
+        }
+        if root.shop-rows.length == 0: Text {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: Grid.page-height;
+            text: root.t.shopping-empty;
+            font-size: 24px;
+            color: Theme.text-3;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: Grid.page-height;
+            content-height: max(self.height, shop-col.preferred-height);
+            shop-col := VerticalLayout {
+                alignment: start;
+                spacing: 8px;
+                for item in root.shop-rows: ShopItem {
+                    text: item.text;
+                    done => {
+                        root.shop-done(item.uid);
+                    }
+                }
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.microphone-44;
+            label: root.t.talk;
+            clicked => {
+                root.talk-clicked();
+            }
+        }
+    }
+
+    // ---- Settings → Language.
+    if root.desk && root.desk-page == "language": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.language;
+            clock: root.clock;
+            back => {
+                root.page = root.language-back;
+            }
+        }
+        Group {
+            x: Grid.col-x;
+            y: Grid.page-y + 16px;
+            width: Grid.col-width;
+            height: root.languages.length * 76px;
+            for l[i] in root.languages: Row {
+                y: i * 76px;
+                width: parent.width;
+                first: i == 0;
+                kind: "check";
+                label: l.name;
+                on: l.selected;
+                clicked => {
+                    root.language-chosen(l.code);
+                    root.page = root.language-back;
+                }
+            }
+        }
+    }
+
+    // ---- Settings → Screen: the night hours.
+    if root.desk && root.desk-page == "screen": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.screen;
+            clock: root.clock;
+            back => {
+                root.page = "settings";
+            }
+        }
+        Group {
+            x: Grid.col-x;
+            y: Grid.page-y + 16px;
+            width: Grid.col-width;
+            height: root.night-on ? 3 * 76px + 2 * 12px : 76px;
+            Row {
+                y: 0;
+                width: parent.width;
+                first: true;
+                kind: "toggle";
+                icon: Icons.weather-night-28;
+                label: root.t.night-mode;
+                on: root.night-on;
+                toggled(v) => {
+                    root.night-changed(v, root.night-start, root.night-end);
+                }
+            }
+            if root.night-on: Row {
+                y: 88px;
+                width: parent.width;
+                kind: "";
+                label: root.t.night-from;
+            }
+            if root.night-on: Stepper {
+                x: parent.width - 16px - self.width;
+                y: 94px;
+                value-width: 120px;
+                font-size: 40px;
+                value: (root.night-start < 10 ? "0" : "") + root.night-start + ":00";
+                step(d) => {
+                    root.night-changed(true, mod(root.night-start + d + 24, 24), root.night-end);
+                }
+            }
+            if root.night-on: Row {
+                y: 176px;
+                width: parent.width;
+                kind: "";
+                label: root.t.night-to;
+            }
+            if root.night-on: Stepper {
+                x: parent.width - 16px - self.width;
+                y: 182px;
+                value-width: 120px;
+                font-size: 40px;
+                value: (root.night-end < 10 ? "0" : "") + root.night-end + ":00";
+                step(d) => {
+                    root.night-changed(true, root.night-start, mod(root.night-end + d + 24, 24));
+                }
+            }
+        }
+        Text {
+            x: Grid.col-x + 8px;
+            y: Grid.page-y + 16px + (root.night-on ? 3 * 76px + 2 * 12px : 76px) + 16px;
+            width: Grid.col-width - 16px;
+            text: root.t.night-hint;
+            font-size: 24px;
+            color: Theme.text-3;
+            wrap: word-wrap;
+        }
+    }
+
+    // ---- Music: what is playing, large; the transport in the action band. Only while something
+    // plays (AirPlay is not there yet: the data is a placeholder).
+    if root.desk && root.desk-page == "music": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.music;
+            clock: root.clock;
+            back => {
+                root.page = "home";
+            }
+        }
+        Rectangle {
+            x: Grid.col-x;
+            y: 120px;
+            width: 304px;
+            height: 304px;
+            border-radius: 20px;
+            background: Theme.surface;
+            clip: true;
+            Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.music-cover;
+                image-fit: ImageFit.cover;
+            }
+            // No cover art for this track: a note, never the previous track's picture.
+            Icon {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 96px;
+                height: 96px;
+                source: Icons.music-note-48;
+                color: Theme.text-3;
+                visible: root.music-cover.width == 0;
+            }
+        }
+        Icon {
+            x: 896px;
+            y: 132px;
+            width: 24px;
+            height: 24px;
+            source: Icons.cast-audio-24;
+            color: Theme.text-2;
+        }
+        Text {
+            x: 930px;
+            y: 128px;
+            height: 32px;
+            text: root.music-source;
+            font-size: 24px;
+            color: Theme.text-2;
+            vertical-alignment: center;
+        }
+        // Title, artist and album stacked: a long title (videos) takes up to three lines and
+        // pushes the rest down instead of running under it.
+        VerticalLayout {
+            x: 896px;
+            y: 176px;
+            width: 336px;
+            height: 400px;
+            spacing: 8px;
+            alignment: start;
+            Text {
+                text: root.music-title;
+                // Song titles are short; video titles are not: smaller type, three lines at most.
+                font-size: root.music-title.character-count > 32 ? 32px : 40px;
+                height: min(self.preferred-height, 3 * self.font-size * 1.25);
+                color: Theme.text;
+                wrap: word-wrap;
+                overflow: elide;
+            }
+            if root.music-artist != "": Text {
+                text: root.music-artist;
+                font-size: 28px;
+                color: Theme.text-2;
+                overflow: elide;
+            }
+            if root.music-album != "": Text {
+                text: root.music-album;
+                font-size: 24px;
+                color: Theme.text-3;
+                overflow: elide;
+            }
+        }
+        BareButton {
+            x: root.slot-left;
+            y: Grid.band-y;
+            icon: Icons.skip-previous-48;
+            label: "";
+            clicked => {
+                root.music-previous();
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: root.music-paused ? Icons.play-44 : Icons.pause-44;
+            label: "";
+            clicked => {
+                root.music-toggle();
+            }
+        }
+        BareButton {
+            x: root.slot-right;
+            y: Grid.band-y;
+            icon: Icons.skip-next-48;
+            label: "";
+            clicked => {
+                root.music-next();
+            }
+        }
+    }
+
+    // ---- First start, 1: the language (none in the configuration, none chosen yet). The
+    // character on his stage, "Welcome" in each language, one big button per language named in
+    // itself; a tap applies it at once (as Settings → Language) and goes on.
+    if root.desk && root.desk-page == "welcome": Rectangle {
+        Text {
+            x: Grid.col-x;
+            y: 48px;
+            width: Grid.col-width;
+            text: root.welcome-title;
+            font-size: 48px;
+            color: Theme.text;
+            wrap: word-wrap;
+        }
+        Flickable {
+            x: Grid.col-x;
+            y: 200px;
+            width: Grid.col-width;
+            height: 776px - self.y;
+            content-height: max(self.height, welcome-col.preferred-height);
+            welcome-col := VerticalLayout {
+                alignment: start;
+                spacing: 16px;
+                for l in root.welcome-rows: Rectangle {
+                    height: 112px;
+                    border-radius: Grid.card-radius;
+                    background: welcome-touch.pressed ? Theme.surface-2 : Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.line;
+                    Icon {
+                        x: 34px;
+                        y: 42px;
+                        width: 28px;
+                        height: 28px;
+                        source: Icons.translate-28;
+                        color: Theme.accent;
+                    }
+                    Text {
+                        x: 88px;
+                        width: parent.width - 88px - 72px;
+                        height: parent.height;
+                        text: l.name;
+                        font-size: 34px;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Icon {
+                        x: parent.width - 60px;
+                        y: 42px;
+                        width: 28px;
+                        height: 28px;
+                        source: Icons.chevron-right-28;
+                        color: Theme.text-3;
+                    }
+                    welcome-touch := TouchArea {
+                        clicked => {
+                            Feedback.tap();
+                            root.language-chosen(l.code);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- First start, 2: Home Assistant (no address in the configuration, none picked yet),
+    // found on the network over mDNS (crates/home-companion/src/ha/discover.rs). One row per
+    // instance (its name and address); a tap saves it and the body restarts with it, then the
+    // QR link page follows. Band: the language · Search again (gold) · Later.
+    if root.desk && root.desk-page == "find-ha": Rectangle {
+        Text {
+            x: Grid.col-x;
+            y: 36px;
+            width: Grid.col-width;
+            text: root.t.find-title;
+            font-size: 34px;
+            color: Theme.text;
+        }
+        Text {
+            x: Grid.col-x;
+            y: 84px;
+            width: Grid.col-width;
+            text: root.find-state == "searching" ? root.t.find-searching
+                : root.find-state == "found" ? root.t.find-found
+                : root.find-state == "none" ? root.t.find-none : "";
+            font-size: 24px;
+            color: Theme.text-2;
+            overflow: elide;
+        }
+        if root.find-state == "searching": Rectangle {
+            x: Grid.col-cx - 120px;
+            y: 360px;
+            width: 240px;
+            height: 4px;
+            border-radius: 2px;
+            background: Theme.line;
+            clip: true;
+            Rectangle {
+                x: root.still ? 80px : (mod(animation-tick() / 1ms, 1400) / 1400) * (parent.width + self.width) - self.width;
+                width: 80px;
+                height: 4px;
+                border-radius: 2px;
+                background: Theme.accent;
+            }
+        }
+        if root.find-state == "found": Flickable {
+            x: Grid.col-x;
+            y: 140px;
+            width: Grid.col-width;
+            height: 600px - self.y;
+            content-height: max(self.height, found-group.height);
+            found-group := Group {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: root.find-rows.length * 104px;
+                for f[i] in root.find-rows: Rectangle {
+                    y: i * 104px;
+                    width: parent.width;
+                    height: 104px;
+                    background: found-touch.pressed ? Theme.surface-2 : transparent;
+                    if i > 0: Separator {
+                        y: 0;
+                        width: parent.width - 72px;
+                    }
+                    Icon {
+                        x: 24px;
+                        y: 22px;
+                        width: 28px;
+                        height: 28px;
+                        source: Icons.view-dashboard-28;
+                        color: Theme.accent;
+                    }
+                    Text {
+                        x: 72px;
+                        y: 16px;
+                        width: parent.width - 72px - 64px;
+                        text: f.name;
+                        font-size: 28px;
+                        color: Theme.text;
+                        overflow: elide;
+                    }
+                    Text {
+                        x: 72px;
+                        y: 56px;
+                        width: parent.width - 72px - 64px;
+                        text: f.url;
+                        font-size: 24px;
+                        color: Theme.text-2;
+                        overflow: elide;
+                    }
+                    Icon {
+                        x: parent.width - 52px;
+                        y: 38px;
+                        width: 28px;
+                        height: 28px;
+                        source: Icons.chevron-right-28;
+                        color: Theme.text-3;
+                    }
+                    found-touch := TouchArea {
+                        clicked => {
+                            Feedback.tap();
+                            root.find-pick(f.url);
+                        }
+                    }
+                }
+            }
+        }
+        if root.find-line != "": VerticalLayout {
+            x: Grid.col-x;
+            y: 140px;
+            width: Grid.col-width;
+            height: Grid.band-y - 160px;
+            alignment: start;
+            SetupRow {
+                icon: root.find-state == "saving" ? Icons.check-28 : Icons.information-28;
+                text: root.find-line;
+                color: root.find-state == "saving" ? Theme.accent : Theme.text-2;
+            }
+        }
+        BareButton {
+            x: root.slot-left;
+            y: Grid.band-y;
+            icon: Icons.translate-48;
+            label: root.language-name;
+            enabled: root.find-state != "saving";
+            clicked => {
+                root.language-back = "find-ha";
+                root.page = "language";
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            spinning: root.find-state == "searching" && !root.still;
+            enabled: root.find-state == "found" || root.find-state == "none";
+            icon: Icons.refresh-44;
+            label: root.t.find-again;
+            clicked => {
+                root.find-search();
+            }
+        }
+        BareButton {
+            x: root.slot-right;
+            y: Grid.band-y;
+            icon: Icons.close-48;
+            label: root.t.later;
+            leaves: true;
+            enabled: root.find-state != "saving";
+            clicked => {
+                root.setup-later();
+                root.page = "home";
+            }
+        }
+    }
+
+    // ---- Link Home Assistant (Settings → Home Assistant, or the first start without a token).
+    // The code opens Home Assistant's authorisation page on the phone; once confirmed there, the
+    // body gets its tokens (design.md section 8, crates/home-companion/src/ha/link.rs).
+    if root.desk && root.desk-page == "setup": Rectangle {
+        Text {
+            x: Grid.col-x;
+            y: 36px;
+            text: root.t.setup-title;
+            font-size: 34px;
+            color: Theme.text;
+        }
+        Text {
+            x: Grid.col-x;
+            y: 84px;
+            text: root.t.setup-subtitle;
+            font-size: 24px;
+            color: Theme.text-2;
+        }
+        // The code: dark modules on ivory (phones read light-on-dark codes poorly).
+        Rectangle {
+            x: Grid.col-x;
+            y: 140px;
+            width: 296px;
+            height: 296px;
+            border-radius: 16px;
+            background: Theme.text;
+            Image {
+                x: 16px;
+                y: 16px;
+                width: 264px;
+                height: 264px;
+                source: root.setup-qr;
+                image-rendering: pixelated;
+                opacity: root.setup-linked ? 0.25 : 1.0;
+            }
+        }
+        Step {
+            x: 888px;
+            y: 148px;
+            width: 344px;
+            number: "1";
+            text: root.t.setup-step1;
+            done: root.setup-linked;
+        }
+        Step {
+            x: 888px;
+            y: 260px;
+            width: 344px;
+            number: "2";
+            text: root.t.setup-step2;
+            done: root.setup-linked;
+        }
+        Step {
+            x: 888px;
+            y: 372px;
+            width: 344px;
+            number: "3";
+            text: root.t.setup-step3;
+            done: root.setup-linked;
+        }
+        // Three rows under the code and the steps, across both columns, each as tall as its text:
+        // Wi-Fi (the network's name), Home Assistant's address (a long DNS name wraps), how the
+        // link went.
+        VerticalLayout {
+            x: Grid.col-x;
+            y: 476px;
+            width: 1232px - Grid.col-x;
+            height: Grid.band-y - 476px;
+            spacing: 8px;
+            alignment: start;
+            if root.setup-wifi != "": SetupRow {
+                icon: Icons.wifi-28;
+                text: root.setup-wifi;
+                color: Theme.text-2;
+            }
+            if root.setup-ha != "": SetupRow {
+                icon: Icons.view-dashboard-28;
+                text: root.setup-ha;
+                color: Theme.text-2;
+                wrap: char-wrap;
+            }
+            if root.setup-status != "": SetupRow {
+                icon: root.setup-linked ? Icons.check-28 : Icons.information-28;
+                text: root.setup-status;
+                color: root.setup-linked ? Theme.accent : Theme.danger;
+            }
+        }
+        BareButton {
+            x: root.slot-left;
+            y: Grid.band-y;
+            icon: Icons.translate-48;
+            label: root.language-name;
+            clicked => {
+                root.language-back = "setup";
+                root.page = "language";
+            }
+        }
+        BareButton {
+            x: root.slot-right;
+            y: Grid.band-y;
+            icon: Icons.close-48;
+            label: root.setup-linked ? root.t.close : root.t.later;
+            leaves: true;
+            clicked => {
+                if !root.setup-linked {
+                    root.setup-later();
+                }
+                root.page = "home";
+            }
+        }
+    }
+
+    // ---- The undo chip after a timer or an alarm was removed (5 s), above the action band.
+    if root.desk && root.undo-text != "": Rectangle {
+        x: Grid.col-cx - self.width / 2;
+        y: 560px;
+        width: undo-label.preferred-width + 200px;
+        height: 64px;
+        border-radius: 32px;
+        background: Theme.surface-2;
+        border-width: 1px;
+        border-color: Theme.line;
+        undo-label := Text {
+            x: 28px;
+            height: parent.height;
+            text: root.undo-text;
+            font-size: 24px;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+        PillButton {
+            x: parent.width - 8px - self.width;
+            y: 6px;
+            height: 52px;
+            width: 140px;
+            label: root.t.undo;
+            clicked => {
+                root.undo-clicked();
+            }
+        }
+    }
+
+    // ---- Dialogs on the desk.
+    if root.dialog == "suspend": Dialog {
+        icon: Icons.power-sleep-48;
+        title: root.t.suspend-question;
+        text: root.t.suspend-text;
+        cancel: root.t.cancel;
+        confirm: root.t.suspend;
+        answered(yes) => {
+            root.dialog = "";
+            if (yes) {
+                root.page = "home";
+                root.suspend-confirmed();
+            }
+        }
+    }
+    if root.dialog == "unlink": Dialog {
+        icon: Icons.close-48;
+        title: root.t.ha-unlink-question;
+        cancel: root.t.cancel;
+        confirm: root.t.ha-unlink;
+        answered(yes) => {
+            root.dialog = "";
+            if (yes) {
+                root.ha-unlink();
+            }
+        }
+    }
+    if root.dialog == "forget": Dialog {
+        icon: Icons.delete-48;
+        title: root.t.forget-question;
+        text: root.t.forget-text;
+        cancel: root.t.cancel;
+        confirm: root.t.forget-all;
+        answered(yes) => {
+            root.dialog = "";
+            if (yes) {
+                root.memories-forget();
+            }
+        }
+    }
+    if root.dialog == "clear": Dialog {
+        icon: Icons.delete-48;
+        title: root.t.clear-question;
+        text: root.t.clear-text;
+        cancel: root.t.cancel;
+        confirm: root.t.clear;
+        answered(yes) => {
+            root.dialog = "";
+            if (yes) {
+                root.chat-clear();
+            }
+        }
+    }
+    if root.dialog == "new-timer": new-timer := Dialog {
+        property <int> minutes: 5;
+        title: root.t.new-timer;
+        cancel: root.t.cancel;
+        confirm: root.t.start;
+        content-height: 64px + 24px + 64px + 24px + 64px;
+        Stepper {
+            x: (672px - self.width) / 2;
+            y: 0;
+            value-width: 240px;
+            value: new-timer.minutes + " " + root.t.minutes;
+            step(d) => {
+                new-timer.minutes = max(1, min(180, new-timer.minutes + d));
+            }
+        }
+        for m[i] in [1, 3, 5, 10, 15, 30]: Chip {
+            x: 48px + mod(i, 3) * 200px;
+            y: 88px + floor(i / 3) * 88px;
+            width: 176px;
+            label: m + " " + root.t.minutes;
+            chosen: new-timer.minutes == m;
+            clicked => {
+                new-timer.minutes = m;
+            }
+        }
+        answered(yes) => {
+            root.dialog = "";
+            if (yes) {
+                root.timer-start(new-timer.minutes);
+            }
+        }
+    }
+    if root.dialog == "new-alarm": new-alarm := Dialog {
+        property <int> hour: 7;
+        property <int> minute: 0;
+        // Bit i (Monday = 0) set: the alarm rings that day.
+        property <int> days: 31;
+        title: root.t.new-alarm;
+        cancel: root.t.cancel;
+        confirm: root.t.save;
+        content-height: 64px + 24px + 64px;
+        Stepper {
+            x: 48px;
+            y: 0;
+            value-width: 96px;
+            value: (new-alarm.hour < 10 ? "0" : "") + new-alarm.hour;
+            step(d) => {
+                new-alarm.hour = mod(new-alarm.hour + d + 24, 24);
+            }
+        }
+        Text {
+            x: (672px - self.width) / 2;
+            y: 0;
+            width: 32px;
+            height: 64px;
+            text: ":";
+            font-family: "Inter Tnum";
+            font-size: 48px;
+            color: Theme.text;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        Stepper {
+            x: 672px - 48px - self.width;
+            y: 0;
+            value-width: 96px;
+            value: (new-alarm.minute < 10 ? "0" : "") + new-alarm.minute;
+            step(d) => {
+                new-alarm.minute = mod(new-alarm.minute + 5 * d + 60, 60);
+            }
+        }
+        for d[i] in root.day-letters: Chip {
+            property <bool> on: mod(floor(new-alarm.days / pow(2, i)), 2) == 1;
+            x: 40px + i * 84px;
+            y: 88px;
+            width: 76px;
+            label: d;
+            chosen: self.on;
+            clicked => {
+                new-alarm.days = new-alarm.days + (self.on ? -1 : 1) * pow(2, i);
+            }
+        }
+        answered(yes) => {
+            root.dialog = "";
+            if (yes) {
+                root.alarm-save(new-alarm.hour, new-alarm.minute, new-alarm.days);
+            }
+        }
+    }
+
+    // Home Assistant's own frontend, full screen over everything else (casa.slint). A ringing
+    // timer is drawn over it (below).
+    }
+
+    // The veil over the stepped-back home (one flat rectangle; only while the view is moving).
+    if (CasaBridge.visible || root.mirror-t > 0) && root.covered > 0.001 && root.covered < 0.999: Rectangle {
+        width: root.width;
+        height: root.height;
+        background: #000000.with-alpha(0.35 * root.covered);
+    }
+
+    // ---- Screen mirroring: the sender's screen centred on the character's background, as large
+    // as it fits (no plate around his pose). With wide bands at the sides (a portrait sender) the character keeps a stage in the left one
+    // (his state, small, while the wake word is answered) and the controls stay in the right
+    // one; over a video that fills the screen nothing is on top at rest, a tap brings up a bar
+    // of controls at the bottom for 4 s and a conversation comes as Home Assistant's bar.
+    if root.mirror-t > 0.001: Rectangle {
+        // It moves the way the swipe that closes it goes, as Home Assistant's view: in from the
+        // side away from the home button's edge, out towards it (edge right: out to the left).
+        property <length> off-w: round((1 - root.mirror-t) * root.width / 1px) * 1px;
+        property <length> off-h: round((1 - root.mirror-t) * root.height / 1px) * 1px;
+        x: CasaBridge.edge == "right" ? -self.off-w : CasaBridge.edge == "left" ? self.off-w : 0;
+        y: CasaBridge.edge == "bottom" ? -self.off-h : CasaBridge.edge == "top" ? self.off-h : 0;
+        width: root.width;
+        height: root.height;
+        background: root.character-background;
+        // A tap on the picture: with the bar shown it goes, otherwise it comes up.
+        TouchArea {
+            clicked => {
+                if (root.mirror-chrome && !root.mirror-sides) {
+                    root.mirror-chrome = false;
+                } else {
+                    root.mirror-poked();
+                }
+            }
+        }
+        // The video grows the last tenth of its size while the page comes in.
+        Rectangle {
+            property <float> grow: 0.9 + 0.1 * root.mirror-t;
+            width: root.mirror-w * self.grow;
+            height: root.mirror-h * self.grow;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: Theme.bg;
+            Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.mirror-frame;
+                image-fit: fill;
+            }
+            // Before the first picture: the sender's name and a sliding line.
+            if root.mirror-frame.width == 0: Rectangle {
+                Text {
+                    x: 24px;
+                    y: parent.height / 2 - 72px;
+                    width: parent.width - 48px;
+                    text: root.mirror-source;
+                    font-size: 28px;
+                    color: Theme.text;
+                    horizontal-alignment: center;
+                    overflow: elide;
+                }
+                Text {
+                    x: 24px;
+                    y: parent.height / 2 - 28px;
+                    width: parent.width - 48px;
+                    text: root.t.mirror-waiting;
+                    font-size: 24px;
+                    color: Theme.text-2;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    y: parent.height / 2 + 48px;
+                    width: min(240px, parent.width - 48px);
+                    height: 4px;
+                    border-radius: 2px;
+                    background: Theme.line;
+                    clip: true;
+                    Rectangle {
+                        x: root.still ? 80px : (mod(animation-tick() / 1ms, 1400) / 1400) * (parent.width + self.width) - self.width;
+                        width: 80px;
+                        height: 4px;
+                        border-radius: 2px;
+                        background: Theme.accent;
+                    }
+                }
+            }
+        }
+
+        // -- The left band: the character, his state while the wake word is answered.
+        if root.mirror-sides: Rectangle {
+            x: 0;
+            width: root.mirror-band;
+            height: root.height;
+            // Home, top left: the same button as over a sideways video.
+            MirrorHomeButton {
+                x: 24px;
+                y: 24px;
+                clicked => {
+                    root.page = "home";
+                }
+            }
+            property <length> pose-h: root.pose.width > 0
+                ? min(480px, (self.width - 48px) * root.pose.height / root.pose.width) : 480px;
+            // At rest the character and his invitation are centred in the height; a
+            // conversation lifts him to make room for the phrase and Ferma under him.
+            property <length> pose-y: root.conversation ? 40px + (480px - self.pose-h)
+                : (self.height - (self.pose-h + 62px)) / 2;
+            animate pose-y { duration: 250ms; easing: ease-in-out; }
+            Image {
+                x: (parent.width - self.width) / 2;
+                y: parent.pose-y;
+                height: parent.pose-h;
+                width: root.pose.height > 0 ? self.height * root.pose.width / root.pose.height : 0px;
+                source: root.pose;
+                image-fit: fill;
+            }
+            // Nothing going on: the invitation, quiet.
+            if !root.conversation: Text {
+                x: 24px;
+                y: parent.pose-y + parent.pose-h + 32px;
+                width: parent.width - 48px;
+                text: root.phrase-idle;
+                font-size: 24px;
+                color: Theme.text-3;
+                horizontal-alignment: center;
+                overflow: elide;
+            }
+            // A conversation: a small wave in the state's colour, the phrase or the answer,
+            // Ferma (in error the phrase alone: "Okay Alfred" still works).
+            if root.conversation: Rectangle {
+                for v[i] in root.wave: Rectangle {
+                    visible: mod(i, 3) == 0;
+                    x: (parent.width - 24 * 9px) / 2 + floor(i / 3) * 9px;
+                    y: 548px - self.height / 2;
+                    width: 4px;
+                    height: 4px + v * 40px;
+                    border-radius: 2px;
+                    background: root.state-color.with-alpha(0.35 + 0.65 * min(1, v * 1.6));
+                }
+                Text {
+                    x: 24px;
+                    y: 576px;
+                    width: parent.width - 48px;
+                    height: 60px;
+                    text: root.state == "speaking" ? root.answer
+                        : root.state == "listening" ? root.phrase-listening
+                        : root.state == "thinking" ? (root.heard != "" ? "«" + root.heard + "»" : root.phrase-thinking)
+                        : root.state == "error" ? root.phrase-error : root.answer;
+                    font-size: root.state == "speaking" || (root.state == "thinking" && root.heard != "") ? 24px : 28px;
+                    color: Theme.text;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                    overflow: elide;
+                }
+                if root.state != "error": PrimaryButton {
+                    x: (parent.width - self.width) / 2;
+                    y: Grid.band-y + 16px;
+                    stop: true;
+                    label: "";
+                    tint: root.state-color;
+                    fill: Theme.bg.mix(root.state-color, 0.82);
+                    clicked => {
+                        root.stop-clicked();
+                    }
+                }
+            }
+        }
+
+        // -- The right band: the time, who mirrors, the sender's transport, the volume, home.
+        if root.mirror-sides: Rectangle {
+            x: root.width - root.mirror-band;
+            width: root.mirror-band;
+            height: root.height;
+            property <length> cx: self.width / 2;
+            Text {
+                x: 0;
+                y: 40px;
+                width: parent.width;
+                text: root.clock;
+                font-family: "Inter Tnum";
+                font-size: 96px;
+                font-weight: 300;
+                letter-spacing: -1px;
+                color: Theme.text;
+                horizontal-alignment: center;
+            }
+            // The date under the time, as on the home.
+            Text {
+                x: 24px;
+                y: 176px;
+                width: parent.width - 48px;
+                height: 40px;
+                text: root.date;
+                font-size: 28px;
+                color: Theme.text-2;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            // Who mirrors, at the bottom, level with "Okay Alfred" (it is stopped from the home's card).
+            HorizontalLayout {
+                x: (parent.width - self.width) / 2;
+                y: Grid.band-y + 12px;
+                width: min(self.preferred-width, parent.width - 48px);
+                height: 40px;
+                spacing: 12px;
+                accessible-role: text;
+                accessible-label: root.t.mirror + " · " + root.mirror-source;
+                Rectangle {
+                    width: 28px;
+                    Icon {
+                        y: 6px;
+                        width: 28px;
+                        height: 28px;
+                        source: Icons.cast-connected-28;
+                        color: Theme.accent;
+                    }
+                }
+                Text {
+                    text: root.mirror-source;
+                    font-size: 24px;
+                    color: Theme.text-2;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+            GlyphButton {
+                x: parent.cx - 144px;
+                y: 344px;
+                icon: Icons.skip-previous-36;
+                clicked => {
+                    root.music-previous();
+                }
+            }
+            PrimaryButton {
+                x: parent.cx - self.width / 2;
+                y: 328px;
+                icon: root.music-paused ? Icons.play-44 : Icons.pause-44;
+                label: "";
+                clicked => {
+                    root.music-toggle();
+                }
+            }
+            GlyphButton {
+                x: parent.cx + 80px;
+                y: 344px;
+                icon: Icons.skip-next-36;
+                clicked => {
+                    root.music-next();
+                }
+            }
+            LevelBar {
+                x: 32px;
+                y: 488px;
+                width: parent.width - 64px;
+                icon: root.volume == 0 ? Icons.volume-off-28
+                    : root.volume >= 67 ? Icons.volume-high-28
+                    : root.volume >= 34 ? Icons.volume-medium-28 : Icons.volume-low-28;
+                level: root.volume;
+                value: root.volume + "%";
+                changed(v) => {
+                    root.control-volume(v);
+                }
+            }
+        }
+
+        // -- Over a video that fills the width: home (left) and the time (right) above, shown
+        // and hidden with the bar below (a tap). In the band above the video when there is one
+        // (a sideways phone leaves ~104 px), else over the picture on a veil.
+        if !root.mirror-sides: mirror-top := Rectangle {
+            property <length> band: (root.height - root.mirror-h) / 2;
+            property <bool> fits: self.band >= 56px;
+            x: 0;
+            y: 0;
+            width: root.width;
+            height: max(104px, self.band);
+            opacity: root.mirror-chrome ? 1 : 0;
+            animate opacity { duration: 180ms; }
+            background: self.fits ? transparent : Theme.bg.with-alpha(0.55);
+            MirrorHomeButton {
+                x: 24px;
+                y: max(16px, (parent.height - self.height) / 2);
+                enabled-touch: mirror-top.opacity > 0.5;
+                clicked => {
+                    root.page = "home";
+                }
+            }
+            Text {
+                x: parent.width - 24px - self.width;
+                y: (parent.height - self.height) / 2;
+                text: root.clock;
+                font-size: 40px;
+                font-weight: 300;
+                color: Theme.text;
+            }
+        }
+
+        // -- Over a video that fills the screen: the bar of controls, up from the bottom edge
+        // on a tap (in the bottom band of a sideways phone), away 4 s after the last touch.
+        if !root.mirror-sides: Rectangle {
+            x: (parent.width - self.width) / 2;
+            // Centred in the band below the video when it has room (a sideways phone), else
+            // 16 px off the bottom edge, over the picture.
+            property <length> vband: (root.height - root.mirror-h) / 2;
+            y: !root.mirror-chrome ? parent.height + 8px
+                : self.vband >= self.height + 8px ? parent.height - self.vband + (self.vband - self.height) / 2
+                : parent.height - 16px - self.height;
+            animate y {
+                duration: 180ms;
+                easing: ease-out;
+            }
+            width: 760px;
+            height: 88px;
+            border-radius: 44px;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.line;
+            TouchArea {
+                clicked => {
+                    root.mirror-poked();
+                }
+            }
+            // (Home is above, with the time.)
+            Icon {
+                x: 24px;
+                y: 30px;
+                width: 28px;
+                height: 28px;
+                source: Icons.cast-connected-28;
+                color: Theme.accent;
+            }
+            Text {
+                x: 64px;
+                width: parent.width - 64px - 248px;
+                height: parent.height;
+                text: root.mirror-source;
+                font-size: 24px;
+                color: Theme.text-2;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            GlyphButton {
+                x: parent.width - 236px;
+                y: 12px;
+                icon: Icons.skip-previous-36;
+                clicked => {
+                    root.mirror-poked();
+                    root.music-previous();
+                }
+            }
+            Rectangle {
+                x: parent.width - 164px;
+                y: 8px;
+                width: 72px;
+                height: 72px;
+                border-radius: 36px;
+                background: play-touch.pressed ? Theme.accent-deep.brighter(0.5) : Theme.accent-deep;
+                border-width: 2px;
+                border-color: Theme.accent.with-alpha(0.9);
+                Icon {
+                    x: 22px;
+                    y: 22px;
+                    width: 28px;
+                    height: 28px;
+                    source: root.music-paused ? Icons.play-28 : Icons.pause-28;
+                    color: Theme.text;
+                }
+                play-touch := TouchArea {
+                    clicked => {
+                        Feedback.tap();
+                        root.mirror-poked();
+                        root.music-toggle();
+                    }
+                }
+            }
+            GlyphButton {
+                x: parent.width - 80px;
+                y: 12px;
+                icon: Icons.skip-next-36;
+                clicked => {
+                    root.mirror-poked();
+                    root.music-next();
+                }
+            }
+        }
+    }
+
+
+    CasaScreen {
+        width: root.width;
+        height: root.height;
+        character-name: root.character-name;
+        stage-pose: root.pose;
+        error-pose: root.error-pose;
+        stage-cx: root.character-cx;
+        stage-top: root.character-top;
+        stage-height: root.character-height;
+        stage-background: root.character-background;
+        // Swipe in from the home button's edge, as over Home Assistant's view (the same edge,
+        // CasaBridge.edge): far enough in, home; the mirroring goes on.
+        mirror-swipe := TouchArea {
+            property <string> e: CasaBridge.edge;
+            property <length> d: self.e == "right" ? self.pressed-x - self.mouse-x
+                : self.e == "left" ? self.mouse-x - self.pressed-x
+                : self.e == "top" ? self.mouse-y - self.pressed-y : self.pressed-y - self.mouse-y;
+            x: self.e == "right" ? parent.width - 36px : 0;
+            y: self.e == "bottom" ? parent.height - 36px : 0;
+            width: self.e == "left" || self.e == "right" ? 36px : parent.width;
+            height: self.e == "left" || self.e == "right" ? parent.height : 36px;
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.up && self.d > 120px) {
+                    Feedback.back();
+                    root.page = "home";
+                }
+            }
+        }
+    }
+
+    // "Okay Alfred" with Home Assistant's view open: a bar over its toolbar instead of leaving
+    // the dashboard (you see the switch flip while he answers). Two lines at most; a longer
+    // answer goes to Alfred's layout and comes back (Rust closes and reopens the view).
+    // It slides down from the top edge when the conversation starts and back up when it ends
+    // (translate only); out of the way above the screen otherwise.
+    if CasaBridge.visible || (root.mirror-t > 0.999 && !root.mirror-sides): Rectangle {
+        property <length> bar-height: clamp(bar-text.preferred-height + 32px, 80px, 128px);
+        x: (root.width - self.width) / 2;
+        y: root.conversation ? 16px : -self.height - 8px;
+        animate y {
+            duration: 180ms;
+            easing: ease-out;
+        }
+        width: 720px;
+        height: self.bar-height;
+        border-radius: 28px;
+        background: Theme.surface;
+        border-width: 2px;
+        border-color: root.state-color.with-alpha(0.6);
+        TouchArea { }
+        Rectangle {
+            x: 12px;
+            y: (parent.height - self.height) / 2;
+            width: 56px;
+            height: 56px;
+            border-radius: 28px;
+            background: Theme.bg;
+            clip: true;
+            Image {
+                width: parent.width;
+                height: parent.height;
+                source: CasaBridge.visible ? CasaBridge.face : root.face;
+                image-fit: cover;
+            }
+        }
+        bar-text := Text {
+            x: 84px;
+            y: (parent.height - min(self.preferred-height, 68px)) / 2;
+            width: parent.width - 84px - 200px;
+            height: min(self.preferred-height, 68px);
+            text: root.state == "speaking" ? root.answer
+                : root.state == "listening" ? root.phrase-listening
+                : root.state == "thinking" ? (root.heard != "" ? "«" + root.heard + "»" : root.phrase-thinking)
+                : root.state == "error" ? root.phrase-error : root.answer;
+            font-size: 28px;
+            color: Theme.text;
+            wrap: word-wrap;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        // A small wave: every third bar of the big one.
+        for v[i] in root.wave: Rectangle {
+            visible: mod(i, 3) == 0;
+            x: parent.width - 196px + floor(i / 3) * 5px;
+            y: (parent.height - self.height) / 2;
+            width: 3px;
+            height: 4px + v * 40px;
+            border-radius: 1.5px;
+            background: root.state-color.with-alpha(0.35 + 0.65 * min(1, v * 1.6));
+        }
+        Rectangle {
+            x: parent.width - 76px;
+            y: (parent.height - self.height) / 2;
+            width: 64px;
+            height: 64px;
+            Rectangle {
+                x: 4px;
+                y: 4px;
+                width: 56px;
+                height: 56px;
+                border-radius: 28px;
+                background: bar-stop.pressed ? Theme.surface-2 : Theme.bg.mix(root.state-color, 0.82);
+                border-width: 2px;
+                border-color: root.state-color.with-alpha(0.9);
+                Rectangle {
+                    x: 19px;
+                    y: 19px;
+                    width: 18px;
+                    height: 18px;
+                    border-radius: 3px;
+                    background: Theme.text;
+                }
+            }
+            bar-stop := TouchArea {
+                clicked => {
+                    root.stop-clicked();
+                }
+            }
+        }
+    }
+
+    // ---- The control center: a pull down from the top edge of the desk (never over the stage),
+    // what is on at a glance and the levels; a tap on the stage, a swipe up or the chevron closes
+    // it. Not over Home Assistant's view (its own pages scroll from the top).
+    if !CasaBridge.visible && root.desk && !root.control-open && !root.night && root.page != "mirror": TouchArea {
+        x: Grid.stage-width;
+        y: 0;
+        width: root.width - Grid.stage-width;
+        height: 40px;
+        moved => {
+            if self.mouse-y - self.pressed-y > 48px {
+                root.control-opened();
+                root.control-open = true;
+            }
+        }
+    }
+    if root.control-open: TouchArea {
+        x: 0;
+        width: Grid.stage-width;
+        height: root.height;
+        clicked => {
+            root.control-open = false;
+        }
+    }
+    control := Rectangle {
+        x: Grid.col-x - 24px;
+        y: root.control-open ? 0 : -root.height;
+        width: Grid.col-width + 48px;
+        height: root.height;
+        background: Theme.bg;
+        clip: true;
+        animate y {
+            duration: 260ms;
+            easing: cubic-bezier(0.05, 0.7, 0.1, 1.0);
+        }
+        // Behind the controls: a swipe up closes.
+        TouchArea {
+            moved => {
+                if self.pressed-y - self.mouse-y > 48px {
+                    root.control-open = false;
+                }
+            }
+        }
+        for t[i] in root.control-tiles: ControlTile {
+            x: 24px + mod(i, 3) * (self.width + 24px);
+            y: 32px + floor(i / 3) * (self.height + 16px);
+            icon: t.key == "wifi" ? (t.on ? Icons.wifi-32 : Icons.wifi-off-32)
+                : t.key == "bluetooth" ? (t.on ? Icons.bluetooth-32 : Icons.bluetooth-off-32)
+                : t.key == "airplay" ? Icons.cast-audio-32
+                : t.key == "mic" ? (t.on ? Icons.microphone-32 : Icons.microphone-off-32)
+                : t.key == "night" ? Icons.weather-night-32
+                : Icons.view-dashboard-32;
+            label: t.label;
+            status: t.status;
+            on: t.on;
+            enabled: t.enabled;
+            tappable: t.tappable;
+            clicked => {
+                root.control-tile(t.key);
+            }
+        }
+        LevelBar {
+            x: 24px;
+            y: 312px;
+            width: Grid.col-width;
+            icon: root.volume == 0 ? Icons.volume-off-28
+                : root.volume >= 67 ? Icons.volume-high-28
+                : root.volume >= 34 ? Icons.volume-medium-28 : Icons.volume-low-28;
+            level: root.volume;
+            value: root.volume + "%";
+            changed(v) => {
+                root.control-volume(v);
+            }
+        }
+        LevelBar {
+            x: 24px;
+            y: 400px;
+            width: Grid.col-width - 136px - 16px;
+            icon: Icons.brightness-6-28;
+            level: root.brightness;
+            value: root.brightness-auto ? "" : root.brightness + "%";
+            dim: root.brightness-auto;
+            changed(v) => {
+                root.control-brightness(v);
+            }
+        }
+        Chip {
+            x: 24px + Grid.col-width - 136px;
+            y: 404px;
+            width: 136px;
+            label: root.brightness-label;
+            chosen: root.brightness-auto;
+            clicked => {
+                root.control-brightness-auto();
+            }
+        }
+        if root.music-playing: Rectangle {
+            x: 24px;
+            y: 496px;
+            width: Grid.col-width;
+            height: 104px;
+            border-radius: Grid.tile-radius;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.line;
+            Rectangle {
+                x: 16px;
+                y: 16px;
+                width: 72px;
+                height: 72px;
+                border-radius: 12px;
+                clip: true;
+                background: Theme.surface-2;
+                Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.music-cover;
+                    image-fit: ImageFit.cover;
+                }
+                // No cover art for this track: a note, never the previous track's picture.
+                Icon {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: 32px;
+                    height: 32px;
+                    source: Icons.music-note-32;
+                    color: Theme.text-3;
+                    visible: root.music-cover.width == 0;
+                }
+            }
+            Text {
+                x: 108px;
+                y: 18px;
+                width: parent.width - 108px - 96px;
+                text: root.music-title;
+                font-size: 28px;
+                color: Theme.text;
+                overflow: elide;
+            }
+            Text {
+                x: 108px;
+                y: 56px;
+                width: parent.width - 108px - 96px;
+                text: root.music-artist + " · " + root.music-source;
+                font-size: 24px;
+                color: Theme.text-2;
+                overflow: elide;
+            }
+            GlyphButton {
+                x: parent.width - 80px;
+                y: 20px;
+                icon: root.music-paused ? Icons.play-28 : Icons.pause-28;
+                icon-color: Theme.accent;
+                clicked => {
+                    root.music-toggle();
+                }
+            }
+        }
+        BareButton {
+            x: Grid.col-cx - (Grid.col-x - 24px) - self.width / 2;
+            y: Grid.band-y;
+            icon: Icons.chevron-up-48;
+            label: root.t.close;
+            clicked => {
+                root.control-open = false;
+            }
+        }
+    }
+
+    // ---- The volume HUD, next to the keys (top right at 270 degrees), over everything.
+    if root.volume-shown: VolumeHud {
+        x: Grid.col-x + Grid.col-width - self.width;
+        y: 16px;
+        level: root.volume;
+    }
+}

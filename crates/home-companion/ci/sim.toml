@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+#
+# The golden screenshots (tools/check-golden.py): the simulator window under Xvfb, no sound
+# device (null audio), any free port on localhost. Paths are relative to this file.
+version = 1
+
+[satellite]
+bind = "127.0.0.1:0"
+
+[audio]
+backend = "null"
+realtime = false
+
+[paths]
+state_dir = "../out/sim-state"
+
+[log]
+format = "text"

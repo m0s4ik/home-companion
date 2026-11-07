@@ -1,0 +1,1255 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+// The body's building blocks: icons, the three kinds of action (bare, primary, pill), the context
+// cards, the page header, tiles, grouped rows, timer and alarm rows, chat lines, dialogs, the
+// volume HUD. Flat fills and 1-2 px strokes only: no shadows, no blur, no gradients over content.
+// Icons are SVG images (drawn at their exact size), never vector paths.
+// Every touch target is at least 64 x 64.
+
+import { Theme, Grid } from "tokens.slint";
+import { Icons } from "icons.slint";
+
+// An icon: an SVG from icons.slint drawn at exactly its size (the size is in its name), tinted.
+// Keep x and y whole pixels: the picture is rasterized once and drawn 1:1.
+// A soft tick under the finger: every control here calls it when it is pressed (Rust plays the
+// character's `tap` sound; Home Assistant's own page does not go through these).
+export global Feedback {
+    callback tap();
+    // The back of a page: Rust plays the home sound when it lands on the home, else the tap.
+    callback back();
+}
+
+export component Icon inherits Image {
+    in property <color> color: Theme.text;
+    colorize: root.color;
+    image-fit: fill;
+}
+
+// A bare action of the action band: the icon alone, no ring, the label under it. The box is the
+// same as PrimaryButton's so the three slots line up; the whole 160 x 136 box is the target.
+export component BareButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> enabled: true;
+    // It leaves the page (Later, Close): the home sound when it lands on the home, as a page's
+    // back does, instead of the tap.
+    in property <bool> leaves: false;
+    callback clicked();
+    width: Grid.slot-width;
+    height: Grid.slot-height;
+    // Pressed: a soft disc behind the icon, no animation.
+    Rectangle {
+        x: 36px;
+        y: 4px;
+        width: 88px;
+        height: 88px;
+        border-radius: 44px;
+        background: touch.pressed ? Theme.surface-2 : transparent;
+    }
+    Icon {
+        x: 56px;
+        y: 24px;
+        width: 48px;
+        height: 48px;
+        source: root.icon;
+        color: !root.enabled ? Theme.text-2.with-alpha(0.35) : touch.pressed ? Theme.text : Theme.text-2;
+    }
+    if root.label != "": Text {
+        x: -20px;
+        y: 104px;
+        width: parent.width + 40px;
+        text: root.label;
+        font-size: 24px;
+        font-weight: 500;
+        color: root.enabled ? Theme.text-2 : Theme.text-2.with-alpha(0.35);
+        horizontal-alignment: center;
+        overflow: elide;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            if root.leaves {
+                Feedback.back();
+            } else {
+                Feedback.tap();
+            }
+            root.clicked();
+        }
+    }
+}
+
+// The primary action, in the middle slot: a 96 px disc, gold ring on deep brown, the label under
+// it. `stop` draws the stop square instead of an icon; `tint` and `fill` let "Ferma" take the
+// character's state colour during a conversation.
+export component PrimaryButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> stop: false;
+    // Working (Home Assistant's setup): the icon turns until it is done.
+    in property <bool> spinning: false;
+    // Off: dimmed, taps ignored (a run of the setup in progress).
+    in property <bool> enabled: true;
+    in property <color> tint: Theme.accent;
+    in property <color> fill: Theme.accent-deep;
+    callback clicked();
+    width: Grid.slot-width;
+    height: Grid.slot-height;
+    opacity: root.enabled ? 1.0 : 0.55;
+    Rectangle {
+        x: 32px;
+        y: 0;
+        width: Grid.primary-size;
+        height: Grid.primary-size;
+        border-radius: self.width / 2;
+        background: touch.pressed ? root.fill.brighter(0.5) : root.fill;
+        border-width: 2px;
+        border-color: root.tint.with-alpha(0.9);
+        animate border-color { duration: 160ms; }
+        if !root.stop: Icon {
+            x: 26px;
+            y: 26px;
+            width: 44px;
+            height: 44px;
+            source: root.icon;
+            // White on the gold ring, like the home button over Home Assistant's view (Andrea,
+            // 2026-11-06).
+            color: Theme.text;
+            rotation-angle: root.spinning ? mod(animation-tick() / 1ms, 1200) / 1200 * 360deg : 0deg;
+        }
+        if root.stop: Rectangle {
+            x: 34px;
+            y: 34px;
+            width: 28px;
+            height: 28px;
+            border-radius: 5px;
+            background: Theme.text;
+        }
+    }
+    if root.label != "": Text {
+        x: -20px;
+        y: 104px;
+        width: parent.width + 40px;
+        text: root.label;
+        font-size: 24px;
+        font-weight: 500;
+        color: Theme.text;
+        horizontal-alignment: center;
+        overflow: elide;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            Feedback.tap();
+            root.clicked();
+        }
+    }
+}
+
+// A pill: an action inside a card or a dialog ("OK", "Annulla", "Apri"): 64 px tall (the touch
+// minimum), a thin ivory ring; `primary` fills it gold (dialogs only, where no gold disc is shown).
+export component PillButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    in property <bool> enabled-touch: true;
+    callback clicked();
+    height: 64px;
+    border-radius: self.height / 2;
+    background: root.primary ? (touch.pressed ? Theme.accent.darker(0.15) : Theme.accent)
+        : (touch.pressed ? Theme.surface-2 : transparent);
+    border-width: root.primary ? 0 : 2px;
+    border-color: Theme.text.with-alpha(0.28);
+    Text {
+        text: root.label;
+        font-size: 24px;
+        font-weight: 500;
+        color: root.primary ? Theme.on-accent : Theme.text;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        enabled: root.enabled-touch;
+        clicked => {
+            Feedback.tap();
+            root.clicked();
+        }
+    }
+}
+
+// A round icon button inside a card or a row (play/pause): 56 px ring, 64 px target, 28 px icon.
+export component RingButton inherits Rectangle {
+    in property <image> icon;
+    callback clicked();
+    width: 64px;
+    height: 64px;
+    Rectangle {
+        x: 4px;
+        y: 4px;
+        width: 56px;
+        height: 56px;
+        border-radius: 28px;
+        background: touch.pressed ? Theme.surface-2 : transparent;
+        border-width: 2px;
+        border-color: Theme.text.with-alpha(0.28);
+        Icon {
+            x: 14px;
+            y: 14px;
+            width: 28px;
+            height: 28px;
+            source: root.icon;
+            color: Theme.text;
+        }
+    }
+    touch := TouchArea {
+        clicked => {
+            Feedback.tap();
+            root.clicked();
+        }
+    }
+}
+
+// A bare 36 px icon inside a card or a row (next track, cancel a timer): 64 px target.
+export component GlyphButton inherits Rectangle {
+    in property <image> icon;
+    in property <color> icon-color: Theme.text-2;
+    callback clicked();
+    width: 64px;
+    height: 64px;
+    Rectangle {
+        x: 4px;
+        y: 4px;
+        width: 56px;
+        height: 56px;
+        border-radius: 28px;
+        background: touch.pressed ? Theme.surface-2 : transparent;
+    }
+    Icon {
+        x: 14px;
+        y: 14px;
+        width: 36px;
+        height: 36px;
+        source: root.icon;
+        color: touch.pressed ? Theme.text : root.icon-color;
+    }
+    touch := TouchArea {
+        clicked => {
+            Feedback.tap();
+            root.clicked();
+        }
+    }
+}
+
+// An on/off switch: the 72 x 40 track (gold when on) in a 96 x 64 target.
+export component Toggle inherits Rectangle {
+    in property <bool> on;
+    callback toggled(bool);
+    width: 96px;
+    height: 64px;
+    Rectangle {
+        x: 12px;
+        y: 12px;
+        width: 72px;
+        height: 40px;
+        border-radius: 20px;
+        background: root.on ? Theme.accent : Theme.line;
+        Rectangle {
+            x: root.on ? 36px : 4px;
+            y: 4px;
+            width: 32px;
+            height: 32px;
+            border-radius: 16px;
+            background: root.on ? Theme.text : Theme.text-3;
+            animate x {
+                duration: 120ms;
+                easing: ease-out;
+            }
+        }
+    }
+    TouchArea {
+        clicked => {
+            Feedback.tap();
+            root.toggled(!root.on);
+        }
+    }
+}
+
+// The ring of a running timer: it empties clockwise from 12 o'clock (one short path, redrawn
+// once a second), the timer glyph inside. 48 px.
+export component TimerRing inherits Rectangle {
+    in property <float> remaining: 0.77;
+    in property <bool> paused: false;
+    width: 48px;
+    height: 48px;
+    Rectangle {
+        border-radius: 24px;
+        border-width: 3px;
+        border-color: Theme.line;
+    }
+    if root.remaining > 0.001: Path {
+        viewbox-width: 48;
+        viewbox-height: 48;
+        fill: transparent;
+        stroke: root.paused ? Theme.text-3 : Theme.accent;
+        stroke-width: 3px;
+        commands: "M 24 1.5 A 22.5 22.5 0 " + (root.remaining > 0.5 ? "1" : "0") + " 1 "
+            + (24 + 22.5 * sin(360deg * min(root.remaining, 0.999))) + " "
+            + (24 - 22.5 * cos(360deg * min(root.remaining, 0.999)));
+    }
+    Icon {
+        x: 12px;
+        y: 12px;
+        width: 24px;
+        height: 24px;
+        source: root.paused ? Icons.pause-24 : Icons.timer-24;
+        color: root.paused ? Theme.text-2 : Theme.accent;
+    }
+}
+
+// --- Context cards: 672 x 88, only while something is alive. A tap on the card opens what it
+// belongs to (the music, the timers, the message); actions on the item are inside it.
+
+export component Card inherits Rectangle {
+    callback tapped();
+    width: Grid.col-width;
+    height: Grid.card-height;
+    border-radius: Grid.card-radius;
+    background: card-touch.pressed ? Theme.surface-2 : Theme.surface;
+    border-width: 1px;
+    border-color: Theme.line;
+    card-touch := TouchArea {
+        clicked => {
+            Feedback.tap();
+            root.tapped();
+        }
+    }
+}
+
+// The title and the second line of a card, from x 92 (after the 64 px leading slot). The caller
+// sets x, width and height.
+export component CardText inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    Text {
+        y: root.detail == "" ? (parent.height - self.height) / 2 : 10px;
+        width: parent.width;
+        text: root.title;
+        font-size: 28px;
+        color: Theme.text;
+        overflow: elide;
+    }
+    if root.detail != "": Text {
+        y: 48px;
+        width: parent.width;
+        text: root.detail;
+        font-size: 24px;
+        color: Theme.text-2;
+        overflow: elide;
+    }
+}
+
+// A card with an icon and two lines: a message, the body's status, "+2 timer", the last answer.
+// `action` adds a pill at the right (OK on a message).
+export component InfoCard inherits Card {
+    in property <image> icon;
+    in property <color> icon-color: Theme.accent;
+    in property <string> title;
+    in property <string> text;
+    in property <string> action;
+    // A cross on the right that ends what the card shows (the screen mirroring).
+    in property <bool> closable: false;
+    callback action-clicked();
+    callback close-clicked();
+    Icon {
+        x: 28px;
+        y: 28px;
+        width: 32px;
+        height: 32px;
+        source: root.icon;
+        color: root.icon-color;
+    }
+    CardText {
+        x: 92px;
+        width: parent.width - 92px - (root.action != "" ? 144px : root.closable ? 84px : 28px);
+        height: parent.height;
+        title: root.title;
+        detail: root.text;
+    }
+    if root.action != "": PillButton {
+        x: parent.width - 12px - self.width;
+        y: 12px;
+        width: 112px;
+        label: root.action;
+        clicked => {
+            Feedback.tap();
+            root.action-clicked();
+        }
+    }
+    if root.closable && root.action == "": GlyphButton {
+        x: parent.width - 8px - 64px;
+        y: (parent.height - 64px) / 2;
+        icon: Icons.close-36;
+        clicked => {
+            root.close-clicked();
+        }
+    }
+}
+
+// A running timer: the ring, the name, the time left in tabular digits.
+export component TimerCard inherits Card {
+    in property <string> name;
+    in property <string> detail;
+    in property <string> left;
+    in property <float> remaining: 0.77;
+    in property <bool> paused: false;
+    TimerRing {
+        x: 20px;
+        y: 20px;
+        remaining: root.remaining;
+        paused: root.paused;
+    }
+    CardText {
+        x: 92px;
+        width: parent.width - 92px - 200px;
+        height: parent.height;
+        title: root.name;
+        detail: root.detail;
+    }
+    Text {
+        x: parent.width - 28px - self.width;
+        width: self.preferred-width;
+        height: parent.height;
+        text: root.left;
+        font-family: "Inter Tnum";
+        font-size: 40px;
+        color: root.paused ? Theme.text-2 : Theme.text;
+        vertical-alignment: center;
+    }
+}
+
+// What is playing (AirPlay, Music Assistant…): the cover, title, artist and source, play/pause
+// and next.
+export component NowPlayingCard inherits Card {
+    in property <image> cover;
+    in property <string> title;
+    in property <string> detail;
+    in property <bool> playing: true;
+    callback play-pause();
+    callback next();
+    Rectangle {
+        x: 12px;
+        y: 12px;
+        width: 64px;
+        height: 64px;
+        border-radius: 12px;
+        background: Theme.surface-2;
+        clip: true;
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.cover;
+            image-fit: ImageFit.cover;
+        }
+        // No cover art for this track: a note, never the previous track's picture.
+        Icon {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 32px;
+            height: 32px;
+            source: Icons.music-note-32;
+            color: Theme.text-3;
+            visible: root.cover.width == 0;
+        }
+    }
+    CardText {
+        x: 92px;
+        width: parent.width - 92px - 176px;
+        height: parent.height;
+        title: root.title;
+        detail: root.detail;
+    }
+    RingButton {
+        x: parent.width - 168px;
+        y: 12px;
+        icon: root.playing ? Icons.pause-28 : Icons.play-28;
+        clicked => {
+            Feedback.tap();
+            root.play-pause();
+        }
+    }
+    GlyphButton {
+        x: parent.width - 80px;
+        y: 12px;
+        icon: Icons.skip-next-36;
+        clicked => {
+            Feedback.tap();
+            root.next();
+        }
+    }
+}
+
+// --- Pages on the desk ---------------------------------------------------------------------
+
+// The top of every desk page: back (the chevron and the title are one 64 px tall target), the
+// time small at the right.
+export component PageHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> clock;
+    in property <bool> back-shown: true;
+    callback back();
+    width: Grid.col-width;
+    height: 64px;
+    if root.back-shown: Rectangle {
+        x: -16px;
+        width: 64px;
+        height: 64px;
+        border-radius: 32px;
+        background: back-touch.pressed ? Theme.surface-2 : transparent;
+    }
+    if root.back-shown: Icon {
+        x: -8px;
+        y: 12px;
+        width: 40px;
+        height: 40px;
+        source: Icons.chevron-left-40;
+        color: Theme.text;
+    }
+    title-text := Text {
+        x: root.back-shown ? 48px : 0;
+        height: 64px;
+        text: root.title;
+        font-size: 34px;
+        color: Theme.text;
+        vertical-alignment: center;
+    }
+    back-touch := TouchArea {
+        x: -16px;
+        width: 80px + title-text.preferred-width;
+        height: 64px;
+        enabled: root.back-shown;
+        clicked => {
+            Feedback.back();
+            root.back();
+        }
+    }
+    Text {
+        x: parent.width - self.width;
+        width: self.preferred-width;
+        height: 64px;
+        text: root.clock;
+        font-family: "Inter Tnum";
+        font-size: 28px;
+        color: Theme.text-2;
+        vertical-alignment: center;
+    }
+}
+
+// A destination of "Altro": icon, name and what is going on there right now.
+export component Tile inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <string> status;
+    // Five or six tiles: 148 px tall, the icon on the left of the words.
+    in property <bool> compact: false;
+    // Seven or eight: 112 px tall (four rows), otherwise as compact.
+    in property <bool> dense: false;
+    callback clicked();
+    width: 324px;
+    height: root.dense ? 112px : root.compact ? 148px : 196px;
+    border-radius: Grid.tile-radius;
+    background: touch.pressed ? Theme.surface-2 : Theme.surface;
+    border-width: 1px;
+    border-color: Theme.line;
+    Icon {
+        x: root.compact ? 24px : 28px;
+        y: root.dense ? 32px : root.compact ? 50px : 28px;
+        width: 48px;
+        height: 48px;
+        source: root.icon;
+        color: Theme.accent;
+    }
+    Text {
+        x: root.compact ? 88px : 28px;
+        y: root.dense ? 20px : root.compact ? 38px : 100px;
+        width: parent.width - self.x - 28px;
+        text: root.label;
+        font-size: root.compact ? 24px : 28px;
+        color: Theme.text;
+        overflow: elide;
+    }
+    Text {
+        x: root.compact ? 88px : 28px;
+        y: root.dense ? 58px : root.compact ? 76px : 142px;
+        width: parent.width - self.x - 28px;
+        text: root.status;
+        font-size: root.compact ? 20px : 24px;
+        color: Theme.text-2;
+        overflow: elide;
+    }
+    touch := TouchArea {
+        clicked => {
+            Feedback.tap();
+            root.clicked();
+        }
+    }
+}
+
+// A section title above a group of rows.
+export component SectionTitle inherits Text {
+    height: 40px;
+    font-size: 20px;
+    font-weight: 500;
+    letter-spacing: 1.5px;
+    color: Theme.text-3;
+    vertical-alignment: center;
+}
+
+// A group of rows: one rounded surface.
+export component Group inherits Rectangle {
+    border-radius: Grid.card-radius;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.line;
+    clip: true;
+}
+
+// A hairline between rows of a group, from x 72 (after the icon column).
+export component Separator inherits Rectangle {
+    x: 72px;
+    height: 1px;
+    background: Theme.line;
+}
+
+// One row of a grouped list (settings): icon, label, value, then a chevron (it opens a page), a
+// check (it is the chosen one) or a switch; 76 px.
+export component Row inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <string> value;
+    in property <bool> first: false;
+    // "page" (chevron), "check", "toggle" or "" (information only).
+    in property <string> kind: "page";
+    in property <bool> on: false;
+    callback clicked();
+    callback toggled(bool);
+    height: 76px;
+    background: touch.pressed && root.kind != "" && root.kind != "toggle" ? Theme.surface-2 : transparent;
+    if !root.first: Separator {
+        y: 0;
+        width: parent.width - 72px;
+    }
+    if root.icon.width > 0: Icon {
+        x: 24px;
+        y: 24px;
+        width: 28px;
+        height: 28px;
+        source: root.icon;
+        color: Theme.text-2;
+    }
+    Text {
+        x: root.icon.width > 0 ? 72px : 28px;
+        width: parent.width - self.x - 140px;
+        height: parent.height;
+        text: root.label;
+        font-size: 28px;
+        color: Theme.text;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    property <length> end: root.kind == "" ? 28px : root.kind == "toggle" ? 116px : 64px;
+    if root.value != "": Text {
+        x: parent.width - root.end - self.width;
+        width: min(self.preferred-width, 320px);
+        height: parent.height;
+        text: root.value;
+        font-size: 24px;
+        color: Theme.text-2;
+        vertical-alignment: center;
+        horizontal-alignment: right;
+        overflow: elide;
+    }
+    if root.kind == "page": Icon {
+        x: parent.width - 52px;
+        y: 24px;
+        width: 28px;
+        height: 28px;
+        source: Icons.chevron-right-28;
+        color: Theme.text-3;
+    }
+    if root.kind == "check" && root.on: Icon {
+        x: parent.width - 52px;
+        y: 24px;
+        width: 28px;
+        height: 28px;
+        source: Icons.check-28;
+        color: Theme.accent;
+    }
+    touch := TouchArea {
+        enabled: root.kind == "page" || root.kind == "check";
+        clicked => {
+            Feedback.tap();
+            root.clicked();
+        }
+    }
+    if root.kind == "toggle": Toggle {
+        x: parent.width - 12px - self.width;
+        y: 6px;
+        on: root.on;
+        toggled(v) => {
+            root.toggled(v);
+        }
+    }
+}
+
+// A value with − and + (an hour, minutes): 64 px targets, tabular digits between them.
+export component Stepper inherits Rectangle {
+    in property <string> value;
+    in property <length> value-width: 160px;
+    in property <length> font-size: 48px;
+    callback step(int);
+    width: 64px + root.value-width + 64px;
+    height: 64px;
+    GlyphButton {
+        x: 0;
+        icon: Icons.minus-36;
+        icon-color: Theme.text;
+        clicked => {
+            Feedback.tap();
+            root.step(-1);
+        }
+    }
+    Text {
+        x: 64px;
+        width: root.value-width;
+        height: parent.height;
+        text: root.value;
+        font-family: "Inter Tnum";
+        font-size: root.font-size;
+        color: Theme.text;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    GlyphButton {
+        x: 64px + root.value-width;
+        icon: Icons.plus-36;
+        icon-color: Theme.text;
+        clicked => {
+            Feedback.tap();
+            root.step(1);
+        }
+    }
+}
+
+// A choice among a few (a timer's preset, a day of the week): 64 px tall, gold ring when chosen.
+export component Chip inherits Rectangle {
+    in property <string> label;
+    in property <bool> chosen: false;
+    callback clicked();
+    height: 64px;
+    border-radius: 32px;
+    background: root.chosen ? Theme.accent-deep : touch.pressed ? Theme.surface-2 : transparent;
+    border-width: 2px;
+    border-color: root.chosen ? Theme.accent : Theme.text.with-alpha(0.2);
+    Text {
+        text: root.label;
+        font-size: 24px;
+        font-weight: 500;
+        color: root.chosen ? Theme.accent : Theme.text;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        clicked => {
+            Feedback.tap();
+            root.clicked();
+        }
+    }
+}
+
+// A timer in the timers page: ring, name and when it ends, time left, pause/resume, cancel. 96 px;
+// 24 px between pause and cancel (a cancel has a 5 s "Annulla" chip, no question).
+export component TimerLine inherits Rectangle {
+    in property <string> name;
+    in property <string> detail;
+    in property <string> left;
+    in property <float> remaining;
+    in property <bool> paused: false;
+    in property <bool> first: false;
+    callback pause-resume();
+    callback cancel();
+    height: 96px;
+    if !root.first: Separator {
+        y: 0;
+        width: parent.width - 72px;
+    }
+    TimerRing {
+        x: 16px;
+        y: 24px;
+        remaining: root.remaining;
+        paused: root.paused;
+    }
+    Text {
+        x: 84px;
+        y: 12px;
+        width: parent.width - 84px - 360px;
+        text: root.name;
+        font-size: 28px;
+        color: Theme.text;
+        overflow: elide;
+    }
+    Text {
+        x: 84px;
+        y: 52px;
+        width: parent.width - 84px - 360px;
+        text: root.detail;
+        font-size: 24px;
+        color: Theme.text-2;
+        overflow: elide;
+    }
+    Text {
+        x: parent.width - 184px - self.width;
+        width: self.preferred-width;
+        height: parent.height;
+        text: root.left;
+        font-family: "Inter Tnum";
+        font-size: 40px;
+        color: root.paused ? Theme.text-2 : Theme.text;
+        vertical-alignment: center;
+    }
+    RingButton {
+        x: parent.width - 168px;
+        y: 16px;
+        icon: root.paused ? Icons.play-28 : Icons.pause-28;
+        clicked => {
+            Feedback.tap();
+            root.pause-resume();
+        }
+    }
+    GlyphButton {
+        x: parent.width - 80px;
+        y: 16px;
+        icon: Icons.close-36;
+        clicked => {
+            Feedback.tap();
+            root.cancel();
+        }
+    }
+}
+
+// An alarm: the time large, the days, on/off, delete. 88 px.
+export component AlarmLine inherits Rectangle {
+    in property <string> time;
+    in property <string> days;
+    in property <bool> on;
+    in property <bool> first: false;
+    callback toggled(bool);
+    callback delete();
+    height: 88px;
+    if !root.first: Separator {
+        y: 0;
+        width: parent.width - 72px;
+    }
+    Icon {
+        x: 26px;
+        y: 30px;
+        width: 28px;
+        height: 28px;
+        source: Icons.alarm-28;
+        color: root.on ? Theme.accent : Theme.text-3;
+    }
+    time-text := Text {
+        x: 72px;
+        height: parent.height;
+        text: root.time;
+        font-family: "Inter Tnum";
+        font-size: 40px;
+        color: root.on ? Theme.text : Theme.text-2;
+        vertical-alignment: center;
+    }
+    Text {
+        x: 72px + time-text.preferred-width + 24px;
+        width: parent.width - self.x - 200px;
+        height: parent.height;
+        text: root.days;
+        font-size: 24px;
+        color: Theme.text-2;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    Toggle {
+        x: parent.width - 192px;
+        y: 12px;
+        on: root.on;
+        toggled(v) => {
+            root.toggled(v);
+        }
+    }
+    GlyphButton {
+        x: parent.width - 80px;
+        y: 12px;
+        icon: Icons.close-36;
+        clicked => {
+            Feedback.tap();
+            root.delete();
+        }
+    }
+}
+
+// --- Conversations ---------------------------------------------------------------------------
+
+// What the user said: a bubble on the right (towards the user's side of the desk), as wide as
+// its text (at most 512 px), as tall as its lines.
+export component ChatUser inherits Rectangle {
+    in property <string> text;
+    property <length> max-text: 468px;
+    measure := Text {
+        visible: false;
+        text: root.text;
+        font-size: 24px;
+    }
+    property <length> text-width: min(root.max-text, measure.preferred-width + 1px);
+    height: body.preferred-height + 28px;
+    Rectangle {
+        x: parent.width - root.text-width - 44px;
+        width: root.text-width + 44px;
+        height: parent.height;
+        background: Theme.surface-2;
+        border-top-left-radius: 22px;
+        border-top-right-radius: 22px;
+        border-bottom-left-radius: 22px;
+        border-bottom-right-radius: 6px;
+        body := Text {
+            x: 22px;
+            y: 14px;
+            width: root.text-width;
+            text: root.text;
+            font-size: 24px;
+            color: Theme.text;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// What the character answered: plain text on the left (towards the character), a gold rule.
+export component ChatCharacter inherits Rectangle {
+    in property <string> text;
+    height: body.preferred-height + 8px;
+    Rectangle {
+        x: 0;
+        y: 4px;
+        width: 3px;
+        height: parent.height - 8px;
+        border-radius: 1.5px;
+        background: Theme.accent.with-alpha(0.7);
+    }
+    body := Text {
+        x: 24px;
+        y: 4px;
+        width: parent.width - 96px;
+        text: root.text;
+        font-size: 24px;
+        color: Theme.text;
+        wrap: word-wrap;
+    }
+}
+
+// A session separator: "Oggi · 14:02 · Home Assistant".
+export component ChatSeparator inherits Text {
+    height: 40px;
+    font-size: 20px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+    color: Theme.text-3;
+    horizontal-alignment: center;
+    vertical-alignment: center;
+}
+
+// --- Setup -----------------------------------------------------------------------------------
+
+// A numbered step: the number in a thin ring (gold and filled once done), the text.
+export component Step inherits Rectangle {
+    in property <string> number;
+    in property <string> text;
+    in property <bool> done: false;
+    height: 104px;
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: 36px;
+        height: 36px;
+        border-radius: 18px;
+        border-width: 2px;
+        border-color: root.done ? Theme.accent : Theme.text-3;
+        background: root.done ? Theme.accent : transparent;
+        Text {
+            text: root.number;
+            font-size: 20px;
+            font-weight: 500;
+            color: root.done ? Theme.on-accent : Theme.text-2;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+    Text {
+        x: 52px;
+        y: 2px;
+        width: parent.width - 52px;
+        text: root.text;
+        font-size: 24px;
+        color: Theme.text;
+        wrap: word-wrap;
+    }
+}
+
+// --- Overlays --------------------------------------------------------------------------------
+
+// A dialog on the desk (never over the stage): a static scrim over the whole screen, a surface
+// in the desk column with a title, a text and two pills (Annulla ring, the action gold). Taps
+// outside do nothing (the question needs an answer). Extra content goes in the children, laid
+// out between the text and the pills; the content box is 672 px wide (children's `parent` is
+// the dialog itself, so they use 672px, not parent.width).
+export component Dialog inherits Rectangle {
+    in property <image> icon;
+    in property <color> icon-color: Theme.accent;
+    in property <string> title;
+    in property <string> text;
+    in property <string> cancel;
+    in property <string> confirm;
+    in property <length> content-height: 0px;
+    // Centred on the desk (Alfred's dialogs), or on the whole screen (over Home Assistant).
+    in property <length> centre-x: Grid.col-cx;
+    callback answered(bool);
+    background: Theme.scrim;
+    TouchArea { }
+    box := Rectangle {
+        property <length> top-pad: root.icon.width > 0 ? 104px : 40px;
+        x: root.centre-x - self.width / 2;
+        y: (parent.height - self.height) / 2;
+        width: 672px;
+        height: self.top-pad + title-text.preferred-height + 16px
+            + (root.text != "" ? body-text.preferred-height + 24px : 0px)
+            + root.content-height + 24px + 64px + 32px;
+        border-radius: 28px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.line;
+        if root.icon.width > 0: Icon {
+            x: (parent.width - self.width) / 2;
+            y: 40px;
+            width: 48px;
+            height: 48px;
+            source: root.icon;
+            color: root.icon-color;
+        }
+        title-text := Text {
+            x: 40px;
+            y: box.top-pad;
+            width: parent.width - 80px;
+            text: root.title;
+            font-size: 34px;
+            color: Theme.text;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        body-text := Text {
+            x: 48px;
+            y: title-text.y + title-text.preferred-height + 16px;
+            width: parent.width - 96px;
+            text: root.text;
+            font-size: 24px;
+            color: Theme.text-2;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+            visible: root.text != "";
+        }
+        Rectangle {
+            x: 0;
+            y: title-text.y + title-text.preferred-height + 16px
+                + (root.text != "" ? body-text.preferred-height + 24px : 0px);
+            width: parent.width;
+            height: root.content-height;
+            @children
+        }
+        PillButton {
+            x: parent.width / 2 - 12px - self.width;
+            y: parent.height - 32px - 64px;
+            width: 220px;
+            label: root.cancel;
+            clicked => {
+                Feedback.tap();
+                root.answered(false);
+            }
+        }
+        PillButton {
+            x: parent.width / 2 + 12px;
+            y: parent.height - 32px - 64px;
+            width: 220px;
+            primary: true;
+            label: root.confirm;
+            clicked => {
+                Feedback.tap();
+                root.answered(true);
+            }
+        }
+    }
+}
+
+// The volume HUD (volume keys, 2 s): next to the keys, on the desk side of the screen; at 270
+// degrees the keys are on the top edge near the right corner, so it sits top right and grows
+// towards Vol+. Never over the action band or the stage.
+export component VolumeHud inherits Rectangle {
+    in property <int> level: 40;
+    width: 360px;
+    height: 56px;
+    border-radius: self.height / 2;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.line;
+    Icon {
+        x: 20px;
+        y: 14px;
+        width: 28px;
+        height: 28px;
+        source: root.level == 0 ? Icons.volume-off-28
+            : root.level >= 67 ? Icons.volume-high-28
+            : root.level >= 34 ? Icons.volume-medium-28 : Icons.volume-low-28;
+        color: Theme.text;
+    }
+    property <length> track-x: 64px;
+    property <length> track-width: self.width - self.track-x - 96px;
+    Rectangle {
+        x: root.track-x;
+        y: 25px;
+        width: root.track-width;
+        height: 6px;
+        border-radius: 3px;
+        background: Theme.line;
+    }
+    Rectangle {
+        x: root.track-x;
+        y: 25px;
+        width: max(self.height, root.track-width * clamp(root.level, 0, 100) / 100);
+        height: 6px;
+        border-radius: 3px;
+        background: Theme.accent;
+    }
+    Text {
+        x: parent.width - 20px - self.width;
+        width: 68px;
+        height: parent.height;
+        text: root.level + "%";
+        font-family: "Inter Tnum";
+        font-size: 24px;
+        color: Theme.text;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+}
+
+// The control center's tile (pulled down from the top of the desk): what is on is gold, a tap
+// switches it or opens its page.
+export component ControlTile inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <string> status;
+    in property <bool> on;
+    in property <bool> enabled: true;
+    // A tile that only tells (Wi-Fi): no touch, not greyed.
+    in property <bool> tappable: true;
+    callback clicked();
+    width: 208px;
+    height: 120px;
+    border-radius: Grid.tile-radius;
+    background: touch.pressed ? Theme.surface-2 : root.on ? Theme.accent-deep : Theme.surface;
+    border-width: 1px;
+    border-color: root.on ? Theme.accent.with-alpha(0.35) : Theme.line;
+    Icon {
+        x: 20px;
+        y: 18px;
+        width: 32px;
+        height: 32px;
+        source: root.icon;
+        color: !root.enabled ? Theme.text-3.with-alpha(0.5) : root.on ? Theme.accent : Theme.text-2;
+    }
+    Text {
+        x: 20px;
+        y: 58px;
+        width: parent.width - 32px;
+        text: root.label;
+        font-size: 24px;
+        font-weight: 500;
+        color: root.enabled ? Theme.text : Theme.text-3;
+        overflow: elide;
+    }
+    Text {
+        x: 20px;
+        y: 86px;
+        width: parent.width - 32px;
+        text: root.status;
+        font-size: 20px;
+        color: root.on ? Theme.accent : Theme.text-3;
+        overflow: elide;
+    }
+    touch := TouchArea {
+        enabled: root.enabled && root.tappable;
+        clicked => {
+            Feedback.tap();
+            root.clicked();
+        }
+    }
+}
+
+// A level the finger drags (volume, brightness): the filled part warm, the icon and the value
+// inside the bar, 72 px tall so it is easy to hit from the sofa.
+export component LevelBar inherits Rectangle {
+    in property <image> icon;
+    in property <int> level;
+    in property <string> value;
+    in property <bool> dim: false;
+    callback changed(int);
+    height: 72px;
+    border-radius: 36px;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.line;
+    clip: true;
+    Rectangle {
+        x: 0;
+        width: max(72px, parent.width * clamp(root.level, 0, 100) / 100);
+        height: parent.height;
+        border-radius: 36px;
+        background: root.dim ? Theme.surface-2 : Theme.accent-deep;
+    }
+    Icon {
+        x: 24px;
+        y: 22px;
+        width: 28px;
+        height: 28px;
+        source: root.icon;
+        color: root.dim ? Theme.text-3 : Theme.accent;
+    }
+    Text {
+        x: parent.width - 24px - self.width;
+        width: 120px;
+        height: parent.height;
+        text: root.value;
+        font-family: "Inter Tnum";
+        font-size: 24px;
+        color: root.dim ? Theme.text-3 : Theme.text;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+    // Only a finger that pressed here moves it: not the pull that opened the control center
+    // passing over it, nor a hover.
+    touch := TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down {
+                root.changed(round(clamp(self.mouse-x / self.width, 0, 1) * 100));
+            }
+        }
+        moved => {
+            if self.pressed {
+                root.changed(round(clamp(self.mouse-x / self.width, 0, 1) * 100));
+            }
+        }
+    }
+}

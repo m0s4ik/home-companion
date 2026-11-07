@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+#
+# fake-ha scenario: Home Assistant starts a 3 s timer and goes away; the satellite must ring
+# it by itself (design section 5, "timers are local").
+ping = true
+
+[[steps]]
+step = "connect"
+
+[[steps]]
+step = "run-satellite"
+
+[[steps]]
+step = "timer-started"
+id = "t-offline"
+total_seconds = 3
+name = "Tea"
+
+[[steps]]
+step = "sleep"
+ms = 300
+
+[[steps]]
+step = "disconnect"

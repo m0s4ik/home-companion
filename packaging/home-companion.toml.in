@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+#
+# /etc/home-companion/home-companion.toml, written by install.sh on the first install (never overwritten:
+# a newer install.sh keeps it). Every key not written here has its default: see them all with
+#   /opt/home-companion/home-companion --print-config
+# After a change: systemctl restart home-companion
+version = 1
+
+[satellite]
+# The name Home Assistant and the AirPlay menu show
+name = "@NAME@"
+bind = "0.0.0.0:10700"
+# Who may connect: Home Assistant's address(es) ("192.0.2.10", "192.0.2.0/24"). After the QR link the device
+# also lets in the addresses it learns from Home Assistant; both empty = nobody
+allowed = [@ALLOWED@]
+
+[character]
+dir = "/opt/home-companion/characters/alfred"
+# The language ("it", "en"); commented out = chosen on the screen at first start (the choice made on the
+# screen is kept in the state directory and wins)
+@LANG_SET@language = "@LANGUAGE@"
+
+[home_assistant]
+# Home Assistant's address (needed for the QR link, the weather, "Casa"); commented out = found from the
+# screen at first start. The device links itself with a QR code on its screen: no token to write here.
+@URL_SET@url = "@HA_URL@"
+
+[weather]
+# A weather.* entity of Home Assistant ("" = no weather on the home screen)
+entity = "weather.forecast_home"
+
+[lists]
+# The shopping list: a todo.* entity ("" = none); the same key in brain.toml for the voice
+shopping = ""
+
+[reflexes]
+# Timers, alarms, the time, the volume and the music handled on the device, also without the network
+# (Vosk models in /opt/home-companion/reflex/<lang>, downloaded by install.sh)
+enabled = @REFLEXES@
+
+[web]
+# "Casa": Home Assistant's own frontend on the screen (needs the system's web layer, WPE WebKit 2.54, and
+# [home_assistant] url)
+enabled = @WEB@
+path = "/lovelace/0"
+
+[airplay]
+# AirPlay receiver, music and screen mirroring (needs the system's AirPlay runtime, GStreamer); the
+# control centre switches it on and off
+enabled = @AIRPLAY@
+
+[audio.record]
+# Keep the phrases said after the wake word (to tune the wake word and the reflexes)
+enabled = false
+
+[paths]
+state_dir = "/var/lib/home-companion"
+locales_dir = "/opt/home-companion/locales"
+
+[log]
+level = "info"

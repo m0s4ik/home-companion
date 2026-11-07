@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+[package]
+name = "webview-proto"
+description = "The socket protocol between the body and the web view helper (home-companion-web): frames as dma-buf, input, control (web/PROTOCOL.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+libc = "0.2"
+thiserror = "2"

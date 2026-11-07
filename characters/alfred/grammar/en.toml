@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: CC0-1.0
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+#
+# Alfred's reflexes in English; see it.toml for the format. Slots:
+# {duration} ("ten minutes", "a minute and a half"), {time} ("at seven thirty", "at seven in the
+# evening"), {percent} ("fifty percent", "fifty").
+format = 1
+language = "en"
+
+[commands]
+time = ["what time is it", "what's the time", "tell me the time"]
+timer_start = [
+    "set a timer for {duration}",
+    "start a timer for {duration}",
+    "set timer for {duration}",
+    "timer for {duration}",
+    "a timer for {duration}",
+]
+timer_cancel = ["cancel the timer", "stop the timer", "cancel timer", "cancel the timers", "delete the timer"]
+timer_left = ["how much time is left", "how long is left", "how much time left", "how long until the timer"]
+alarm_set = ["set an alarm {time}", "set the alarm {time}", "wake me up {time}", "alarm {time}"]
+alarm_cancel = ["cancel the alarm", "delete the alarm", "turn off the alarm"]
+volume_up = ["volume up", "turn the volume up", "turn it up", "louder"]
+volume_down = ["volume down", "turn the volume down", "turn it down", "quieter"]
+volume_set = ["set the volume to {percent}", "volume {percent}", "volume to {percent}"]
+volume_max = ["volume to the maximum", "maximum volume", "full volume"]
+volume_min = ["volume to the minimum", "minimum volume"]
+music_pause = ["pause the music", "pause music", "pause", "stop the music", "stop music"]
+music_play = ["resume the music", "play the music", "resume", "continue the music", "start the music again"]
+music_next = ["next song", "next track", "skip this song", "skip song", "play the next song"]
+music_previous = ["previous song", "previous track", "go back to the previous song", "play the previous song"]
+silence = ["silence", "be quiet", "never mind", "nothing", "cancel", "no thanks", "no thank you", "that's all", "no", "thanks", "thank you", "enough"]

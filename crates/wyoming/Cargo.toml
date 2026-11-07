@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+[package]
+name = "wyoming"
+description = "Wyoming protocol for Home Assistant satellites: framing, typed events, the satellite-side server and a fake Home Assistant for tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+thiserror = "2"
+hound = "3.5"
+toml = "1"
+
+[[bin]]
+name = "fake-ha"
+path = "src/bin/fake-ha.rs"
+
+[[bin]]
+name = "stub-satellite"
+path = "src/bin/stub-satellite.rs"

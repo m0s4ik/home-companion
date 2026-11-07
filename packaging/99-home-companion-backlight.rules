@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+# Lets group video (home-companion runs in it) set the backlight: dim home, full brightness when awake
+# (crates/home-companion/src/ui/backlight.rs). Install in /etc/udev/rules.d/, then
+#   udevadm control --reload && udevadm trigger -s backlight
+SUBSYSTEM=="backlight", ACTION=="add|change", RUN+="/bin/chgrp video /sys%p/brightness", RUN+="/bin/chmod g+w /sys%p/brightness"

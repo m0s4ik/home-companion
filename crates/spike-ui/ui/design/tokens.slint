@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+// Design tokens of the body: colours, type scale, the grid. Every
+// screen takes its values from here. Contrast on `bg` (WCAG 2): text 16.9:1, text-2 7.4:1,
+// text-3 5.5:1 (5.0:1 on surface, 4.6:1 on surface-2: fine at every size we use), accent 9.5:1,
+// danger 6.9:1.
+
+export global Theme {
+    // The character's background. Poses are opaque pictures painted on it, so the window must be
+    // exactly this colour: the body sets the window's from character.toml (Alfred: #03050d).
+    out property <color> bg: #03050d;
+    // Surfaces: cards, tiles, grouped lists, dialogs and the volume HUD; pressed rows and the
+    // user's chat bubbles one step lighter. Hairlines (card borders, separators, tracks) warm.
+    out property <color> surface: #111318;
+    out property <color> surface-2: #1b1c22;
+    out property <color> line: #2a2824;
+    // Text: ivory and two warm greys.
+    out property <color> text: #efe9df;
+    out property <color> text-2: #a39b8f;
+    out property <color> text-3: #8a8479;
+    // Gold: the one primary action of a screen, and the marks of things that are alive (a running
+    // timer, the music playing, a message waiting). Never more than one gold button per screen.
+    out property <color> accent: #d4ab63;
+    out property <color> accent-deep: #35281a;
+    out property <color> on-accent: #1f170c;
+    // The body's own problems (no connection, a view that cannot open). The conversation's error
+    // keeps the character's colour.
+    out property <color> danger: #e07a5f;
+    // Settings → Home Assistant: a check that is fine, or works but needs a look (red = danger).
+    out property <color> ok: #8cc084;
+    out property <color> warn: #e6c15a;
+    // Night: the clock and its one line, dim enough for a dark bedroom.
+    out property <color> night: #5c5750;
+    // A dialog's scrim (static, never animated).
+    out property <color> scrim: #000000b3;
+}
+
+// The type scale (Inter; "Inter Tnum" = Inter with tabular digits). Eight sizes, two Light ones:
+// fewer sizes, fewer glyph atlas entries. Light only at 160 and 96 (thin stems below that go grey
+// from the sofa).
+export global Type {
+    out property <length> display: 160px;   // the clock (Inter Tnum Light, -2 px tracking)
+    out property <length> hero: 96px;       // a finished timer's name (Light)
+    out property <length> title: 48px;      // state phrases ("Ti ascolto…"), dialogs' digits
+    out property <length> headline: 40px;   // notice and music titles; countdowns, alarm times (Tnum)
+    out property <length> page: 34px;       // page titles, the answer, the date line
+    out property <length> body: 28px;       // card titles, rows, tiles
+    out property <length> reading: 24px;    // chat, hints, second lines, action labels
+    out property <length> caption: 20px;    // timestamps, section titles (Medium, tracked)
+}
+
+export global Grid {
+    // The two zones. The stage (x 0..512) belongs to the character: nothing is drawn over it.
+    out property <length> stage-width: 512px;
+    // The desk column, where everything else lives: x 560..1232, centre 896.
+    out property <length> col-x: 560px;
+    out property <length> col-width: 672px;
+    out property <length> col-cx: 896px;
+    // Bands of the desk column (y): page header 32..96, time band 48..290, middle band 312..600
+    // (pages: 112..608, scrolling inside), action band 640..776.
+    out property <length> header-y: 32px;
+    out property <length> cards-y: 312px;
+    out property <length> page-y: 112px;
+    out property <length> page-height: 496px;
+    out property <length> band-y: 640px;
+    // The action band's three slots (160 x 136 each), centred at col-cx - 200, col-cx, col-cx + 200.
+    out property <length> slot-dx: 200px;
+    out property <length> slot-width: 160px;
+    out property <length> slot-height: 136px;
+    // Sizes.
+    out property <length> card-height: 88px;
+    out property <length> card-gap: 12px;
+    out property <length> card-radius: 20px;
+    out property <length> tile-radius: 24px;
+    out property <length> primary-size: 96px;
+    out property <length> touch-min: 64px;
+}

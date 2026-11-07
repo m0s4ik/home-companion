@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+[package]
+name = "spike-audio"
+description = "M0 spike: one owner of the speaker, mixing and resampling, 16 kHz capture, WebRTC processing cost"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "spike-audio"
+path = "src/main.rs"
+
+[features]
+default = []
+# WebRTC AGC2 + NS + AEC3, built from the sources bundled in the -sys crate (meson, ninja).
+# Works for the host; for aarch64 see tools/build-webrtc-aarch64.sh and `webrtc-system`.
+webrtc = ["dep:webrtc-audio-processing", "webrtc-audio-processing/bundled"]
+# Same, linked against a prebuilt libwebrtc-audio-processing-2 found with pkg-config.
+webrtc-system = ["dep:webrtc-audio-processing"]
+
+[dependencies]
+alsa = "0.12"
+rubato = "5"
+hound = "3.5"
+libc = "0.2"
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+webrtc-audio-processing = { version = "2.1", optional = true }

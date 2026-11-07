@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+[package]
+name = "audio"
+description = "One owner of the speaker and the microphone: mixing, resampling, capture, level meters, optional WebRTC AGC, debug recorder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "audio-bench"
+path = "src/bin/audio_bench.rs"
+
+[features]
+# `alsa` only has an effect on Linux (the dependency is Linux-only); elsewhere use `cpal`.
+default = ["alsa"]
+alsa = ["dep:alsa"]
+# The simulator backend (macOS and desktop Linux).
+cpal = ["dep:cpal"]
+# WebRTC AGC2 built from the sources bundled in the -sys crate (meson, ninja): host only.
+webrtc = ["dep:webrtc-audio-processing", "webrtc-audio-processing/bundled"]
+# The same, linked against a prebuilt libwebrtc-audio-processing-2 found with pkg-config
+# (tools/build-webrtc-aarch64.sh for the device).
+webrtc-system = ["dep:webrtc-audio-processing"]
+
+[dependencies]
+rubato = "5"
+hound = "3.5"
+libc = "0.2"
+log = "0.4"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+webrtc-audio-processing = { version = "2.1", optional = true }
+# cpal 0.18 (the latest release) depends on alsa 0.11 / alsa-sys 0.4, which cannot coexist with
+# alsa 0.12 / alsa-sys 0.6 (used here and by spike-audio) in one workspace (`links = "alsa"`).
+# cpal's master (0.19.0, unreleased) moved to alsa 0.12: pinned until 0.19 is on crates.io.
+cpal = { git = "https://github.com/RustAudio/cpal", rev = "5eadda51028b1814c9562aaf706a88db4427d788", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa = { version = "0.12", optional = true }

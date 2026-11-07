@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+[package]
+name = "spike-gpu"
+description = "Spike: animate the character at 16 fps on the ThinkSmart View, GPU (Slint femtovg on KMS) vs software blit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "spike-gpu"
+path = "src/main.rs"
+
+[features]
+default = []
+# Slint's DRM/KMS backend with the femtovg renderer: OpenGL ES through EGL on a
+# GBM surface, page flipping. Needs libgbm1, libegl1, libgles2 (Mesa) at run time.
+gpu = ["slint/backend-linuxkms", "slint/renderer-femtovg", "dep:glow"]
+# The same femtovg code in a desktop window (winit, X11): build machine only,
+# to check the GPU path under Xvfb with Mesa's llvmpipe.
+gpu-window = ["slint/backend-winit", "slint/backend-winit-x11", "slint/renderer-femtovg", "dep:glow"]
+
+[dependencies]
+slint = { version = "1.18.1", default-features = false, features = ["compat-1-18", "std", "renderer-software"] }
+png = "0.18"
+memmap2 = "0.9"
+libc = "0.2"
+serde_json = "1"
+# GL calls for the texture upload (same version femtovg uses).
+glow = { version = "0.18", optional = true }
+
+# As in spike-ui: fontconfig is opened with dlopen, not linked (the device has none).
+[target.'cfg(target_os = "linux")'.dependencies]
+fontique = { version = "0.11", default-features = false, features = ["fontconfig-dlopen"] }
+
+[build-dependencies]
+slint-build = "1.18"

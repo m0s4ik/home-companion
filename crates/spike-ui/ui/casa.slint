@@ -1,0 +1,473 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+// "Casa": Home Assistant's own frontend, full screen over the companion screen.
+// The page is drawn by the web
+// helper (home-companion-web) and arrives as a GL texture (`frame`); everything else here is the body's: the
+// way back home, the first load and the notice when the view cannot open (on Alfred's layout),
+// the native option sheet of the page's <select>s, the question before a heavy view, the home
+// indicator and the swipe in from the button's edge. Touches on the page do not come through
+// Slint: Rust sends them to the helper (crates/home-companion/src/ui/webview/), handles the home button
+// itself (tap = home, drag = move it; webview/controls.rs), and gives Slint only those on the
+// notice, the sheets, the dialog and the conversation bar. The home button and the indicator bar
+// show up only for a few seconds after a touch (`controls-shown`), so a full-screen dashboard
+// has nothing on top at rest.
+
+import { Theme, Grid } from "design/tokens.slint";
+import { Icons } from "design/icons.slint";
+import { Icon, BareButton, PrimaryButton, PillButton, Dialog } from "design/components.slint";
+
+export struct CasaMenuRow {
+    label: string,
+    enabled: bool,
+    group: bool,
+    selected: bool,
+}
+
+export global CasaBridge {
+    in property <bool> visible: false;
+    // The page (a borrowed GL texture) and whether there is one.
+    in property <image> frame;
+    in property <bool> has-frame: false;
+    // "ok", "loading" (the page is loading), "error" (`message`), "offline" (no helper).
+    in property <string> status: "ok";
+    in property <float> progress: 0;
+    in property <string> message;
+    in property <string> label-home: "Home";
+    in property <string> label-retry: "Retry";
+    in property <string> label-close: "Close";
+    in property <string> label-loading: "Loading Home Assistant…";
+    in property <string> label-offline: "Home Assistant's view is not available";
+    in property <string> label-offline-text: "Home Assistant is not answering. I retry by myself every 30 seconds; timers and alarms keep working.";
+    in property <string> label-open: "Open";
+    in property <string> label-cancel: "Cancel";
+    in property <string> label-release: "Release to go back to Alfred";
+    in property <string> label-heavy-title: "This view is heavy";
+    // The page's <select> (`menu-open`), drawn as a sheet; its label.
+    in property <bool> menu-open: false;
+    in property <string> menu-label;
+    in property <[CasaMenuRow]> menu-items;
+    // The question before a heavy view.
+    in property <bool> confirm-open: false;
+    in property <string> confirm-text;
+    // A short line under Home Assistant's toolbar for 2 s ("Heavy view: it takes a while").
+    in property <string> note;
+    // Swipe in from the button's edge (on: the indicator bar is shown): how far the finger has
+    // come in (0 = no swipe), and whether letting go now goes home.
+    in property <bool> edge-swipe: true;
+    in property <length> pull: 0;
+    in property <bool> pull-armed: false;
+    // The page's way in and out, along its swipe: how far it is pushed away, in the direction the
+    // swipe pushes it (Rust: the view's width or height = gone). The page comes in the way it
+    // leaves, backwards. Animated only when asked (never while the finger moves it).
+    in property <length> slide: 0;
+    in property <bool> slide-animated: false;
+    // "bottom", "top", "left" or "right": the edge of the home button, the indicator and the swipe.
+    in property <string> edge: "bottom";
+    // The home button and the indicator bar are shown (they fade in and out).
+    in property <bool> controls-shown: false;
+    // The home button: where it is (top left, set by Rust, which also hits-tests it), whether a
+    // finger is on it, and whether it is being dragged (it follows the finger, no animation).
+    in property <length> home-x: 1280px - 16px - 96px;
+    in property <length> home-y: 800px - 24px - 96px;
+    in property <bool> home-pressed: false;
+    in property <bool> home-dragging: false;
+    // The character's face (the swipe chip, the conversation bar).
+    in property <image> face;
+    callback home();
+    callback retry();
+    callback menu-chosen(int);
+    callback confirm-answered(bool);
+}
+
+export component CasaScreen inherits Rectangle {
+    in property <string> character-name;
+    // The character's layout for the notice and the first load: its poses, drawn like the stage.
+    in property <image> stage-pose;
+    in property <image> error-pose;
+    in property <length> stage-cx: 256px;
+    in property <length> stage-top: 30px;
+    in property <length> stage-height: 740px;
+    in property <color> stage-background: Theme.bg;
+
+    property <bool> notice: CasaBridge.status == "error" || CasaBridge.status == "offline";
+    property <bool> first-load: !CasaBridge.has-frame && !self.notice;
+    property <length> slot-left: Grid.col-cx - Grid.slot-dx - Grid.slot-width / 2;
+    property <length> slot-mid: Grid.col-cx - Grid.slot-width / 2;
+    property <bool> vertical: CasaBridge.edge == "left" || CasaBridge.edge == "right";
+    // Where the page is: the finger's pull or the way in/out, whichever is further.
+    property <length> away: CasaBridge.slide;
+    animate away {
+        duration: CasaBridge.slide-animated ? 400ms : 0ms;
+        easing: cubic-bezier(0.05, 0.7, 0.1, 1.0);
+    }
+    property <length> off: max(CasaBridge.pull, root.away);
+    property <length> off-x: CasaBridge.edge == "left" ? root.off : CasaBridge.edge == "right" ? -root.off : 0;
+    property <length> off-y: CasaBridge.edge == "bottom" ? -root.off : CasaBridge.edge == "top" ? root.off : 0;
+
+    if CasaBridge.visible: Rectangle {
+        width: root.width;
+        height: root.height;
+        // Nothing under the page takes a touch.
+        TouchArea { }
+
+        // The page's sheet: the home shows around it while it moves (translate only).
+        Rectangle {
+            x: root.off-x;
+            y: root.off-y;
+            width: parent.width;
+            height: parent.height;
+            background: Theme.surface;
+        }
+
+        // The page follows the finger of the swipe and its way in and out (translate only).
+        if CasaBridge.has-frame && !root.notice: Image {
+            x: root.off-x;
+            y: root.off-y;
+            width: parent.width;
+            height: parent.height;
+            source: CasaBridge.frame;
+            image-fit: fill;
+        }
+
+        // Loading over a picture (stale page): a thin gold line at the top.
+        if CasaBridge.has-frame && CasaBridge.status == "loading": Rectangle {
+            y: root.off-y;
+            height: 4px;
+            width: parent.width * max(0.05, CasaBridge.progress);
+            x: root.off-x;
+            background: Theme.accent;
+        }
+
+        // The first load, and the notice when the view cannot open: Alfred's layout, not a
+        // full-screen error.
+        if root.first-load || root.notice: Rectangle {
+            x: root.off-x;
+            y: root.off-y;
+            width: parent.width;
+            height: parent.height;
+            background: root.stage-background;
+            TouchArea { }
+            Image {
+                property <image> p: root.notice ? root.error-pose : root.stage-pose;
+                x: root.stage-cx - self.width / 2;
+                y: root.stage-top;
+                height: root.stage-height;
+                width: self.p.height > 0 ? self.height * self.p.width / self.p.height : 0px;
+                source: self.p;
+                image-fit: fill;
+            }
+            if root.first-load: Text {
+                x: Grid.col-x;
+                y: 300px;
+                width: Grid.col-width;
+                text: CasaBridge.label-loading;
+                font-size: 34px;
+                color: Theme.text;
+                horizontal-alignment: center;
+            }
+            if root.first-load: Rectangle {
+                x: Grid.col-cx - 120px;
+                y: 380px;
+                width: 240px;
+                height: 4px;
+                border-radius: 2px;
+                background: Theme.line;
+                clip: true;
+                Rectangle {
+                    x: (mod(animation-tick() / 1ms, 1400) / 1400) * (parent.width + self.width) - self.width;
+                    width: 80px;
+                    height: 4px;
+                    border-radius: 2px;
+                    background: Theme.accent;
+                }
+            }
+            if root.notice: Icon {
+                x: Grid.col-cx - 32px;
+                y: 152px;
+                width: 64px;
+                height: 64px;
+                source: Icons.alert-circle-64;
+                color: Theme.danger;
+            }
+            if root.notice: Text {
+                x: Grid.col-x + 24px;
+                y: 240px;
+                width: Grid.col-width - 48px;
+                text: CasaBridge.status == "offline" ? CasaBridge.label-offline : CasaBridge.message;
+                font-size: 34px;
+                color: Theme.text;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            if root.notice: Text {
+                x: Grid.col-x + 48px;
+                y: 360px;
+                width: Grid.col-width - 96px;
+                height: 160px;
+                text: CasaBridge.label-offline-text;
+                font-size: 24px;
+                color: Theme.text-2;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            BareButton {
+                x: root.slot-left;
+                y: Grid.band-y;
+                icon: Icons.close-48;
+                label: CasaBridge.label-close;
+                clicked => {
+                    CasaBridge.home();
+                }
+            }
+            if root.notice && CasaBridge.status == "error": PrimaryButton {
+                x: root.slot-mid;
+                y: Grid.band-y;
+                icon: Icons.refresh-44;
+                label: CasaBridge.label-retry;
+                clicked => {
+                    CasaBridge.retry();
+                }
+            }
+        }
+
+        // A short line under the toolbar (2 s).
+        if CasaBridge.note != "": Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: 72px;
+            width: note-text.preferred-width + 48px;
+            height: 48px;
+            border-radius: 24px;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.line;
+            note-text := Text {
+                text: CasaBridge.note;
+                font-size: 20px;
+                color: Theme.text-2;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // The way home: a round button (bottom right by default, the user can drag it to any
+        // edge), as big as Parla, its gold ring and deep fill, a white house, so it stands out from any
+        // dashboard (Andrea, 2026-11-06). Shown only with `controls-shown`; it never takes a touch itself (Rust
+        // routes the touches on it: controls.rs SIZE + HIT_SLACK), so hidden it is just not drawn.
+        Rectangle {
+            x: CasaBridge.home-x;
+            y: CasaBridge.home-y;
+            width: Grid.primary-size;
+            height: Grid.primary-size;
+            border-radius: self.width / 2;
+            background: CasaBridge.home-pressed ? Theme.accent-deep.brighter(0.5) : Theme.accent-deep;
+            border-color: Theme.accent.with-alpha(0.9);
+            border-width: 2px;
+            opacity: 0;
+            visible: self.opacity > 0;
+            animate x, y {
+                duration: CasaBridge.home-dragging ? 0ms : 160ms;
+                easing: ease-out;
+            }
+            Icon {
+                x: 26px;
+                y: 26px;
+                width: 44px;
+                height: 44px;
+                source: Icons.home-44;
+                color: Theme.text;
+            }
+            states [
+                shown when CasaBridge.controls-shown || CasaBridge.home-pressed: {
+                    opacity: 1;
+                    in {
+                        animate opacity { duration: 150ms; }
+                    }
+                    out {
+                        animate opacity { duration: 300ms; }
+                    }
+                }
+            ]
+        }
+
+        // The home indicator, on the button's edge (vertical on the left and right edges): the
+        // swipe in starts there, like a phone's. Shown with the home button; the swipe works
+        // either way. A 1 px dark rim so it shows on light pages too.
+        if CasaBridge.edge-swipe && CasaBridge.pull <= 0 && !root.notice: Rectangle {
+            width: root.vertical ? 6px : 160px;
+            height: root.vertical ? 160px : 6px;
+            x: CasaBridge.edge == "left" ? 12px
+                : CasaBridge.edge == "right" ? parent.width - 12px - self.width
+                : (parent.width - self.width) / 2;
+            y: CasaBridge.edge == "top" ? 12px
+                : CasaBridge.edge == "bottom" ? parent.height - 12px - self.height
+                : (parent.height - self.height) / 2;
+            border-radius: 3px;
+            background: Theme.text.with-alpha(0.72);
+            border-width: 1px;
+            border-color: Theme.bg.with-alpha(0.5);
+            opacity: 0;
+            visible: self.opacity > 0;
+            states [
+                shown when CasaBridge.controls-shown: {
+                    opacity: 1;
+                    in {
+                        animate opacity { duration: 150ms; }
+                    }
+                    out {
+                        animate opacity { duration: 300ms; }
+                    }
+                }
+            ]
+        }
+
+        // The swipe: a pill comes in with the finger from the edge; armed, it is a gold chip
+        // with the character's face and "Release to go back to Alfred".
+        if CasaBridge.pull > 0: Rectangle {
+            property <length> come: min(CasaBridge.pull, 180px);
+            width: CasaBridge.pull-armed ? release-measure.preferred-width + 48px + 12px + 36px : 160px;
+            height: CasaBridge.pull-armed ? 72px : 12px;
+            x: clamp(CasaBridge.edge == "left" ? self.come - self.width / 2 + 24px
+                : CasaBridge.edge == "right" ? parent.width - self.come - self.width / 2 - 24px
+                : (parent.width - self.width) / 2, 16px, parent.width - self.width - 16px);
+            y: CasaBridge.edge == "top" ? self.come - self.height / 2 + 12px
+                : CasaBridge.edge == "bottom" ? parent.height - self.come - self.height / 2 - 12px
+                : (parent.height - self.height) / 2;
+            border-radius: self.height / 2;
+            background: CasaBridge.pull-armed ? Theme.accent : Theme.text.with-alpha(0.72);
+            border-width: 1px;
+            border-color: Theme.bg.with-alpha(0.5);
+            release-measure := Text {
+                visible: false;
+                text: CasaBridge.label-release;
+                font-size: 24px;
+                font-weight: 500;
+            }
+            if CasaBridge.pull-armed: HorizontalLayout {
+                x: 12px;
+                height: parent.height;
+                spacing: 12px;
+                Rectangle {
+                    width: 48px;
+                    Rectangle {
+                        y: 12px;
+                        width: 48px;
+                        height: 48px;
+                        border-radius: 24px;
+                        clip: true;
+                        background: Theme.bg;
+                        Image {
+                            width: parent.width;
+                            height: parent.height;
+                            source: CasaBridge.face;
+                            image-fit: cover;
+                        }
+                    }
+                }
+                Text {
+                    text: CasaBridge.label-release;
+                    font-size: 24px;
+                    font-weight: 500;
+                    color: Theme.on-accent;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // The page's <select>: a sheet in the middle of the screen; a tap outside cancels it.
+        if CasaBridge.menu-open: menu-scrim := Rectangle {
+            background: Theme.scrim;
+            TouchArea {
+                clicked => {
+                    CasaBridge.menu-chosen(-1);
+                }
+            }
+            property <length> list-height: min(parent.height - 80px - 160px, CasaBridge.menu-items.length * 80px);
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 640px;
+                height: (CasaBridge.menu-label != "" ? 72px : 16px) + parent.list-height + 96px;
+                border-radius: 28px;
+                background: Theme.surface;
+                border-color: Theme.line;
+                border-width: 1px;
+                clip: true;
+                TouchArea { }
+                if CasaBridge.menu-label != "": Text {
+                    x: 32px;
+                    y: 16px;
+                    width: parent.width - 64px;
+                    height: 56px;
+                    text: CasaBridge.menu-label;
+                    font-size: 28px;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                Flickable {
+                    x: 0;
+                    y: CasaBridge.menu-label != "" ? 72px : 16px;
+                    width: parent.width;
+                    height: menu-scrim.list-height;
+                    content-height: CasaBridge.menu-items.length * 80px;
+                    for item[i] in CasaBridge.menu-items: Rectangle {
+                        y: i * 80px;
+                        height: 80px;
+                        width: parent.width;
+                        background: item.selected ? Theme.surface-2
+                            : row.pressed && item.enabled && !item.group ? Theme.surface-2 : transparent;
+                        Text {
+                            x: item.group ? 32px : 40px;
+                            width: parent.width - 120px;
+                            height: parent.height;
+                            text: item.group ? item.label.to-uppercase() : item.label;
+                            font-size: item.group ? 20px : 28px;
+                            font-weight: item.group ? 500 : 400;
+                            letter-spacing: item.group ? 1.5px : 0;
+                            color: item.group || !item.enabled ? Theme.text-3 : Theme.text;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        if item.selected: Icon {
+                            x: parent.width - 40px - self.width;
+                            y: (parent.height - self.height) / 2;
+                            width: 28px;
+                            height: 28px;
+                            color: Theme.accent;
+                            source: Icons.check-28;
+                        }
+                        row := TouchArea {
+                            enabled: item.enabled && !item.group;
+                            clicked => {
+                                CasaBridge.menu-chosen(i);
+                            }
+                        }
+                    }
+                }
+                PillButton {
+                    x: (parent.width - self.width) / 2;
+                    y: parent.height - 16px - 64px;
+                    width: 220px;
+                    label: CasaBridge.label-cancel;
+                    clicked => {
+                        CasaBridge.menu-chosen(-1);
+                    }
+                }
+            }
+        }
+
+        // Before a heavy view: the user just asked for it, so "Apri" is the gold one.
+        if CasaBridge.confirm-open: Dialog {
+            centre-x: root.width / 2;
+            icon: Icons.timer-sand-full-48;
+            title: CasaBridge.label-heavy-title;
+            text: CasaBridge.confirm-text;
+            cancel: CasaBridge.label-cancel;
+            confirm: CasaBridge.label-open;
+            answered(yes) => {
+                CasaBridge.confirm-answered(yes);
+            }
+        }
+    }
+}

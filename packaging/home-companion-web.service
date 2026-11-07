@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+# home-companion-web: the web helper behind "Casa" (Home Assistant's frontend in WPE WebKit, off screen; the body imports its
+# frames over /run/home-companion-web/home-companion-web.sock). Needs the web layer of thinksmart-view-debian (WEB=1: WPE WebKit 2.54,
+# bubblewrap) and runs only while [web] enabled = true in /etc/home-companion/home-companion.toml. Layout: packaging/README.md.
+[Unit]
+Description=Home Companion web helper (Home Assistant's frontend for "Casa")
+Wants=network-online.target
+After=network-online.target
+# stopped and restarted with the body
+PartOf=home-companion.service
+
+[Service]
+Type=simple
+User=home-companion-web
+Group=home-companion-web
+# the GPU's render node (never card0: the body is DRM master)
+SupplementaryGroups=render video
+# Nothing to do while "Casa" is off: `home-companion web-url` fails then (exit status 65 skips the unit, it does not fail it)
+ExecCondition=+/opt/home-companion/home-companion web-url --config /etc/home-companion/home-companion.toml
+# The login (as root: the configuration and the token are readable by group home-companion only): `home-companion web-login` prints the
+# hassTokens line, read once from standard input below; the file lives on tmpfs, mode 600, and is removed as soon as
+# the helper has it open. The socket: /run/home-companion-web is group home-companion-web (0750), the body's user home-companion is in that group
+# (packaging/README.md), the socket itself 0660 (UMask). WebKit's own runtime directory (D-Bus proxy, sandbox) is
+# in the unit's private /tmp.
+ExecStartPre=+/bin/sh -c 'set -e; umask 077; d=/run/home-companion-web; rm -f $d/home-companion-web.sock; /opt/home-companion/home-companion web-url --config /etc/home-companion/home-companion.toml > $d/url; /opt/home-companion/home-companion web-login --config /etc/home-companion/home-companion.toml > $d/login; chown home-companion-web: $d/url $d/login'
+ExecStart=/bin/sh -c 'd=/run/home-companion-web; exec 3< $d/login; rm -f $d/login; mkdir -p -m 700 "$XDG_RUNTIME_DIR"; exec /opt/home-companion/home-companion-web --token-stdin --url "$(cat $d/url)" --socket $d/home-companion-web.sock --scale 1.25 --theme dark --hidden --data-dir /var/lib/home-companion-web/data --cache-dir /var/cache/home-companion-web <&3 3<&-'
+# The freezer: the body (user home-companion) freezes this unit's cgroup after [web] freeze_after_seconds hidden
+ExecStartPost=+/bin/chown home-companion /sys/fs/cgroup/system.slice/home-companion-web.service/cgroup.freeze /sys/fs/cgroup/system.slice/home-companion-web.service/cgroup.kill
+Environment=HOME=/var/lib/home-companion-web XDG_RUNTIME_DIR=/tmp/xdg
+# freedreno's tiled (gmem) path loops forever on some of WebKit's draws even in Mesa 26.3: direct rendering to system
+# memory for this process only (thinksmart-view-debian docs/known-issues.md, "GPU and web layer")
+Environment=FD_MESA_DEBUG=sysmem
+# WebKit paints the page's tiles with Skia on the CPU (the GPU still composites): the dashboard's peak goes from ~1.15 GB
+# to ~0.4 GB (its GPU buffers from ~810 MB to ~55 MB), the same frames per second while scrolling, a picture the same
+# but for 340 pixels in a million (measured 2026-11-06). MSAA off too: on the GPU path it alone tripled the buffers
+# for a pixel-identical picture
+Environment=WEBKIT_SKIA_ENABLE_CPU_RENDERING=1 WEBKIT_SKIA_MSAA_SAMPLE_COUNT=0
+# Six painting threads of the eight cores (WebKit used about two: panels slid slowly); two stay for the voice.
+Environment=WEBKIT_SKIA_CPU_PAINTING_THREADS=6
+RuntimeDirectory=home-companion-web
+RuntimeDirectoryMode=0750
+StateDirectory=home-companion-web
+CacheDirectory=home-companion-web
+UMask=0007
+# the body comes first: the helper waits for the CPU, and the kernel kills it, not the body, when memory runs out
+Nice=10
+CPUWeight=50
+IOWeight=50
+OOMScoreAdjust=500
+# Loading a dashboard peaks at ~0.4 GB of the cgroup with CPU painting (~1.1 GB on the GPU path, where a 1G
+# MemoryMax killed it on every opening and a 1G MemoryHigh froze it for 20-30 s). MemoryHigh sits well above the peak
+# (heavy views, WebGL), only a runaway page is slowed down, MemoryMax ends it
+MemoryHigh=900M
+MemoryMax=1200M
+OOMPolicy=kill
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=home-companion.service

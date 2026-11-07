@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+# home-companion-brain: tools over MCP for Home Assistant's own AI, long-term memory on the device, no API key.
+# Configuration /etc/home-companion/brain.toml, memory in /var/lib/home-companion-brain.
+[Unit]
+Description=Home Companion brain (tools and memory for Home Assistant's AI)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=home-companion-brain
+Group=home-companion-brain
+ExecStart=/opt/home-companion/home-companion-brain --config /etc/home-companion/brain.toml
+StateDirectory=home-companion-brain
+StateDirectoryMode=0700
+# The body's control socket /run/home-companion-brain/brain.sock (the "Ricordi" page, reminder cards): the
+# directory is group home-companion-brain, which the body's user home-companion is in (packaging/README.md); the socket
+# itself 0660 (set by the brain)
+RuntimeDirectory=home-companion-brain
+RuntimeDirectoryMode=0750
+UMask=0077
+# the body comes first: the brain mostly waits for the network
+Nice=5
+CPUWeight=50
+MemoryMax=128M
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

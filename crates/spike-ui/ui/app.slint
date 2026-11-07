@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+// M0 UI spike: one portrait screen of the ThinkSmart View (800x1280).
+// Every dynamic value is driven from Rust so frame counts and dirty regions
+// are exact. Font sizes used (all static, pre-rendered at build time):
+// 160 px (clock), 28 px (labels), 22 px (status).
+
+import "../fixtures/fonts/DejaVuSans-subset.ttf";
+
+export component AppWindow inherits Window {
+    width: 800px;
+    height: 1280px;
+    title: "spike-ui";
+    default-font-family: "DejaVu Sans";
+    background: root.bg;
+
+    in property <color> bg: #1d2433;
+    in property <image> pose;
+    in property <string> clock: "00:00:00";
+    in property <length> box-x: 100px;
+    in property <length> box-y: 980px;
+    in property <color> box-color: #3fc1c9;
+    // 0.0 .. 1.0
+    in property <float> volume: 0.5;
+    in property <string> volume-label: "Volume";
+    in property <string> status: "starting";
+    // Duration of the optional Slint animation of the box (0 = driven per frame from Rust).
+    in property <duration> box-animation: 0ms;
+
+    callback screenshot-requested();
+    // A touch (or click in the simulator) on the box.
+    callback box-touched();
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == "s" || event.text == "S") {
+                root.screenshot-requested();
+                return accept;
+            }
+            reject
+        }
+    }
+    init => {
+        keys.focus();
+    }
+
+    pose-image := Image {
+        x: 100px;
+        y: 80px;
+        width: 600px;
+        height: 600px;
+        source: root.pose;
+        image-fit: contain;
+    }
+
+    clock := Text {
+        x: 0px;
+        y: 700px;
+        width: 800px;
+        height: 200px;
+        text: root.clock;
+        font-size: 160px;
+        color: #f2f2f2;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    box := Rectangle {
+        x: root.box-x;
+        y: root.box-y;
+        width: 64px;
+        height: 64px;
+        border-radius: 12px;
+        background: root.box-color;
+        animate x, y {
+            duration: root.box-animation;
+            easing: linear;
+        }
+        TouchArea {
+            clicked => {
+                root.box-touched();
+            }
+        }
+    }
+
+    Text {
+        x: 100px;
+        y: 1120px;
+        width: 600px;
+        height: 36px;
+        text: root.volume-label;
+        font-size: 28px;
+        color: #c8cdd6;
+    }
+
+    volume-bar := Rectangle {
+        x: 100px;
+        y: 1160px;
+        width: 600px;
+        height: 24px;
+        border-radius: 12px;
+        background: #3a4458;
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width * clamp(root.volume, 0, 1);
+            height: parent.height;
+            border-radius: 12px;
+            background: #f6c446;
+        }
+    }
+
+    Text {
+        x: 16px;
+        y: 1230px;
+        width: 768px;
+        height: 32px;
+        text: root.status;
+        font-size: 22px;
+        color: #8a93a5;
+        horizontal-alignment: center;
+    }
+}

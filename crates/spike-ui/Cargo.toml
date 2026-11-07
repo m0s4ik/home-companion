@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+[package]
+name = "spike-ui"
+description = "M0 spike: Slint software renderer on the ThinkSmart View framebuffer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+default-run = "spike-ui"
+
+[[bin]]
+name = "spike-ui"
+path = "src/main.rs"
+
+# The companion's landscape screen with a character, in a desktop window (ui/companion.slint).
+[[bin]]
+name = "companion-sim"
+path = "src/bin/companion-sim.rs"
+required-features = ["simulator"]
+
+[features]
+default = ["simulator"]
+# Desktop window (winit; slint/backend-winit brings X11 and Wayland), software
+# renderer only: no femtovg, no skia, no OpenGL.
+simulator = ["slint/backend-winit", "slint/backend-winit-x11"]
+# Slint's own DRM/KMS backend (dumb buffers, plus its legacy fbdev fallback).
+linuxkms = ["slint/backend-linuxkms"]
+# linuxkms plus touch/keys through libinput (the device then needs libinput10 and
+# libxkbcommon0, which the base image does not ship).
+linuxkms-input = ["linuxkms", "slint/backend-linuxkms-libinput"]
+# Our own minimal platform writing dirty regions to /dev/fb0 (no extra deps).
+fbdev = []
+
+[dependencies]
+slint = { version = "1.18.1", default-features = false, features = ["compat-1-18", "std", "renderer-software"] }
+png = "0.18"
+memmap2 = "0.9"
+libc = "0.2"
+serde_json = "1"
+character = { path = "../character" }
+locale = { path = "../locale" }
+toml = "1"
+
+# Slint's text stack (parley -> fontique) links libfontconfig.so.1 by default; the
+# device image has no fontconfig. Feature unification switches it to dlopen: when
+# the library is missing, fontique simply sees no system fonts (ours are embedded).
+[target.'cfg(target_os = "linux")'.dependencies]
+fontique = { version = "0.11", default-features = false, features = ["fontconfig-dlopen"] }
+
+[build-dependencies]
+slint-build = "1.18"

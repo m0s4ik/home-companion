@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+#
+# Example configuration for the M1 runbook on the ThinkSmart View,
+# copied to /root/home-companion-m1/home-companion.toml. `allowed` is only needed before the QR link: after it the
+# body learns Home Assistant's own addresses (kept in ha-setup.json) and lets them in.
+version = 1
+
+[satellite]
+name = "ThinkSmart View"
+bind = "0.0.0.0:10700"
+allowed = ["192.0.2.10"]
+ping = true
+
+[character]
+dir = "/root/home-companion-m1/characters/alfred"
+language = "it"
+
+[wake_word]
+refractory_seconds = 2.0
+cooloff_seconds = 1.0
+
+[audio]
+backend = "alsa"
+playback_device = "hw:0,0"
+capture_device = "hw:0,1"
+capture_channels = 2
+capture_channel = "left"
+keep_open = true
+agc = false
+realtime = true
+volume = 1.0
+# Volume keys: 'Speaker Amp Master' of the TAS5782M (1 dB per step, 85 = 0 dB); 5 % = 47 (-38 dB),
+# 100 % = 85 (0 dB, the ceiling, chosen by ear), 2 dB per 5 % step. The level is kept in
+# <state_dir>/settings.toml.
+volume_control = "Speaker Amp Master"
+volume_card = "hw:0"
+volume_max_amp = 85
+volume_min_amp = 47
+volume_step = 5
+
+[audio.record]
+enabled = false
+dir = "/root/home-companion-m1/state/utterances"
+keep = 20
+
+[ui]
+renderer = "auto"
+rotation = "auto"
+touch = "auto"
+
+# Weather on the home screen (Home Assistant's WebSocket API). The token file holds a long-lived
+# access token (Home Assistant: profile, Security), mode 0640, group home-companion. No url: no weather.
+[home_assistant]
+url = "http://192.0.2.10:8123"
+token_file = "ha-token"
+
+[weather]
+entity = "weather.home"
+
+# The shopping list: a todo.* entity ("" = no "Spesa" card, tile or page); the same key in brain.toml
+[lists]
+shopping = ""
+
+# "Casa": Home Assistant's own frontend through the web helper home-companion-web.
+# The page is `path` on [home_assistant] url, logged in with [home_assistant] token_file.
+[web]
+enabled = false
+path = "/lovelace/0"
+# The home button and the indicator bar fade out this long after the last touch (0 = always shown).
+home_button_seconds = 4
+
+[paths]
+state_dir = "/root/home-companion-m1/state"
+locales_dir = "/root/home-companion-m1/locales"
+
+[log]
+level = "info"
+format = "auto"

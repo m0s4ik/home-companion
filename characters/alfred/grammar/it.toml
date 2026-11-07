@@ -1,0 +1,109 @@
+# SPDX-License-Identifier: CC0-1.0
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+#
+# Alfred's reflexes in Italian: what the body does by itself, without
+# Home Assistant, when Vosk hears exactly one of these phrases. Slots: {duration} ("dieci minuti",
+# "un minuto e mezzo", "un'ora"), {time} ("alle sette e mezza", "all'una di notte"), {percent}
+# ("cinquanta per cento", "cinquanta"); their words are in crates/reflex/src/slots.rs. Anything
+# else ("accendi la luce", "che tempo fa") goes to the brain. Every word must be in the Vosk
+# model's vocabulary: Vosk logs "missing in vocabulary" for any that is not (journalctl -u home-companion).
+format = 1
+language = "it"
+
+[commands]
+time = ["che ore sono", "che ora è", "dimmi l'ora", "mi dici l'ora", "sai che ore sono"]
+timer_start = [
+    "metti un timer di {duration}",
+    "metti un timer da {duration}",
+    "metti un timer tra {duration}",
+    "metti un timer fra {duration}",
+    "imposta un timer tra {duration}",
+    "timer tra {duration}",
+    "imposta un timer di {duration}",
+    "avvia un timer di {duration}",
+    "fai partire un timer di {duration}",
+    "timer di {duration}",
+    "timer da {duration}",
+    "timer {duration}",
+    "imposta timer {duration}",
+    "imposta il timer {duration}",
+    "imposta un timer {duration}",
+    "imposta timer di {duration}",
+    "imposta il timer a {duration}",
+    "metti timer {duration}",
+    "metti il timer {duration}",
+    "metti un timer {duration}",
+    "metti timer di {duration}",
+    "un timer di {duration}",
+]
+timer_cancel = [
+    "annulla il timer",
+    "cancella il timer",
+    "togli il timer",
+    "ferma il timer",
+    "spegni il timer",
+    "annulla i timer",
+    "cancella i timer",
+    "togli i timer",
+    "interrompi il timer",
+    "interrompi timer",
+    "ferma timer",
+    "annulla timer",
+    "togli timer",
+    "cancella timer",
+    "spegni timer",
+    "elimina il timer",
+    "elimina timer",
+    "stop timer",
+]
+timer_left = ["quanto manca", "quanto manca al timer", "quanto tempo manca", "quanto tempo rimane", "quanto manca alla fine del timer"]
+alarm_set = [
+    "metti la sveglia {time}",
+    "metti una sveglia {time}",
+    "imposta la sveglia {time}",
+    "imposta una sveglia {time}",
+    "svegliami {time}",
+    "sveglia {time}",
+]
+alarm_cancel = ["annulla la sveglia", "togli la sveglia", "cancella la sveglia", "spegni la sveglia"]
+volume_up = ["alza il volume", "alza", "più forte", "volume più alto"]
+volume_down = ["abbassa il volume", "abbassa", "più piano", "volume più basso"]
+volume_set = ["metti il volume al {percent}", "metti il volume a {percent}", "volume al {percent}", "volume a {percent}"]
+volume_max = ["volume al massimo", "metti il volume al massimo"]
+volume_min = ["volume al minimo", "metti il volume al minimo"]
+music_pause = [
+    "ferma la musica",
+    "metti in pausa",
+    "metti in pausa la musica",
+    "metti pausa",
+    "pausa",
+    "spegni la musica",
+    "interrompi la musica",
+    "basta musica",
+]
+music_play = [
+    "riprendi la musica",
+    "fai ripartire la musica",
+    "rimetti la musica",
+    "continua la musica",
+    "fai partire la musica",
+    "riprendi",
+]
+music_next = [
+    "prossima canzone",
+    "canzone successiva",
+    "passa alla prossima",
+    "passa alla prossima canzone",
+    "prossimo brano",
+    "brano successivo",
+    "salta questa canzone",
+    "cambia canzone",
+]
+music_previous = [
+    "canzone precedente",
+    "brano precedente",
+    "torna alla canzone di prima",
+    "la canzone di prima",
+    "rimetti la canzone di prima",
+]
+silence = ["silenzio", "stai zitto", "zitto", "lascia stare", "niente", "non importa", "annulla", "basta", "basta così", "no grazie", "niente grazie", "no", "grazie", "va bene così", "a posto così"]

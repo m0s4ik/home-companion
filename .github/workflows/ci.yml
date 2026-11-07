@@ -1,0 +1,151 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+#
+# M1 checks: formatting, SPDX headers, private data, build + tests +
+# clippy on x86_64, the end-to-end test against the fake Home Assistant, the golden
+# screenshots, and the device build for aarch64 with its NEEDED check. The M0 spikes are
+# not built here.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  NEW_CRATES: -p wyoming -p audio -p wakeword -p home-companion
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: rustfmt (M1 crates)
+        run: cargo fmt -p wyoming -p audio -p wakeword -p home-companion -- --check
+      - name: SPDX headers
+        run: tools/check-spdx.sh
+      - name: no private data
+        run: tools/check-private.sh
+
+  test-x86:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libinput-dev libxkbcommon-dev \
+            libwayland-dev libgbm-dev libegl1-mesa-dev libgles2-mesa-dev libdrm-dev \
+            libfontconfig-dev libfreetype-dev libxkbcommon-x11-0 xvfb xauth
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86
+      - name: TFLite Micro cache
+        uses: actions/cache@v4
+        with:
+          path: crates/wakeword/third_party
+          key: tflm-${{ hashFiles('crates/wakeword/tools/fetch-tflm.sh') }}
+      - name: fetch TFLite Micro (pinned)
+        run: crates/wakeword/tools/fetch-tflm.sh
+      - name: build
+        run: cargo build --workspace --release --exclude spike-native --exclude spike-audio --exclude spike-ui --exclude spike-gpu
+      - name: test
+        run: cargo test --release -p wyoming -p audio -p wakeword -p home-companion -p character -p locale
+      - name: clippy
+        run: cargo clippy --release $NEW_CRATES --all-targets -- -D warnings
+      - name: end to end (home-companion <-> fake Home Assistant)
+        run: crates/home-companion/tools/run-e2e.sh
+      - name: golden screenshots
+        run: |
+          crates/home-companion/tools/shoot-golden.sh crates/home-companion/out/golden
+          python3 -I crates/home-companion/tools/check-golden.py crates/home-companion/fixtures/golden crates/home-companion/out/golden
+      - name: artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-and-screens
+          path: |
+            crates/home-companion/out/e2e-*
+            crates/home-companion/out/golden/
+          if-no-files-found: ignore
+
+  cross-aarch64:
+    runs-on: ubuntu-24.04
+    env:
+      PKG_CONFIG_SYSROOT_DIR: /
+      PKG_CONFIG_PATH: /usr/lib/aarch64-linux-gnu/pkgconfig
+      PKG_CONFIG_ALLOW_CROSS: 1
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      T: target/aarch64-unknown-linux-gnu/release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - name: arm64 packages
+        run: |
+          sudo dpkg --add-architecture arm64
+          # The default Ubuntu mirrors carry amd64 only: arm64 comes from ports.
+          sudo sed -i 's/^Types: deb$/Types: deb\nArchitectures: amd64/' /etc/apt/sources.list.d/ubuntu.sources
+          printf '%s\n' \
+            'Types: deb' 'URIs: http://ports.ubuntu.com/ubuntu-ports' \
+            'Suites: noble noble-updates noble-security' 'Components: main universe' \
+            'Architectures: arm64' 'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
+            | sudo tee /etc/apt/sources.list.d/arm64.sources
+          sudo apt-get update
+          sudo apt-get install -y crossbuild-essential-arm64 libasound2-dev:arm64 libudev-dev:arm64 \
+            libinput10:arm64 libxkbcommon-dev:arm64 libgbm-dev:arm64 libegl1-mesa-dev:arm64 \
+            libgles2-mesa-dev:arm64 libdrm-dev:arm64 libfontconfig-dev:arm64 libfreetype-dev:arm64
+          # libinput-dev:arm64 pulls libglib2.0-dev:arm64, whose tools clash with the runner's amd64 ones;
+          # the headers and the .so link are all the build needs.
+          cd "$RUNNER_TEMP" && apt-get download libinput-dev:arm64 && sudo dpkg -x libinput-dev_*_arm64.deb /
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: aarch64
+      - name: TFLite Micro cache
+        uses: actions/cache@v4
+        with:
+          path: crates/wakeword/third_party
+          key: tflm-${{ hashFiles('crates/wakeword/tools/fetch-tflm.sh') }}
+      - name: fetch TFLite Micro (pinned)
+        run: crates/wakeword/tools/fetch-tflm.sh
+      - name: device tools
+        run: cargo build --release --target aarch64-unknown-linux-gnu -p wyoming --bin fake-ha -p wakeword --bin wakeword-run -p audio --bin audio-bench
+      - name: home-companion, software only (fbdev)
+        run: |
+          cargo build --release --target aarch64-unknown-linux-gnu -p home-companion --no-default-features --features fbdev
+          mkdir -p dist
+          aarch64-linux-gnu-strip -o dist/home-companion-software $T/home-companion
+      - name: home-companion, GPU first with software fallback (fbdev,gpu)
+        run: |
+          cargo build --release --target aarch64-unknown-linux-gnu -p home-companion --no-default-features --features fbdev,gpu
+          aarch64-linux-gnu-strip -o dist/home-companion $T/home-companion
+      - name: NEEDED libraries
+        run: |
+          check() {
+            needed=$(aarch64-linux-gnu-readelf -d "$1" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
+            echo "$1: $needed"
+            for l in $needed; do
+              case " $2 " in *" $l "*) ;; *) echo "unexpected NEEDED $l in $1"; exit 1 ;; esac
+            done
+          }
+          base="libasound.so.2 libstdc++.so.6 libgcc_s.so.1 libm.so.6 libc.so.6 ld-linux-aarch64.so.1"
+          check dist/home-companion-software "$base"
+          # The gbm crate links libgbm (as spike-gpu on the device); EGL/GLES are opened at run time.
+          check dist/home-companion "$base libgbm.so.1"
+          ls -l dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: home-companion-aarch64
+          path: |
+            dist/home-companion
+            dist/home-companion-software
+            ${{ env.T }}/fake-ha
+            ${{ env.T }}/wakeword-run
+            ${{ env.T }}/audio-bench

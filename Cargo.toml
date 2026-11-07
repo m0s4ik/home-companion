@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+exclude = ["third_party/femtovg"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+rust-version = "1.85"
+
+[profile.release]
+debug = "line-tables-only"
+
+# femtovg 0.27.0 with our patch (third_party/femtovg-0.27.0-rotation.patch): text and icons stay sharp when
+# the screen is rotated by 90/180/270 degrees (the device's panel is mounted sideways). See
+# third_party/README.md.
+[patch.crates-io]
+femtovg = { path = "third_party/femtovg" }

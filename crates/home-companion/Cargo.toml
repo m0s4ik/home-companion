@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+[package]
+name = "home-companion"
+description = "home-companion: the body (Wyoming satellite for Home Assistant, wake word, companion screen)"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+default-run = "home-companion"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "home-companion"
+path = "src/main.rs"
+
+[features]
+default = ["simulator"]
+# Desktop window (winit, software renderer) and the laptop's microphone and speaker (cpal).
+simulator = ["slint/backend-winit", "slint/backend-winit-x11", "audio/cpal"]
+# Our own software platform on /dev/fb0 (no extra dependencies); also the `headless` renderer.
+fbdev = []
+# Slint's DRM/KMS backend with the femtovg renderer (OpenGL ES through EGL/GBM, page flipping).
+gpu = ["slint/backend-linuxkms", "slint/renderer-femtovg"]
+# WebRTC AGC2 against a prebuilt libwebrtc-audio-processing-2 (crates/audio/tools/build-aarch64.sh).
+webrtc-system = ["audio/webrtc-system"]
+# WebRTC AGC2 built from the bundled sources (host only).
+webrtc = ["audio/webrtc"]
+
+[dependencies]
+audio = { path = "../audio" }
+character = { path = "../character" }
+locale = { path = "../locale" }
+wakeword = { path = "../wakeword" }
+wyoming = { path = "../wyoming" }
+webview-proto = { path = "../webview-proto" }
+reflex = { path = "../reflex" }
+slint = { version = "1.18.1", default-features = false, features = ["compat-1-18", "std", "renderer-software"] }
+# The icons are SVG files drawn at run time (resvg): the GPU and window backends turn this on
+# already, the fbdev-only build needs it too.
+i-slint-core = { version = "=1.18.1", default-features = false, features = ["svg", "image-decoders"] }
+png = "0.18"
+# AirPlay cover art (JPEG or PNG), decoded here: Slint caches an image by its path.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+memmap2 = "0.9"
+libc = "0.2"
+log = { version = "0.4", features = ["kv_std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+# The QR code of Settings → Home Assistant (the link, src/ha/link.rs): one file, no dependencies.
+qrcodegen = "1.8"
+
+# As spike-ui: fontconfig is opened with dlopen, not linked (the device has none; our fonts are
+# embedded).
+[target.'cfg(target_os = "linux")'.dependencies]
+fontique = { version = "0.11", default-features = false, features = ["fontconfig-dlopen"] }
+# The amplifier control for the volume (src/volume.rs); the same alsa as the audio crate.
+alsa = "0.12"
+
+[dev-dependencies]
+hound = "3.5"
+
+[build-dependencies]
+slint-build = "1.18"

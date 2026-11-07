@@ -1,0 +1,9 @@
+{"type":"auth_required","ha_version":"2026.10.4"}
+{"type":"auth_ok","ha_version":"2026.10.4"}
+{"id":1,"type":"result","success":true,"result":null}
+{"id":1,"type":"event","event":{"a":{"weather.home":{"s":"cloudy","a":{"temperature":13.7,"apparent_temperature":12.1,"dew_point":8.2,"temperature_unit":"°C","humidity":71,"cloud_coverage":88.3,"pressure":1014.2,"pressure_unit":"hPa","wind_bearing":215.4,"wind_speed":11.5,"wind_speed_unit":"km/h","visibility_unit":"km","precipitation_unit":"mm","attribution":"Weather forecast from met.no, delivered by the Norwegian Meteorological Institute.","friendly_name":"Forecast Home","supported_features":3},"c":"01JBCDEFGHJKMNPQRSTVWXYZ00","lc":1793800000.123,"lu":1793800000.123}}}}
+{"id":2,"type":"result","success":true,"result":null}
+{"id":2,"type":"event","event":{"type":"daily","forecast":[{"condition":"cloudy","datetime":"2026-11-03T11:00:00+00:00","wind_bearing":200.1,"temperature":14.0,"templow":8.5,"wind_speed":9.0,"precipitation":0.0,"humidity":70},{"condition":"rainy","datetime":"2026-11-04T11:00:00+00:00","wind_bearing":210.3,"temperature":15.2,"templow":7.9,"wind_speed":12.6,"precipitation":3.4,"humidity":80},{"condition":"sunny","datetime":"2026-11-05T11:00:00+00:00","wind_bearing":30.0,"temperature":16.1,"templow":6.2,"wind_speed":6.1,"precipitation":0.0,"humidity":60},{"condition":"partlycloudy","datetime":"2026-11-06T11:00:00+00:00","wind_bearing":90.0,"temperature":14.8,"templow":5.5,"wind_speed":7.4,"precipitation":0.0,"humidity":65}]}}
+{"id":1,"type":"event","event":{"c":{"weather.home":{"+":{"s":"rainy","a":{"temperature":12.4,"humidity":84},"c":"01JBCDEFGHJKMNPQRSTVWXYZ01","lc":1793803600.5}}}}}
+{"id":1,"type":"event","event":{"c":{"weather.home":{"+":{"lu":1793803700.1,"c":"01JBCDEFGHJKMNPQRSTVWXYZ02"},"-":{"a":["wind_bearing"]}}}}}
+{"id":3,"type":"pong"}

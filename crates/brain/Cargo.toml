@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+[package]
+name = "brain"
+description = "home-companion-brain: tools over MCP for Home Assistant's own AI (memory, reminders, timers, alarms, the house with gates), long-term memory on the device"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "home-companion-brain"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+log = { version = "0.4", features = ["kv_std"] }
+# SQLite with FTS5, compiled in (the device has no libsqlite3)
+rusqlite = { version = "0.37", features = ["bundled"] }
+libc = "0.2"

@@ -1,0 +1,4 @@
+The SVG files in this directory are Material Design Icons 7.4.47 by Pictogrammers
+(https://pictogrammers.com/library/mdi/), path data from the @mdi/js package, written one file
+per size by tools/make-icons.py. They are licensed under the Apache License, Version 2.0:
+https://www.apache.org/licenses/LICENSE-2.0
