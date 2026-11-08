@@ -69,6 +69,9 @@ pub enum UiEvent {
     MusicNext,
     /// "Interrompi" on the mirroring page.
     MirrorStop,
+    /// The control center's "do not disturb": on until this unix time (Some) or off (None), the
+    /// same as the reflex.
+    DoNotDisturb(Option<u64>),
     MusicPrevious,
 }
 
@@ -1807,6 +1810,12 @@ impl Core {
                 }
             }
             UiEvent::MusicPrevious => self.music_remote(crate::airplay::Remote::Previous),
+            // The screen's tile: as the reflex would (the core's side of it, the sounds, is
+            // the reflexes'; the screen hears it back as UiCommand::DoNotDisturb).
+            UiEvent::DoNotDisturb(until) => {
+                log::info!(event = "dnd", on = until.is_some(), by = "control"; "do not disturb {}", if until.is_some() { "on" } else { "off" });
+                self.ui(UiCommand::DoNotDisturb(until));
+            }
             UiEvent::TimerStart(secs) => {
                 let id = self.d.timers.start_local(None, secs, now_unix());
                 log::info!(event = "timer_started", id = id.as_str(), seconds = secs, by = "touch"; "timer {id}: {secs} s (touch)");

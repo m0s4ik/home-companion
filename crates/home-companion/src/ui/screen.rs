@@ -22,12 +22,13 @@ use slint::{Color, Image, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode};
 use super::anim::{self, Clip, Mode, Playhead, Sequencer, Show, Timing};
 use super::backlight::{Awake, Backlight, Fade, Levels, WakeSource};
 use super::cards::{self, Alive, CardWords};
+use super::house::{self, Dnd, HouseCards};
 use super::light::{Auto, Curve};
 use super::lists::{self, Choice, ShopList};
 use super::next;
 use super::{AlarmLineView, MemoriesView, MusicView, Screen, SettingsView, TimerLineView};
 use crate::alarms::Alarm;
-use crate::brain_link::{BrainLink, BrainMsg, Upcoming};
+use crate::brain_link::{self, BrainLink, BrainMsg, Upcoming};
 use crate::core::{CoreEvent, MirrorInfo, Phase, UiCommand, UiEvent};
 use crate::ha::hub::{HubCmd, HubMsg};
 use crate::ha::weather::Weather;
@@ -269,10 +270,14 @@ pub struct Demo {
     /// `--state ha-home` / `weather` / `ha-lists` / `reminders-events`: v0.2's Home Assistant
     /// screens on sample data.
     pub v02: &'static str,
+    /// v0.2 `--state house-done*` / `house-ask*`: the brain's "done" card (1) or question (2).
+    pub house: u8,
+    /// `--state dnd`: do not disturb on.
+    pub dnd: bool,
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 41] = [
+pub const DEMO_STATES: [&str; 47] = [
     "home",
     "cards",
     "cards-setup",
@@ -314,6 +319,12 @@ pub const DEMO_STATES: [&str; 41] = [
     "first-ha-searching",
     "first-ha-found",
     "first-ha-none",
+    "house-done",
+    "house-done-speaking",
+    "house-ask",
+    "dnd",
+    "control-dnd",
+    "what",
 ];
 
 impl Demo {
@@ -412,6 +423,44 @@ impl Demo {
                 v02: "events",
                 ..page("reminders")
             },
+            "house-done" => Demo {
+                house: 1,
+                cards: true,
+                ..home.clone()
+            },
+            "house-done-speaking" => Demo {
+                house: 1,
+                phase: Phase::Speaking,
+                ..home.clone()
+            },
+            "house-ask" => Demo {
+                house: 2,
+                ..home.clone()
+            },
+            "house-ask-mirror" => Demo {
+                house: 2,
+                mirror: Some((1280, 592)),
+                ..page("mirror")
+            },
+            "house-done-mirror" => Demo {
+                house: 1,
+                mirror: Some((1280, 592)),
+                ..page("mirror")
+            },
+            "dnd" => Demo {
+                dnd: true,
+                ..home.clone()
+            },
+            "dnd-night" => Demo {
+                dnd: true,
+                night: true,
+                ..home.clone()
+            },
+            "control-dnd" => Demo {
+                control: true,
+                dnd: true,
+                ..home.clone()
+            },
             "cards-setup" => Demo {
                 cards: true,
                 setup_card: true,
@@ -427,7 +476,7 @@ impl Demo {
                 ..home.clone()
             },
             "altro" | "chat" | "timers" | "settings" | "language" | "screen" | "music"
-            | "setup" | "ha" | "memories" | "reminders" | "shopping" => {
+            | "setup" | "ha" | "memories" | "reminders" | "shopping" | "what" => {
                 page(DEMO_STATES.into_iter().find(|x| *x == s)?)
             }
             "first-language" => page("welcome"),
@@ -731,6 +780,12 @@ pub struct Ui<S: Screen> {
     find: RefCell<Option<Receiver<crate::ha::discover::Outcome>>>,
     /// Home Assistant picked: the restart after "saving" has been on screen a moment.
     restart_timer: Timer,
+    /// v0.2: the "done" and Yes/No cards of the brain's house commands.
+    house: RefCell<HouseCards>,
+    /// The countdown's length last put on screen (it is set again when it moved enough).
+    ask_left: Cell<f32>,
+    /// Do not disturb (UiCommand::DoNotDisturb).
+    dnd: Cell<Dnd>,
     this: RefCell<Weak<Self>>,
 }
 
@@ -842,6 +897,25 @@ fn local_hm(t: i64) -> (String, i64) {
     };
     let day = (t + tm.tm_gmtoff) / 86400;
     (format!("{:02}:{:02}", tm.tm_hour, tm.tm_min), day)
+}
+
+/// The local offset from UTC at `t` (seconds), for the hours of the clock.
+fn local_offset(t: i64) -> i64 {
+    // SAFETY: localtime_r only writes into the struct we pass.
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        let tt = t as libc::time_t;
+        libc::localtime_r(&tt, &mut tm);
+        tm.tm_gmtoff
+    }
+}
+
+/// A house event of the brain, gathered while its messages are read (BrainMsg).
+enum HouseEvent {
+    Done(i64, String, bool),
+    Ask(i64, String, i64),
+    AskOver(i64),
+    View(brain_link::View),
 }
 
 /// Whether `hour` is in the night hours `start..end` (they may cross midnight).
@@ -972,6 +1046,9 @@ impl<S: Screen> Ui<S> {
             language_pending: Cell::new(opts_first.language),
             find: RefCell::new(None),
             restart_timer: Timer::default(),
+            house: RefCell::new(HouseCards::default()),
+            ask_left: Cell::new(0.0),
+            dnd: Cell::new(Dnd::default()),
             this: RefCell::new(Weak::new()),
         });
         *ui.this.borrow_mut() = Rc::downgrade(&ui);
@@ -1020,7 +1097,16 @@ impl<S: Screen> Ui<S> {
     }
 
     fn send(&self, e: UiEvent) {
+        // Do not disturb: the cards' sounds stay quiet (the screen's side of it).
+        if matches!(e, UiEvent::Reminder) && self.dnd_on() {
+            log::debug!("do not disturb: no card sound");
+            return;
+        }
         let _ = self.core.send(CoreEvent::Ui(e));
+    }
+
+    fn dnd_on(&self) -> bool {
+        self.dnd.get().active(now_unix() as u64)
     }
 
     fn wire(self: &Rc<Self>) {
@@ -1137,6 +1223,7 @@ impl<S: Screen> Ui<S> {
                     let _ = tx.send(CoreEvent::Ui(UiEvent::ControlTile(key)));
                 }
                 "night" => ui.toggle_night(),
+                "dnd" => ui.toggle_dnd(),
                 "ha" => {
                     ui.screen.set_control_open(false);
                     ui.screen
@@ -1144,6 +1231,28 @@ impl<S: Screen> Ui<S> {
                     ui.on_page(&ui.screen.get_page());
                 }
                 _ => {}
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_done_undo(move || {
+            if let Some(ui) = ui.upgrade() {
+                let id = ui.house.borrow_mut().undo();
+                if let Some(id) = id {
+                    log::info!(event = "house_undo", id = id; "house: undo {id}");
+                    ui.brain_do(brain_link::undo(id));
+                }
+                ui.render_house();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_ask_answered(move |yes| {
+            if let Some(ui) = ui.upgrade() {
+                let id = ui.house.borrow_mut().answer();
+                if let Some(id) = id {
+                    log::info!(event = "house_answer", id = id, yes = yes; "house: {} to {id}", if yes { "yes" } else { "no" });
+                    ui.brain_do(brain_link::confirm_answer(id, yes));
+                }
+                ui.render_house();
             }
         });
         let ui = Rc::downgrade(self);
@@ -1614,6 +1723,7 @@ impl<S: Screen> Ui<S> {
         self.poll_find();
         self.poll_brain();
         self.poll_ha();
+        self.poll_house();
         let mut added = false;
         {
             let mut m = self.motion.borrow_mut();
@@ -1686,7 +1796,8 @@ impl<S: Screen> Ui<S> {
             if let Some(p) = self.desk.borrow().brightness_manual {
                 levels = manual_levels(self.opts.screen.levels, p);
             }
-            if night && !casa {
+            // Night, or do not disturb: the night's ceiling (the view excepted).
+            if (night || self.dnd_on()) && !casa {
                 levels = levels.min(self.opts.screen.night_levels);
             }
             let level = if m.awake.is_asleep() && !casa {
@@ -2086,6 +2197,7 @@ impl<S: Screen> Ui<S> {
                 mic_on: true,
                 night_now: false,
                 night_from: "23:00".into(),
+                dnd: d.dnd.then(|| "07:00".into()),
                 ha: Some(true),
             };
             let tiles = crate::ui::control::tiles(&st, &w);
@@ -2303,6 +2415,28 @@ impl<S: Screen> Ui<S> {
         if let Some(v) = d.volume {
             self.screen.set_volume(v, true);
         }
+        if d.page == "what" {
+            self.refresh_what();
+        }
+        if d.dnd {
+            self.screen.set_dnd(
+                true,
+                &format!("{} · {}", w("dnd"), w("cc_until").replace("{t}", "07:00")),
+            );
+        }
+        match d.house {
+            1 => {
+                let word = |k: &str| {
+                    let x = l.text(k);
+                    (x != k).then(|| x.to_string())
+                };
+                let line =
+                    house::done_line(l.sample("house_light"), Some("off"), "turn_off", &word);
+                self.screen.set_done(true, &line, true);
+            }
+            2 => self.screen.set_ask(true, l.sample("house_question"), 0.62),
+            _ => {}
+        }
     }
 
     /// The controls over the mirrored screen: shown now, hidden [`MIRROR_CHROME`] after the
@@ -2410,10 +2544,8 @@ impl<S: Screen> Ui<S> {
                 self.volume.set(p);
                 self.screen.set_volume(p, false);
             }
-            // v0.2 contract: the Interface stream implements these on ui/backlight.rs.
-            c @ (UiCommand::ScreenOff | UiCommand::DoNotDisturb(_)) => {
-                log::debug!("{c:?} (not implemented yet)");
-            }
+            UiCommand::ScreenOff => self.screen_off(),
+            UiCommand::DoNotDisturb(until) => self.set_dnd(until),
             UiCommand::Suspending => {
                 self.screen.set_settings_open(false);
                 self.motion.borrow_mut().awake.sleep(Instant::now());
@@ -2752,6 +2884,7 @@ impl<S: Screen> Ui<S> {
                 mic_on: d.mic_on,
                 night_now: d.night_now,
                 night_from: format!("{:02}:00", d.night.1),
+                dnd: self.dnd_until_hm(),
                 ha: self.ha_linked.get().then_some(true),
             }
         };
@@ -3109,6 +3242,7 @@ impl<S: Screen> Ui<S> {
             "settings" | "screen" | "language" => self.refresh_settings(),
             "altro" => self.refresh_tiles(),
             "memories" => self.refresh_memories(),
+            "what" => self.refresh_what(),
             "ha" => self.ha_send(crate::ha::setup::SetupCmd::Check, false),
             _ => {}
         }
@@ -3852,6 +3986,7 @@ impl<S: Screen> Ui<S> {
         let mut timers: Vec<u64> = Vec::new();
         let mut cancels: Vec<String> = Vec::new();
         let mut alarms: Vec<(u8, u8, u8)> = Vec::new();
+        let mut house_cards: Vec<HouseEvent> = Vec::new();
         while let Some(m) = b.try_recv() {
             let l = self.locale.borrow();
             let name = self.character.name.clone();
@@ -3972,13 +4107,28 @@ impl<S: Screen> Ui<S> {
                     log::info!(event = "brain_alarm"; "alarm from the brain: {h:02}:{m:02}");
                     alarms.push((h, m, days));
                 }
-                // v0.2 contract: the Interface stream shows these (cards, Yes/No, the view).
-                m @ (BrainMsg::Changed(_)
-                | BrainMsg::Confirm { .. }
-                | BrainMsg::ConfirmDone { .. }
-                | BrainMsg::ShowView(_)) => {
-                    log::debug!("brain: {m:?} (not shown yet)");
+                BrainMsg::Changed(c) => {
+                    let word = |k: &str| {
+                        let w = l.text(k);
+                        (w != k).then(|| w.to_string())
+                    };
+                    let line = house::done_line(&c.name, c.state.as_deref(), &c.service, &word);
+                    log::info!(event = "house_done", id = c.id, entity = c.entity_id.as_str(), undo = c.undo; "house: {line}");
+                    house_cards.push(HouseEvent::Done(c.id, line, c.undo));
                 }
+                BrainMsg::Confirm {
+                    id,
+                    text,
+                    expires_at,
+                } => {
+                    log::info!(event = "house_confirm", id = id; "house: asks {text:?}");
+                    house_cards.push(HouseEvent::Ask(id, text, expires_at));
+                }
+                BrainMsg::ConfirmDone { id, yes } => {
+                    log::info!(event = "house_confirm_done", id = id, answered = yes.is_some(); "house: question {id} over");
+                    house_cards.push(HouseEvent::AskOver(id));
+                }
+                BrainMsg::ShowView(v) => house_cards.push(HouseEvent::View(v)),
                 BrainMsg::Upcoming(items) => {
                     d.memories.events = event_rows(&items, &l, now_unix() as i64);
                     d.events = items;
@@ -4036,6 +4186,9 @@ impl<S: Screen> Ui<S> {
         if events_seen && !home {
             self.refresh_home();
         }
+        for e in house_cards {
+            self.house_event(e);
+        }
         if let Some(up) = upcoming_seen {
             let differs = self.desk.borrow().upcoming != up;
             if differs {
@@ -4054,6 +4207,184 @@ impl<S: Screen> Ui<S> {
             self.refresh_notice();
             self.refresh_home();
         }
+    }
+
+    /// A house event of the brain on the screen.
+    fn house_event(&self, e: HouseEvent) {
+        let now = Instant::now();
+        match e {
+            HouseEvent::Done(id, line, undo) => {
+                self.house.borrow_mut().changed(id, line, undo, now);
+                // The card is seen: a soft wake (not the screen asleep by "spegni lo schermo"
+                // just before, nor the night's, that the touch is for).
+                self.wake(WakeSource::Conversation);
+            }
+            HouseEvent::Ask(id, text, expires_at) => {
+                if !self
+                    .house
+                    .borrow_mut()
+                    .confirm(id, text, expires_at, self.now())
+                {
+                    log::info!(event = "house_confirm", id = id; "house: question {id} over already");
+                    return;
+                }
+                // The question needs the screen, whatever it was doing.
+                self.motion.borrow_mut().awake.end_sleep();
+                self.wake(WakeSource::Conversation);
+                self.screen.set_control_open(false);
+            }
+            HouseEvent::AskOver(id) => {
+                self.house.borrow_mut().confirm_done(id);
+            }
+            HouseEvent::View(v) => {
+                self.show_view(v);
+                return;
+            }
+        }
+        self.render_house();
+    }
+
+    /// Home Assistant's view at what the brain asked (a dashboard, a camera).
+    fn show_view(&self, v: brain_link::View) {
+        if !self.ha_linked.get() {
+            log::info!(event = "show_view", shown = false; "brain: {v:?} not shown: not linked to Home Assistant");
+            return;
+        }
+        if !super::webview::present() {
+            log::info!(event = "show_view", shown = false; "brain: {v:?} not shown: no Home Assistant view here");
+            return;
+        }
+        log::info!(event = "show_view", shown = true; "brain: open the view {v:?}");
+        self.wake(WakeSource::Conversation);
+        self.screen.set_control_open(false);
+        super::webview::request_view(v);
+    }
+
+    /// The cards' time (every poll): the done card goes, the question expires, the countdown
+    /// moves; do not disturb ends at its time.
+    fn poll_house(&self) {
+        if self.opts.demo.is_some() {
+            return;
+        }
+        let now_unix = now_unix();
+        if self.house.borrow_mut().tick(Instant::now(), now_unix) {
+            self.render_house();
+        }
+        let left = self.house.borrow().ask_left(now_unix);
+        if (left - self.ask_left.get()).abs() >= 0.004 {
+            self.ask_left.set(left);
+            self.screen.set_ask_left(left);
+        }
+        let mut dnd = self.dnd.get();
+        if dnd.expire(now_unix as u64) {
+            self.dnd.set(dnd);
+            log::info!(event = "dnd", on = false, by = "time"; "do not disturb: over");
+            self.render_dnd();
+        }
+    }
+
+    /// Both cards as they are now.
+    fn render_house(&self) {
+        let h = self.house.borrow().clone();
+        match &h.done {
+            Some(d) => self.screen.set_done(true, &d.line, d.undo),
+            None => self.screen.set_done(false, "", false),
+        }
+        let left = h.ask_left(self.now());
+        self.ask_left.set(left);
+        match &h.ask {
+            Some(a) => self.screen.set_ask(true, &a.text, left),
+            None => self.screen.set_ask(false, "", 0.0),
+        }
+    }
+
+    /// A touch at (x, y) is for a card of the house over Home Assistant's view (the Yes/No
+    /// question takes every touch; the done strip its own).
+    pub fn house_overlay(&self, x: f32, y: f32) -> bool {
+        let h = self.house.borrow();
+        if h.ask.is_some() {
+            return true;
+        }
+        // The card: 672 x 88 centred at the top, at the bottom during a conversation (its bar
+        // is at the top): companion.slint, DoneCard over a full view.
+        let y0 = if self.view.get().in_conversation() {
+            688.0
+        } else {
+            24.0
+        };
+        h.done.is_some() && (304.0..976.0).contains(&x) && (y0..y0 + 88.0).contains(&y)
+    }
+
+    /// "Spegni lo schermo": the backlight off until a touch, a key or the wake word (the
+    /// panel stays on: only the backlight goes, as Vol+ and Vol− together do). Over Home
+    /// Assistant's view the view closes first.
+    fn screen_off(&self) {
+        if self.opts.demo.is_some() {
+            return;
+        }
+        if super::webview::visible() {
+            super::webview::request_home();
+        }
+        self.screen.set_control_open(false);
+        log::info!(event = "screen_sleep", by = "voice"; "screen: off (asked by voice)");
+        self.motion.borrow_mut().awake.sleep(Instant::now());
+        self.step();
+    }
+
+    /// Do not disturb on until `until` (unix s) or off.
+    fn set_dnd(&self, until: Option<u64>) {
+        let mut d = self.dnd.get();
+        d.set(until);
+        self.dnd.set(d);
+        log::info!(event = "dnd", on = until.is_some(); "do not disturb {}", if until.is_some() { "on" } else { "off" });
+        self.render_dnd();
+    }
+
+    /// The line over the clock, the tile, the backlight's ceiling.
+    fn render_dnd(&self) {
+        let line = match self.dnd_until_hm() {
+            Some(hm) => {
+                let l = self.locale.borrow();
+                format!(
+                    "{} · {}",
+                    l.text("dnd"),
+                    l.text("cc_until").replace("{t}", &hm)
+                )
+            }
+            None => String::new(),
+        };
+        self.screen.set_dnd(self.dnd_on(), &line);
+        self.refresh_control();
+        self.step();
+    }
+
+    /// Until when do not disturb lasts ("07:00"), None when off.
+    fn dnd_until_hm(&self) -> Option<String> {
+        let d = self.dnd.get();
+        if !d.active(now_unix() as u64) {
+            return None;
+        }
+        d.until().map(|u| local_hm(u as i64).0)
+    }
+
+    /// The control center's tile: on until the morning (the night's end hour), or off. Through
+    /// the core, as the reflex: it answers with UiCommand::DoNotDisturb.
+    fn toggle_dnd(&self) {
+        let until = if self.dnd_on() {
+            None
+        } else {
+            let now = now_unix() as i64;
+            let end = self.desk.borrow().night.2;
+            Some(house::next_hour(now, local_offset(now), end) as u64)
+        };
+        self.send(UiEvent::DoNotDisturb(until));
+    }
+
+    /// "What to say", in the language on screen.
+    fn refresh_what(&self) {
+        let l = self.locale.borrow();
+        let rows = house::what_rows(&|k: &str| l.text(k).to_string(), &self.character.name);
+        self.screen.set_what(&rows);
     }
 
     /// The end of a conversation: a sentence heard without an answer is kept too.

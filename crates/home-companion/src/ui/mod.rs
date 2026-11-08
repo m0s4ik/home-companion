@@ -10,6 +10,7 @@ pub mod anim;
 pub mod backlight;
 pub mod cards;
 pub mod control;
+pub mod house;
 pub mod keycombo;
 pub mod light;
 pub mod lists;
@@ -294,6 +295,17 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn on_ha_unlink(&self, f: impl Fn() + 'static);
     /// The OK after "All set".
     fn on_ha_ok(&self, f: impl Fn() + 'static);
+    /// v0.2: a house command went through (the "done" card: shown, its line, with Undo).
+    fn set_done(&self, shown: bool, line: &str, undo: bool);
+    /// A house command waits for a yes: shown, the question, the time left (1..0).
+    fn set_ask(&self, shown: bool, text: &str, left: f32);
+    fn set_ask_left(&self, left: f32);
+    /// Do not disturb: on, its line.
+    fn set_dnd(&self, on: bool, line: &str);
+    /// "What to say": (icon, title, examples) per group.
+    fn set_what(&self, rows: &[(String, String, String)]);
+    fn on_done_undo(&self, f: impl Fn() + 'static);
+    fn on_ask_answered(&self, f: impl Fn(bool) + 'static);
 }
 
 /// What the "Ricordi" page shows.
@@ -506,6 +518,12 @@ macro_rules! impl_screen {
                     find_found,
                     find_none,
                     find_again,
+                    yes,
+                    no,
+                    what_short,
+                    what_title,
+                    what_intro,
+                    dnd,
                 );
                 $m::CompanionWindow::set_t(self, w)
             }
@@ -1066,6 +1084,40 @@ macro_rules! impl_screen {
             }
             fn on_ha_unlink(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_ha_unlink(self, f)
+            }
+            fn set_done(&self, shown: bool, line: &str, undo: bool) {
+                $m::CompanionWindow::set_done_line(self, line.into());
+                $m::CompanionWindow::set_done_undo(self, undo);
+                $m::CompanionWindow::set_done_shown(self, shown);
+            }
+            fn set_ask(&self, shown: bool, text: &str, left: f32) {
+                $m::CompanionWindow::set_ask_text(self, text.into());
+                $m::CompanionWindow::set_ask_left(self, left);
+                $m::CompanionWindow::set_ask_shown(self, shown);
+            }
+            fn set_ask_left(&self, left: f32) {
+                $m::CompanionWindow::set_ask_left(self, left)
+            }
+            fn set_dnd(&self, on: bool, line: &str) {
+                $m::CompanionWindow::set_dnd_line(self, line.into());
+                $m::CompanionWindow::set_dnd(self, on);
+            }
+            fn set_what(&self, rows: &[(String, String, String)]) {
+                let v: Vec<$m::WhatRow> = rows
+                    .iter()
+                    .map(|(i, t, e)| $m::WhatRow {
+                        icon: i.into(),
+                        title: t.into(),
+                        examples: e.into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_what_rows(self, model!(v))
+            }
+            fn on_done_undo(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_done_undo_clicked(self, f)
+            }
+            fn on_ask_answered(&self, f: impl Fn(bool) + 'static) {
+                $m::CompanionWindow::on_ask_answered(self, f)
             }
             fn on_ha_ok(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_ha_ok(self, f)

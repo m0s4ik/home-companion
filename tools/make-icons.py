@@ -34,7 +34,7 @@ USED = {
     "minus": [36], "check": [44, 28],
     # tiles, headers, rows
     "forum": [48, 32], "music-note": [48, 32], "timer": [48, 32, 24], "cog": [48], "chevron-left": [40],
-    "chevron-right": [28], "chevron-up": [48, 36], "brain": [48, 28], "account-voice": [28],
+    "chevron-right": [28], "chevron-up": [48, 36], "brain": [48, 28], "account-voice": [48, 28],
     "volume-high": [28], "volume-medium": [28], "volume-low": [28], "volume-off": [28],
     "brightness-6": [28], "information": [28], "qrcode": [28], "cast-audio": [32, 24],
     "cast-connected": [32, 28],
@@ -42,7 +42,7 @@ USED = {
     # the control center's tiles
     "bluetooth": [32], "bluetooth-off": [32], "microphone": [44, 32],
     # cards, status, dialogs
-    "bell": [32], "cloud-off": [32], "microphone-off": [32], "alert-circle": [64, 32],
+    "bell": [32], "bell-off": [32, 28], "help-circle": [48], "cloud-off": [32], "microphone-off": [32], "alert-circle": [64, 32],
     "check-circle": [32], "cart": [48, 32], "calendar-clock": [48, 32], "alarm": [40, 32, 28, 24], "cellphone": [28], "timer-sand-full": [48],
     # weather (the date line)
     "weather-sunny": [32], "weather-night-partly-cloudy": [32], "weather-partly-cloudy": [32],

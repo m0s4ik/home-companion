@@ -1000,6 +1000,49 @@ export component Step inherits Rectangle {
     }
 }
 
+// A house command went through (the brain): a check, its line, Undo when it can be undone. A
+// floating card, the desk column's width, a gold hairline so it reads over a page.
+export component DoneCard inherits Rectangle {
+    in property <string> line;
+    // "" = no Undo.
+    in property <string> undo-label;
+    callback undo();
+    width: Grid.col-width;
+    height: Grid.card-height;
+    border-radius: Grid.card-radius;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.accent.with-alpha(0.45);
+    TouchArea { }
+    Icon {
+        x: 28px;
+        y: 28px;
+        width: 32px;
+        height: 32px;
+        source: Icons.check-circle-32;
+        color: Theme.accent;
+    }
+    Text {
+        x: 92px;
+        width: parent.width - 92px - (root.undo-label != "" ? 176px : 28px);
+        height: parent.height;
+        text: root.line;
+        font-size: 28px;
+        color: Theme.text;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    if root.undo-label != "": PillButton {
+        x: parent.width - 12px - self.width;
+        y: 12px;
+        width: 152px;
+        label: root.undo-label;
+        clicked => {
+            root.undo();
+        }
+    }
+}
+
 // --- Overlays --------------------------------------------------------------------------------
 
 // A dialog on the desk (never over the stage): a static scrim over the whole screen, a surface
@@ -1155,16 +1198,18 @@ export component ControlTile inherits Rectangle {
     in property <bool> enabled: true;
     // A tile that only tells (Wi-Fi): no touch, not greyed.
     in property <bool> tappable: true;
+    // Three rows instead of two: 100 px tall, the lines closer.
+    in property <bool> compact: false;
     callback clicked();
     width: 208px;
-    height: 120px;
+    height: root.compact ? 100px : 120px;
     border-radius: Grid.tile-radius;
     background: touch.pressed ? Theme.surface-2 : root.on ? Theme.accent-deep : Theme.surface;
     border-width: 1px;
     border-color: root.on ? Theme.accent.with-alpha(0.35) : Theme.line;
     Icon {
         x: 20px;
-        y: 18px;
+        y: root.compact ? 14px : 18px;
         width: 32px;
         height: 32px;
         source: root.icon;
@@ -1172,7 +1217,7 @@ export component ControlTile inherits Rectangle {
     }
     Text {
         x: 20px;
-        y: 58px;
+        y: root.compact ? 48px : 58px;
         width: parent.width - 32px;
         text: root.label;
         font-size: 24px;
@@ -1182,7 +1227,7 @@ export component ControlTile inherits Rectangle {
     }
     Text {
         x: 20px;
-        y: 86px;
+        y: root.compact ? 72px : 86px;
         width: parent.width - 32px;
         text: root.status;
         font-size: 20px;

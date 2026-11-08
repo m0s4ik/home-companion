@@ -197,6 +197,57 @@ pub fn hass_tokens(url: &str, token: &str) -> Result<String, String> {
     .to_string())
 }
 
+/// The path of Home Assistant's frontend that shows `view` (BrainMsg::ShowView): a dashboard
+/// path as it is; a camera as the more-info dialog over the dashboard (`dashboard`, the view's
+/// usual page), which the frontend opens from its `more-info-entity-id` query parameter (since
+/// 2025: src/common/url/more-info-query-params.ts, restored on every `location-changed`). None:
+/// not a path of the same origin, or not a camera's entity id.
+pub fn view_path(view: &crate::brain_link::View, dashboard: &str) -> Option<String> {
+    use crate::brain_link::View;
+    let same_origin =
+        |p: &str| p.starts_with('/') && !p.starts_with("//") && !p.chars().any(|c| c.is_control());
+    match view {
+        View::Path(p) => same_origin(p).then(|| p.clone()),
+        View::Camera(e) => {
+            let ok = e.strip_prefix("camera.").is_some_and(|o| {
+                !o.is_empty()
+                    && o.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+            });
+            if !ok || !same_origin(dashboard) {
+                return None;
+            }
+            let base = dashboard.split('#').next().unwrap_or(dashboard);
+            let sep = if base.contains('?') { '&' } else { '?' };
+            Some(format!("{base}{sep}more-info-entity-id={e}"))
+        }
+    }
+}
+
+/// A `javascript:` URL that moves the loaded frontend to `path` the way its own links do
+/// (src/common/navigate.ts: `history.pushState` and a `location-changed` event): no reload,
+/// the dashboard is there at once.
+pub fn navigate_url(path: &str) -> String {
+    let p = serde_json::to_string(path).unwrap_or_else(|_| "\"/\"".into());
+    javascript_url(&format!(
+        "history.pushState(null,'',{p});\nwindow.dispatchEvent(new CustomEvent('location-changed',{{detail:{{replace:false}}}}));\n"
+    ))
+}
+
+static VIEW_REQUESTED: std::sync::Mutex<Option<crate::brain_link::View>> =
+    std::sync::Mutex::new(None);
+
+/// Opens "Casa" at a view the brain asked for (see [`view_path`]).
+pub fn request_view(view: crate::brain_link::View) {
+    if let Ok(mut v) = VIEW_REQUESTED.lock() {
+        *v = Some(view);
+    }
+}
+
+fn take_view_request() -> Option<crate::brain_link::View> {
+    VIEW_REQUESTED.lock().ok().and_then(|mut v| v.take())
+}
+
 static VISIBLE: AtomicBool = AtomicBool::new(false);
 static HOME_REQUESTED: AtomicBool = AtomicBool::new(false);
 static LOGIN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -550,6 +601,10 @@ struct Inner {
     note_until: Option<Instant>,
     /// Hidden by a long answer or a ringing timer: shown again once back home.
     reopen: bool,
+    /// A view asked by the brain (request_view), applied when the view opens.
+    view_wanted: Option<String>,
+    /// The page is not the dashboard (a view asked by the brain): back to it when hidden.
+    navigated: bool,
 }
 
 /// During "Okay Alfred" over the view, frames are imported at most this often (the CPU is for
@@ -677,6 +732,8 @@ impl<S: Screen> Casa<S> {
                 heavy_opened: Default::default(),
                 note_until: None,
                 reopen: false,
+                view_wanted: None,
+                navigated: false,
             }),
             cfg: opts.cfg,
             page: opts.page,
@@ -820,6 +877,39 @@ impl<S: Screen> Casa<S> {
         }
     }
 
+    /// The page at `path` of the frontend (a view asked by the brain): moved there in place
+    /// when the dashboard is loaded, else loaded there (the first opening without a preload).
+    fn go_to(&self, path: &str) {
+        let (loaded, connected) = {
+            let i = self.inner.borrow();
+            (i.page_loaded, i.conn.is_some())
+        };
+        if !connected {
+            log::warn!(event = "casa_view", path = path; "casa: no helper for the view {path}");
+            return;
+        }
+        log::info!(event = "casa_view", path = path, loaded = loaded; "casa: to {path}");
+        if loaded {
+            self.send(Message::Load {
+                url: navigate_url(path),
+            });
+        } else {
+            let Some(url) = page_url(&self.page, path) else {
+                return;
+            };
+            {
+                let mut i = self.inner.borrow_mut();
+                i.page_loaded = true;
+                i.status = Status::Loading;
+                i.progress = 0.0;
+                i.message.clear();
+            }
+            self.send(Message::Load { url });
+            self.show_status();
+        }
+        self.inner.borrow_mut().navigated = true;
+    }
+
     /// The "Home Assistant" button.
     pub fn open(&self) {
         if self.inner.borrow().visible {
@@ -910,6 +1000,12 @@ impl<S: Screen> Casa<S> {
         };
         VISIBLE.store(false, Ordering::Relaxed);
         log::info!(event = "casa_hide", reason = why; "casa: hidden ({why})");
+        // A view asked by the brain: the dashboard again for the next opening.
+        if std::mem::take(&mut self.inner.borrow_mut().navigated) {
+            self.send(Message::Load {
+                url: navigate_url(&self.cfg.path),
+            });
+        }
         if touching {
             self.send_touch(WebTouch::Cancel, 0.0, 0.0);
         }
@@ -1639,6 +1735,7 @@ impl<S: Screen> Casa<S> {
                 let on_bar = talking && x >= BAR.0 && x < BAR.2 && y >= BAR.1 && y < BAR.3;
                 let overlay = i.menu.is_some()
                     || self.ui.screen.get_control_open()
+                    || self.ui.house_overlay(x, y)
                     || i.confirm.is_some()
                     || on_bar
                     || matches!(i.status, Status::Error | Status::Offline)
@@ -1839,6 +1936,16 @@ impl<S: Screen> Casa<S> {
         if OPEN_REQUESTED.swap(false, Ordering::Relaxed) {
             self.inner.borrow_mut().open_wanted = Some(Instant::now());
         }
+        if let Some(view) = take_view_request() {
+            match view_path(&view, &self.cfg.path) {
+                Some(path) => {
+                    let mut i = self.inner.borrow_mut();
+                    i.view_wanted = Some(path);
+                    i.open_wanted = Some(Instant::now());
+                }
+                None => log::warn!(event = "casa_view"; "casa: not a view to open: {view:?}"),
+            }
+        }
         let open_now = {
             let i = self.inner.borrow();
             i.open_wanted
@@ -1849,6 +1956,10 @@ impl<S: Screen> Casa<S> {
             // From the setup page straight to Home Assistant; the home is under it on the way back.
             if self.ui.screen.get_page() == "setup" {
                 self.ui.screen.set_page("home");
+            }
+            let view = self.inner.borrow_mut().view_wanted.take();
+            if let Some(path) = view {
+                self.go_to(&path);
             }
             self.open();
         }
@@ -2012,6 +2123,43 @@ pub fn url_line(ha: &crate::config::HomeAssistantCfg, web: &WebCfg) -> Result<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn views_of_the_brain() {
+        use crate::brain_link::View;
+        let p = |s: &str| View::Path(s.into());
+        let cam = |s: &str| View::Camera(s.into());
+        assert_eq!(
+            view_path(&p("/lovelace/energy"), "/lovelace/0").as_deref(),
+            Some("/lovelace/energy")
+        );
+        assert_eq!(view_path(&p("lovelace"), "/lovelace/0"), None);
+        assert_eq!(view_path(&p("//evil.example/x"), "/lovelace/0"), None);
+        assert_eq!(view_path(&p("/a\nb"), "/lovelace/0"), None);
+        assert_eq!(
+            view_path(&cam("camera.front_door"), "/lovelace/0").as_deref(),
+            Some("/lovelace/0?more-info-entity-id=camera.front_door")
+        );
+        assert_eq!(
+            view_path(&cam("camera.door"), "/dashboard-x/home?kiosk#top").as_deref(),
+            Some("/dashboard-x/home?kiosk&more-info-entity-id=camera.door")
+        );
+        assert_eq!(view_path(&cam("light.kitchen"), "/lovelace/0"), None);
+        assert_eq!(view_path(&cam("camera.a&b=c"), "/lovelace/0"), None);
+        assert_eq!(view_path(&cam("camera."), "/lovelace/0"), None);
+    }
+
+    #[test]
+    fn navigation_in_place() {
+        let u = navigate_url("/lovelace/0?more-info-entity-id=camera.door");
+        assert_eq!(
+            u,
+            "javascript:history.pushState(null,'',%22/lovelace/0?more-info-entity-id=camera.door%22);%0A\
+             window.dispatchEvent(new%20CustomEvent('location-changed',{detail:{replace:false}}));%0Avoid%200"
+        );
+        // A quote in the path stays inside the string.
+        assert!(navigate_url("/a\"b").contains("%22/a%5C%22b%22"));
+    }
 
     #[test]
     fn scripts_become_javascript_urls() {

@@ -354,6 +354,43 @@ reflex_nothing_to_repeat = "I have nothing to repeat."
 reflex_dnd_on = "Do not disturb until {time}."
 reflex_dnd_off = "Do not disturb is off."
 
+# v0.2 ui
+# The brain's house commands: the "done" card ("Kitchen light: off"), its state words (Home
+# Assistant's states; one without a word here shows as Home Assistant says it).
+house_state_on = "on"
+house_state_off = "off"
+house_state_open = "open"
+house_state_closed = "closed"
+house_state_opening = "opening"
+house_state_closing = "closing"
+house_done = "done"
+# The Yes/No card of a command that waits for an answer.
+yes = "Yes"
+no = "No"
+# Do not disturb (the line over the clock, the control center's tile).
+dnd = "Do not disturb"
+cc_dnd = "Do not disturb"
+cc_until = "Until {t}"
+# More → What to say: a page of sentences to try, by group (sentences separated by |).
+what_short = "What to say"
+what_title = "What to say to {name}"
+what_intro = "Say «Okay {name}», then for example:"
+what_quote = "«{s}»"
+what_time = "Time and timers"
+what_time_say = "What time is it? | Set a timer for 5 minutes | How long is left on the timer?"
+what_alarms = "Alarms"
+what_alarms_say = "Wake me up at 7 | Set an alarm for 6:30 on weekdays | Delete the alarm"
+what_reminders = "Reminders and memories"
+what_reminders_say = "Remind me to call mum at 6 pm | Remember that the cat is called Snow | What do I have tomorrow?"
+what_lists = "Lists"
+what_lists_say = "Add milk to the shopping list | What is on the shopping list?"
+what_house = "The house"
+what_house_say = "Turn off the kitchen light | Close the living room blind | Show me the front door camera"
+what_music = "Music and AirPlay"
+what_music_say = "Pause the music | Next track | Turn the volume up"
+what_screen = "The screen"
+what_screen_say = "Turn off the screen | Do not disturb for an hour | Stop"
+
 [sample]
 # The first start's Home Assistant page (--state first-ha-found): a second instance's name.
 find_second = "Holiday home"
@@ -382,3 +419,7 @@ event_dentist = "Dentist"
 event_holiday = "Bank holiday"
 list_names = "Groceries|Hardware store"
 calendar_names = "Family|Work"
+
+# v0.2 ui
+house_light = "Kitchen light"
+house_question = "Living room blind: close it?"

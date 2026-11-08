@@ -8,7 +8,7 @@
 /// One tile as the screen draws it (`ControlRow` in companion.slint).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlTileView {
-    /// Picks the icon: "wifi", "bluetooth", "airplay", "mic", "night", "ha".
+    /// Picks the icon: "wifi", "bluetooth", "airplay", "mic", "night", "dnd", "ha".
     pub key: &'static str,
     pub label: String,
     pub status: String,
@@ -32,6 +32,8 @@ pub struct ControlState {
     /// Night now, and the hour it starts ("23:00").
     pub night_now: bool,
     pub night_from: String,
+    /// Do not disturb: None = off; Some("07:00") = on until then.
+    pub dnd: Option<String>,
     /// None: not linked; Some(ok).
     pub ha: Option<bool>,
 }
@@ -92,6 +94,16 @@ pub fn tiles(s: &ControlState, w: &dyn Fn(&str) -> String) -> Vec<ControlTileVie
             s.night_now,
             true,
         ),
+        match &s.dnd {
+            None => tile("dnd", "cc_dnd", w("cc_off"), false, true),
+            Some(until) => tile(
+                "dnd",
+                "cc_dnd",
+                w("cc_until").replace("{t}", until),
+                true,
+                true,
+            ),
+        },
         match s.ha {
             None => tile("ha", "ha_short", w("cc_not_linked"), false, true),
             Some(true) => tile("ha", "ha_short", w("cc_linked"), true, true),
@@ -113,13 +125,14 @@ mod tests {
             "cc_night_from" => "Dalle {from}",
             "cc_listening" => "In ascolto",
             "cc_linked" => "Collegato",
+            "cc_until" => "Fino alle {t}",
             k => k,
         }
         .to_string()
     }
 
     #[test]
-    fn six_tiles_in_order() {
+    fn seven_tiles_in_order() {
         let s = ControlState {
             wifi: Some("Casa".into()),
             airplay: Some("iPhone".into()),
@@ -130,13 +143,30 @@ mod tests {
         };
         let t = tiles(&s, &w);
         let keys: Vec<&str> = t.iter().map(|t| t.key).collect();
-        assert_eq!(keys, ["wifi", "bluetooth", "airplay", "mic", "night", "ha"]);
+        assert_eq!(
+            keys,
+            ["wifi", "bluetooth", "airplay", "mic", "night", "dnd", "ha"]
+        );
         assert_eq!((t[0].status.as_str(), t[0].on), ("Casa", true));
         assert!(!t[0].tappable && t[2].tappable);
         assert!(!t[1].enabled, "no Bluetooth yet");
         assert_eq!((t[2].status.as_str(), t[2].on), ("iPhone", true));
         assert_eq!(t[4].status, "Dalle 23:00");
-        assert_eq!(t[5].status, "Collegato");
+        assert_eq!((t[5].status.as_str(), t[5].on), ("Spento", false));
+        assert_eq!(t[6].status, "Collegato");
+    }
+
+    #[test]
+    fn dnd_until() {
+        let s = ControlState {
+            dnd: Some("07:00".into()),
+            ..Default::default()
+        };
+        let t = &tiles(&s, &w)[5];
+        assert_eq!(
+            (t.key, t.status.as_str(), t.on),
+            ("dnd", "Fino alle 07:00", true)
+        );
     }
 
     #[test]

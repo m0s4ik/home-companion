@@ -23,7 +23,8 @@ import { Icons } from "design/icons.slint";
 import {
     Icon, BareButton, PrimaryButton, PillButton, InfoCard, TimerCard, NowPlayingCard, PageHeader,
     Tile, SectionTitle, Row, Group, TimerLine, AlarmLine, ChatUser, ChatCharacter, ChatSeparator,
-    Step, Stepper, Chip, Dialog, Separator, VolumeHud, GlyphButton, ControlTile, LevelBar, Feedback
+    Step, Stepper, Chip, Dialog, Separator, VolumeHud, GlyphButton, ControlTile, LevelBar, Feedback,
+    DoneCard
 } from "design/components.slint";
 import { CasaScreen, CasaBridge } from "casa.slint";
 import { WeatherPage, ListsPage, EventRow, ForecastRow, ChoiceRow } from "ha-pages.slint";
@@ -228,6 +229,20 @@ export struct Words {
     find_found: string,
     find_none: string,
     find_again: string,
+    yes: string,
+    no: string,
+    what_short: string,
+    what_title: string,
+    what_intro: string,
+    dnd: string,
+}
+
+// A group of "What to say" (Altro): its icon ("timer", "alarm", "calendar-clock", "cart",
+// "view-dashboard", "music-note", "screen"), title and example sentences.
+export struct WhatRow {
+    icon: string,
+    title: string,
+    examples: string,
 }
 
 // A check of Settings → Home Assistant: a coloured dot, what, the detail; "Repair" when the row
@@ -648,6 +663,22 @@ export component CompanionWindow inherits Window {
     // A line under the steps: linked (gold) or what went wrong (danger); "" = none.
     in property <string> setup-status: "";
     in property <bool> setup-linked: false;
+    // ---- v0.2: what the brain's house commands show (crates/home-companion/src/ui/house.rs).
+    // A command went through: its line ("Kitchen light: off") and Undo, for 8 s.
+    in property <bool> done-shown: false;
+    in property <string> done-line: "";
+    in property <bool> done-undo: false;
+    callback done-undo-clicked();
+    // A command waits for a yes: the question, the time left (1 = just asked, 0 = over).
+    in property <bool> ask-shown: false;
+    in property <string> ask-text: "";
+    in property <float> ask-left: 1;
+    callback ask-answered(bool);
+    // Do not disturb: on, and its line ("Do not disturb · until 07:00").
+    in property <bool> dnd: false;
+    in property <string> dnd-line: "";
+    // "What to say" (Altro): the groups.
+    in property <[WhatRow]> what-rows: [];
     // The volume (percent) and whether its HUD is on screen (Rust hides it after 2 s).
     in property <int> volume: 40;
     in property <bool> volume-shown: false;
@@ -1606,6 +1637,91 @@ export component CompanionWindow inherits Window {
             enabled: !root.offline;
             clicked => {
                 root.home-assistant-clicked();
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.microphone-44;
+            label: root.t.talk;
+            clicked => {
+                root.talk-clicked();
+            }
+        }
+        // What the user can say (its own page).
+        BareButton {
+            x: root.slot-right;
+            y: Grid.band-y;
+            icon: Icons.account-voice-48;
+            label: root.t.what-short;
+            clicked => {
+                root.page-back = "altro";
+                root.page = "what";
+            }
+        }
+    }
+
+    // ---- What to say: the groups of things the character does, with sentences to try.
+    if root.desk && root.desk-page == "what": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.what-title;
+            clock: root.clock;
+            back => {
+                root.page = root.page-back;
+            }
+        }
+        Text {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            text: root.t.what-intro;
+            font-size: 24px;
+            color: Theme.text-2;
+            overflow: elide;
+        }
+        Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y + 44px;
+            width: Grid.col-width;
+            height: Grid.band-y - 8px - self.y;
+            content-height: what-list.preferred-height;
+            what-list := VerticalLayout {
+                spacing: 18px;
+                for g in root.what-rows: HorizontalLayout {
+                    spacing: 20px;
+                    Rectangle {
+                        width: 32px;
+                        Icon {
+                            y: 2px;
+                            width: 32px;
+                            height: 32px;
+                            color: Theme.accent;
+                            source: g.icon == "timer" ? Icons.timer-32
+                                : g.icon == "alarm" ? Icons.alarm-32
+                                : g.icon == "calendar-clock" ? Icons.calendar-clock-32
+                                : g.icon == "cart" ? Icons.cart-32
+                                : g.icon == "view-dashboard" ? Icons.view-dashboard-32
+                                : g.icon == "music-note" ? Icons.music-note-32
+                                : Icons.weather-night-32;
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 4px;
+                        Text {
+                            text: g.title;
+                            font-size: 28px;
+                            color: Theme.text;
+                        }
+                        Text {
+                            text: g.examples;
+                            font-size: 24px;
+                            color: Theme.text-2;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
             }
         }
         PrimaryButton {
@@ -2886,6 +3002,32 @@ export component CompanionWindow inherits Window {
         }
     }
 
+    // ---- Do not disturb: a quiet line over the clock (and over the night's clock).
+    if root.dnd && (root.night-home || (root.desk && root.desk-page == "home")): HorizontalLayout {
+        x: Grid.col-cx - self.width / 2;
+        y: 12px;
+        width: min(self.preferred-width, Grid.col-width);
+        height: 32px;
+        spacing: 10px;
+        Rectangle {
+            width: 28px;
+            Icon {
+                y: 2px;
+                width: 28px;
+                height: 28px;
+                source: Icons.bell-off-28;
+                color: root.night-home ? Theme.night : Theme.text-3;
+            }
+        }
+        Text {
+            text: root.dnd-line;
+            font-size: 20px;
+            color: root.night-home ? Theme.night : Theme.text-3;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
     // ---- Dialogs on the desk.
     if root.dialog == "suspend": Dialog {
         icon: Icons.power-sleep-48;
@@ -3125,19 +3267,14 @@ export component CompanionWindow inherits Window {
             x: 0;
             width: root.mirror-band;
             height: root.height;
-            // Home, top left: the same button as over a sideways video.
-            MirrorHomeButton {
-                x: 24px;
-                y: 24px;
-                clicked => {
-                    root.page = "home";
-                }
-            }
-            property <length> pose-h: root.pose.width > 0
-                ? min(480px, (self.width - 48px) * root.pose.height / root.pose.width) : 480px;
             // At rest the character and his invitation are centred in the height; a
-            // conversation lifts him to make room for the phrase and Ferma under him.
-            property <length> pose-y: root.conversation ? 40px + (480px - self.pose-h)
+            // conversation lifts him to make room for the phrase and Ferma under him, never
+            // into the home button's corner (top 24 + 72 px + a gap): he is a little smaller.
+            property <length> pose-max: root.conversation ? 400px : 480px;
+            property <length> pose-h: root.pose.width > 0
+                ? min(self.pose-max, (self.width - 48px) * root.pose.height / root.pose.width) : self.pose-max;
+            animate pose-h { duration: 250ms; easing: ease-in-out; }
+            property <length> pose-y: root.conversation ? 520px - self.pose-h
                 : (self.height - (self.pose-h + 62px)) / 2;
             animate pose-y { duration: 250ms; easing: ease-in-out; }
             Image {
@@ -3196,6 +3333,15 @@ export component CompanionWindow inherits Window {
                     clicked => {
                         root.stop-clicked();
                     }
+                }
+            }
+            // Home, top left (the same button as over a sideways video), drawn last: nothing
+            // of the band ever covers it.
+            MirrorHomeButton {
+                x: 24px;
+                y: 24px;
+                clicked => {
+                    root.page = "home";
                 }
             }
         }
@@ -3541,6 +3687,53 @@ export component CompanionWindow inherits Window {
         }
     }
 
+    // ---- A house command went through: a card over the desk for 8 s (over Home Assistant's
+    // view or a mirrored screen: the same card, centred at the top). In the home's
+    // third card slot, above the action band; during a conversation at the top of the desk,
+    // over nothing it says.
+    if root.done-shown && !root.night-home && !root.starting && !root.ringing: DoneCard {
+        property <bool> full: CasaBridge.visible || (root.mirror-t > 0.999 && !root.mirror-sides);
+        x: self.full ? (root.width - self.width) / 2 : Grid.col-x;
+        // Over a full view: top centre (bottom centre while the conversation bar is at the top).
+        y: self.full ? (root.conversation ? root.height - 24px - self.height : 24px)
+            : root.conversation ? 24px : Grid.cards-y + 2 * (Grid.card-height + Grid.card-gap);
+        line: root.done-line;
+        undo-label: root.done-undo ? root.t.undo : "";
+        undo => {
+            root.done-undo-clicked();
+        }
+    }
+
+    // ---- A house command waits for a yes (covers, valves): the question, No and Yes, the time
+    // left as a thin line. Over everything but the volume (Home Assistant's view and a mirrored
+    // screen included: then centred on the screen); it wakes the screen.
+    if root.ask-shown: Dialog {
+        icon: Icons.help-circle-48;
+        title: root.ask-text;
+        cancel: root.t.no;
+        confirm: root.t.yes;
+        content-height: 20px;
+        centre-x: CasaBridge.visible || root.mirror-t > 0.001 ? root.width / 2 : Grid.col-cx;
+        Rectangle {
+            x: 48px;
+            y: 8px;
+            width: 672px - 96px;
+            height: 4px;
+            border-radius: 2px;
+            background: Theme.line;
+            Rectangle {
+                x: 0;
+                width: parent.width * root.ask-left;
+                height: parent.height;
+                border-radius: 2px;
+                background: Theme.accent;
+            }
+        }
+        answered(yes) => {
+            root.ask-answered(yes);
+        }
+    }
+
     // ---- The control center: a pull down from the top edge of the desk (never over the stage),
     // what is on at a glance and the levels; a tap on the stage, a swipe up or the chevron closes
     // it. Not over Home Assistant's view (its own pages scroll from the top).
@@ -3583,14 +3776,17 @@ export component CompanionWindow inherits Window {
                 }
             }
         }
+        // Three rows of compact tiles (seven: the last row starts with "do not disturb").
         for t[i] in root.control-tiles: ControlTile {
+            compact: true;
             x: 24px + mod(i, 3) * (self.width + 24px);
-            y: 32px + floor(i / 3) * (self.height + 16px);
+            y: 24px + floor(i / 3) * (self.height + 12px);
             icon: t.key == "wifi" ? (t.on ? Icons.wifi-32 : Icons.wifi-off-32)
                 : t.key == "bluetooth" ? (t.on ? Icons.bluetooth-32 : Icons.bluetooth-off-32)
                 : t.key == "airplay" ? Icons.cast-audio-32
                 : t.key == "mic" ? (t.on ? Icons.microphone-32 : Icons.microphone-off-32)
                 : t.key == "night" ? Icons.weather-night-32
+                : t.key == "dnd" ? (t.on ? Icons.bell-off-32 : Icons.bell-32)
                 : Icons.view-dashboard-32;
             label: t.label;
             status: t.status;
@@ -3603,7 +3799,7 @@ export component CompanionWindow inherits Window {
         }
         LevelBar {
             x: 24px;
-            y: 312px;
+            y: 364px;
             width: Grid.col-width;
             icon: root.volume == 0 ? Icons.volume-off-28
                 : root.volume >= 67 ? Icons.volume-high-28
@@ -3616,7 +3812,7 @@ export component CompanionWindow inherits Window {
         }
         LevelBar {
             x: 24px;
-            y: 400px;
+            y: 448px;
             width: Grid.col-width - 136px - 16px;
             icon: Icons.brightness-6-28;
             level: root.brightness;
@@ -3628,7 +3824,7 @@ export component CompanionWindow inherits Window {
         }
         Chip {
             x: 24px + Grid.col-width - 136px;
-            y: 404px;
+            y: 452px;
             width: 136px;
             label: root.brightness-label;
             chosen: root.brightness-auto;
@@ -3638,7 +3834,7 @@ export component CompanionWindow inherits Window {
         }
         if root.music-playing: Rectangle {
             x: 24px;
-            y: 496px;
+            y: 532px;
             width: Grid.col-width;
             height: 104px;
             border-radius: Grid.tile-radius;
