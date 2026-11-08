@@ -17,6 +17,7 @@ pub mod ha;
 pub mod history;
 pub mod logger;
 pub mod reflex;
+pub mod repeat;
 pub mod settings;
 pub mod subcommands;
 pub mod suspend;
