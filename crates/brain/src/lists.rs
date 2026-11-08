@@ -91,6 +91,60 @@ pub fn parse_items(result: &Value) -> Vec<Item> {
         .collect()
 }
 
+/// Which `todo.*` list a tool call is about. `known` = every `todo.*` entity of Home Assistant
+/// as (entity id, friendly name); `chosen` = the ones chosen on the body's screen (empty = all);
+/// `shopping` = `[lists] shopping`; `wanted` = the model's `list` argument (name or entity id,
+/// may be empty). Without `wanted`: the shopping list, else a list named like shopping/spesa,
+/// else the first chosen one. Returns (entity id, name).
+pub fn pick(
+    known: &[(String, String)],
+    chosen: &[String],
+    shopping: &str,
+    wanted: &str,
+) -> Result<(String, String), String> {
+    let name_of = |id: &str| {
+        known
+            .iter()
+            .find(|(k, _)| k == id)
+            .map_or_else(|| id.to_string(), |(_, n)| n.clone())
+    };
+    let mut pool: Vec<(String, String)> = if chosen.is_empty() {
+        known.to_vec()
+    } else {
+        chosen.iter().map(|id| (id.clone(), name_of(id))).collect()
+    };
+    if !shopping.is_empty() && !pool.iter().any(|(id, _)| id == shopping) {
+        pool.push((shopping.to_string(), name_of(shopping)));
+    }
+    let wanted = wanted.trim();
+    if wanted.is_empty() {
+        if !shopping.is_empty() {
+            return Ok((shopping.to_string(), name_of(shopping)));
+        }
+        let shop = pool.iter().find(|(id, n)| {
+            let t = normalize(&format!("{id} {n}"));
+            t.contains("shopping") || t.contains("spesa") || t.contains("grocer")
+        });
+        return shop
+            .or(pool.first())
+            .cloned()
+            .ok_or_else(|| "no list is available: Home Assistant has no todo list".to_string());
+    }
+    let w = normalize(wanted);
+    let names = || pool.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join(", ");
+    if let Some(p) = pool.iter().find(|(id, n)| {
+        id.eq_ignore_ascii_case(wanted) || *id == format!("todo.{wanted}") || normalize(n) == w
+    }) {
+        return Ok(p.clone());
+    }
+    let partial: Vec<&(String, String)> = pool.iter().filter(|(_, n)| matches(wanted, n)).collect();
+    match partial.as_slice() {
+        [one] => Ok((*one).clone()),
+        [] => Err(format!("no list called '{wanted}'; the lists are: {}", names())),
+        _ => Err(format!("'{wanted}' fits several lists, which one? {}", names())),
+    }
+}
+
 /// The items of the list as `Value` strings for the model (sanitized by the caller).
 pub struct Lists<'a> {
     pub ha: &'a Ha,
@@ -244,5 +298,32 @@ mod tests {
             parse_items(&r),
             vec![item("a", "Pane", false), item("b", "Latte", true)]
         );
+    }
+
+    #[test]
+    fn pick_a_list_by_name_or_default() {
+        let k = |v: &[(&str, &str)]| -> Vec<(String, String)> {
+            v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+        };
+        let known = k(&[
+            ("todo.casa", "Home to-do"),
+            ("todo.bring", "Spesa"),
+            ("todo.garden", "Garden jobs"),
+        ]);
+        let chosen = vec!["todo.casa".to_string(), "todo.bring".to_string()];
+        let id = |r: Result<(String, String), String>| r.map(|p| p.0);
+        // Default: the configured list, else the one named like shopping, else the first chosen.
+        assert_eq!(id(pick(&known, &chosen, "todo.casa", "")).unwrap(), "todo.casa");
+        assert_eq!(id(pick(&known, &chosen, "", "")).unwrap(), "todo.bring");
+        assert_eq!(id(pick(&known, &["todo.casa".into()], "", "")).unwrap(), "todo.casa");
+        // By friendly name (forgiving), by entity id, by part of the name.
+        assert_eq!(id(pick(&known, &chosen, "", "home to do")).unwrap(), "todo.casa");
+        assert_eq!(id(pick(&known, &chosen, "", "todo.bring")).unwrap(), "todo.bring");
+        assert_eq!(id(pick(&known, &chosen, "todo.bring", "home")).unwrap(), "todo.casa");
+        // Not among the chosen ones: refused with the names; empty chosen = all of them.
+        let e = pick(&known, &chosen, "", "garden jobs").unwrap_err();
+        assert!(e.contains("Spesa"), "{e}");
+        assert_eq!(id(pick(&known, &[], "", "garden jobs")).unwrap(), "todo.garden");
+        assert!(pick(&[], &[], "", "").is_err());
     }
 }

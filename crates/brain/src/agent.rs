@@ -51,6 +51,66 @@ pub struct Brain {
     entities: Mutex<Option<(Instant, Vec<crate::ha::Entity>)>>,
     /// The body's subscriptions (the control socket): timers go to the device this way.
     hub: std::sync::OnceLock<Arc<crate::control::Hub>>,
+    /// The `todo.*` lists and `calendar.*` entities chosen on the body's screen (empty = all).
+    chosen_lists: Mutex<Vec<String>>,
+    chosen_calendars: Mutex<Vec<String>>,
+    /// The `upcoming` event last sent and when the calendars were last read (0 = read again).
+    upcoming: Mutex<UpcomingState>,
+    /// Ids for `confirm` and `changed` events.
+    seq: std::sync::atomic::AtomicI64,
+    /// House commands that can be undone from the screen (the last 5, for 2 minutes).
+    done_controls: Mutex<Vec<DoneControl>>,
+    /// A Yes/No tapped on the screen, for the model's waiting `home_control` call to find.
+    screen_answer: Mutex<Option<(i64, bool)>>,
+    /// How many `home_control` calls are waiting for an answer right now.
+    waiting: std::sync::atomic::AtomicUsize,
+    /// The last question answered on the screen while nobody waited (the command already ran).
+    last_answered: Mutex<Option<(i64, bool)>>,
+}
+
+#[derive(Default)]
+struct UpcomingState {
+    checked: i64,
+    last: Option<Value>,
+}
+
+/// A house command that went through and has a clear inverse.
+#[derive(Debug, Clone)]
+struct DoneControl {
+    id: i64,
+    entity_id: String,
+    undo_service: &'static str,
+    at_ms: i64,
+}
+
+/// How long a question waits for a yes, and how long an "Undo" stays possible.
+const CONFIRM_MS: i64 = 60_000;
+const UNDO_MS: i64 = 120_000;
+const UNDO_KEPT: usize = 5;
+
+/// The service that undoes `service`, when there is a clear one.
+fn inverse(service: &str) -> Option<&'static str> {
+    Some(match service {
+        "turn_on" => "turn_off",
+        "turn_off" => "turn_on",
+        "open_cover" => "close_cover",
+        "close_cover" => "open_cover",
+        "toggle" => "toggle",
+        _ => return None,
+    })
+}
+
+/// The entity's state after `service`, when it follows from the service (`prior` = before).
+fn state_after(service: &str, prior: &str) -> Option<&'static str> {
+    match (service, prior) {
+        ("turn_on", _) => Some("on"),
+        ("turn_off", _) => Some("off"),
+        ("open_cover", _) => Some("open"),
+        ("close_cover", _) => Some("closed"),
+        ("toggle", "on") => Some("off"),
+        ("toggle", "off") => Some("on"),
+        _ => None,
+    }
 }
 
 /// A house command asked with "Confermi?".
@@ -63,7 +123,7 @@ struct PendingControl {
     asked_ms: i64,
 }
 
-fn now_ms() -> i64 {
+pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64)
@@ -157,31 +217,35 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "list_add",
-            description: "Add things to the shopping list. One entry per thing, keep quantities in \
-                          the text ('2 kg farina'); things already on it are not added twice.",
+            description: "Add things to the shopping list (or another to-do list, with list). One \
+                          entry per thing, keep quantities in the text ('2 kg farina'); things \
+                          already on it are not added twice.",
             parameters: obj(
-                json!({"items": {"type": "array", "items": {"type": "string"}}}),
+                json!({"items": {"type": "array", "items": {"type": "string"}}, "list": {"type": "string", "description": "which list: its name (e.g. 'Spesa', 'Garden') or entity id; leave out for the shopping list"}}),
                 &["items"],
             ),
         },
         ToolSpec {
             name: "list_read",
-            description: "What is on the shopping list (open items). Read them back briefly.",
-            parameters: obj(json!({}), &[]),
+            description: "What is on the shopping list (or another to-do list, with list): open \
+                          items. Read them back briefly.",
+            parameters: obj(json!({"list": {"type": "string", "description": "which list: its name (e.g. 'Spesa', 'Garden') or entity id; leave out for the shopping list"}}), &[]),
         },
         ToolSpec {
             name: "list_done",
-            description: "Tick things on the shopping list as bought ('ho preso il pane').",
+            description: "Tick things on the shopping list (or another list, with list) as bought \
+                          or done ('ho preso il pane').",
             parameters: obj(
-                json!({"items": {"type": "array", "items": {"type": "string"}}}),
+                json!({"items": {"type": "array", "items": {"type": "string"}}, "list": {"type": "string", "description": "which list: its name (e.g. 'Spesa', 'Garden') or entity id; leave out for the shopping list"}}),
                 &["items"],
             ),
         },
         ToolSpec {
             name: "list_remove",
-            description: "Remove things from the shopping list ('togli il latte dalla lista').",
+            description: "Remove things from the shopping list or another list, with list \
+                          ('togli il latte dalla lista').",
             parameters: obj(
-                json!({"items": {"type": "array", "items": {"type": "string"}}}),
+                json!({"items": {"type": "array", "items": {"type": "string"}}, "list": {"type": "string", "description": "which list: its name (e.g. 'Spesa', 'Garden') or entity id; leave out for the shopping list"}}),
                 &["items"],
             ),
         },
@@ -382,6 +446,14 @@ impl Brain {
             heard: Mutex::new(None),
             entities: Mutex::new(None),
             hub: std::sync::OnceLock::new(),
+            chosen_lists: Mutex::new(Vec::new()),
+            chosen_calendars: Mutex::new(Vec::new()),
+            upcoming: Mutex::new(UpcomingState::default()),
+            seq: std::sync::atomic::AtomicI64::new(now_ms() % 1_000_000),
+            done_controls: Mutex::new(Vec::new()),
+            screen_answer: Mutex::new(None),
+            waiting: std::sync::atomic::AtomicUsize::new(0),
+            last_answered: Mutex::new(None),
             cfg,
         })
     }
@@ -418,25 +490,159 @@ impl Brain {
     }
 
     /// The `todo.*` lists and `calendar.*` entities chosen on the body's screen (each token
-    /// handover; None = the body did not say, an empty list = all of them).
-    // v0.2 contract: the Brain stream fills these in (lists for the list tools, calendars for
-    // the "next" card and the morning summary).
+    /// handover; None = the body did not say, an empty list = all of them). The list tools use
+    /// the lists, the "next" card and the morning summary the calendars.
     pub fn set_chosen(&self, lists: Option<Vec<String>>, calendars: Option<Vec<String>>) {
-        log::debug!("chosen lists {lists:?}, calendars {calendars:?}");
+        let clean = |v: Vec<String>, prefix: &str| -> Vec<String> {
+            let mut out: Vec<String> = Vec::new();
+            for e in v {
+                let e = e.trim().to_string();
+                if e.starts_with(prefix) && !out.contains(&e) {
+                    out.push(e);
+                }
+            }
+            out
+        };
+        if let Some(l) = lists {
+            *self.chosen_lists.lock().unwrap_or_else(|e| e.into_inner()) = clean(l, "todo.");
+        }
+        if let Some(c) = calendars {
+            let c = clean(c, "calendar.");
+            let mut cur = self.chosen_calendars.lock().unwrap_or_else(|e| e.into_inner());
+            if *cur != c {
+                *cur = c;
+                // The "next" card is read again at the next pass.
+                self.upcoming.lock().unwrap_or_else(|e| e.into_inner()).checked = 0;
+            }
+        }
     }
 
-    /// Yes or No on the screen for the `confirm` event `id` (events.rs).
-    // v0.2 contract: the Brain stream implements it.
+    fn broadcast(&self, events: &[Value]) {
+        if let Some(h) = self.hub.get() {
+            h.broadcast(events);
+        }
+    }
+
+    fn next_id(&self) -> i64 {
+        self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+    }
+
+    /// Yes or No on the screen for the `confirm` event `id` (events.rs). It counts like a
+    /// spoken answer: a `home_control` call that is waiting sees it; when the model has moved
+    /// on, a yes carries out the pending command itself.
     pub fn answer_confirm(&self, id: i64, yes: bool) -> Result<(), String> {
-        let _ = (id, yes);
-        Err("confirm.answer: not implemented yet".into())
+        let p = {
+            let pending = self.pending_control.lock().unwrap_or_else(|e| e.into_inner());
+            pending
+                .as_ref()
+                .filter(|p| p.id == id)
+                .cloned()
+                .ok_or("no such question (it may have expired or been answered)")?
+        };
+        if now_ms() - p.asked_ms > CONFIRM_MS {
+            return Err("that question has expired".into());
+        }
+        if self.waiting.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+            *self.screen_answer.lock().unwrap_or_else(|e| e.into_inner()) = Some((id, yes));
+            return Ok(());
+        }
+        {
+            let mut pending = self.pending_control.lock().unwrap_or_else(|e| e.into_inner());
+            if pending.as_ref().is_none_or(|q| q.id != id) {
+                return Err("no such question (it was answered meanwhile)".into());
+            }
+            *pending = None;
+        }
+        *self.last_answered.lock().unwrap_or_else(|e| e.into_inner()) = Some((id, yes));
+        self.broadcast(&[crate::events::confirm_done(id, Some(yes))]);
+        log::info!(event = "brain_gate", gate = "screen_answer", yes = yes; "answered on the screen");
+        if !yes {
+            return Ok(());
+        }
+        let e = self
+            .exposed(false)?
+            .into_iter()
+            .find(|e| e.entity_id == p.entity_id)
+            .ok_or_else(|| format!("{} is not exposed any more", p.entity_id))?;
+        if self.gate_of(&e) == Gate::Never {
+            return Err("not allowed: this device is never controlled by voice".into());
+        }
+        let ha = self.ha().ok_or("Home Assistant is not configured")?;
+        self.run_control(ha, &e, &p.service, &p.data, false)
     }
 
-    /// "Undo" on the screen for the `changed` event `id` (events.rs).
-    // v0.2 contract: the Brain stream implements it.
+    /// Questions nobody answered for a minute are closed (`confirm_done` with null); called
+    /// every few seconds from main with the current time (ms).
+    pub fn expire_confirms(&self, at_ms: i64) {
+        let gone = {
+            let mut pending = self.pending_control.lock().unwrap_or_else(|e| e.into_inner());
+            if pending.as_ref().is_some_and(|p| at_ms - p.asked_ms > CONFIRM_MS) {
+                pending.take()
+            } else {
+                None
+            }
+        };
+        if let Some(p) = gone {
+            log::info!(event = "brain_gate", gate = "expired"; "a question went unanswered");
+            self.broadcast(&[crate::events::confirm_done(p.id, None)]);
+        }
+    }
+
+    /// "Undo" on the screen for the `changed` event `id` (events.rs): the inverse service, for
+    /// 2 minutes after the command, only on a device that is still allowed at once.
     pub fn undo_control(&self, id: i64) -> Result<(), String> {
-        let _ = id;
-        Err("control.undo: not implemented yet".into())
+        let d = {
+            let mut v = self.done_controls.lock().unwrap_or_else(|e| e.into_inner());
+            let at = now_ms();
+            v.retain(|d| at - d.at_ms <= UNDO_MS);
+            let i = v.iter().position(|d| d.id == id).ok_or("nothing to undo (too late?)")?;
+            v.remove(i)
+        };
+        let e = self
+            .exposed(false)?
+            .into_iter()
+            .find(|e| e.entity_id == d.entity_id)
+            .ok_or_else(|| format!("{} is not exposed any more", d.entity_id))?;
+        if self.gate_of(&e) != Gate::Allow {
+            return Err("not allowed: this device cannot be undone without a yes".into());
+        }
+        let ha = self.ha().ok_or("Home Assistant is not configured")?;
+        self.run_control(ha, &e, d.undo_service, &json!({}), false)
+    }
+
+    /// Runs a service on an exposed entity and tells the screen it is done (`changed`). With
+    /// `undo_ok` and a clear inverse the screen gets an "Undo" (never after a yes: a blind or a
+    /// valve is moved back only by asking again; and not for an undo itself).
+    fn run_control(
+        &self,
+        ha: &Ha,
+        e: &crate::ha::Entity,
+        service: &str,
+        data: &Value,
+        undo_ok: bool,
+    ) -> Result<(), String> {
+        ha.control(&e.entity_id, service, data, Duration::from_secs(10))?;
+        // The state changed: the cached list is stale.
+        *self.entities.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let id = self.next_id();
+        let undo = inverse(service).filter(|_| undo_ok);
+        if let Some(u) = undo {
+            let mut v = self.done_controls.lock().unwrap_or_else(|e| e.into_inner());
+            let at = now_ms();
+            v.retain(|d| at - d.at_ms <= UNDO_MS);
+            v.push(DoneControl { id, entity_id: e.entity_id.clone(), undo_service: u, at_ms: at });
+            let extra = v.len().saturating_sub(UNDO_KEPT);
+            v.drain(..extra);
+        }
+        self.broadcast(&[crate::events::changed(
+            id,
+            &e.entity_id,
+            &e.full_name(),
+            service,
+            state_after(service, &e.state),
+            undo.is_some(),
+        )]);
+        Ok(())
     }
 
     fn satellite(&self) -> String {
@@ -526,32 +732,35 @@ impl Brain {
                     Err("ask the user to confirm first".into())
                 }
             }
-            "list_add" | "list_read" | "list_done" | "list_remove" => {
-                match (self.ha(), self.cfg.lists.shopping.as_str()) {
-                    (Some(ha), entity) if !entity.is_empty() => {
-                        let l = crate::lists::Lists { ha, entity, timeout: t };
-                        let items: Vec<String> = call
-                            .args
-                            .get("items")
-                            .and_then(Value::as_array)
-                            .into_iter()
-                            .flatten()
-                            .filter_map(Value::as_str)
-                            .map(|s| sanitize(s, 80))
-                            .filter(|s| !s.is_empty())
-                            .take(20)
-                            .collect();
-                        let r = match call.name.as_str() {
-                            "list_add" => l.add(&items),
-                            "list_read" => l.read(10),
-                            "list_done" => l.done_or_remove(&items, false),
-                            _ => l.done_or_remove(&items, true),
-                        };
-                        r.map(|v| Value::from(external(&v.to_string(), 1500)))
-                    }
-                    _ => Err("no shopping list is configured".into()),
-                }
-            }
+            "list_add" | "list_read" | "list_done" | "list_remove" => match self.ha() {
+                Some(ha) => self.pick_list(&s("list")).and_then(|(entity, name)| {
+                    let l = crate::lists::Lists { ha, entity: &entity, timeout: t };
+                    let items: Vec<String> = call
+                        .args
+                        .get("items")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(|s| sanitize(s, 80))
+                        .filter(|s| !s.is_empty())
+                        .take(20)
+                        .collect();
+                    let r = match call.name.as_str() {
+                        "list_add" => l.add(&items),
+                        "list_read" => l.read(10),
+                        "list_done" => l.done_or_remove(&items, false),
+                        _ => l.done_or_remove(&items, true),
+                    };
+                    r.map(|mut v| {
+                        v["list"] = json!(sanitize(&name, 60));
+                        Value::from(external(&v.to_string(), 1500))
+                    })
+                }),
+                None => Err("Home Assistant is not configured".into()),
+            },
+            "show_view" => self.show_view(&call.args),
+            "announce" => self.announce_tool(&call.args),
             "schedule" => self.schedule(&call.args),
             "list_jobs" => {
                 let m = self.mem();
@@ -713,7 +922,7 @@ impl Brain {
     /// the shopping list and the house with its gates. No web search: Home Assistant's agent
     /// has its own.
     pub fn mcp_tools(&self) -> Vec<ToolSpec> {
-        let lists = self.ha().is_some() && !self.cfg.lists.shopping.is_empty();
+        let lists = self.ha().is_some();
         let obj = |props: Value, req: &[&str]| json!({"type": "object", "properties": props, "required": req});
         let mut v: Vec<ToolSpec> = tools()
             .into_iter()
@@ -755,7 +964,37 @@ impl Brain {
                 &["time"],
             ),
         });
+        v.push(ToolSpec {
+            name: "show_view",
+            description: "Show something on the device's screen, in Home Assistant's view: \
+                          'mostrami le telecamere', 'fammi vedere la dashboard dell'energia', \
+                          'show me the front door camera'. Give path (a dashboard path starting \
+                          with '/', like /lovelace/energy) or camera (a camera.* entity from \
+                          home_entities). It only shows, it never changes anything.",
+            parameters: obj(
+                json!({
+                    "path": {"type": "string", "description": "a dashboard path starting with /"},
+                    "camera": {"type": "string", "description": "a camera.* entity exposed to the voice assistant"}
+                }),
+                &[],
+            ),
+        });
         if self.ha().is_some() {
+            v.push(ToolSpec {
+                name: "announce",
+                description: "Say a short message aloud on the house's voice satellites, for everyone: \
+                              'dì a tutti che la cena è pronta', 'tell everyone dinner is ready'. \
+                              Plain text, one or two sentences, in the language of the house. By \
+                              default on every satellite; satellites (assist_satellite.* entities) \
+                              limits it. Not for reminders (schedule).",
+                parameters: obj(
+                    json!({
+                        "message": {"type": "string", "description": "what to say, plain text, at most 200 characters"},
+                        "satellites": {"type": "array", "items": {"type": "string"}, "description": "assist_satellite.* entities (default: all)"}
+                    }),
+                    &["message"],
+                ),
+            });
             v.push(ToolSpec {
                 name: "home_entities",
                 description: "The house: the devices and sensors the user exposed, one per line with \
@@ -978,42 +1217,66 @@ impl Brain {
             }
             Gate::Confirm => {
                 let confirm_id = args.get("confirm_id").and_then(Value::as_i64);
-                let mut pending = self.pending_control.lock().unwrap_or_else(|e| e.into_inner());
-                let same = pending.as_ref().filter(|p| {
-                    Some(p.id) == confirm_id && p.entity_id == entity_id && p.service == service
-                });
-                match (confirm_id, same.cloned()) {
-                    (Some(_), Some(p)) => {
-                        drop(pending);
-                        match self.wait_answer(p.asked_ms) {
-                            Some(true) => {
-                                *self.pending_control.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                                log::info!(event = "brain_gate", gate = "confirmed", domain = e.domain(); "house command confirmed");
-                                ha.control(&p.entity_id, &p.service, &p.data, Duration::from_secs(10))?;
-                                return Ok(json!({"done": true}));
+                let same = self
+                    .pending_control
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .filter(|p| Some(p.id) == confirm_id && p.entity_id == entity_id && p.service == service)
+                    .cloned();
+                let screen_done = self.last_answered.lock().unwrap_or_else(|e| e.into_inner()).filter(|(id, _)| Some(*id) == confirm_id);
+                match (same, screen_done) {
+                    (Some(p), _) => match self.wait_answer(p.id, p.asked_ms) {
+                        Some(yes) => {
+                            {
+                                let mut pending = self.pending_control.lock().unwrap_or_else(|e| e.into_inner());
+                                if pending.as_ref().is_some_and(|q| q.id == p.id) {
+                                    *pending = None;
+                                }
                             }
-                            Some(false) => {
-                                *self.pending_control.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                            if now_ms() - p.asked_ms > CONFIRM_MS {
+                                self.broadcast(&[crate::events::confirm_done(p.id, None)]);
+                                return Err("the question expired: do nothing and say so briefly".into());
+                            }
+                            self.broadcast(&[crate::events::confirm_done(p.id, Some(yes))]);
+                            if !yes {
                                 return Err("the user did not confirm: do nothing and say so briefly".into());
                             }
-                            None => {
-                                return Err("no spoken yes from the user yet: ask the question and wait for \
-                                            their answer before calling again"
-                                    .into());
-                            }
+                            log::info!(event = "brain_gate", gate = "confirmed", domain = e.domain(); "house command confirmed");
+                            self.run_control(ha, &e, &p.service, &p.data, false)?;
+                            return Ok(json!({"done": true}));
                         }
+                        None => {
+                            return Err("no spoken yes from the user yet: ask the question and wait for \
+                                        their answer before calling again"
+                                .into());
+                        }
+                    },
+                    // The user already answered on the screen while the model was talking.
+                    (None, Some((_, true))) => {
+                        return Ok(json!({"done": true, "note": "the user said yes on the screen: already done"}));
                     }
-                    _ => {
-                        let id = now_ms() % 1_000_000;
-                        *pending = Some(PendingControl {
+                    (None, Some((_, false))) => {
+                        return Err("the user said no on the screen: do nothing and say so briefly".into());
+                    }
+                    (None, None) => {
+                        let id = self.next_id();
+                        let old = self.pending_control.lock().unwrap_or_else(|e| e.into_inner()).replace(PendingControl {
                             id,
                             entity_id: entity_id.clone(),
                             service: service.clone(),
                             data,
                             asked_ms: now_ms(),
                         });
+                        *self.screen_answer.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                        *self.last_answered.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                        if let Some(o) = old {
+                            self.broadcast(&[crate::events::confirm_done(o.id, None)]);
+                        }
                         log::info!(event = "brain_gate", gate = "confirm", domain = e.domain(); "house command waits for a yes");
                         let what = format!("{} ({})", e.full_name(), service.replace('_', " "));
+                        let text = if it { format!("{what}: confermi?") } else { format!("{what}: confirm?") };
+                        self.broadcast(&[crate::events::confirm(id, &text, now() + CONFIRM_MS / 1000)]);
                         return Ok(json!({"needs_confirmation": true, "confirm_id": id,
                             "ask": if it { format!("Ask: '{what}: confermi?' in Italian, one short question") }
                                    else { format!("Ask: '{what}: confirm?', one short question") },
@@ -1023,22 +1286,38 @@ impl Brain {
             }
             Gate::Allow => {}
         }
-        ha.control(&entity_id, &service, &data, Duration::from_secs(10))?;
-        // The state after the command, when Home Assistant has it already.
-        *self.entities.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.run_control(ha, &e, &service, &data, true)?;
         Ok(json!({"done": true}))
     }
 
-    /// The user's answer after `asked_ms`: a yes or a no in the first sentence heard since, or
-    /// None. Waits up to 3 s: the satellite's transcript may arrive just after the model's call.
-    fn wait_answer(&self, asked_ms: i64) -> Option<bool> {
+    /// The answer to question `id` asked at `asked_ms`: a yes or a no tapped on the screen, or
+    /// said in the first sentence heard since, or None. Waits up to 3 s: the satellite's
+    /// transcript may arrive just after the model's call.
+    fn wait_answer(&self, id: i64, asked_ms: i64) -> Option<bool> {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.waiting.fetch_add(1, SeqCst);
+        let r = self.wait_answer_inner(id, asked_ms);
+        self.waiting.fetch_sub(1, SeqCst);
+        r
+    }
+
+    fn wait_answer_inner(&self, id: i64, asked_ms: i64) -> Option<bool> {
         let until = Instant::now() + Duration::from_secs(3);
         loop {
+            {
+                let mut a = self.screen_answer.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some((sid, yes)) = *a
+                    && sid == id
+                {
+                    *a = None;
+                    return Some(yes);
+                }
+            }
             let h = self.heard.lock().unwrap_or_else(|e| e.into_inner()).clone();
             if let Some((text, at)) = h
                 && at > asked_ms
             {
-                if at - asked_ms > 60_000 {
+                if at - asked_ms > CONFIRM_MS {
                     return Some(false);
                 }
                 return Some(answer_to_confirm(&text).unwrap_or(false));
@@ -1048,6 +1327,178 @@ impl Brain {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
+    }
+}
+
+impl Brain {
+    // ------------------------------------------------------------ lists, views, announcements, calendars
+
+    /// The states of Home Assistant's entities of one domain: (entity id, friendly name).
+    fn states_of(&self, domain: &str) -> Result<Vec<(String, String)>, String> {
+        let ha = self.ha().ok_or("Home Assistant is not configured")?;
+        let v = ha.call(json!({"type": "get_states"}), Duration::from_secs(10))?;
+        let prefix = format!("{domain}.");
+        Ok(v.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| {
+                let id = s.get("entity_id")?.as_str()?;
+                id.starts_with(&prefix).then(|| {
+                    let name = s
+                        .pointer("/attributes/friendly_name")
+                        .and_then(Value::as_str)
+                        .filter(|n| !n.trim().is_empty())
+                        .unwrap_or(id);
+                    (id.to_string(), name.trim().to_string())
+                })
+            })
+            .collect())
+    }
+
+    /// The `todo.*` list a list tool works on: the `list` argument (name or entity id) among
+    /// the lists chosen on the screen, else the shopping list.
+    fn pick_list(&self, wanted: &str) -> Result<(String, String), String> {
+        let shopping = self.cfg.lists.shopping.as_str();
+        let chosen = self.chosen_lists.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        // The names are needed only to match a name or to find the default among several.
+        let known = if wanted.trim().is_empty() && !shopping.is_empty() {
+            Vec::new()
+        } else {
+            self.states_of("todo")?
+        };
+        crate::lists::pick(&known, &chosen, shopping, wanted)
+    }
+
+    /// The calendars to read: the chosen ones, or every `calendar.*` of Home Assistant.
+    fn calendar_entities(&self) -> Vec<String> {
+        let chosen = self.chosen_calendars.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if !chosen.is_empty() {
+            return chosen;
+        }
+        self.states_of("calendar")
+            .map(|v| v.into_iter().map(|(id, _)| id).collect())
+            .unwrap_or_default()
+    }
+
+    /// The `upcoming` event now: the events of the next 36 hours.
+    fn fetch_upcoming(&self, at: i64) -> Option<Value> {
+        let ha = self.ha().filter(|h| h.has_token())?;
+        let cals = if self.cfg.briefing.calendars.is_empty() {
+            self.calendar_entities()
+        } else {
+            self.cfg.briefing.calendars.clone()
+        };
+        if cals.is_empty() {
+            return Some(crate::calendar::to_event(&[]));
+        }
+        let cmd = json!({"type": "call_service", "domain": "calendar", "service": "get_events",
+            "service_data": {"duration": {"hours": crate::calendar::HORIZON_HOURS}},
+            "return_response": true, "target": {"entity_id": cals}});
+        match ha.call(cmd, Duration::from_secs(15)) {
+            Ok(v) => Some(crate::calendar::to_event(&crate::calendar::upcoming_from(&v, at))),
+            Err(e) => {
+                log::warn!(event = "brain_calendar"; "calendars: {e}");
+                None
+            }
+        }
+    }
+
+    /// Reads the calendars when the last read is 10 minutes old (or the choice changed) and
+    /// returns the `upcoming` event when it differs from the one sent last. Called every few
+    /// seconds from main.
+    pub fn refresh_upcoming(&self, at: i64) -> Option<Value> {
+        {
+            let st = self.upcoming.lock().unwrap_or_else(|e| e.into_inner());
+            if st.checked != 0 && at - st.checked < 600 {
+                return None;
+            }
+        }
+        let ev = self.fetch_upcoming(at)?;
+        let mut st = self.upcoming.lock().unwrap_or_else(|e| e.into_inner());
+        st.checked = at;
+        if st.last.as_ref() == Some(&ev) {
+            None
+        } else {
+            st.last = Some(ev.clone());
+            Some(ev)
+        }
+    }
+
+    /// The `show_view` tool: Home Assistant's view opens on a dashboard path or a camera.
+    fn show_view(&self, args: &Value) -> Result<Value, String> {
+        let get = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let (path, camera) = (get("path"), get("camera"));
+        match (path.is_empty(), camera.is_empty()) {
+            (false, true) => {
+                let ok = path.starts_with('/')
+                    && !path.starts_with("//")
+                    && path.len() <= 200
+                    && !path.contains("..")
+                    && path.chars().all(|c| c.is_ascii_graphic() && c != '\\');
+                if !ok {
+                    return Err("path: a dashboard path starting with /, like /lovelace/energy".into());
+                }
+            }
+            (true, false) => {
+                if !camera.starts_with("camera.") {
+                    return Err("camera: a camera.* entity".into());
+                }
+                if !self.exposed(false)?.iter().any(|e| e.entity_id == camera) {
+                    return Err(format!(
+                        "{camera} is not exposed to the voice assistant: see home_entities with domain camera"
+                    ));
+                }
+            }
+            _ => return Err("give either path or camera".into()),
+        }
+        match self.hub.get() {
+            Some(h) if h.subscribers() > 0 => {
+                let ev = if camera.is_empty() {
+                    crate::events::show_view(crate::events::View::Path(&path))
+                } else {
+                    crate::events::show_view(crate::events::View::Camera(&camera))
+                };
+                h.broadcast(&[ev]);
+                log::info!(event = "brain_show_view"; "view shown on the device");
+                Ok(json!({"shown": if camera.is_empty() { path } else { camera }}))
+            }
+            _ => Err("the device's screen is not connected: nothing can be shown".into()),
+        }
+    }
+
+    /// The `announce` tool: a message said by the voice satellites.
+    fn announce_tool(&self, args: &Value) -> Result<Value, String> {
+        let message = sanitize(args.get("message").and_then(Value::as_str).unwrap_or("").trim(), 200);
+        if message.is_empty() {
+            return Err("message: what to say".into());
+        }
+        let ha = self.ha().ok_or("Home Assistant is not configured")?;
+        let named: Vec<String> = args
+            .get("satellites")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let all = self.states_of("assist_satellite")?;
+        let targets: Vec<String> = if named.is_empty() {
+            all.into_iter().map(|(id, _)| id).collect()
+        } else {
+            if let Some(bad) = named.iter().find(|n| !all.iter().any(|(id, _)| id == *n)) {
+                return Err(format!("{bad} is not a voice satellite of this house"));
+            }
+            named
+        };
+        if targets.is_empty() {
+            return Err("this house has no voice satellite to announce on".into());
+        }
+        let cmd = json!({"type": "call_service", "domain": "assist_satellite", "service": "announce",
+            "service_data": {"message": message}, "target": {"entity_id": targets}});
+        ha.call(cmd, Duration::from_secs(15))?;
+        log::info!(event = "brain_announce", satellites = targets.len(); "announced on {} satellites", targets.len());
+        Ok(json!({"announced_on": targets.len()}))
     }
 }
 
@@ -1209,10 +1660,15 @@ impl Brain {
                     data["weather"] = json!(external(&v.to_string(), 1500));
                 }
             }
-            if !self.cfg.briefing.calendars.is_empty() {
+            let cals = if self.cfg.briefing.calendars.is_empty() {
+                self.calendar_entities()
+            } else {
+                self.cfg.briefing.calendars.clone()
+            };
+            if !cals.is_empty() {
                 let cmd = json!({"type": "call_service", "domain": "calendar", "service": "get_events",
                     "service_data": {"duration": {"hours": 24}}, "return_response": true,
-                    "target": {"entity_id": self.cfg.briefing.calendars}});
+                    "target": {"entity_id": cals}});
                 if let Ok(v) = ha.call(cmd, t) {
                     data["calendar"] = json!(external(&v.to_string(), 2500));
                 }
@@ -1437,11 +1893,17 @@ impl Brain {
 
     /// For a body that (re)connects: the reminders delivered and not yet touched.
     pub fn replay(&self) -> Vec<Value> {
-        jobs::delivered(self.mem().db())
+        let mut v: Vec<Value> = jobs::delivered(self.mem().db())
             .unwrap_or_default()
             .iter()
             .map(notify)
-            .collect()
+            .collect();
+        // The "next" card: read now when the last read is old, else the one we have.
+        let _ = self.refresh_upcoming(now());
+        if let Some(u) = self.upcoming.lock().unwrap_or_else(|e| e.into_inner()).last.clone() {
+            v.push(u);
+        }
+        v
     }
 }
 

@@ -26,6 +26,10 @@ struct Fake {
     todo: Todo,
     /// Every command received.
     calls: Arc<Mutex<Vec<Value>>>,
+    /// Other entities in `get_states` (not exposed): (entity_id, friendly name).
+    states: Vec<(&'static str, &'static str)>,
+    /// The `calendar.get_events` answer (`{"calendar.x": {"events": […]}}`).
+    calendar: Arc<Mutex<Value>>,
 }
 
 /// "2026-11-05T17:00:00Z" for a time in seconds (UTC).
@@ -117,8 +121,13 @@ fn answer(f: &Fake, cmd: &Value) -> Value {
                 .iter()
                 .map(|(id, name, class)| json!({"entity_id": id, "state": "open",
                     "attributes": {"friendly_name": name, "device_class": class}}))
+                .chain(f.states.iter().map(|(id, name)| json!({"entity_id": id, "state": "idle",
+                    "attributes": {"friendly_name": name}})))
                 .collect::<Vec<_>>()
         ),
+        (Some("call_service"), Some("calendar"), Some("get_events")) => {
+            json!({"context": {}, "response": f.calendar.lock().unwrap().clone()})
+        }
         (Some("config/entity_registry/list_for_display"), _, _) => json!({"entities": []}),
         (Some("config/device_registry/list"), _, _) | (Some("config/area_registry/list"), _, _) => {
             json!([])
@@ -472,5 +481,329 @@ fn shopping_list_add_read_done_remove() {
             .iter()
             .all(|c| c["target"].is_null() || c["target"]["entity_id"] == "todo.spesa")
     );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+// ---- v0.2: several lists, calendars, house commands on the screen, views, announcements
+
+use std::io::BufRead;
+use std::os::unix::net::UnixStream;
+
+/// The body's side of the control socket: a `subscribe` connection reading the brain's events.
+struct Screen {
+    r: std::io::BufReader<UnixStream>,
+}
+
+impl Screen {
+    fn connect(b: &Arc<Brain>, dir: &std::path::Path) -> Screen {
+        let hub = Arc::new(brain::control::Hub::default());
+        b.set_hub(hub.clone());
+        let path = dir.join("c.sock").to_string_lossy().to_string();
+        brain::control::start(b.clone(), hub.clone(), &path).unwrap();
+        let mut s = UnixStream::connect(&path).unwrap();
+        s.write_all(b"{\"cmd\":\"subscribe\"}\n").unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let mut r = std::io::BufReader::new(s);
+        let mut line = String::new();
+        r.read_line(&mut line).unwrap();
+        assert!(line.contains("\"ok\":true"), "{line}");
+        // The connection joins the hub after the replay: wait for it.
+        for _ in 0..100 {
+            if hub.subscribers() > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(hub.subscribers(), 1);
+        Screen { r }
+    }
+
+    /// The next event named `name` (others are skipped); panics after 5 s.
+    fn event(&mut self, name: &str) -> Value {
+        loop {
+            let mut line = String::new();
+            assert!(self.r.read_line(&mut line).unwrap() > 0, "closed while waiting for {name}");
+            let v: Value = serde_json::from_str(line.trim()).unwrap();
+            if v["event"] == name {
+                return v;
+            }
+        }
+    }
+}
+
+fn services(f: &Fake) -> Vec<String> {
+    f.calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|c| c["type"] == "call_service")
+        .map(|c| format!("{}.{} {}", c["domain"].as_str().unwrap(), c["service"].as_str().unwrap(),
+            c["service_data"]["entity_id"].as_str().unwrap_or("")))
+        .collect()
+}
+
+#[test]
+fn list_tools_work_on_several_lists_by_name() {
+    let f = Fake {
+        states: vec![("todo.casa", "Home to-do"), ("todo.bring", "Spesa"), ("todo.garden", "Garden")],
+        ..Fake::default()
+    };
+    let (mut cfg, dir) = setup("lists2", &fake_ha(f.clone()));
+    cfg.lists.shopping = "todo.bring".into();
+    let b = Brain::new(cfg).unwrap();
+    b.set_chosen(Some(vec!["todo.casa".into(), "todo.bring".into()]), None);
+    let target = |f: &Fake, service: &str| -> String {
+        f.calls.lock().unwrap().iter().rev()
+            .find(|c| c["service"] == service)
+            .map(|c| c["target"]["entity_id"].as_str().unwrap().to_string())
+            .unwrap()
+    };
+    let (r, err) = tool(&b, "list_add", json!({"items": ["pane"]}));
+    assert!(!err, "{r}");
+    assert_eq!(target(&f, "add_item"), "todo.bring");
+    let (r, err) = tool(&b, "list_add", json!({"items": ["tidy shed"], "list": "home to do"}));
+    assert!(!err && r.to_string().contains("Home to-do"), "{r}");
+    assert_eq!(target(&f, "add_item"), "todo.casa");
+    // Not among the chosen lists: refused, with the names that are.
+    let (r, err) = tool(&b, "list_read", json!({"list": "garden"}));
+    assert!(err && r.to_string().contains("Spesa"), "{r}");
+    // Everything chosen again (empty = all): the garden list is there.
+    b.set_chosen(Some(vec![]), None);
+    let (r, err) = tool(&b, "list_read", json!({"list": "todo.garden"}));
+    assert!(!err, "{r}");
+    // Without a configured shopping list: the one named like it.
+    let (mut cfg, dir2) = setup("lists3", &fake_ha(f.clone()));
+    cfg.lists.shopping.clear();
+    let b = Brain::new(cfg).unwrap();
+    let (_, err) = tool(&b, "list_add", json!({"items": ["uova"]}));
+    assert!(!err);
+    assert_eq!(target(&f, "add_item"), "todo.bring");
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = std::fs::remove_dir_all(dir2);
+}
+
+#[test]
+fn upcoming_events_on_subscribe_and_with_the_chosen_calendars() {
+    let now = brain::memory::now();
+    let at = |t: i64| rfc3339(t);
+    let f = Fake {
+        states: vec![("calendar.family", "Family"), ("calendar.work", "Work")],
+        ..Fake::default()
+    };
+    *f.calendar.lock().unwrap() = json!({
+        "calendar.family": {"events": [
+            {"start": at(now + 7200), "end": at(now + 10800), "summary": "Dentist"}]},
+        "calendar.work": {"events": [
+            {"start": at(now + 3600), "end": at(now + 5400), "summary": "Stand-up"}]}
+    });
+    let (cfg, dir) = setup("upcoming", &fake_ha(f.clone()));
+    let b = Arc::new(Brain::new(cfg).unwrap());
+    // Nothing chosen = every calendar of Home Assistant; soonest first.
+    let mut screen = Screen::connect(&b, &dir);
+    let u = screen.event("upcoming");
+    let titles: Vec<&str> = u["items"].as_array().unwrap().iter().map(|i| i["title"].as_str().unwrap()).collect();
+    assert_eq!(titles, ["Stand-up", "Dentist"], "{u}");
+    assert_eq!(u["items"][0]["calendar"], "calendar.work");
+    assert_eq!(u["items"][0]["all_day"], false);
+    let ask = f.calls.lock().unwrap().iter().rev().find(|c| c["service"] == "get_events").cloned().unwrap();
+    assert_eq!(ask["target"]["entity_id"], json!(["calendar.family", "calendar.work"]));
+    // Nothing changed: no new event; a new choice reads again and sends the new list.
+    assert!(b.refresh_upcoming(now + 30).is_none());
+    b.set_chosen(None, Some(vec!["calendar.family".into()]));
+    // The fake answers both calendars anyway: same events, nothing to send, but it did read again.
+    assert!(b.refresh_upcoming(now + 60).is_none());
+    let ask = f.calls.lock().unwrap().iter().rev().find(|c| c["service"] == "get_events").cloned().unwrap();
+    assert_eq!(ask["target"]["entity_id"], json!(["calendar.family"]));
+    // Ten minutes later the calendars are read again; same events: nothing to send.
+    assert!(b.refresh_upcoming(now + 60 + 599).is_none());
+    *f.calendar.lock().unwrap() = json!({"calendar.family": {"events": []}});
+    let ev = b.refresh_upcoming(now + 60 + 601).expect("the events changed");
+    assert_eq!(ev["items"], json!([]));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_house_command_is_reported_and_can_be_undone() {
+    let f = Fake {
+        exposed: vec![("light.cucina", "Luce cucina", ""), ("cover.soggiorno", "Tapparella soggiorno", "shutter")],
+        ..Fake::default()
+    };
+    let (cfg, dir) = setup("undo", &fake_ha(f.clone()));
+    let b = Arc::new(Brain::new(cfg).unwrap());
+    let mut screen = Screen::connect(&b, &dir);
+    let (r, err) = tool(&b, "home_control", json!({"entity_id": "light.cucina", "service": "turn_off"}));
+    assert!(!err, "{r}");
+    let c = screen.event("changed");
+    assert_eq!((c["entity_id"].as_str(), c["service"].as_str(), c["state"].as_str(), c["undo"].as_bool()),
+        (Some("light.cucina"), Some("turn_off"), Some("off"), Some(true)), "{c}");
+    b.undo_control(c["id"].as_i64().unwrap()).unwrap();
+    let c2 = screen.event("changed");
+    assert_eq!((c2["service"].as_str(), c2["state"].as_str(), c2["undo"].as_bool()),
+        (Some("turn_on"), Some("on"), Some(false)), "{c2}");
+    assert_eq!(services(&f), ["light.turn_off light.cucina", "light.turn_on light.cucina"]);
+    // Once only; an unknown id is an error.
+    assert!(b.undo_control(c["id"].as_i64().unwrap()).is_err());
+    assert!(b.undo_control(12345).is_err());
+    // Toggle undoes itself; a command with no clear inverse has no Undo.
+    let (_, err) = tool(&b, "home_control", json!({"entity_id": "light.cucina", "service": "toggle"}));
+    assert!(!err);
+    assert_eq!(screen.event("changed")["undo"], true);
+    let (_, err) = tool(&b, "home_control",
+        json!({"entity_id": "light.cucina", "service": "turn_on", "data": {"brightness_pct": 30}}));
+    assert!(!err);
+    let c = screen.event("changed");
+    assert_eq!(c["undo"], true);
+    let (_, err) = tool(&b, "home_control", json!({"entity_id": "light.cucina", "service": "set_foo"}));
+    assert!(!err);
+    assert_eq!(screen.event("changed")["undo"], false);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_blind_asks_on_the_screen_and_a_yes_there_does_it_without_undo() {
+    let f = Fake {
+        exposed: vec![("cover.soggiorno", "Tapparella soggiorno", "shutter")],
+        ..Fake::default()
+    };
+    let (cfg, dir) = setup("screen-yes", &fake_ha(f.clone()));
+    let b = Arc::new(Brain::new(cfg).unwrap());
+    let mut screen = Screen::connect(&b, &dir);
+    let args = json!({"entity_id": "cover.soggiorno", "service": "close_cover"});
+    let (r, _) = tool(&b, "home_control", args.clone());
+    assert_eq!(r["needs_confirmation"], true, "{r}");
+    let c = screen.event("confirm");
+    let id = c["id"].as_i64().unwrap();
+    assert_eq!(r["confirm_id"], id);
+    assert!(c["text"].as_str().unwrap().contains("Tapparella soggiorno"));
+    assert!(c["expires_at"].as_i64().unwrap() - brain::memory::now() > 50);
+    // Nothing happened yet; the model has moved on and the user taps Yes.
+    assert!(services(&f).is_empty());
+    b.answer_confirm(id, true).unwrap();
+    let d = screen.event("confirm_done");
+    assert_eq!((d["id"].as_i64(), d["yes"].as_bool()), (Some(id), Some(true)));
+    let ch = screen.event("changed");
+    assert_eq!((ch["service"].as_str(), ch["undo"].as_bool()), (Some("close_cover"), Some(false)), "{ch}");
+    assert_eq!(services(&f), ["cover.close_cover cover.soggiorno"]);
+    // A second tap is refused; the model's late call with the id does not run it again.
+    assert!(b.answer_confirm(id, true).is_err());
+    let mut again = args;
+    again["confirm_id"] = json!(id);
+    let (r, err) = tool(&b, "home_control", again);
+    assert!(!err && r["done"] == true, "{r}");
+    assert_eq!(services(&f).len(), 1);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_screen_no_or_a_yes_during_the_wait_counts_like_a_spoken_answer() {
+    let f = Fake {
+        exposed: vec![("cover.soggiorno", "Tapparella soggiorno", "shutter")],
+        ..Fake::default()
+    };
+    let (cfg, dir) = setup("screen-wait", &fake_ha(f.clone()));
+    let b = Arc::new(Brain::new(cfg).unwrap());
+    let mut screen = Screen::connect(&b, &dir);
+    let args = json!({"entity_id": "cover.soggiorno", "service": "close_cover"});
+    for (yes, n_calls) in [(false, 0), (true, 1)] {
+        let (r, _) = tool(&b, "home_control", args.clone());
+        let id = r["confirm_id"].as_i64().unwrap();
+        let mut again = args.clone();
+        again["confirm_id"] = json!(id);
+        // The model's second call waits for the answer; the screen answers meanwhile.
+        let b2 = b.clone();
+        let waiter = std::thread::spawn(move || tool(&b2, "home_control", again));
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        b.answer_confirm(id, yes).unwrap();
+        let (r, err) = waiter.join().unwrap();
+        assert_eq!(err, !yes, "{r}");
+        assert_eq!(screen.event("confirm_done")["yes"], yes);
+        assert_eq!(services(&f).len(), n_calls);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn an_unanswered_question_expires_after_a_minute() {
+    let f = Fake {
+        exposed: vec![("cover.soggiorno", "Tapparella soggiorno", "shutter")],
+        ..Fake::default()
+    };
+    let (cfg, dir) = setup("expire", &fake_ha(f.clone()));
+    let b = Arc::new(Brain::new(cfg).unwrap());
+    let mut screen = Screen::connect(&b, &dir);
+    let (r, _) = tool(&b, "home_control", json!({"entity_id": "cover.soggiorno", "service": "close_cover"}));
+    let id = r["confirm_id"].as_i64().unwrap();
+    screen.event("confirm");
+    b.expire_confirms(brain::agent::now_ms() + 30_000);
+    b.expire_confirms(brain::agent::now_ms() + 61_000);
+    let d = screen.event("confirm_done");
+    assert_eq!((d["id"].as_i64(), d["yes"].clone()), (Some(id), Value::Null));
+    assert!(b.answer_confirm(id, true).is_err());
+    assert!(services(&f).is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn show_view_opens_paths_and_exposed_cameras_only() {
+    let f = Fake {
+        exposed: vec![("camera.front", "Front door", ""), ("light.cucina", "Luce cucina", "")],
+        states: vec![("camera.secret", "Bedroom camera")],
+        ..Fake::default()
+    };
+    let (cfg, dir) = setup("view", &fake_ha(f.clone()));
+    let b = Arc::new(Brain::new(cfg).unwrap());
+    // No screen connected: an error, like the timer.
+    let (r, err) = tool(&b, "show_view", json!({"path": "/lovelace/energy"}));
+    assert!(err && r.to_string().contains("not connected"), "{r}");
+    let mut screen = Screen::connect(&b, &dir);
+    let (_, err) = tool(&b, "show_view", json!({"path": "/lovelace/energy"}));
+    assert!(!err);
+    assert_eq!(screen.event("show_view")["path"], "/lovelace/energy");
+    let (_, err) = tool(&b, "show_view", json!({"camera": "camera.front"}));
+    assert!(!err);
+    assert_eq!(screen.event("show_view")["camera"], "camera.front");
+    // Not exposed, not a camera, bad paths, both or neither.
+    for args in [
+        json!({"camera": "camera.secret"}),
+        json!({"camera": "light.cucina"}),
+        json!({"path": "http://evil.example/"}),
+        json!({"path": "//evil.example/x"}),
+        json!({"path": "/a b"}),
+        json!({"path": "/../config"}),
+        json!({"path": "/x", "camera": "camera.front"}),
+        json!({}),
+    ] {
+        let (r, err) = tool(&b, "show_view", args.clone());
+        assert!(err, "{args}: {r}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn announce_goes_to_every_satellite_or_the_named_ones() {
+    let f = Fake {
+        states: vec![("assist_satellite.kitchen", "Kitchen"), ("assist_satellite.hall", "Hall"), ("todo.x", "X")],
+        ..Fake::default()
+    };
+    let (cfg, dir) = setup("announce", &fake_ha(f.clone()));
+    let b = Brain::new(cfg).unwrap();
+    let last = |f: &Fake| f.calls.lock().unwrap().iter().rev().find(|c| c["service"] == "announce").cloned().unwrap();
+    let (r, err) = tool(&b, "announce", json!({"message": "La cena è pronta"}));
+    assert!(!err, "{r}");
+    let c = last(&f);
+    assert_eq!(c["domain"], "assist_satellite");
+    assert_eq!(c["service_data"]["message"], "La cena è pronta");
+    assert_eq!(c["target"]["entity_id"], json!(["assist_satellite.kitchen", "assist_satellite.hall"]));
+    let (_, err) = tool(&b, "announce", json!({"message": "Ciao", "satellites": ["assist_satellite.hall"]}));
+    assert!(!err);
+    assert_eq!(last(&f)["target"]["entity_id"], json!(["assist_satellite.hall"]));
+    // Unknown satellite, empty message: refused; long text is cut.
+    let (_, err) = tool(&b, "announce", json!({"message": "x", "satellites": ["light.cucina"]}));
+    assert!(err);
+    let (_, err) = tool(&b, "announce", json!({"message": "  "}));
+    assert!(err);
+    let (_, err) = tool(&b, "announce", json!({"message": "x".repeat(500)}));
+    assert!(!err);
+    assert!(last(&f)["service_data"]["message"].as_str().unwrap().chars().count() <= 201);
     let _ = std::fs::remove_dir_all(dir);
 }

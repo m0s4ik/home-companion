@@ -4,6 +4,7 @@
 //! `home-companion-brain`: the on-device conversational brain.
 
 pub mod agent;
+pub mod calendar;
 pub mod clock;
 pub mod config;
 pub mod control;

@@ -148,6 +148,18 @@ fn main() -> std::process::ExitCode {
             h.broadcast(&events);
         }
     });
+    // Every 5 s: unanswered Yes/No questions close after a minute; the calendars are read every
+    // 10 minutes (or when the choice changes) and the "next" card gets the new events if they differ.
+    let (b, h) = (brain.clone(), hub.clone());
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(5));
+            b.expire_confirms(brain::agent::now_ms());
+            if let Some(ev) = b.refresh_upcoming(brain::memory::now()) {
+                h.broadcast(&[ev]);
+            }
+        }
+    });
     // Home Assistant's own AI thinks; the brain serves it tools (MCP).
     log::info!("MCP tools for Home Assistant's conversation agent on http://{}/mcp", cfg.listen);
     brain::mcp::run(brain, listener, allow);
