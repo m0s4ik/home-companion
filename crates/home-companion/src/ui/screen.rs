@@ -3005,7 +3005,7 @@ impl<S: Screen> Ui<S> {
                 format!("{}{more}", first.join(" · ")),
             )
         });
-        let now = now_unix() as i64;
+        let now = self.now() as i64; // the demo clock in screenshots
         let next: Vec<&(i64, String)> = d
             .upcoming
             .iter()
