@@ -140,8 +140,9 @@ The link page needs `[home_assistant] link_port` (8124) open from the LAN. The h
 `[home_assistant] url` and the body's tokens, the page from `[web] path`; the token never on a command line). Ways back
 home: the round button (bottom right, shown for 4 s after a touch, `[web] home_button_seconds`; it can be dragged
 to any edge and its place is kept in `<state_dir>/settings.toml`), a swipe up from the bottom edge, Vol+ and Vol−
-pressed together (outside "Casa" the pair puts the screen to sleep instead); it also goes home
-by itself after `[web] idle_return_seconds` untouched and when a conversation or a timer needs the screen. For tests
+pressed together (outside "Casa" the pair puts the screen to sleep instead). Left alone it stays open, so it can be
+kept as a wall dashboard (`[web] idle_return_seconds` > 0 sends it home after that long untouched); it gives way
+when a conversation or a timer needs the screen and comes back afterwards. For tests
 without the unit (a test root): `web/test/helper.sh`.
 
 Linking to Home Assistant (Settings → Home Assistant, and the first start without a token): the page shows a QR code

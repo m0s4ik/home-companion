@@ -3330,11 +3330,7 @@ impl<S: Screen> Ui<S> {
                     format!("{}{more}", lists::first_texts(v, 3).join(" · ")),
                 )
             });
-        let now = if self.opts.demo.is_some() {
-            DEMO_NOW as i64
-        } else {
-            now_unix() as i64
-        };
+        let now = self.now() as i64; // the demo clock in screenshots
         // The next reminder or calendar event, whichever comes first.
         let next = next::merge(&d.upcoming, &d.events, now);
         let upcoming = next.first().map(|n| {

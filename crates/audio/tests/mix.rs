@@ -60,6 +60,12 @@ fn cues_land_on_their_frames_over_an_answer() {
         Duration::from_secs(20),
         is_finished(end)
     ));
+    // The answer can end after the last cue (it plays out at its own pace): wait for its
+    // `Finished` too before stopping, or a slow machine stops the mix with it still queued.
+    let answer = is_finished(s.id());
+    if !seen.iter().any(&answer) {
+        assert!(wait_event(&rx, &mut seen, Duration::from_secs(20), answer));
+    }
     audio.stop();
     let (left, rate) = read_left(&out);
     assert_eq!(rate, 48000);
@@ -109,7 +115,8 @@ fn repeated_bell_has_its_gaps() {
     assert!((lc - LEVEL).abs() < 0.3);
     // Silence in the gaps and after the third.
     assert!(left[a + 9600..b].iter().all(|&s| s == 0));
-    assert!(left[c + 9600..].iter().all(|&s| s == 0));
+    // (The file may end right where the third beep does.)
+    assert!(left[(c + 9600).min(left.len())..].iter().all(|&s| s == 0));
 }
 
 #[test]

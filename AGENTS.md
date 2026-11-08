@@ -13,6 +13,9 @@ thinking is Home Assistant's: its pipeline (speech-to-text, conversation agent, 
 `home-companion-brain` lends that agent tools over MCP (memory, reminders, shopping list, the house with safety gates).
 **Lightness first**: RAM, CPU and dependencies are measured on a 2 GB arm64 device.
 
+How it is built and why: [docs/design.md](docs/design.md); the screen: [docs/ui.md](docs/ui.md). A ready task for a
+contributor or a coding assistant: [docs/android-port.md](docs/android-port.md).
+
 ## Map
 
 | Crate | What |
