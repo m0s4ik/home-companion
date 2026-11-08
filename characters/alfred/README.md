@@ -21,3 +21,18 @@ of home-companion.
   the `sleeping` loop (80-143, 4 s, once a minute) and `wake_from_sleep` (144-223, he takes the cap off and
   brightens), in that order so each runs into the next; aligned on `idle.png`. `sleeping.png` matches the loop's
   first frame (mean difference 0.8/255).
+- **How the animations were made**: Wan 2.2 I2V A14B (fp8, with the lightx2v 4-step LoRA; weights under
+  Apache-2.0) in ComfyUI, from the poses, one clip per state.
+
+## Improving Alfred
+
+Redrawing him, a better animation, a pose that is missing: all welcome, even just the drawings. The sheets here
+are a processed form and not a good starting point; the material they come from is in the
+[Alfred source package](https://github.com/m0s4ik/home-companion/releases/tag/alfred-sources-v1): every clip's
+final frames, the video model's original output, the ComfyUI workflows, the prompts of the poses and of the clips,
+and the rules a new drawing must keep (canvas, feet in the same place, the flat `#03050D` background, loops that
+close on their first frame). Rebuild a sheet with `tools/make-animation.py`, look at it with a headless screenshot of
+its state, and open a pull request: contributions to the character are CC0 as well.
+
+Missing today: poses for "plug it in" (the Home Assistant link page), "at work", "satisfied" and "a nod", and
+animations for the offline and muted poses.
