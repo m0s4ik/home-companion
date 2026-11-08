@@ -68,7 +68,8 @@ pub struct WebCfg {
     pub governor: String,
     /// Freeze the helper's cgroup after this long hidden (0 = never).
     pub freeze_after_seconds: f32,
-    /// Back home after this long without a touch on "Casa" (0 = never).
+    /// Back home after this long without a touch on "Casa" (0 = never, the default: the page can
+    /// stay up as a wall dashboard).
     pub idle_return_seconds: f32,
     /// A swipe up from the bottom edge goes home (like a phone's home gesture), with a thin
     /// home indicator bar at the bottom.
@@ -123,7 +124,7 @@ impl Default for WebCfg {
             socket: "/run/home-companion-web/home-companion-web.sock".into(),
             governor: "performance".into(),
             freeze_after_seconds: 360.0,
-            idle_return_seconds: 300.0,
+            idle_return_seconds: 0.0,
             edge_swipe: true,
             home_button_seconds: 4.0,
             heavy_views: Vec::new(),
