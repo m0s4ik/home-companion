@@ -637,24 +637,33 @@ fn go<S: Screen>(
         );
     }
 
-    // The shopping list (`[lists] shopping`, a `todo.*` entity): its own thread too.
-    let shopping =
-        (a.state.is_none() && !cfg.lists.shopping.is_empty() && !cfg.home_assistant.url.is_empty())
-            .then(|| {
-                let sc = home_companion::ha::todo::ShopConfig {
-                    url: cfg.home_assistant.url.clone(),
-                    auth: std::sync::Arc::new(cfg.ha_auth()),
-                    entity: cfg.lists.shopping.clone(),
-                };
-                match home_companion::ha::todo::spawn(sc, signals::stop_requested) {
-                    Ok((rx, tx, _)) => Some((rx, tx)),
-                    Err(e) => {
-                        log::warn!("shopping list thread: {e}");
-                        None
-                    }
+    // Cards and shopping lists from Home Assistant (one WebSocket connection, its own thread):
+    // the lists the user chose on the screen, else `[lists] shopping`, else every `todo.*`.
+    let settings_lists = Settings::in_dir(&cfg.state_dir()).lists();
+    let hub_lists = if !settings_lists.is_empty() {
+        settings_lists
+    } else if !cfg.lists.shopping.is_empty() {
+        vec![cfg.lists.shopping.clone()]
+    } else {
+        Vec::new()
+    };
+    let hub = (a.state.is_none() && !cfg.home_assistant.url.is_empty())
+        .then(|| {
+            let hc = home_companion::ha::hub::HubConfig {
+                url: cfg.home_assistant.url.clone(),
+                auth: std::sync::Arc::new(cfg.ha_auth()),
+                device: character.name.clone(),
+                lists: hub_lists.clone(),
+            };
+            match home_companion::ha::hub::spawn(hc, signals::stop_requested) {
+                Ok((rx, tx, _)) => Some((rx, tx, hub_lists)),
+                Err(e) => {
+                    log::warn!("Home Assistant hub thread: {e}");
+                    None
                 }
-            })
-            .flatten();
+            }
+        })
+        .flatten();
 
     // Settings → Home Assistant: the setup after the QR link and its checks (own thread).
     let ha_setup = (a.state.is_none() && opts.demo.is_none() && !cfg.home_assistant.url.is_empty())
@@ -692,7 +701,7 @@ fn go<S: Screen>(
         touch,
         wake: wake_sources,
         weather,
-        shopping,
+        hub,
         ha_setup,
         fps: cfg.ui.fps,
         exit_after: a.exit_after,

@@ -294,10 +294,12 @@ pub struct UiContext {
     pub wake: Option<Receiver<WakeSource>>,
     /// The weather thread (crate::ha): `None` = no real data.
     pub weather: Option<Receiver<Option<crate::ha::weather::Weather>>>,
-    /// The shopping list thread (crate::ha::todo): its open items, and the ticks back.
-    pub shopping: Option<(
-        Receiver<Vec<crate::ha::todo::Item>>,
-        std::sync::mpsc::Sender<crate::ha::todo::ShopCmd>,
+    /// Home Assistant's cards and lists thread (crate::ha::hub): what it says, what the screen
+    /// tells it, and the lists chosen at first.
+    pub hub: Option<(
+        Receiver<crate::ha::hub::HubMsg>,
+        std::sync::mpsc::Sender<crate::ha::hub::HubCmd>,
+        Vec<String>,
     )>,
     /// The setup of Home Assistant (crate::ha::setup): Settings → Home Assistant.
     pub ha_setup: Option<crate::ha::setup::Setup>,
@@ -345,8 +347,8 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
         let (ui, quit, casa) = (ui.clone(), quit.clone(), casa.clone());
         let (commands, touch, wake) = (ctx.commands, ctx.touch, ctx.wake);
         let weather = ctx.weather;
-        let shopping = ctx.shopping.map(|(rx, tx)| {
-            ui.set_shopping_sender(tx);
+        let hub = ctx.hub.map(|(rx, tx, lists)| {
+            ui.set_hub(tx, lists);
             rx
         });
         if let Some(s) = ctx.ha_setup {
@@ -402,10 +404,10 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
                     ui.set_weather(last);
                 }
             }
-            if let Some(s) = &shopping
-                && let Some(items) = s.try_iter().last()
-            {
-                ui.set_shopping_items(items);
+            if let Some(h) = &hub {
+                while let Ok(m) = h.try_recv() {
+                    ui.apply_hub(m);
+                }
             }
             if crate::signals::take_wake() {
                 log::info!("SIGUSR1: waking the screen");

@@ -276,9 +276,16 @@ pub fn feed_ha_token(
                     Ok((token, expires_at)) => request(&path, &{
                         let st = crate::ha::setup::State::load(&setup_state);
                         let lang = settings.language().unwrap_or_else(|| language.clone());
-                        json!({"cmd": "ha.token", "token": token, "expires_at": expires_at,
-                                "url": url, "satellite_entity": st.satellite,
-                                "allow": st.ha_addresses, "language": lang})
+                        ha_token_request(
+                            &token,
+                            expires_at,
+                            &url,
+                            &st.satellite,
+                            &st.ha_addresses,
+                            &lang,
+                            &settings.lists(),
+                            &settings.calendars(),
+                        )
                     })
                     .is_some_and(|a| a.get("ok") == Some(&Value::Bool(true))),
                     Err(e) => {
@@ -299,6 +306,25 @@ pub fn feed_ha_token(
                 });
             }
         });
+}
+
+/// The `ha.token` request: the token with Home Assistant's address, the satellite, the allowed
+/// addresses, the language and the lists and calendars the user chose on the screen (empty =
+/// all of them).
+#[allow(clippy::too_many_arguments)]
+pub fn ha_token_request(
+    token: &str,
+    expires_at: u64,
+    url: &str,
+    satellite: &str,
+    allow: &[String],
+    language: &str,
+    lists: &[String],
+    calendars: &[String],
+) -> Value {
+    json!({"cmd": "ha.token", "token": token, "expires_at": expires_at, "url": url,
+           "satellite_entity": satellite, "allow": allow, "language": language,
+           "lists": lists, "calendars": calendars})
 }
 
 /// What the brain says about its tools (Settings → Home Assistant): None = it does not answer.
@@ -371,6 +397,29 @@ fn subscribe_loop(path: &std::path::Path, tx: &Sender<BrainMsg>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ha_token_request_carries_the_choices() {
+        let r = super::ha_token_request(
+            "t",
+            1794150000,
+            "http://ha.example:8123",
+            "assist_satellite.x",
+            &["10.0.0.2".to_string()],
+            "it",
+            &["todo.shopping".to_string(), "todo.bring_home".to_string()],
+            &[],
+        );
+        // The same shape as the brain's contract (crates/brain/contract).
+        let line = include_str!("../../brain/contract/requests.jsonl")
+            .lines()
+            .find(|l| l.contains("ha.token"))
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap());
+        if let Some(c) = line {
+            assert_eq!(r, c);
+        }
+        assert_eq!(r["calendars"], serde_json::json!([]));
+        assert_eq!(r["lists"][1], "todo.bring_home");
+    }
     use super::*;
     use std::os::unix::net::UnixListener;
 

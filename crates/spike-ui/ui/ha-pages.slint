@@ -1,0 +1,305 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+// Pages that come from Home Assistant, kept apart from companion.slint: the weather page (current
+// condition and the daily forecast), "Lists and calendars" (which `todo.*` lists and `calendar.*`
+// calendars to show), and a line for a calendar event. Each page draws its header and its
+// content in the desk column; the action band (the gold Talk button) is companion.slint's.
+
+import { Theme, Grid } from "design/tokens.slint";
+import { Icons } from "design/icons.slint";
+import { Icon, PageHeader, SectionTitle, Group, Row } from "design/components.slint";
+
+// A day of the forecast: "Tomorrow", Home Assistant's condition, its words, the temperatures
+// ("12°", "4°"), the rain ("60%", "2.5 mm"; empty = dry or unknown).
+export struct ForecastRow {
+    day: string,
+    kind: string,
+    condition: string,
+    high: string,
+    low: string,
+    rain: string,
+}
+
+// A list or a calendar with its switch.
+export struct ChoiceRow {
+    id: string,
+    name: string,
+    on: bool,
+}
+
+component WeatherGlyph inherits Icon {
+    in property <string> kind;
+    width: 32px;
+    height: 32px;
+    source: root.kind == "sunny" ? Icons.weather-sunny-32
+        : root.kind == "clear-night" ? Icons.weather-night-32
+        : root.kind == "partlycloudy" ? Icons.weather-partly-cloudy-32
+        : root.kind == "cloudy" ? Icons.weather-cloudy-32
+        : root.kind == "rainy" ? Icons.weather-rainy-32
+        : root.kind == "pouring" ? Icons.weather-pouring-32
+        : root.kind == "snowy" ? Icons.weather-snowy-32
+        : root.kind == "snowy-rainy" ? Icons.weather-snowy-rainy-32
+        : root.kind == "fog" ? Icons.weather-fog-32
+        : root.kind == "hail" ? Icons.weather-hail-32
+        : root.kind == "lightning" ? Icons.weather-lightning-32
+        : root.kind == "lightning-rainy" ? Icons.weather-lightning-rainy-32
+        : root.kind == "windy" ? Icons.weather-windy-32
+        : root.kind == "windy-variant" ? Icons.weather-windy-variant-32
+        : Icons.alert-circle-32;
+}
+
+// One forecast line: the day, the sky, the rain, the high and the low.
+component ForecastLine inherits Rectangle {
+    in property <ForecastRow> day;
+    height: 72px;
+    Text {
+        x: 24px;
+        width: 200px;
+        height: parent.height;
+        text: root.day.day;
+        font-size: 26px;
+        color: Theme.text;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    WeatherGlyph {
+        x: 236px;
+        y: 20px;
+        kind: root.day.kind;
+        color: Theme.text-2;
+    }
+    Text {
+        x: 290px;
+        width: 140px;
+        height: parent.height;
+        text: root.day.rain;
+        font-size: 22px;
+        color: Theme.accent;
+        vertical-alignment: center;
+    }
+    Text {
+        x: parent.width - 24px - 170px;
+        width: 100px;
+        height: parent.height;
+        text: root.day.high;
+        font-family: "Inter Tnum";
+        font-size: 26px;
+        font-weight: 500;
+        color: Theme.text;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+    Text {
+        x: parent.width - 24px - 70px;
+        width: 70px;
+        height: parent.height;
+        text: root.day.low;
+        font-family: "Inter Tnum";
+        font-size: 26px;
+        color: Theme.text-3;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+}
+
+// The weather page: the current condition (MDI path data of its icon, the temperature, today's
+// range) over the daily forecast.
+export component WeatherPage inherits Rectangle {
+    in property <string> title;
+    in property <string> clock;
+    in property <string> icon;
+    in property <string> temperature;
+    in property <string> condition;
+    in property <string> high;
+    in property <string> low;
+    in property <string> forecast-title;
+    in property <string> empty;
+    in property <[ForecastRow]> rows;
+    callback back();
+    PageHeader {
+        x: Grid.col-x;
+        y: Grid.header-y;
+        title: root.title;
+        clock: root.clock;
+        back => {
+            root.back();
+        }
+    }
+    Rectangle {
+        x: Grid.col-x;
+        y: Grid.page-y;
+        width: Grid.col-width;
+        height: 128px;
+        Path {
+            x: 8px;
+            y: 16px;
+            width: 96px;
+            height: 96px;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: root.icon;
+            fill: Theme.accent;
+            stroke-width: 0;
+        }
+        Text {
+            x: 128px;
+            y: 8px;
+            width: parent.width - 128px;
+            text: root.temperature;
+            font-family: "Inter Tnum";
+            font-size: 64px;
+            font-weight: 300;
+            color: Theme.text;
+        }
+        Text {
+            x: 128px;
+            y: 84px;
+            width: parent.width - 128px;
+            text: root.condition + (root.high != "" ? "  ·  " + root.high + " / " + root.low : "");
+            font-size: 26px;
+            color: Theme.text-2;
+            overflow: elide;
+        }
+    }
+    if root.rows.length == 0: Text {
+        x: Grid.col-x;
+        y: Grid.page-y + 140px;
+        width: Grid.col-width;
+        text: root.empty;
+        font-size: 24px;
+        color: Theme.text-3;
+        wrap: word-wrap;
+    }
+    if root.rows.length > 0: Flickable {
+        x: Grid.col-x;
+        y: Grid.page-y + 136px;
+        width: Grid.col-width;
+        height: Grid.page-height - 136px;
+        content-height: max(self.height, forecast-col.preferred-height);
+        forecast-col := VerticalLayout {
+            alignment: start;
+            SectionTitle {
+                text: root.forecast-title;
+            }
+            Group {
+                height: root.rows.length * 72px;
+                for r[i] in root.rows: ForecastLine {
+                    y: i * 72px;
+                    width: parent.width;
+                    day: r;
+                }
+            }
+        }
+    }
+}
+
+// "Lists and calendars": the lists and the calendars Home Assistant has, each with a switch.
+export component ListsPage inherits Rectangle {
+    in property <string> title;
+    in property <string> clock;
+    in property <string> hint;
+    in property <string> todo-title;
+    in property <string> calendars-title;
+    in property <string> empty;
+    in property <[ChoiceRow]> todo;
+    in property <[ChoiceRow]> calendars;
+    callback back();
+    callback toggled(string);
+    PageHeader {
+        x: Grid.col-x;
+        y: Grid.header-y;
+        title: root.title;
+        clock: root.clock;
+        back => {
+            root.back();
+        }
+    }
+    Flickable {
+        x: Grid.col-x;
+        y: Grid.page-y;
+        width: Grid.col-width;
+        height: Grid.page-height;
+        content-height: max(self.height, lists-col.preferred-height);
+        lists-col := VerticalLayout {
+            alignment: start;
+            spacing: 8px;
+            Text {
+                text: root.todo.length + root.calendars.length == 0 ? root.empty : root.hint;
+                font-size: 20px;
+                color: Theme.text-3;
+                wrap: word-wrap;
+            }
+            if root.todo.length > 0: SectionTitle {
+                text: root.todo-title;
+            }
+            if root.todo.length > 0: Group {
+                height: root.todo.length * 76px;
+                for r[i] in root.todo: Row {
+                    y: i * 76px;
+                    width: parent.width;
+                    first: i == 0;
+                    label: r.name;
+                    kind: "toggle";
+                    on: r.on;
+                    toggled(v) => {
+                        root.toggled(r.id);
+                    }
+                }
+            }
+            if root.calendars.length > 0: SectionTitle {
+                text: root.calendars-title;
+            }
+            if root.calendars.length > 0: Group {
+                height: root.calendars.length * 76px;
+                for r[i] in root.calendars: Row {
+                    y: i * 76px;
+                    width: parent.width;
+                    first: i == 0;
+                    label: r.name;
+                    kind: "toggle";
+                    on: r.on;
+                    toggled(v) => {
+                        root.toggled(r.id);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A calendar event on the reminders page: what, and when ("today 15:00 · Family"); nothing to
+// delete here (the calendar belongs to Home Assistant).
+export component EventRow inherits Rectangle {
+    in property <string> text;
+    in property <string> detail;
+    height: max(76px, title.preferred-height + 30px + 28px);
+    border-radius: 16px;
+    background: Theme.surface;
+    Icon {
+        x: 24px;
+        y: 22px;
+        width: 32px;
+        height: 32px;
+        source: Icons.calendar-clock-32;
+        color: Theme.text-2;
+    }
+    title := Text {
+        x: 80px;
+        y: 14px;
+        width: parent.width - 104px;
+        text: root.text;
+        font-size: 24px;
+        color: Theme.text;
+        wrap: word-wrap;
+    }
+    Text {
+        x: 80px;
+        y: 14px + title.preferred-height + 4px;
+        width: parent.width - 104px;
+        text: root.detail;
+        font-size: 20px;
+        color: Theme.text-3;
+        overflow: elide;
+    }
+}

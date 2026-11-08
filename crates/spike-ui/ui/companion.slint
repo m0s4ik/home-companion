@@ -26,6 +26,8 @@ import {
     Step, Stepper, Chip, Dialog, Separator, VolumeHud, GlyphButton, ControlTile, LevelBar, Feedback
 } from "design/components.slint";
 import { CasaScreen, CasaBridge } from "casa.slint";
+import { WeatherPage, ListsPage, EventRow, ForecastRow, ChoiceRow } from "ha-pages.slint";
+export { ForecastRow, ChoiceRow } from "ha-pages.slint";
 export { CasaBridge, CasaMenuRow } from "casa.slint";
 export { Feedback } from "design/components.slint";
 
@@ -199,6 +201,16 @@ export struct Words {
     forget_text: string,
     shopping: string,
     shopping_empty: string,
+    calendar_events: string,
+    weather_title: string,
+    weather_forecast: string,
+    weather_no_forecast: string,
+    ha_lists: string,
+    lists_title: string,
+    lists_todo: string,
+    lists_calendars: string,
+    lists_empty: string,
+    lists_hint: string,
     ha_intro: string,
     ha_configure: string,
     ha_check: string,
@@ -597,6 +609,16 @@ export component CompanionWindow inherits Window {
     in property <bool> shopping-on: false;
     in property <[ShopRow]> shop-rows: [];
     in property <string> tile-shopping: "";
+    // v0.2 ha: the weather page (its icon's path data, today's range, the forecast), the page
+    // choosing lists and calendars, and the calendar events on the reminders page.
+    in property <string> weather-icon: "";
+    in property <string> weather-high: "";
+    in property <string> weather-low: "";
+    in property <[ForecastRow]> forecast-rows: [];
+    in property <[ChoiceRow]> choice-todo: [];
+    in property <[ChoiceRow]> choice-calendars: [];
+    in property <[JobRow]> event-rows: [];
+    callback choice-toggled(string);
     // Settings → Home Assistant: the checks, a status line, working, set up once.
     in property <[HaRow]> ha-rows: [];
     in property <string> ha-line: "";
@@ -1003,6 +1025,18 @@ export component CompanionWindow inherits Window {
             }
         }
 
+        // A tap on the weather opens its page.
+        if root.weather-shown: TouchArea {
+            x: Grid.col-x;
+            y: 232px;
+            width: Grid.col-width;
+            height: 60px;
+            clicked => {
+                Feedback.tap();
+                root.page = "weather";
+            }
+        }
+
         // Nothing alive: the invitation, quiet, in the middle of the band.
         if root.cards.length == 0 || root.notifications-hidden: Text {
             x: Grid.col-x;
@@ -1062,12 +1096,21 @@ export component CompanionWindow inherits Window {
                         : c.kind == "alarm" ? Icons.alarm-32
                         : c.kind == "mirror" ? Icons.cast-connected-32
                         : c.kind == "ready" ? Icons.check-circle-32
+                        : c.kind == "hc-alert" ? Icons.alert-circle-32
+                        : c.kind == "hc-check" ? Icons.check-circle-32
+                        : c.kind == "hc-cart" ? Icons.cart-32
+                        : c.kind == "hc-calendar" ? Icons.calendar-clock-32
+                        : c.kind == "hc-alarm" ? Icons.alarm-32
+                        : c.kind == "hc-timer" ? Icons.timer-32
+                        : c.kind == "hc-music" ? Icons.music-note-32
+                        : c.kind == "hc-rain" ? Icons.weather-rainy-32
+                        : c.kind == "hc-sun" ? Icons.weather-sunny-32
                         : Icons.forum-32;
-                    icon-color: c.kind == "status" ? Theme.danger
+                    icon-color: c.kind == "status" || c.kind == "hc-alert" ? Theme.danger
                         : c.kind == "more" || c.kind == "answer" ? Theme.text-2 : Theme.accent;
                     title: c.title;
                     text: c.text;
-                    action: c.kind == "message" || c.kind == "reminder" ? root.t.ok : "";
+                    action: c.kind == "message" || c.kind == "reminder" || c.kind.starts-with("hc-") ? root.t.ok : "";
                     closable: c.kind == "mirror" || c.kind == "ready";
                     action-clicked => {
                         root.message-ok(i);
@@ -1952,6 +1995,18 @@ export component CompanionWindow inherits Window {
                         root.ha-repair(r.id);
                     }
                 }
+                if root.ha-configured: Group {
+                    height: 76px;
+                    Row {
+                        width: parent.width;
+                        first: true;
+                        icon: Icons.view-dashboard-28;
+                        label: root.t.ha-lists;
+                        clicked => {
+                            root.page = "ha-lists";
+                        }
+                    }
+                }
             }
         }
         BareButton {
@@ -1978,6 +2033,63 @@ export component CompanionWindow inherits Window {
                 } else if !root.ha-busy {
                     root.ha-check();
                 }
+            }
+        }
+    }
+
+    // ---- The weather: the current condition and the daily forecast (Home Assistant).
+    if root.desk && root.desk-page == "weather": Rectangle {
+        WeatherPage {
+            title: root.t.weather-title;
+            clock: root.clock;
+            icon: root.weather-icon;
+            temperature: root.temperature;
+            condition: root.weather-condition;
+            high: root.weather-high;
+            low: root.weather-low;
+            forecast-title: root.t.weather-forecast;
+            empty: root.t.weather-no-forecast;
+            rows: root.forecast-rows;
+            back => {
+                root.page = "home";
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.microphone-44;
+            label: root.t.talk;
+            clicked => {
+                root.talk-clicked();
+            }
+        }
+    }
+
+    // ---- Home Assistant → Lists and calendars: which ones the screen (and the brain) use.
+    if root.desk && root.desk-page == "ha-lists": Rectangle {
+        ListsPage {
+            title: root.t.lists-title;
+            clock: root.clock;
+            hint: root.t.lists-hint;
+            todo-title: root.t.lists-todo;
+            calendars-title: root.t.lists-calendars;
+            empty: root.t.lists-empty;
+            todo: root.choice-todo;
+            calendars: root.choice-calendars;
+            back => {
+                root.page = "ha";
+            }
+            toggled(id) => {
+                root.choice-toggled(id);
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.microphone-44;
+            label: root.t.talk;
+            clicked => {
+                root.talk-clicked();
             }
         }
     }
@@ -2116,7 +2228,14 @@ export component CompanionWindow inherits Window {
                         root.job-cancel(j.id);
                     }
                 }
-                if root.job-rows.length == 0: Text {
+                if root.event-rows.length > 0: SectionTitle {
+                    text: root.t.calendar-events;
+                }
+                for e in root.event-rows: EventRow {
+                    text: e.text;
+                    detail: e.when;
+                }
+                if root.job-rows.length == 0 && root.event-rows.length == 0: Text {
                     height: 120px;
                     text: root.t.reminders-empty;
                     font-size: 24px;
@@ -2168,10 +2287,15 @@ export component CompanionWindow inherits Window {
             shop-col := VerticalLayout {
                 alignment: start;
                 spacing: 8px;
-                for item in root.shop-rows: ShopItem {
-                    text: item.text;
-                    done => {
-                        root.shop-done(item.uid);
+                for item in root.shop-rows: VerticalLayout {
+                    if item.uid == "": SectionTitle {
+                        text: item.text;
+                    }
+                    if item.uid != "": ShopItem {
+                        text: item.text;
+                        done => {
+                            root.shop-done(item.uid);
+                        }
                     }
                 }
             }
