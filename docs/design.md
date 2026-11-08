@@ -286,6 +286,6 @@ The body runs **UxPlay** as a child process (patched, `tools/airplay/`) and stay
 - **End to end**: `crates/wyoming`'s fake Home Assistant plays scripted Wyoming conversations against the body
   (`cargo test -p home-companion --tests`, `crates/home-companion/tools/run-e2e.sh`).
 - **Golden screenshots**: each screen rendered headless with fixed data and compared with a reference PNG
-  (`crates/home-companion/fixtures/golden/`, `tools/shoot-golden.sh`, `tools/check-golden.py`).
+  (`crates/home-companion/fixtures/golden/`, `crates/home-companion/tools/shoot-golden.sh`, `crates/home-companion/tools/check-golden.py`).
 - **Characters and locales**: `cargo test -p character` and `cargo test -p locale` check every package.
 - On the device: audio, the wake word and the final check.
