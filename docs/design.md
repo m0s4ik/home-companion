@@ -190,7 +190,7 @@ models, training the stop words).
   LED stays off (packaging/README.md). **Night mode** (Settings → Screen, 23-07 by default) caps the levels and shows
   the bedside clock (ui.md).
 - **Backlight and awake time**: the home screen is dim with the character still; a touch, a volume key, a movement
-  of the accelerometer or the end of a conversation makes it bright for 16 s (`[screen] awake_seconds`), while the
+  of the accelerometer or the end of a conversation makes it bright for 60 s (`[screen] awake_seconds`), while the
   character plays its wake-up animation and then the idle one; every other screen is bright. The panel is never
   switched off through DRM (it does not come back on the ThinkSmart View). **Vol+ and Vol− together** outside the
   Home Assistant view put the screen to sleep: backlight 0 until the next touch, key, movement, wake word or ringing

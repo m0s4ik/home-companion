@@ -387,7 +387,7 @@ impl Default for ScreenCfg {
             auto_dark: [0.2, 40.0, 400.0],
             auto_room: [20.0, 600.0, 2200.0],
             auto_bright: [100.0, 1200.0, 4095.0],
-            awake_seconds: 16.0,
+            awake_seconds: 60.0,
             keys: true,
             accelerometer: "auto".into(),
             motion_threshold: 1.5,

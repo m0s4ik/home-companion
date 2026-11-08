@@ -108,7 +108,7 @@ the governors) gives group `home-companion` write access to both files at every 
 
 Screen behaviour (`[screen]` in the configuration, defaults shown by `home-companion --print-config`): the home screen is dim
 (`idle_brightness`, 600 of 4095) with the character still; a touch, a volume key, moving the device or the end of a
-conversation makes it bright (`active_brightness`) for `awake_seconds` (16), while the character plays its wake-up
+conversation makes it bright (`active_brightness`) for `awake_seconds` (60), while the character plays its wake-up
 and idle animations. Every other screen is bright. Vol+ and Vol− pressed together outside "Casa" put the screen to
 sleep at once (backlight 0, home-companion still listening) until the next touch, key, movement or conversation; a key press that
 only wakes the screen (or the device, after Settings → Sospendi) does not change the volume. Without the udev rule the
