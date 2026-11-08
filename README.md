@@ -18,6 +18,9 @@ elderly butler.
 [<img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue">](LICENSE)
 [<img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-m0s4ik-FFDD00?logo=buymeacoffee&logoColor=black">](https://buymeacoffee.com/m0s4ik)
 
+If this project saved you some time, you can also
+[buy me a coffee ☕](https://buymeacoffee.com/m0s4ik): it keeps the next one coming.
+
 ## What it does
 
 ### 🗣️ Talk to it
@@ -202,5 +205,3 @@ The design: [docs/design.md](docs/design.md) and the screen: [docs/ui.md](docs/u
   [characters/alfred/stopword/README.md](characters/alfred/stopword/README.md)).
 
 An independent project, not affiliated with Home Assistant or Lenovo; ThinkSmart is a trademark of its owner.
-
-If it saved you some time, you can [buy me a coffee ☕](https://buymeacoffee.com/m0s4ik).
