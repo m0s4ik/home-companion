@@ -1,3 +1,3 @@
 {"cmd":"confirm.answer","id":42,"yes":true}
 {"cmd":"control.undo","id":41}
-{"cmd":"ha.token","token":"t","expires_at":1794150000,"url":"http://ha.example:8123","satellite_entity":"assist_satellite.x","allow":["10.0.0.2"],"language":"it","lists":["todo.shopping","todo.bring_home"],"calendars":[]}
+{"cmd":"ha.token","token":"t","expires_at":1794150000,"url":"http://ha.example:8123","satellite_entity":"assist_satellite.x","allow":["192.0.2.10"],"language":"it","lists":["todo.shopping","todo.bring_home"],"calendars":[]}
