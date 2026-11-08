@@ -14,6 +14,7 @@
 pub mod auth;
 pub mod discover;
 pub mod events;
+pub mod hub;
 pub mod link;
 pub mod setup;
 pub mod todo;

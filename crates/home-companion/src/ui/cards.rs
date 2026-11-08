@@ -12,7 +12,10 @@
 //! Ricordi), (6) the shopping list, (7) what plays, (8) the last long answer for a few minutes
 //! (it opens Conversazioni). Nothing alive: no cards, the invitation shows.
 
+use std::time::{Duration, Instant};
+
 use super::CardView;
+use crate::ha::events::{CardEvent, HaCard};
 use crate::timers::TimerView;
 
 pub const MAX_CARDS: usize = 3;
@@ -35,6 +38,8 @@ pub struct Alive<'a> {
     /// ("Configurazione completata", "Tocca per aprire Home Assistant") after the first setup,
     /// until the user opens it or closes it.
     pub ready: Option<(String, String)>,
+    /// Cards sent by Home Assistant, oldest first: (title, text, kind from [`icon_kind`]).
+    pub ha: &'a [(String, String, &'static str)],
     pub timers: &'a [TimerView],
     /// The next alarm within a day: ("Sveglia · domani 07:00", its days).
     pub alarm: Option<(String, String)>,
@@ -83,6 +88,9 @@ pub fn pick(a: &Alive, w: &CardWords) -> Vec<CardView> {
         // Today every message is one of home-companion-brain's (a reminder that is due, the morning
         // summary): the reminder's calendar, not a bell.
         out.push(card("reminder", &title, x));
+    }
+    for (t, x, kind) in a.ha {
+        out.push(card(kind, t, x));
     }
     if let Some((t, x)) = &a.mirror {
         out.push(card("mirror", t, x));
@@ -134,6 +142,147 @@ pub fn pick(a: &Alive, w: &CardWords) -> Vec<CardView> {
     }
     out.truncate(MAX_CARDS);
     out
+}
+
+/// The card kinds of Home Assistant's cards (the screen draws the icon from the kind). All of
+/// them start with `hc-`, except the generic one.
+pub const HA_KINDS: [&str; 10] = [
+    "message",
+    "hc-alert",
+    "hc-check",
+    "hc-cart",
+    "hc-calendar",
+    "hc-alarm",
+    "hc-timer",
+    "hc-music",
+    "hc-rain",
+    "hc-sun",
+];
+
+/// A card kind of a Home Assistant card: a few common `mdi:` names map to icons the screen
+/// has; anything else is the generic message.
+pub fn icon_kind(icon: Option<&str>) -> &'static str {
+    let name = icon.and_then(|i| i.strip_prefix("mdi:")).unwrap_or("");
+    let has = |parts: &[&str]| parts.iter().any(|p| name.contains(p));
+    if name.starts_with("bell") {
+        "message"
+    } else if has(&[
+        "alert",
+        "fire",
+        "smoke",
+        "water-alert",
+        "alarm-light",
+        "shield-alert",
+    ]) {
+        "hc-alert"
+    } else if name.starts_with("check") {
+        "hc-check"
+    } else if has(&["cart", "basket", "shopping"]) {
+        "hc-cart"
+    } else if name.starts_with("calendar") {
+        "hc-calendar"
+    } else if name.starts_with("alarm") {
+        "hc-alarm"
+    } else if name.starts_with("timer") || has(&["clock", "washing-machine", "dishwasher"]) {
+        "hc-timer"
+    } else if name.starts_with("music") || has(&["speaker", "volume"]) {
+        "hc-music"
+    } else if name.contains("rain") || name.contains("umbrella") || name.contains("pouring") {
+        "hc-rain"
+    } else if name.contains("sun") || name.contains("weather-sunny") {
+        "hc-sun"
+    } else {
+        "message"
+    }
+}
+
+/// At most this many cards from Home Assistant are kept (the oldest go first).
+pub const MAX_HA_CARDS: usize = 6;
+
+#[derive(Debug, Clone)]
+struct HaEntry {
+    card: HaCard,
+    expires: Option<Instant>,
+}
+
+/// The cards Home Assistant sent and that are still on: a card with the id of one already
+/// there replaces it, `seconds` ends a card by itself, a tap on OK (or a dismiss event) ends it.
+#[derive(Debug, Default)]
+pub struct HaCards {
+    items: Vec<HaEntry>,
+}
+
+impl HaCards {
+    /// Applies an event; true if what is shown changed (and, for a card, that a sound is due).
+    pub fn apply(&mut self, ev: CardEvent, now: Instant) -> bool {
+        match ev {
+            CardEvent::Show(card) => {
+                let entry = HaEntry {
+                    expires: card.seconds.map(|s| now + Duration::from_secs(s)),
+                    card,
+                };
+                let same = entry.card.id.as_ref().and_then(|id| {
+                    self.items
+                        .iter()
+                        .position(|e| e.card.id.as_ref() == Some(id))
+                });
+                match same {
+                    Some(i) => self.items[i] = entry,
+                    None => {
+                        self.items.push(entry);
+                        if self.items.len() > MAX_HA_CARDS {
+                            self.items.remove(0);
+                        }
+                    }
+                }
+                true
+            }
+            CardEvent::Dismiss(id) => {
+                let before = self.items.len();
+                self.items
+                    .retain(|e| e.card.id.as_deref() != Some(id.as_str()));
+                self.items.len() != before
+            }
+        }
+    }
+
+    /// Drops the cards whose time is up; true if there were any.
+    pub fn expire(&mut self, now: Instant) -> bool {
+        let before = self.items.len();
+        self.items.retain(|e| e.expires.is_none_or(|t| t > now));
+        self.items.len() != before
+    }
+
+    /// The OK of the `n`th card (0 = the oldest).
+    pub fn dismiss_nth(&mut self, n: usize) -> bool {
+        if n < self.items.len() {
+            self.items.remove(n);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// (title, text, kind) for [`Alive::ha`]; `default_title` for a card without one.
+    pub fn views(&self, default_title: &str) -> Vec<(String, String, &'static str)> {
+        self.items
+            .iter()
+            .map(|e| {
+                (
+                    e.card
+                        .title
+                        .clone()
+                        .unwrap_or_else(|| default_title.to_string()),
+                    e.card.text.clone(),
+                    icon_kind(e.card.icon.as_deref()),
+                )
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -190,6 +339,7 @@ mod tests {
             mirror: None,
             ready: None,
             timers: &timers,
+            ha: &[],
             alarm: None,
             upcoming: None,
             shopping: None,
@@ -300,5 +450,86 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(kinds(&pick(&b, &w)), ["alarm", "upcoming"]);
+    }
+
+    fn ha(id: Option<&str>, text: &str, seconds: Option<u64>) -> CardEvent {
+        CardEvent::Show(HaCard {
+            id: id.map(String::from),
+            text: text.into(),
+            seconds,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn ha_cards_replace_by_id_and_expire() {
+        let t0 = Instant::now();
+        let mut c = HaCards::default();
+        assert!(c.apply(ha(Some("w"), "Done", Some(60)), t0));
+        assert!(c.apply(ha(None, "No id", None), t0));
+        assert!(c.apply(ha(None, "No id either", None), t0));
+        assert!(c.apply(ha(Some("w"), "Again", Some(10)), t0));
+        let v = c.views("Message");
+        assert_eq!(v.len(), 3);
+        assert_eq!(v[0].1, "Again");
+        assert_eq!(v[0].0, "Message");
+        // Ten seconds later the replaced card is gone, the ones without a time stay.
+        assert!(!c.expire(t0 + Duration::from_secs(5)));
+        assert!(c.expire(t0 + Duration::from_secs(11)));
+        assert_eq!(c.views("M").len(), 2);
+        assert!(!c.expire(t0 + Duration::from_secs(9999)));
+    }
+
+    #[test]
+    fn ha_cards_dismiss_and_limit() {
+        let t0 = Instant::now();
+        let mut c = HaCards::default();
+        c.apply(ha(Some("a"), "A", None), t0);
+        c.apply(ha(Some("b"), "B", None), t0);
+        assert!(c.apply(CardEvent::Dismiss("a".into()), t0));
+        assert!(!c.apply(CardEvent::Dismiss("a".into()), t0));
+        assert!(c.dismiss_nth(0));
+        assert!(!c.dismiss_nth(0));
+        assert!(c.is_empty());
+        for i in 0..MAX_HA_CARDS + 3 {
+            c.apply(ha(None, &i.to_string(), None), t0);
+        }
+        let v = c.views("M");
+        assert_eq!(v.len(), MAX_HA_CARDS);
+        assert_eq!(v[0].1, "3");
+    }
+
+    #[test]
+    fn mdi_names_map_to_known_icons() {
+        assert_eq!(icon_kind(Some("mdi:cart-outline")), "hc-cart");
+        assert_eq!(icon_kind(Some("mdi:washing-machine")), "hc-timer");
+        assert_eq!(icon_kind(Some("mdi:alert-circle")), "hc-alert");
+        assert_eq!(icon_kind(Some("mdi:bell-ring")), "message");
+        assert_eq!(icon_kind(Some("mdi:weather-rainy")), "hc-rain");
+        assert_eq!(icon_kind(Some("mdi:something-new")), "message");
+        assert_eq!(icon_kind(None), "message");
+        for k in [
+            "hc-cart", "hc-timer", "hc-alert", "hc-rain", "hc-sun", "hc-music", "hc-check",
+        ] {
+            assert!(HA_KINDS.contains(&k));
+        }
+    }
+
+    #[test]
+    fn ha_cards_come_after_messages() {
+        let (of, more) = words();
+        let w = CardWords {
+            of: &of,
+            more_timers: &more,
+            paused: "P",
+        };
+        let msgs = vec![("R".to_string(), "x".to_string())];
+        let ha = vec![("Laundry".to_string(), "Done".to_string(), "hc-timer")];
+        let a = Alive {
+            messages: &msgs,
+            ha: &ha,
+            ..Default::default()
+        };
+        assert_eq!(kinds(&pick(&a, &w)), ["reminder", "hc-timer"]);
     }
 }

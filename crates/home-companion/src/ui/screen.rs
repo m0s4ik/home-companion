@@ -23,10 +23,13 @@ use super::anim::{self, Clip, Mode, Playhead, Sequencer, Show, Timing};
 use super::backlight::{Awake, Backlight, Fade, Levels, WakeSource};
 use super::cards::{self, Alive, CardWords};
 use super::light::{Auto, Curve};
+use super::lists::{self, Choice, ShopList};
+use super::next;
 use super::{AlarmLineView, MemoriesView, MusicView, Screen, SettingsView, TimerLineView};
 use crate::alarms::Alarm;
-use crate::brain_link::{BrainLink, BrainMsg};
+use crate::brain_link::{BrainLink, BrainMsg, Upcoming};
 use crate::core::{CoreEvent, MirrorInfo, Phase, UiCommand, UiEvent};
+use crate::ha::hub::{HubCmd, HubMsg};
 use crate::ha::weather::Weather;
 use crate::history::History;
 use crate::settings::Settings;
@@ -263,6 +266,9 @@ pub struct Demo {
     pub mirror_at: Option<f32>,
     /// `--state first-ha-*`: the first start's Home Assistant page ("searching", "found", "none").
     pub find: &'static str,
+    /// `--state ha-home` / `weather` / `ha-lists` / `reminders-events`: v0.2's Home Assistant
+    /// screens on sample data.
+    pub v02: &'static str,
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
@@ -386,6 +392,26 @@ impl Demo {
                     ..page("mirror")
                 }
             }
+            "ha-home" => Demo {
+                v02: "home",
+                ..home.clone()
+            },
+            "ha-next" => Demo {
+                v02: "next",
+                ..home.clone()
+            },
+            "weather" => Demo {
+                v02: "weather",
+                ..page("weather")
+            },
+            "ha-lists" => Demo {
+                v02: "lists",
+                ..page("ha-lists")
+            },
+            "reminders-events" => Demo {
+                v02: "events",
+                ..page("reminders")
+            },
             "cards-setup" => Demo {
                 cards: true,
                 setup_card: true,
@@ -611,7 +637,11 @@ struct Desk {
     /// The "Ricordi" page as last received.
     memories: MemoriesView,
     /// The shopping list's open items (uid, text); None = not configured or not received yet.
-    shopping: Option<Vec<(String, String)>>,
+    shopping: Option<Vec<ShopList>>,
+    /// Calendar events from the brain (`BrainMsg::Upcoming`), soonest first.
+    events: Vec<Upcoming>,
+    /// Cards sent by Home Assistant (`home_companion_card`).
+    ha_cards: cards::HaCards,
     /// home-companion-brain's reminders still to come (due, seconds since the epoch; text), soonest first.
     upcoming: Vec<(i64, String)>,
     /// The core's tiles of the control center (UiCommand::Control).
@@ -683,8 +713,13 @@ pub struct Ui<S: Screen> {
     wifi_name: RefCell<Option<String>>,
     /// home-companion-brain's control socket (None in demos).
     brain: Option<BrainLink>,
-    /// Ticks of the shopping list, to its thread (crate::ha::todo).
-    shop_tx: RefCell<Option<Sender<crate::ha::todo::ShopCmd>>>,
+    /// Ticks of the shopping lists and the choice of lists, to Home Assistant's thread
+    /// (crate::ha::hub).
+    hub_tx: RefCell<Option<Sender<HubCmd>>>,
+    /// Home Assistant → Lists and calendars.
+    choice: RefCell<Choice>,
+    /// The kinds of the cards on the home, in order (what an OK on card `i` means).
+    card_kinds: RefCell<Vec<&'static str>>,
     /// The setup of Home Assistant (crate::ha::setup) and what its page shows.
     ha_setup: RefCell<Option<crate::ha::setup::Setup>>,
     ha_page: RefCell<HaPage>,
@@ -733,6 +768,54 @@ fn tidy_line(l: &Locale, tidy: &serde_json::Value) -> String {
 }
 
 /// "5 nov" (the locale's month, three letters).
+/// The calendar events of today and tomorrow as rows of the reminders page: ("today 15:00 ·
+/// Family", what); all-day ones say "all day".
+/// The sample calendar of the demos: a dentist this afternoon, a holiday and a dinner tomorrow.
+fn demo_events(l: &Locale) -> Vec<Upcoming> {
+    let midnight = DEMO_NOW as i64 - DEMO_NOW as i64 % 86400;
+    let ev = |start, end, all_day, title: &str| Upcoming {
+        start,
+        end,
+        all_day,
+        title: title.into(),
+        calendar: "calendar.demo0".into(),
+    };
+    vec![
+        ev(
+            DEMO_NOW as i64 + 2100,
+            DEMO_NOW as i64 + 3900,
+            false,
+            l.sample("event_dentist"),
+        ),
+        ev(
+            midnight + 86400,
+            midnight + 2 * 86400,
+            true,
+            l.sample("event_holiday"),
+        ),
+    ]
+}
+
+fn event_rows(events: &[Upcoming], l: &Locale, now: i64) -> Vec<(String, String)> {
+    let day_of = |t: i64| local_hm(t).1;
+    next::today_tomorrow(events, now, &day_of)
+        .into_iter()
+        .map(|(offset, e)| {
+            let day = l.text(if offset == 0 {
+                "calendar_today"
+            } else {
+                "calendar_tomorrow"
+            });
+            let at = if e.all_day {
+                l.text("calendar_all_day").to_string()
+            } else {
+                local_hm(e.start).0
+            };
+            (format!("{day} {at}"), e.title.clone())
+        })
+        .collect()
+}
+
 fn short_date(l: &Locale, ts: i64) -> String {
     let t = ts as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
@@ -880,7 +963,9 @@ impl<S: Screen> Ui<S> {
             link_done: Cell::new(None),
             wifi_name: RefCell::new(None),
             brain: (!demo).then(BrainLink::start),
-            shop_tx: RefCell::new(None),
+            hub_tx: RefCell::new(None),
+            choice: RefCell::new(Choice::default()),
+            card_kinds: RefCell::new(Vec::new()),
             ha_setup: RefCell::new(None),
             ha_page: RefCell::new(HaPage::default()),
             ha_keep: Cell::new(None),
@@ -975,6 +1060,12 @@ impl<S: Screen> Ui<S> {
         let tx = self.core.clone();
         let ui = Rc::downgrade(self);
         self.screen.on_message_ok(move |i| {
+            // A card from Home Assistant: its own OK.
+            if let Some(ui) = ui.upgrade()
+                && ui.ha_card_ok(i)
+            {
+                return;
+            }
             // The message card on the home is the first reminder while there is one.
             if let Some(ui) = ui.upgrade()
                 && ui.ack_reminder()
@@ -993,6 +1084,12 @@ impl<S: Screen> Ui<S> {
         self.screen.on_memories_forget(move || {
             if let Some(ui) = ui.upgrade() {
                 ui.brain_do(json!({"cmd": "memory.forget_all", "confirm": true}));
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_choice_toggled(move |id| {
+            if let Some(ui) = ui.upgrade() {
+                ui.choice_toggled(&id);
             }
         });
         let ui = Rc::downgrade(self);
@@ -1791,6 +1888,79 @@ impl<S: Screen> Ui<S> {
         )
     }
 
+    /// v0.2's Home Assistant screens on sample data (`Demo::v02`): the home with a card from
+    /// Home Assistant, a calendar event and two shopping lists; the weather page; Lists and
+    /// calendars.
+    fn show_demo_v02(&self, d: &Demo, l: &Locale) {
+        let names = |k: &str| -> Vec<String> { l.sample(k).split('|').map(String::from).collect() };
+        match d.v02 {
+            "home" | "next" => {
+                let mut desk = self.desk.borrow_mut();
+                if d.v02 == "next" {
+                    // The next event and the lists need room: no timer, no card.
+                    desk.timers.clear();
+                } else {
+                    desk.ha_cards.apply(
+                        crate::ha::events::CardEvent::Show(crate::ha::events::HaCard {
+                            id: Some("washing".into()),
+                            title: Some(l.sample("ha_card_title_sample").into()),
+                            text: l.sample("ha_card_text").into(),
+                            icon: Some("mdi:washing-machine".into()),
+                            seconds: None,
+                        }),
+                        Instant::now(),
+                    );
+                }
+                desk.events = demo_events(l);
+                let items = |v: &[&str]| -> Vec<(String, String)> {
+                    v.iter().map(|t| (t.to_string(), t.to_string())).collect()
+                };
+                let n = names("list_names");
+                desk.shopping = Some(vec![
+                    ShopList {
+                        entity: "todo.groceries".into(),
+                        name: n[0].clone(),
+                        items: items(&["Bread", "Milk"]),
+                    },
+                    ShopList {
+                        entity: "todo.hardware".into(),
+                        name: n[1].clone(),
+                        items: items(&["Screws"]),
+                    },
+                ]);
+            }
+            "weather" => {
+                let w = Weather::sample_week("2026-11-03");
+                let t = super::weather::text(&w, l);
+                self.screen.set_weather(Some((
+                    &w.condition,
+                    t.condition.as_str(),
+                    t.rounded.as_str(),
+                )));
+                let rows = super::weather::forecast_rows(&w, l, "2026-11-03", 7);
+                self.screen.set_weather_page(t.icon, &t.high, &t.low, &rows);
+            }
+            "lists" => {
+                let (lists, cals) = (names("list_names"), names("calendar_names"));
+                let named = |p: &str, v: &[String]| -> Vec<(String, String)> {
+                    v.iter()
+                        .enumerate()
+                        .map(|(i, n)| (format!("{p}.demo{i}"), n.clone()))
+                        .collect()
+                };
+                let mut c = self.choice.borrow_mut();
+                c.known = crate::ha::hub::Entities {
+                    todo: named("todo", &lists),
+                    calendar: named("calendar", &cals),
+                };
+                c.calendars = vec!["calendar.demo0".into()];
+                drop(c);
+                self.render_choices();
+            }
+            _ => {}
+        }
+    }
+
     fn show_demo(&self, d: Demo) {
         let l = self.locale.borrow().clone();
         let w = |k: &str| l.text(k).to_string();
@@ -1888,6 +2058,7 @@ impl<S: Screen> Ui<S> {
             );
         }
         self.screen.set_music(self.desk.borrow().music.as_ref());
+        self.show_demo_v02(&d, &l);
         if let Some((w, h)) = d.mirror {
             let info = MirrorInfo {
                 source: l.sample("mirror_source").to_string(),
@@ -2033,6 +2204,11 @@ impl<S: Screen> Ui<S> {
                     format!("{} 18:00", w("today")),
                     l.sample("reminder_text").into(),
                 )],
+                events: if d.v02 == "events" {
+                    event_rows(&demo_events(&l), &l, DEMO_NOW as i64)
+                } else {
+                    Vec::new()
+                },
             });
             let items: Vec<(String, String)> = l
                 .sample("shop_items")
@@ -2402,6 +2578,10 @@ impl<S: Screen> Ui<S> {
             text.as_ref()
                 .map(|(c, t)| (c.as_str(), t.condition.as_str(), t.rounded.as_str())),
         );
+        if let (Some(w), Some((_, t))) = (shown, &text) {
+            let rows = super::weather::forecast_rows(w, &l, &crate::ha::local_date(), 7);
+            self.screen.set_weather_page(t.icon, &t.high, &t.low, &rows);
+        }
     }
 
     /// Clock and date (every second; only a change redraws); the backlight when nothing moves;
@@ -2412,6 +2592,9 @@ impl<S: Screen> Ui<S> {
         }
         self.feed_light();
         let now = Instant::now();
+        if self.desk.borrow_mut().ha_cards.expire(now) {
+            self.refresh_home();
+        }
         if self.update_night(now) {
             self.show(self.view.get());
         } else if !self.frame_timer.running() {
@@ -3001,28 +3184,36 @@ impl<S: Screen> Ui<S> {
             .iter()
             .map(|(_, t, x)| (t.clone(), x.clone()))
             .collect();
-        let shopping = d.shopping.as_ref().filter(|v| !v.is_empty()).map(|v| {
-            let first: Vec<&str> = v.iter().take(3).map(|(_, t)| t.as_str()).collect();
-            let more = if v.len() > 3 { " …" } else { "" };
-            (
-                w("shopping_card").replace("{n}", &v.len().to_string()),
-                format!("{}{more}", first.join(" · ")),
-            )
-        });
-        let now = now_unix() as i64;
-        let next: Vec<&(i64, String)> = d
-            .upcoming
-            .iter()
-            .filter(|(at, _)| *at >= now - 60)
-            .collect();
-        let upcoming = next.first().map(|(at, text)| {
-            let (hm, day) = local_hm(*at);
+        let shopping = d
+            .shopping
+            .as_ref()
+            .filter(|v| lists::count(v) > 0)
+            .map(|v| {
+                let n = lists::count(v);
+                let more = if n > 3 { " …" } else { "" };
+                (
+                    w("shopping_card").replace("{n}", &n.to_string()),
+                    format!("{}{more}", lists::first_texts(v, 3).join(" · ")),
+                )
+            });
+        let now = if self.opts.demo.is_some() {
+            DEMO_NOW as i64
+        } else {
+            now_unix() as i64
+        };
+        // The next reminder or calendar event, whichever comes first.
+        let next = next::merge(&d.upcoming, &d.events, now);
+        let upcoming = next.first().map(|n| {
+            let (hm, day) = local_hm(n.at);
             let today = local_hm(now).1;
-            let when = match day - today {
-                0 => w("when_today").replace("{t}", &hm),
-                1 => w("when_tomorrow").replace("{t}", &hm),
+            let when = match (day - today, n.all_day) {
+                (0, true) => w("when_allday_today"),
+                (1, true) => w("when_allday_tomorrow"),
+                (_, true) => short_date(&l, n.at),
+                (0, false) => w("when_today").replace("{t}", &hm),
+                (1, false) => w("when_tomorrow").replace("{t}", &hm),
                 _ => w("when_day")
-                    .replace("{d}", &short_date(&l, *at))
+                    .replace("{d}", &short_date(&l, n.at))
                     .replace("{t}", &hm),
             };
             let more = if next.len() > 1 {
@@ -3030,11 +3221,17 @@ impl<S: Screen> Ui<S> {
             } else {
                 String::new()
             };
+            let key = if n.event {
+                "next_event"
+            } else {
+                "next_reminder"
+            };
             (
-                format!("{}{more}", w("next_reminder").replace("{when}", &when)),
-                text.clone(),
+                format!("{}{more}", w(key).replace("{when}", &when)),
+                n.text.clone(),
             )
         });
+        let ha_cards = d.ha_cards.views(l.text("ha_card_title"));
         let alarm = crate::alarms::Alarms::from_list(d.alarms.clone())
             .next_within(crate::alarms::Now::at(now), 24 * 60)
             .map(|(a, minutes)| {
@@ -3086,6 +3283,7 @@ impl<S: Screen> Ui<S> {
             upcoming,
             shopping,
             messages: &reminders,
+            ha: &ha_cards,
             timers: &timers,
             // The sound of a mirrored screen is not music: no card for it.
             music: d.music.as_ref().filter(|_| d.mirror.is_none()).map(|m| {
@@ -3104,7 +3302,9 @@ impl<S: Screen> Ui<S> {
                 .as_ref()
                 .map(|(a, _)| (w("last_answer"), a.clone())),
         };
-        self.screen.set_cards(&cards::pick(&alive, &cw));
+        let picked = cards::pick(&alive, &cw);
+        *self.card_kinds.borrow_mut() = picked.iter().map(|c| c.kind).collect();
+        self.screen.set_cards(&picked);
     }
 
     fn refresh_ringing(&self) {
@@ -3412,26 +3612,122 @@ impl<S: Screen> Ui<S> {
 
     // ---- the shopping list --------------------------------------------------------------------
 
-    pub fn set_shopping_sender(&self, tx: Sender<crate::ha::todo::ShopCmd>) {
-        *self.shop_tx.borrow_mut() = Some(tx);
-        self.desk.borrow_mut().shopping = Some(Vec::new());
-        self.render_shopping();
+    /// Home Assistant's thread (cards, shopping lists): where the screen's ticks and choices
+    /// go, and the lists chosen at first (empty = all).
+    pub fn set_hub(&self, tx: Sender<HubCmd>, lists: Vec<String>) {
+        *self.hub_tx.borrow_mut() = Some(tx);
+        self.choice.borrow_mut().lists = lists;
+        self.choice.borrow_mut().calendars = self
+            .settings
+            .as_ref()
+            .map(|s| s.calendars())
+            .unwrap_or_default();
     }
 
-    /// The open items from Home Assistant (each time the list changes).
-    pub fn set_shopping_items(&self, items: Vec<(String, String)>) {
-        self.desk.borrow_mut().shopping = Some(items);
-        self.render_shopping();
-        self.refresh_home();
+    /// What Home Assistant's thread says.
+    pub fn apply_hub(&self, m: HubMsg) {
+        match m {
+            HubMsg::Card(ev) => {
+                let show = matches!(ev, crate::ha::events::CardEvent::Show(_));
+                let changed = self.desk.borrow_mut().ha_cards.apply(ev, Instant::now());
+                if changed {
+                    // Like a reminder: a soft wake and its sound, by day only.
+                    if show && !self.desk.borrow().night_now {
+                        self.wake(WakeSource::Conversation);
+                        self.send(UiEvent::Reminder);
+                    }
+                    self.refresh_home();
+                }
+            }
+            HubMsg::Entities(e) => {
+                self.choice.borrow_mut().known = e;
+                self.render_choices();
+            }
+            HubMsg::Lists(active) => {
+                {
+                    let mut d = self.desk.borrow_mut();
+                    d.shopping = (!active.is_empty())
+                        .then(|| lists::with_active(d.shopping.as_deref().unwrap_or(&[]), &active));
+                }
+                self.render_shopping();
+                self.refresh_home();
+            }
+            HubMsg::Items { list, items } => {
+                if let Some(l) = self
+                    .desk
+                    .borrow_mut()
+                    .shopping
+                    .as_mut()
+                    .and_then(|v| v.iter_mut().find(|l| l.entity == list))
+                {
+                    l.items = items;
+                }
+                self.render_shopping();
+                self.refresh_home();
+            }
+        }
+    }
+
+    /// The OK on card `i` of the home, when it is one of Home Assistant's.
+    fn ha_card_ok(&self, i: usize) -> bool {
+        let nth = {
+            let kinds = self.card_kinds.borrow();
+            let Some(k) = kinds.get(i) else { return false };
+            if !cards::HA_KINDS.contains(k) {
+                return false;
+            }
+            kinds[..i]
+                .iter()
+                .filter(|k| cards::HA_KINDS.contains(k))
+                .count()
+        };
+        let gone = self.desk.borrow_mut().ha_cards.dismiss_nth(nth);
+        if gone {
+            self.refresh_home();
+        }
+        gone
+    }
+
+    /// A tap on a row of Lists and calendars: saved, and the lists change at once.
+    fn choice_toggled(&self, id: &str) {
+        let mut c = self.choice.borrow_mut();
+        if !c.toggle(id) {
+            return;
+        }
+        if let Some(s) = &self.settings {
+            if id.starts_with("todo.") {
+                s.save_lists(&c.lists);
+            } else {
+                s.save_calendars(&c.calendars);
+            }
+        }
+        if id.starts_with("todo.")
+            && let Some(tx) = self.hub_tx.borrow().as_ref()
+        {
+            let _ = tx.send(HubCmd::SetLists(c.lists.clone()));
+        }
+        drop(c);
+        self.render_choices();
+    }
+
+    fn render_choices(&self) {
+        let (todo, cal) = self.choice.borrow().rows();
+        self.screen.set_choices(&todo, &cal);
     }
 
     /// A tick on the page: gone from the screen at once, completed in Home Assistant.
     fn shop_done(&self, uid: String) {
+        let Some((list, item)) = lists::split_uid(&uid) else {
+            return;
+        };
         if let Some(v) = self.desk.borrow_mut().shopping.as_mut() {
-            v.retain(|(u, _)| *u != uid);
+            lists::remove(v, list, item);
         }
-        if let Some(tx) = self.shop_tx.borrow().as_ref() {
-            let _ = tx.send(crate::ha::todo::ShopCmd::Done(uid));
+        if let Some(tx) = self.hub_tx.borrow().as_ref() {
+            let _ = tx.send(HubCmd::Done {
+                list: list.to_string(),
+                uid: item.to_string(),
+            });
         }
         self.render_shopping();
         self.refresh_home();
@@ -3441,11 +3737,11 @@ impl<S: Screen> Ui<S> {
         let d = self.desk.borrow();
         let l = self.locale.borrow();
         match &d.shopping {
-            Some(items) => self.screen.set_shopping(
+            Some(v) => self.screen.set_shopping(
                 true,
-                items,
+                &lists::rows(v),
                 &l.text("tile_shopping")
-                    .replace("{n}", &items.len().to_string()),
+                    .replace("{n}", &lists::count(v).to_string()),
             ),
             None => self.screen.set_shopping(false, &[], ""),
         }
@@ -3551,6 +3847,7 @@ impl<S: Screen> Ui<S> {
         let Some(b) = &self.brain else { return };
         let mut changed = false;
         let mut home = false;
+        let mut events_seen = false;
         let mut upcoming_seen: Option<Vec<(i64, String)>> = None;
         let mut timers: Vec<u64> = Vec::new();
         let mut cancels: Vec<String> = Vec::new();
@@ -3679,9 +3976,14 @@ impl<S: Screen> Ui<S> {
                 m @ (BrainMsg::Changed(_)
                 | BrainMsg::Confirm { .. }
                 | BrainMsg::ConfirmDone { .. }
-                | BrainMsg::ShowView(_)
-                | BrainMsg::Upcoming(_)) => {
+                | BrainMsg::ShowView(_)) => {
                     log::debug!("brain: {m:?} (not shown yet)");
+                }
+                BrainMsg::Upcoming(items) => {
+                    d.memories.events = event_rows(&items, &l, now_unix() as i64);
+                    d.events = items;
+                    changed = true;
+                    events_seen = true;
                 }
                 BrainMsg::Notify(v) => {
                     let id = v["id"].as_i64().unwrap_or(0);
@@ -3730,6 +4032,9 @@ impl<S: Screen> Ui<S> {
         }
         for (h, m, days) in alarms {
             self.send(UiEvent::AlarmSave(h, m, days));
+        }
+        if events_seen && !home {
+            self.refresh_home();
         }
         if let Some(up) = upcoming_seen {
             let differs = self.desk.borrow().upcoming != up;

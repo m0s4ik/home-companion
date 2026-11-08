@@ -70,6 +70,33 @@ a swipe from its edge, brings you back to Alfred; "Okay Alfred" still works over
 </p>
 <p align="center"><sub>A test Home Assistant with its demo devices.</sub></p>
 
+#### Cards from Home Assistant
+
+An automation or a script can put a card on the home screen with Home Assistant's built-in `event` action, nothing
+to install:
+
+```yaml
+action: event
+event: home_companion_card
+event_data:
+  id: washing          # optional: a card with the same id replaces the old one
+  title: Laundry       # optional
+  text: The washing machine is done
+  icon: mdi:washing-machine   # optional
+  seconds: 600         # optional: the card goes away by itself
+  device: Alfred       # optional: only the device with this name (default: every device)
+```
+
+The card plays the soft reminder sound by day and goes away with its OK. `home_companion_card_dismiss` with an `id`
+takes a card away. The home's "next" card shows the next calendar event or reminder, whichever is first, and
+tapping the weather opens the forecast.
+
+#### Lists and calendars
+
+Home Assistant page → "Lists and calendars": every `todo.*` list (Home Assistant's own, Bring!, ...) and every
+`calendar.*` calendar Home Assistant has, each with a switch. All of them are shown until you switch some off; several
+lists make a section each on the shopping page.
+
 ### 🎵 AirPlay: music and screen mirroring
 
 Pick the device in the AirPlay menu of an iPhone, an iPad or a Mac. **Music** shows its title and cover, can be

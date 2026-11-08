@@ -25,6 +25,10 @@ pub struct ForecastDay {
     pub condition: String,
     pub high: Option<f64>,
     pub low: Option<f64>,
+    /// Expected precipitation (the integration's unit, usually mm), when it says.
+    pub precipitation: Option<f64>,
+    /// Chance of precipitation, percent.
+    pub precipitation_probability: Option<f64>,
 }
 
 /// What the home screen shows.
@@ -53,9 +57,38 @@ impl Weather {
                 condition: "cloudy".into(),
                 high: Some(15.0),
                 low: Some(8.0),
+                precipitation: None,
+                precipitation_probability: None,
             }),
             next_days: Vec::new(),
         }
+    }
+}
+
+impl Weather {
+    /// A week for the demos: `today` ("2026-11-03") and the six days after it.
+    pub fn sample_week(today: &str) -> Weather {
+        let d: u32 = today[8..10].parse().unwrap_or(3);
+        // Days stay inside one month for the sample (the 3rd plus six days).
+        let day = |i: u32, condition: &str, high: f64, low: f64, rain: Option<f64>| ForecastDay {
+            date: format!("{}-{:02}", &today[..7], d + i),
+            condition: condition.into(),
+            high: Some(high),
+            low: Some(low),
+            precipitation: rain,
+            precipitation_probability: None,
+        };
+        let mut w = Weather::sample();
+        w.today = Some(day(0, "cloudy", 15.0, 8.0, None));
+        w.next_days = vec![
+            day(1, "rainy", 12.0, 9.0, Some(2.5)),
+            day(2, "sunny", 14.0, 6.0, None),
+            day(3, "partlycloudy", 13.0, 7.0, None),
+            day(4, "rainy", 11.0, 8.0, Some(6.0)),
+            day(5, "pouring", 10.0, 8.0, Some(12.0)),
+            day(6, "cloudy", 12.0, 7.0, None),
+        ];
+        w
     }
 }
 
@@ -119,6 +152,8 @@ pub fn parse_forecast(v: &Value) -> Vec<ForecastDay> {
                     .to_string(),
                 high: number(d.get("temperature")),
                 low: number(d.get("templow")),
+                precipitation: number(d.get("precipitation")),
+                precipitation_probability: number(d.get("precipitation_probability")),
             })
         })
         .collect()

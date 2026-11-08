@@ -12,8 +12,10 @@ pub mod cards;
 pub mod control;
 pub mod keycombo;
 pub mod light;
+pub mod lists;
 pub mod mirror;
 pub mod mirror_video;
+pub mod next;
 pub mod platform_fb;
 pub mod renderer;
 pub mod screen;
@@ -157,6 +159,13 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// removes it.
     fn set_weather(&self, w: Option<(&str, &str, &str)>);
     fn set_cards(&self, cards: &[CardView]);
+    /// The weather page: the condition's icon (MDI path data), today's high and low, the
+    /// daily forecast.
+    fn set_weather_page(&self, icon: &str, high: &str, low: &str, rows: &[weather::ForecastRow]);
+    /// Home Assistant → Lists and calendars: (entity id, name, on) of the lists and of the
+    /// calendars.
+    fn set_choices(&self, todo: &[(String, String, bool)], calendars: &[(String, String, bool)]);
+    fn on_choice_toggled(&self, f: impl Fn(String) + 'static);
     fn set_offline(&self, offline: bool);
     fn set_starting(&self, starting: bool);
     /// Nothing moves by itself (demo screenshots): the start-up line, the ringing ring.
@@ -299,6 +308,8 @@ pub struct MemoriesView {
     pub notes: String,
     pub facts: Vec<(i64, String, String)>,
     pub jobs: Vec<(i64, String, String)>,
+    /// Calendar events of today and tomorrow: (when, what), after the reminders.
+    pub events: Vec<(String, String)>,
 }
 
 /// Words of `Words` (companion.slint) and their keys in locales/*.toml (`[text]`).
@@ -468,6 +479,16 @@ macro_rules! impl_screen {
                     forget_text,
                     shopping,
                     shopping_empty,
+                    calendar_events,
+                    weather_title,
+                    weather_forecast,
+                    weather_no_forecast,
+                    ha_lists,
+                    lists_title,
+                    lists_todo,
+                    lists_calendars,
+                    lists_empty,
+                    lists_hint,
                     ha_intro,
                     ha_configure,
                     ha_check,
@@ -525,6 +546,49 @@ macro_rules! impl_screen {
                     $m::CompanionWindow::set_weather_condition(self, condition.into());
                     $m::CompanionWindow::set_temperature(self, temperature.into());
                 }
+            }
+            fn set_weather_page(
+                &self,
+                icon: &str,
+                high: &str,
+                low: &str,
+                rows: &[weather::ForecastRow],
+            ) {
+                $m::CompanionWindow::set_weather_icon(self, icon.into());
+                $m::CompanionWindow::set_weather_high(self, high.into());
+                $m::CompanionWindow::set_weather_low(self, low.into());
+                let v: Vec<$m::ForecastRow> = rows
+                    .iter()
+                    .map(|r| $m::ForecastRow {
+                        day: r.day.as_str().into(),
+                        kind: r.kind.as_str().into(),
+                        condition: r.condition.as_str().into(),
+                        high: r.high.as_str().into(),
+                        low: r.low.as_str().into(),
+                        rain: r.rain.as_str().into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_forecast_rows(self, model!(v))
+            }
+            fn set_choices(
+                &self,
+                todo: &[(String, String, bool)],
+                calendars: &[(String, String, bool)],
+            ) {
+                let rows = |v: &[(String, String, bool)]| -> Vec<$m::ChoiceRow> {
+                    v.iter()
+                        .map(|(i, n, on)| $m::ChoiceRow {
+                            id: i.as_str().into(),
+                            name: n.as_str().into(),
+                            on: *on,
+                        })
+                        .collect()
+                };
+                $m::CompanionWindow::set_choice_todo(self, model!(rows(todo)));
+                $m::CompanionWindow::set_choice_calendars(self, model!(rows(calendars)))
+            }
+            fn on_choice_toggled(&self, f: impl Fn(String) + 'static) {
+                $m::CompanionWindow::on_choice_toggled(self, move |id| f(id.into()))
             }
             fn set_cards(&self, cards: &[CardView]) {
                 let v: Vec<$m::CardRow> = cards
@@ -905,6 +969,17 @@ macro_rules! impl_screen {
                     })
                     .collect();
                 $m::CompanionWindow::set_job_rows(self, model!(j));
+                let e: Vec<$m::JobRow> = m
+                    .events
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (w, t))| $m::JobRow {
+                        id: -(i as i32) - 1,
+                        when: w.into(),
+                        text: t.into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_event_rows(self, model!(e));
             }
             fn set_shopping(&self, on: bool, items: &[(String, String)], tile: &str) {
                 $m::CompanionWindow::set_shopping_on(self, on);
