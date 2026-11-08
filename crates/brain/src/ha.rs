@@ -463,7 +463,6 @@ mod tests {
         let ha = Ha::new(HaCfg {
             url: "http://ha.example:8123".into(),
             token_file: "/nonexistent/ha-token".into(),
-            ..HaCfg::default()
         });
         assert!(!ha.has_token());
         ha.set_token("A1".into(), now_secs() + 600);

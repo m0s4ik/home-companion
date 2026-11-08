@@ -180,7 +180,7 @@ fn serve(brain: &Brain, stream: TcpStream) -> std::io::Result<()> {
     let out = match &msg {
         Value::Array(batch) => {
             let answers: Vec<Value> = batch.iter().filter_map(|m| answer(brain, m)).collect();
-            (!answers.is_empty()).then(|| Value::Array(answers))
+            (!answers.is_empty()).then_some(Value::Array(answers))
         }
         m => answer(brain, m),
     };

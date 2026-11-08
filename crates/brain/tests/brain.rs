@@ -438,7 +438,6 @@ fn shopping_list_add_read_done_remove() {
     let ha = brain::ha::Ha::new(brain::config::HaCfg {
         url,
         token_file: dir.join("tok").to_string_lossy().into(),
-        ..Default::default()
     });
     let l = brain::lists::Lists {
         ha: &ha,
