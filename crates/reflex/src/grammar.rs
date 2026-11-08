@@ -13,19 +13,30 @@ use serde::{Deserialize, Serialize};
 use crate::slots;
 
 /// What a reflex does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "do", rename_all = "snake_case")]
 pub enum Command {
     /// "Che ore sono?"
     Time,
-    /// A local timer of this many seconds.
+    /// A local timer of this many seconds, named after one of the grammar's `timer_names`
+    /// ("timer pasta dieci minuti": "Pasta").
     TimerStart {
         seconds: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
-    /// Cancel the timers.
-    TimerCancel,
-    /// How long until the next timer rings.
-    TimerLeft,
+    /// Cancel the timers (None) or the one with this name.
+    TimerCancel {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    /// How long until the next timer rings (None) or the one with this name.
+    TimerLeft {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    /// Every running timer with its time left ("che timer ho?").
+    TimerList,
     /// A one-time alarm at this time of day.
     AlarmSet {
         hour: u8,
@@ -45,6 +56,20 @@ pub enum Command {
     MusicPlay,
     MusicNext,
     MusicPrevious,
+    /// The character's last spoken answer again ("ripeti", "cosa hai detto?").
+    Repeat,
+    /// The backlight off until a touch, a key or a wake word.
+    ScreenOff,
+    /// Do not disturb for this long; None: the default (the body decides by the hour).
+    DoNotDisturb {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seconds: Option<u64>,
+    },
+    /// Do not disturb until the morning (07:00).
+    DoNotDisturbMorning,
+    DoNotDisturbOff,
+    /// The screen off and do not disturb until the morning.
+    GoodNight,
 }
 
 /// One word of a Vosk result.
@@ -74,6 +99,190 @@ struct File {
     format: u32,
     language: String,
     commands: BTreeMap<String, Vec<String>>,
+    /// Timer names: the label shown on the screen → its spoken forms, by the key a template
+    /// names (`{name:the}` → `the = "la pasta"`).
+    #[serde(default)]
+    timer_names: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+/// What the slots of one expanded phrase are worth.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Bound {
+    duration: Option<u64>,
+    time: Option<(u8, u8)>,
+    percent: Option<u8>,
+    name: Option<String>,
+}
+
+/// A template with every slot replaced by each of its spoken forms. Slots: `{duration}`,
+/// `{whole_duration}`, `{time}`, `{percent}`, `{name:<key>}` (the timer names that have that
+/// form; one name per template).
+fn expand(
+    t: &str,
+    slots: &slots::Slots,
+    names: &BTreeMap<String, BTreeMap<String, String>>,
+) -> Result<Vec<(String, Bound)>, String> {
+    let mut out = vec![(t.to_string(), Bound::default())];
+    let mut cross = |slot: &str, values: Vec<(String, Bound)>| {
+        if !t.contains(slot) {
+            return;
+        }
+        out = out
+            .iter()
+            .flat_map(|(p, b)| {
+                values.iter().map(move |(s, v)| {
+                    let mut b = b.clone();
+                    b.duration = v.duration.or(b.duration);
+                    b.time = v.time.or(b.time);
+                    b.percent = v.percent.or(b.percent);
+                    b.name = v.name.clone().or(b.name);
+                    (p.replace(slot, s), b)
+                })
+            })
+            .collect();
+    };
+    let bind = |d: Option<u64>, t: Option<(u8, u8)>, p: Option<u8>| Bound {
+        duration: d,
+        time: t,
+        percent: p,
+        name: None,
+    };
+    if t.contains("{duration}") && t.contains("{whole_duration}") {
+        return Err(format!("{t:?}: two durations"));
+    }
+    cross(
+        "{duration}",
+        slots
+            .durations
+            .iter()
+            .map(|(s, v)| (s.clone(), bind(Some(*v), None, None)))
+            .collect(),
+    );
+    cross(
+        "{whole_duration}",
+        slots
+            .whole_durations
+            .iter()
+            .map(|(s, v)| (s.clone(), bind(Some(*v), None, None)))
+            .collect(),
+    );
+    cross(
+        "{time}",
+        slots
+            .times
+            .iter()
+            .map(|(s, v)| (s.clone(), bind(None, Some(*v), None)))
+            .collect(),
+    );
+    cross(
+        "{percent}",
+        slots
+            .percents
+            .iter()
+            .map(|(s, v)| (s.clone(), bind(None, None, Some(*v))))
+            .collect(),
+    );
+    if let Some(i) = t.find("{name:") {
+        let key = &t[i + 6..];
+        let key = &key[..key
+            .find('}')
+            .ok_or_else(|| format!("{t:?}: unclosed {{name:"))?];
+        let slot = format!("{{name:{key}}}");
+        let values: Vec<(String, Bound)> = names
+            .iter()
+            .filter_map(|(label, forms)| {
+                forms.get(key).map(|f| {
+                    (
+                        f.clone(),
+                        Bound {
+                            name: Some(label.clone()),
+                            ..Bound::default()
+                        },
+                    )
+                })
+            })
+            .collect();
+        if values.is_empty() {
+            return Err(format!("{t:?}: no timer name has the form {key:?}"));
+        }
+        cross(&slot, values);
+    }
+    if let Some((p, _)) = out.iter().find(|(p, _)| p.contains('{')) {
+        return Err(format!("{t:?}: unknown slot in {p:?}"));
+    }
+    Ok(out)
+}
+
+/// The command a phrase of `name` means, from its slots; an error for a slot the command does
+/// not take or a slot it needs and has not.
+fn command(name: &str, b: Bound) -> Result<Command, String> {
+    let named = |b: &Bound| b.duration.is_none() && b.time.is_none() && b.percent.is_none();
+    let plain = |b: &Bound, c: Command| {
+        if *b == Bound::default() {
+            Ok(c)
+        } else {
+            Err("takes no slot".to_string())
+        }
+    };
+    Ok(match name {
+        "time" => plain(&b, Command::Time)?,
+        "timer_list" => plain(&b, Command::TimerList)?,
+        "alarm_cancel" => plain(&b, Command::AlarmCancel)?,
+        "volume_up" => plain(&b, Command::VolumeUp)?,
+        "volume_down" => plain(&b, Command::VolumeDown)?,
+        "volume_max" => plain(&b, Command::VolumeSet { percent: 100 })?,
+        "volume_min" => plain(&b, Command::VolumeSet { percent: 5 })?,
+        "silence" => plain(&b, Command::Silence)?,
+        "music_pause" => plain(&b, Command::MusicPause)?,
+        "music_play" => plain(&b, Command::MusicPlay)?,
+        "music_next" => plain(&b, Command::MusicNext)?,
+        "music_previous" => plain(&b, Command::MusicPrevious)?,
+        "repeat" => plain(&b, Command::Repeat)?,
+        "screen_off" => plain(&b, Command::ScreenOff)?,
+        "dnd_morning" => plain(&b, Command::DoNotDisturbMorning)?,
+        "dnd_off" => plain(&b, Command::DoNotDisturbOff)?,
+        "good_night" => plain(&b, Command::GoodNight)?,
+        "timer_cancel" if named(&b) => Command::TimerCancel { name: b.name },
+        "timer_left" if named(&b) => Command::TimerLeft { name: b.name },
+        "timer_start" => match b {
+            Bound {
+                duration: Some(seconds),
+                time: None,
+                percent: None,
+                name,
+            } => Command::TimerStart { seconds, name },
+            _ => return Err("needs a {duration} and nothing else but a name".into()),
+        },
+        "dnd_on" => match b {
+            Bound {
+                duration,
+                time: None,
+                percent: None,
+                name: None,
+            } => Command::DoNotDisturb { seconds: duration },
+            _ => return Err("takes a {whole_duration} only".into()),
+        },
+        "alarm_set" => match b {
+            Bound {
+                time: Some((hour, minute)),
+                duration: None,
+                percent: None,
+                name: None,
+            } => Command::AlarmSet { hour, minute },
+            _ => return Err("needs a {time} only".into()),
+        },
+        "volume_set" => match b {
+            Bound {
+                percent: Some(percent),
+                duration: None,
+                time: None,
+                name: None,
+            } => Command::VolumeSet { percent },
+            _ => return Err("needs a {percent} only".into()),
+        },
+        "timer_cancel" | "timer_left" => return Err("takes a {name:...} only".into()),
+        other => return Err(format!("unknown command {other:?}")),
+    })
 }
 
 /// A language's reflexes: phrase → command.
@@ -96,89 +305,23 @@ impl Grammar {
         }
         let slots = slots::for_language(&f.language)
             .ok_or_else(|| format!("no reflex vocabulary for language {:?}", f.language))?;
-        let mut phrases = BTreeMap::new();
-        let mut add = |phrase: String, c: Command| -> Result<(), String> {
-            let phrase = normalize(&phrase);
-            match phrases.insert(phrase.clone(), c) {
-                Some(old) if old != c => Err(format!("{phrase:?} means both {old:?} and {c:?}")),
-                _ => Ok(()),
-            }
-        };
+        let mut phrases: BTreeMap<String, Command> = BTreeMap::new();
         for (name, templates) in &f.commands {
             for t in templates {
-                let needs = |slot: &str| -> Result<(), String> {
-                    if t.contains(slot) {
-                        Ok(())
-                    } else {
-                        Err(format!("{name}: {t:?} has no {slot}"))
+                for (p, b) in
+                    expand(t, &slots, &f.timer_names).map_err(|e| format!("{name}: {e}"))?
+                {
+                    let c = command(name, b).map_err(|e| format!("{name}: {t:?} {e}"))?;
+                    let p = normalize(&p);
+                    match phrases.get(&p) {
+                        Some(old) if *old != c => {
+                            return Err(format!("{p:?} means both {old:?} and {c:?}"));
+                        }
+                        Some(_) => {}
+                        None => {
+                            phrases.insert(p, c);
+                        }
                     }
-                };
-                let plain = |c: Command| -> Result<Vec<(String, Command)>, String> {
-                    if t.contains('{') {
-                        return Err(format!("{name}: {t:?} takes no slot"));
-                    }
-                    Ok(vec![(t.clone(), c)])
-                };
-                let expanded: Vec<(String, Command)> = match name.as_str() {
-                    "time" => plain(Command::Time)?,
-                    "timer_cancel" => plain(Command::TimerCancel)?,
-                    "timer_left" => plain(Command::TimerLeft)?,
-                    "alarm_cancel" => plain(Command::AlarmCancel)?,
-                    "volume_up" => plain(Command::VolumeUp)?,
-                    "volume_down" => plain(Command::VolumeDown)?,
-                    "volume_max" => plain(Command::VolumeSet { percent: 100 })?,
-                    "volume_min" => plain(Command::VolumeSet { percent: 5 })?,
-                    "silence" => plain(Command::Silence)?,
-                    "music_pause" => plain(Command::MusicPause)?,
-                    "music_play" => plain(Command::MusicPlay)?,
-                    "music_next" => plain(Command::MusicNext)?,
-                    "music_previous" => plain(Command::MusicPrevious)?,
-                    "timer_start" => {
-                        needs("{duration}")?;
-                        slots
-                            .durations
-                            .iter()
-                            .map(|(s, v)| {
-                                (
-                                    t.replace("{duration}", s),
-                                    Command::TimerStart { seconds: *v },
-                                )
-                            })
-                            .collect()
-                    }
-                    "alarm_set" => {
-                        needs("{time}")?;
-                        slots
-                            .times
-                            .iter()
-                            .map(|(s, (h, m))| {
-                                (
-                                    t.replace("{time}", s),
-                                    Command::AlarmSet {
-                                        hour: *h,
-                                        minute: *m,
-                                    },
-                                )
-                            })
-                            .collect()
-                    }
-                    "volume_set" => {
-                        needs("{percent}")?;
-                        slots
-                            .percents
-                            .iter()
-                            .map(|(s, p)| {
-                                (
-                                    t.replace("{percent}", s),
-                                    Command::VolumeSet { percent: *p },
-                                )
-                            })
-                            .collect()
-                    }
-                    other => return Err(format!("unknown command {other:?}")),
-                };
-                for (p, c) in expanded {
-                    add(p, c)?;
                 }
             }
         }
@@ -201,7 +344,7 @@ impl Grammar {
 
     /// The command of a phrase exactly as Vosk writes it.
     pub fn command(&self, text: &str) -> Option<Command> {
-        self.phrases.get(text).copied()
+        self.phrases.get(text).cloned()
     }
 
     pub fn phrases(&self) -> impl Iterator<Item = &str> {
@@ -339,7 +482,10 @@ silence = ["silenzio"]
         assert_eq!(g.command("che ore sono"), Some(Command::Time));
         assert_eq!(
             g.command("metti un timer di dodici minuti e mezzo"),
-            Some(Command::TimerStart { seconds: 750 })
+            Some(Command::TimerStart {
+                seconds: 750,
+                name: None
+            })
         );
         assert_eq!(
             g.command("metti la sveglia alle sette e mezza"),
@@ -363,7 +509,10 @@ silence = ["silenzio"]
         let t = "metti un timer di un minuto";
         assert_eq!(
             g.decide(t, &words(t, 1.0), 0.97),
-            Decision::Accept(Command::TimerStart { seconds: 60 })
+            Decision::Accept(Command::TimerStart {
+                seconds: 60,
+                name: None
+            })
         );
         // One unsure word.
         let mut ws = words(t, 1.0);
@@ -443,5 +592,200 @@ silence = ["silenzio"]
             g.decide_covered("e che ore sono", &words, 0.8, &vad),
             Decision::Accept(_)
         ));
+    }
+
+    fn alfred(lang: &str) -> Grammar {
+        let path = format!(
+            "{}/../../characters/alfred/grammar/{lang}.toml",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        Grammar::load(Path::new(&path)).unwrap()
+    }
+
+    fn named(seconds: u64, name: &str) -> Option<Command> {
+        Some(Command::TimerStart {
+            seconds,
+            name: Some(name.into()),
+        })
+    }
+
+    #[test]
+    fn alfred_italian_v02_reflexes() {
+        let g = alfred("it");
+        let c = |p: &str| g.command(p);
+        assert_eq!(c("ripeti"), Some(Command::Repeat));
+        assert_eq!(c("cosa hai detto"), Some(Command::Repeat));
+        assert_eq!(c("spegni lo schermo"), Some(Command::ScreenOff));
+        assert_eq!(
+            c("non disturbare"),
+            Some(Command::DoNotDisturb { seconds: None })
+        );
+        assert_eq!(
+            c("non disturbare per un'ora"),
+            Some(Command::DoNotDisturb {
+                seconds: Some(3600)
+            })
+        );
+        assert_eq!(
+            c("non disturbarmi per due ore"),
+            Some(Command::DoNotDisturb {
+                seconds: Some(7200)
+            })
+        );
+        assert_eq!(
+            c("non disturbare per mezz'ora"),
+            Some(Command::DoNotDisturb {
+                seconds: Some(1800)
+            })
+        );
+        assert_eq!(
+            c("non disturbare fino a domattina"),
+            Some(Command::DoNotDisturbMorning)
+        );
+        assert_eq!(
+            c("disattiva non disturbare"),
+            Some(Command::DoNotDisturbOff)
+        );
+        assert_eq!(c("buonanotte"), Some(Command::GoodNight));
+        assert_eq!(c("buona notte"), Some(Command::GoodNight));
+        assert_eq!(c("timer pasta dieci minuti"), named(600, "Pasta"));
+        assert_eq!(
+            c("metti un timer per la pasta di dieci minuti"),
+            named(600, "Pasta")
+        );
+        assert_eq!(c("timer delle uova nove minuti"), named(540, "Uova"));
+        assert_eq!(
+            c("metti un timer per il forno di un'ora e mezza"),
+            named(5400, "Forno")
+        );
+        assert_eq!(c("timer tè tre minuti"), named(180, "Tè"));
+        assert_eq!(
+            c("annulla il timer della pasta"),
+            Some(Command::TimerCancel {
+                name: Some("Pasta".into())
+            })
+        );
+        assert_eq!(
+            c("annulla il timer"),
+            Some(Command::TimerCancel { name: None })
+        );
+        assert_eq!(
+            c("quanto manca alla pasta"),
+            Some(Command::TimerLeft {
+                name: Some("Pasta".into())
+            })
+        );
+        assert_eq!(
+            c("quanto manca per le uova"),
+            Some(Command::TimerLeft {
+                name: Some("Uova".into())
+            })
+        );
+        assert_eq!(c("quanto manca"), Some(Command::TimerLeft { name: None }));
+        assert_eq!(c("che timer ho"), Some(Command::TimerList));
+        assert_eq!(c("quali timer ci sono"), Some(Command::TimerList));
+        // Named timers take whole minutes only: the grammar stays small.
+        assert_eq!(c("timer pasta dieci secondi"), None);
+        assert_eq!(c("timer pasta dieci minuti e mezzo"), None);
+        // The plain ones still take every duration.
+        assert_eq!(
+            c("timer dieci minuti e mezzo"),
+            Some(Command::TimerStart {
+                seconds: 630,
+                name: None
+            })
+        );
+    }
+
+    #[test]
+    fn alfred_english_v02_reflexes() {
+        let g = alfred("en");
+        let c = |p: &str| g.command(p);
+        assert_eq!(c("repeat that"), Some(Command::Repeat));
+        assert_eq!(c("what did you say"), Some(Command::Repeat));
+        assert_eq!(c("turn off the screen"), Some(Command::ScreenOff));
+        assert_eq!(
+            c("do not disturb"),
+            Some(Command::DoNotDisturb { seconds: None })
+        );
+        assert_eq!(
+            c("do not disturb for an hour"),
+            Some(Command::DoNotDisturb {
+                seconds: Some(3600)
+            })
+        );
+        assert_eq!(
+            c("do not disturb for two hours"),
+            Some(Command::DoNotDisturb {
+                seconds: Some(7200)
+            })
+        );
+        assert_eq!(
+            c("do not disturb until tomorrow morning"),
+            Some(Command::DoNotDisturbMorning)
+        );
+        assert_eq!(c("turn off do not disturb"), Some(Command::DoNotDisturbOff));
+        assert_eq!(c("good night"), Some(Command::GoodNight));
+        assert_eq!(c("set a pasta timer for ten minutes"), named(600, "Pasta"));
+        assert_eq!(c("set an egg timer for nine minutes"), named(540, "Eggs"));
+        assert_eq!(
+            c("set a timer for the pasta for ten minutes"),
+            named(600, "Pasta")
+        );
+        assert_eq!(c("rice timer for twenty minutes"), named(1200, "Rice"));
+        assert_eq!(
+            c("cancel the pasta timer"),
+            Some(Command::TimerCancel {
+                name: Some("Pasta".into())
+            })
+        );
+        assert_eq!(
+            c("how long for the eggs"),
+            Some(Command::TimerLeft {
+                name: Some("Eggs".into())
+            })
+        );
+        assert_eq!(c("what timers do i have"), Some(Command::TimerList));
+        assert_eq!(c("set a pasta timer for ten seconds"), None);
+    }
+
+    #[test]
+    fn name_slots_and_their_errors() {
+        let ok = r#"
+format = 1
+language = "it"
+[commands]
+timer_start = ["timer {name:bare} {whole_duration}"]
+timer_cancel = ["annulla il timer {name:of}"]
+[timer_names]
+Pasta = { bare = "pasta", of = "della pasta" }
+Uova = { bare = "uova" }
+"#;
+        let g = Grammar::parse(ok).unwrap();
+        assert_eq!(g.command("timer uova un minuto"), named(60, "Uova"));
+        // A name without the form is left out of that template.
+        assert_eq!(g.command("annulla il timer delle uova"), None);
+        let bad = |commands: &str| {
+            Grammar::parse(&format!(
+                "format = 1\nlanguage = \"it\"\n[commands]\n{commands}\n[timer_names]\nPasta = {{ bare = \"pasta\" }}\n"
+            ))
+            .unwrap_err()
+        };
+        assert!(bad(r#"timer_start = ["timer {name:of} {duration}"]"#).contains("no timer name"));
+        assert!(bad(r#"time = ["ora {name:bare}"]"#).contains("takes no slot"));
+        assert!(bad(r#"timer_cancel = ["annulla {duration}"]"#).contains("name"));
+        assert!(bad(r#"dnd_on = ["zitto {name:bare}"]"#).contains("whole_duration"));
+        assert!(bad(r#"timer_start = ["timer {minutes}"]"#).contains("unknown slot"));
+        assert!(bad(r#"timer_start = ["timer {duration} {whole_duration}"]"#).contains("two"));
+    }
+
+    #[test]
+    fn alfred_grammars_stay_small() {
+        // Vosk compiles the phrase list at start: keep it within reach of the device.
+        for lang in ["it", "en"] {
+            let n = alfred(lang).len();
+            eprintln!("{lang}: {n} phrases");
+            assert!(n < 30_000, "{lang}: {n} phrases");
+        }
     }
 }

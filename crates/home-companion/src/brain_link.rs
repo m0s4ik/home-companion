@@ -404,7 +404,7 @@ mod tests {
             1794150000,
             "http://ha.example:8123",
             "assist_satellite.x",
-            &["10.0.0.2".to_string()],
+            &["192.0.2.10".to_string()],
             "it",
             &["todo.shopping".to_string(), "todo.bring_home".to_string()],
             &[],

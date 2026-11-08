@@ -343,6 +343,17 @@ lists_calendars = "CALENDARS"
 lists_empty = "Home Assistant has none yet."
 lists_hint = "All are shown unless you switch some off."
 
+# v0.2 reflexes
+reflex_timer_set_named = "{name} timer for {duration} started."
+reflex_timer_cancelled_named = "{name} timer cancelled."
+reflex_no_timer_named = "There is no {name} timer."
+reflex_timer_left_named = "{name}: {left} left."
+reflex_timer_item = "{name} {left}"
+reflex_timer_item_paused = "{name} {left}, paused"
+reflex_nothing_to_repeat = "I have nothing to repeat."
+reflex_dnd_on = "Do not disturb until {time}."
+reflex_dnd_off = "Do not disturb is off."
+
 [sample]
 # The first start's Home Assistant page (--state first-ha-found): a second instance's name.
 find_second = "Holiday home"

@@ -5,7 +5,9 @@
 # Home Assistant, when Vosk hears exactly one of these phrases. Slots: {duration} ("dieci minuti",
 # "un minuto e mezzo", "un'ora"), {time} ("alle sette e mezza", "all'una di notte"), {percent}
 # ("cinquanta per cento", "cinquanta"); their words are in crates/reflex/src/slots.rs. Anything
-# else ("accendi la luce", "che tempo fa") goes to the brain. Every word must be in the Vosk
+# else ("accendi la luce", "che tempo fa") goes to the brain. {whole_duration} is {duration} in
+# whole minutes up to three hours (used where another slot multiplies the phrases); {name:<key>}
+# is a timer name of [timer_names] in the form <key>: label = what the screen shows. Every word must be in the Vosk
 # model's vocabulary: Vosk logs "missing in vocabulary" for any that is not (journalctl -u home-companion).
 format = 1
 language = "it"
@@ -35,6 +37,9 @@ timer_start = [
     "metti un timer {duration}",
     "metti timer di {duration}",
     "un timer di {duration}",
+    "timer {name:bare} {whole_duration}",
+    "timer {name:of} {whole_duration}",
+    "metti un timer per {name:the} di {whole_duration}",
 ]
 timer_cancel = [
     "annulla il timer",
@@ -55,8 +60,23 @@ timer_cancel = [
     "elimina il timer",
     "elimina timer",
     "stop timer",
+    "annulla il timer {name:of}",
+    "cancella il timer {name:of}",
+    "togli il timer {name:of}",
+    "ferma il timer {name:of}",
+    "spegni il timer {name:of}",
 ]
-timer_left = ["quanto manca", "quanto manca al timer", "quanto tempo manca", "quanto tempo rimane", "quanto manca alla fine del timer"]
+timer_left = [
+    "quanto manca",
+    "quanto manca al timer",
+    "quanto tempo manca",
+    "quanto tempo rimane",
+    "quanto manca alla fine del timer",
+    "quanto manca {name:to}",
+    "quanto manca per {name:the}",
+    "quanto manca al timer {name:of}",
+]
+timer_list = ["che timer ho", "quali timer ho", "che timer ci sono", "quali timer ci sono", "quanti timer ho", "elenca i timer"]
 alarm_set = [
     "metti la sveglia {time}",
     "metti una sveglia {time}",
@@ -107,3 +127,34 @@ music_previous = [
     "rimetti la canzone di prima",
 ]
 silence = ["silenzio", "stai zitto", "zitto", "lascia stare", "niente", "non importa", "annulla", "basta", "basta così", "no grazie", "niente grazie", "no", "grazie", "va bene così", "a posto così"]
+repeat = ["ripeti", "puoi ripetere", "ripeti per favore", "cosa hai detto", "che cosa hai detto", "come hai detto", "ripetilo"]
+screen_off = ["spegni lo schermo", "spegni il display", "spegni lo schermo per favore"]
+dnd_on = [
+    "non disturbare",
+    "non disturbarmi",
+    "attiva non disturbare",
+    "attiva la modalità non disturbare",
+    "modalità non disturbare",
+    "non disturbare per {whole_duration}",
+    "non disturbarmi per {whole_duration}",
+    "attiva non disturbare per {whole_duration}",
+]
+dnd_morning = ["non disturbare fino a domattina", "non disturbarmi fino a domattina", "non disturbare fino a domani mattina"]
+dnd_off = ["disattiva non disturbare", "disattiva la modalità non disturbare", "togli non disturbare", "spegni non disturbare"]
+good_night = ["buonanotte", "buona notte"]
+
+# The timers a name can be given by voice ("timer pasta dieci minuti"). A closed grammar takes no
+# free words, so the names are a list; edit it freely (label = what the screen shows).
+[timer_names]
+Pasta = { bare = "pasta", the = "la pasta", of = "della pasta", to = "alla pasta" }
+Uova = { bare = "uova", the = "le uova", of = "delle uova", to = "alle uova" }
+Forno = { bare = "forno", the = "il forno", of = "del forno", to = "al forno" }
+Pizza = { bare = "pizza", the = "la pizza", of = "della pizza", to = "alla pizza" }
+Riso = { bare = "riso", the = "il riso", of = "del riso", to = "al riso" }
+"Tè" = { bare = "tè", the = "il tè", of = "del tè", to = "al tè" }
+"Caffè" = { bare = "caffè", the = "il caffè", of = "del caffè", to = "al caffè" }
+Bucato = { bare = "bucato", the = "il bucato", of = "del bucato", to = "al bucato" }
+Pane = { bare = "pane", the = "il pane", of = "del pane", to = "al pane" }
+Torta = { bare = "torta", the = "la torta", of = "della torta", to = "alla torta" }
+Carne = { bare = "carne", the = "la carne", of = "della carne", to = "alla carne" }
+Verdure = { bare = "verdure", the = "le verdure", of = "delle verdure", to = "alle verdure" }

@@ -14,6 +14,19 @@ pub struct Slots {
     pub times: Vec<(String, (u8, u8))>,
     /// "cinquanta per cento", "cinquanta" → 50.
     pub percents: Vec<(String, u8)>,
+    /// The `durations` in whole minutes up to three hours ("dieci minuti", "un'ora e mezza"):
+    /// the `{whole_duration}` slot, for templates multiplied by other slots (a named timer, do
+    /// not disturb) where every second would make the grammar too big for Vosk.
+    pub whole_durations: Vec<(String, u64)>,
+}
+
+/// Whole minutes up to three hours; past an hour, quarters only.
+fn whole(durations: &[(String, u64)]) -> Vec<(String, u64)> {
+    durations
+        .iter()
+        .filter(|(_, v)| *v % 60 == 0 && *v <= 3 * 3600 && (*v < 3600 || *v % 900 == 0))
+        .cloned()
+        .collect()
 }
 
 /// The slots of a language ("it", "en"); None for a language without reflexes.
@@ -203,6 +216,7 @@ fn italian() -> Slots {
         p.push((w(n), n as u8));
     }
     Slots {
+        whole_durations: whole(&d),
         durations: d,
         times: t,
         percents: p,
@@ -332,6 +346,7 @@ fn english() -> Slots {
         p.push((w(n), n as u8));
     }
     Slots {
+        whole_durations: whole(&d),
         durations: d,
         times: t,
         percents: p,
@@ -740,5 +755,33 @@ mod tests {
         assert_eq!(t("alle dodici di mattina"), None);
         assert_eq!(t("alle dodici meno un quarto di mattina"), Some((11, 45)));
         assert_eq!(t("alle dodici di notte"), Some((0, 0)));
+    }
+
+    #[test]
+    fn whole_durations_are_minutes_and_quarters() {
+        let it = italian();
+        let d = |x| value(&it.whole_durations, x);
+        assert_eq!(d("un minuto"), Some(60));
+        assert_eq!(d("dieci minuti"), Some(600));
+        assert_eq!(d("mezz'ora"), Some(1800));
+        assert_eq!(d("un'ora"), Some(3600));
+        assert_eq!(d("un'ora e mezza"), Some(5400));
+        assert_eq!(d("un'ora e un quarto"), Some(4500));
+        assert_eq!(d("due ore"), Some(7200));
+        assert_eq!(d("tre ore"), Some(10800));
+        assert_eq!(d("dieci secondi"), None);
+        assert_eq!(d("dieci minuti e mezzo"), None);
+        assert_eq!(d("un'ora e cinque minuti"), None);
+        assert_eq!(d("quattro ore"), None);
+        let en = english();
+        let d = |x| value(&en.whole_durations, x);
+        assert_eq!(d("a minute"), Some(60));
+        assert_eq!(d("ten minutes"), Some(600));
+        assert_eq!(d("half an hour"), Some(1800));
+        assert_eq!(d("an hour and a half"), Some(5400));
+        assert_eq!(d("two hours"), Some(7200));
+        assert_eq!(d("ten seconds"), None);
+        assert_eq!(d("two and a half minutes"), None);
+        assert!(it.whole_durations.len() < 100 && en.whole_durations.len() < 100);
     }
 }

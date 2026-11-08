@@ -107,7 +107,7 @@ def soften(buf):
     return out
 
 
-GAIN = {"tap": 0.8, "home": 0.7, "reminder": 1.25}  # relative to PEAK
+GAIN = {"tap": 0.8, "home": 0.7, "reminder": 1.25, "tick": 0.45}  # relative to PEAK
 
 
 def finish(buf, name=""):
@@ -172,6 +172,9 @@ SOUNDS = {
     "home": lambda: mix([(0.0, falling_bubble(700, 400, 1.0)), (0.08, falling_bubble(520, 300, 0.6))]),
     # A control pressed: a soft bubble.
     "tap": lambda: soft_bubble(),
+    # Each of a timer's last ten seconds: a very soft, short wooden clock tick (it must not
+    # cover a conversation or startle; the body plays it only on the quiet home, never at night).
+    "tick": lambda: note(1400, 0.05, "wood", 0.6),
     # One ring of the timer bell (the body repeats it with a pause): soft but clear.
     "bell": lambda: mix([(0.0, note(E6, 0.7, "bell")), (0.18, note(C6, 0.7, "bell")),
                          (0.36, note(G5, 1.0, "bell"))]),
@@ -187,8 +190,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     for name, make in SOUNDS.items():
         raw = make()
-        # The bubbles stay dry (no room, no low-pass).
-        buf = finish(raw if name in ("tap", "home") else soften(raw), name)
+        # The bubbles and the tick stay dry (no room, no low-pass).
+        buf = finish(raw if name in ("tap", "home", "tick") else soften(raw), name)
         write(out / f"{name}.wav", buf)
         print(f"{name}.wav  {len(buf) / RATE:.2f} s")
 

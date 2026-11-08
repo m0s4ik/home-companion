@@ -473,6 +473,15 @@ fn frame(index: u64, amp: f32) -> CoreEvent {
 /// Runs the core with no Home Assistant and the fake helper: Talk, a spoken second (a tone),
 /// silence, then the helper's `result`. Returns the UI commands and what the helper got.
 fn reflex_run(text: &str, conf: f32) -> (Vec<UiCommand>, Vec<reflex::proto::Request>, Summary) {
+    reflex_run_then(text, conf, |_| {})
+}
+
+/// [`reflex_run`], then `then` sends more events before the core quits.
+fn reflex_run_then(
+    text: &str,
+    conf: f32,
+    then: impl FnOnce(&Sender<CoreEvent>),
+) -> (Vec<UiCommand>, Vec<reflex::proto::Request>, Summary) {
     let (core_tx, core_rx) = mpsc::channel::<CoreEvent>();
     let (ui_tx, ui_rx) = mpsc::channel();
     let tx = core_tx.clone();
@@ -569,6 +578,7 @@ fn reflex_run(text: &str, conf: f32) -> (Vec<UiCommand>, Vec<reflex::proto::Requ
         ))
         .unwrap();
     std::thread::sleep(Duration::from_millis(300));
+    then(&core_tx);
     core_tx.send(CoreEvent::Quit).unwrap();
     let summary = core.join().unwrap();
     let ui: Vec<UiCommand> = ui_rx.try_iter().collect();
@@ -686,4 +696,157 @@ fn not_a_reflex_goes_to_home_assistant_in_one_burst() {
         r.record.received.iter().map(|x| &x.1).collect::<Vec<_>>()
     );
     assert!(r.views.contains(&Phase::Thinking), "{:?}", r.views);
+}
+
+#[test]
+fn good_night_turns_the_screen_off_and_does_not_disturb_until_the_morning() {
+    let (ui, _, summary) = reflex_run("buonanotte", 1.0);
+    let dnd = ui.iter().find_map(|c| match c {
+        UiCommand::DoNotDisturb(u) => Some(*u),
+        _ => None,
+    });
+    let until = dnd.flatten().expect("do not disturb on") as f64;
+    let now = home_companion::timers::now_unix();
+    assert!(until > now && until <= now + 86_400.0, "{until}");
+    assert_eq!(home_companion::alarms::Now::at(until as i64).hour, 7);
+    // The screen off comes last, after the view went back home.
+    let off = ui
+        .iter()
+        .rposition(|c| *c == UiCommand::ScreenOff)
+        .expect("screen off");
+    let home = ui
+        .iter()
+        .rposition(|c| matches!(c, UiCommand::View(_)))
+        .unwrap();
+    assert!(off > home, "{ui:?}");
+    assert!(
+        !ui.iter()
+            .any(|c| matches!(c, UiCommand::Answer(a) if !a.is_empty()))
+    );
+    assert_eq!(summary.detections_sent, 0);
+}
+
+#[test]
+fn screen_off_by_voice() {
+    let (ui, _, _) = reflex_run("spegni lo schermo", 1.0);
+    assert!(ui.contains(&UiCommand::ScreenOff), "{ui:?}");
+    assert!(!ui.iter().any(|c| matches!(c, UiCommand::DoNotDisturb(_))));
+}
+
+#[test]
+fn do_not_disturb_for_two_hours_and_timers_still_ring() {
+    let (ui, _, summary) = reflex_run_then("non disturbare per due ore", 1.0, |tx| {
+        // The answer off the screen first (a timer does not ring over a conversation).
+        tx.send(CoreEvent::Ui(UiEvent::Stop)).unwrap();
+        tx.send(CoreEvent::Ui(UiEvent::TimerStart(1))).unwrap();
+        std::thread::sleep(Duration::from_millis(2500));
+    });
+    let until = ui
+        .iter()
+        .find_map(|c| match c {
+            UiCommand::DoNotDisturb(Some(u)) => Some(*u as f64),
+            _ => None,
+        })
+        .expect("do not disturb on");
+    let now = home_companion::timers::now_unix();
+    assert!((until - (now + 7200.0)).abs() < 10.0, "{until} vs {now}");
+    assert!(
+        ui.iter()
+            .any(|c| matches!(c, UiCommand::Answer(a) if a.starts_with("Non disturbo fino alle"))),
+        "{ui:?}"
+    );
+    assert_eq!(
+        summary.rung.len(),
+        1,
+        "a timer rings even with do not disturb"
+    );
+}
+
+#[test]
+fn do_not_disturb_off() {
+    let (ui, _, _) = reflex_run("disattiva non disturbare", 1.0);
+    assert!(ui.contains(&UiCommand::DoNotDisturb(None)), "{ui:?}");
+    assert!(ui.contains(&UiCommand::Answer("Non disturbare disattivato.".into())));
+}
+
+#[test]
+fn a_named_timer_by_voice() {
+    let (ui, _, _) = reflex_run("timer pasta dieci minuti", 1.0);
+    let rows = ui
+        .iter()
+        .find_map(|c| match c {
+            UiCommand::Timers(rows) if !rows.is_empty() => Some(rows.clone()),
+            _ => None,
+        })
+        .expect("a timer shown");
+    assert_eq!(rows[0].name, "Pasta");
+    assert!(
+        ui.contains(&UiCommand::Answer("Timer «Pasta» di 10:00 avviato.".into())),
+        "{ui:?}"
+    );
+}
+
+#[test]
+fn nothing_to_repeat_and_no_timers_to_list() {
+    let (ui, _, _) = reflex_run("ripeti", 1.0);
+    assert!(
+        ui.contains(&UiCommand::Answer("Non ho niente da ripetere.".into())),
+        "{ui:?}"
+    );
+    let (ui, _, _) = reflex_run("che timer ho", 1.0);
+    assert!(
+        ui.contains(&UiCommand::Answer("Non c'è nessun timer.".into())),
+        "{ui:?}"
+    );
+    let (ui, _, _) = reflex_run("quanto manca alla pasta", 1.0);
+    assert!(
+        ui.contains(&UiCommand::Answer("Non c'è un timer «Pasta».".into())),
+        "{ui:?}"
+    );
+}
+
+fn tap() -> UiEvent {
+    UiEvent::Tap
+}
+
+#[test]
+fn repeat_plays_the_last_answer_again() {
+    // An announcement, then Talk and "ripeti": the same words come back on the screen and the
+    // audio plays again (a second Speaking), with nothing sent to Home Assistant.
+    let steps = vec![
+        Step::Connect,
+        Step::RunSatellite,
+        Step::Sleep { ms: 300 },
+        Step::Announce {
+            path: fake_ha::announce_wav(),
+        },
+        Step::Sleep { ms: 9000 },
+        Step::Disconnect,
+    ];
+    let presses = [
+        Press {
+            on: Phase::Speaking,
+            wait: Duration::ZERO,
+            event: tap,
+        },
+        Press {
+            on: Phase::Home,
+            wait: Duration::from_millis(200),
+            event: talk,
+        },
+    ];
+    let r = run_with(Scenario { ping: false, steps }, &presses, Some("ripeti"));
+    assert!(r.record.failures.is_empty(), "{:?}", r.record.failures);
+    assert_eq!(r.summary.detections_sent, 0);
+    let speaking = r.views.iter().filter(|p| **p == Phase::Speaking).count();
+    assert!(speaking >= 2, "{:?}", r.views);
+    assert_eq!(
+        outcomes(&r.summary),
+        vec![
+            ("announcement".into(), "played".into()),
+            ("talk".into(), "reflex".into())
+        ]
+    );
+    // The announcement had no words: the replay shows none (not "nothing to repeat").
+    assert_eq!(r.summary.conversations[1].answer, "");
 }
