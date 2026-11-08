@@ -155,6 +155,7 @@ tools/release/build-bundle.sh 0.1.0                 # the release bundle
 ```
 
 Contributing, with or without a coding assistant: [AGENTS.md](AGENTS.md).
+The design: [docs/design.md](docs/design.md) and the screen: [docs/ui.md](docs/ui.md).
 
 ## Licences and credits
 
