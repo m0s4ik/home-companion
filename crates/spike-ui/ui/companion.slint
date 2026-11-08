@@ -447,6 +447,9 @@ export component CompanionWindow inherits Window {
     in property <image> pose;
     // The error pose (the notice when Home Assistant's view cannot open).
     in property <image> error-pose;
+    // Do not disturb, on the home: a prop of the character at its feet (the character's
+    // `poses/dnd.png`, if it has one; Alfred's is a hand bell asleep on a velvet cushion).
+    in property <image> dnd-prop;
     // An animation frame of the character, drawn instead of the pose while it is set (Rust
     // places it where the animation's rect falls on the pose; only this box redraws).
     in property <image> frame;
@@ -885,6 +888,21 @@ export component CompanionWindow inherits Window {
         source: root.frame;
         image-fit: fill;
         visible: root.frame.width > 0;
+    }
+    // On the floor at the character's right foot, at the night's light by night; it fades in
+    // and out with do not disturb.
+    Image {
+        property <bool> shown: root.dnd && root.desk && root.desk-page == "home" && root.dnd-prop.width > 0;
+        width: 150px;
+        height: root.dnd-prop.width > 0 ? self.width * root.dnd-prop.height / root.dnd-prop.width : 0px;
+        x: root.character-cx + 165px - self.width / 2;
+        // The night's figure stands a little higher (its feet at ~715 px, the day's at ~735).
+        y: root.character-top + root.character-height - (root.night-home ? 38px : 18px) - self.height;
+        source: root.dnd-prop;
+        image-fit: fill;
+        visible: self.opacity > 0.01;
+        opacity: self.shown ? (root.night-home ? 0.55 : 1.0) : 0.0;
+        animate opacity { duration: 400ms; easing: ease-in-out; }
     }
     TouchArea {
         width: Grid.stage-width;

@@ -32,6 +32,10 @@ and a character without them still works.
 | `timer_finished` | `poses/timer_finished.png` | no (falls back to `speaking`) | a timer or alarm is ringing |
 | `sleeping` | `poses/sleeping.png` | no (falls back to `idle`, drawn dimmed) | night mode: the body's night hours, the home at rest. Drawn as it is: make it as dark as it should be at night |
 
+Optional prop: `poses/dnd.png`, drawn on the floor at the figure's right foot while do not disturb is on (the home,
+day and night; at night at 55 %). Any size (shown 150 px wide), RGBA with a transparent background, or RGB on the
+character's background. Without it do not disturb shows only its line over the clock.
+
 Rules for the pictures:
 
 - PNG, 8 bits per channel (RGB or RGBA), **all the same size** within a character (Alfred: 1024x1024).

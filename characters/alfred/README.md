@@ -15,6 +15,8 @@ of home-companion.
   them), background noise snapped to the flat background, and only the pixels that change by more than 6 levels
   from one frame to the next stored: 9.7 MB in all. The loading clip (208 frames) contains the idle loop (frames
   0-63) and the wake-up, where he fixes his bow tie and glove (96-175), so the three share `animations/loading.png`.
+- **Do not disturb**: `poses/dnd.png`, a hand bell asleep on a velvet cushion (gpt-image-2.5-flare from `idle.png`,
+  background made transparent).
 - **Night**: `poses/sleeping.png` (drawn with gpt-image-2 from `idle.png`: eyes closed, a nightcap) at 60 % on the
   background, as the night clips are. `animations/night.png` (224 frames, made from 440x760 16 fps clips
   generated from the poses) holds `fall_asleep` (0-79, idle to sleeping, he puts on the cap while dimming to 60 %),

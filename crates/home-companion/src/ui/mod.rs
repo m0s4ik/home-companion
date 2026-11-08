@@ -132,6 +132,7 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_dialog(&self, s: &str);
     fn set_pose(&self, i: Image);
     fn set_error_pose(&self, i: Image);
+    fn set_dnd_prop(&self, i: Image);
     /// An animation frame drawn instead of the pose (`Image::default()` = the pose).
     fn set_frame(&self, i: Image);
     fn set_frame_rect(&self, x: f32, y: f32, w: f32, h: f32);
@@ -372,6 +373,9 @@ macro_rules! impl_screen {
             }
             fn set_error_pose(&self, i: Image) {
                 $m::CompanionWindow::set_error_pose(self, i)
+            }
+            fn set_dnd_prop(&self, i: Image) {
+                $m::CompanionWindow::set_dnd_prop(self, i)
             }
             fn set_frame(&self, i: Image) {
                 $m::CompanionWindow::set_frame(self, i)

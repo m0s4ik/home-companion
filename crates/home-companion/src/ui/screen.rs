@@ -79,6 +79,40 @@ pub fn load_pose(path: &Path, crop: Crop, bg: Rgb) -> Result<Image, String> {
     Ok(Image::from_rgba8(buf))
 }
 
+/// A whole picture of the character that is not a pose (the do not disturb prop), with the
+/// background snapped as the poses'; none (an empty image) when the character has no such file.
+fn load_prop(path: &Path, bg: Rgb) -> Image {
+    if !path.exists() {
+        return Image::default();
+    }
+    let size = std::fs::File::open(path)
+        .map_err(|e| e.to_string())
+        .and_then(|f| {
+            png::Decoder::new(std::io::BufReader::new(f))
+                .read_info()
+                .map(|r| (r.info().width, r.info().height))
+                .map_err(|e| e.to_string())
+        });
+    match size.and_then(|(w, h)| {
+        load_pose(
+            path,
+            Crop {
+                x0: 0,
+                y0: 0,
+                x1: w,
+                y1: h,
+            },
+            bg,
+        )
+    }) {
+        Ok(i) => i,
+        Err(e) => {
+            log::warn!("{}: {e}", path.display());
+            Image::default()
+        }
+    }
+}
+
 /// The link's QR code as a picture of the page's 264 px square: dark modules on ivory, each
 /// module a whole number of pixels (centred; the quiet zone takes the rest), so no module is
 /// drawn wider than another.
@@ -1063,6 +1097,10 @@ impl<S: Screen> Ui<S> {
         ui.set_welcome();
         ui.wire();
         ui.screen.set_error_pose(ui.pose(State::Error));
+        ui.screen.set_dnd_prop(load_prop(
+            &ui.character.dir.join("poses/dnd.png"),
+            ui.character.background,
+        ));
         match ui.opts.demo.clone() {
             Some(d) => ui.show_demo(d),
             None => {
