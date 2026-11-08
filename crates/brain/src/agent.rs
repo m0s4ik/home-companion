@@ -264,6 +264,43 @@ pub fn tools() -> Vec<ToolSpec> {
 }
 
 /// Local date and time in words the model understands ("2026-11-05 Thursday 18:42").
+/// Words of a name or an entity id, for comparing them: lowercase letters and digits.
+fn name_key(s: &str) -> String {
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The exposed entity a model meant: its exact id, or else the one whose name (with or without its
+/// device) reads like the id it made up ("light.strip_office_right" for "Strip Office Right"). The error says
+/// what to do instead, and that it is not a permission problem (models tend to say so).
+pub fn resolve_entity<'a>(exposed: &'a [crate::ha::Entity], asked: &str) -> Result<&'a crate::ha::Entity, String> {
+    if let Some(e) = exposed.iter().find(|e| e.entity_id == asked) {
+        return Ok(e);
+    }
+    let (domain, object) = asked.split_once('.').unwrap_or(("", asked));
+    let key = name_key(object);
+    let same: Vec<&crate::ha::Entity> = exposed
+        .iter()
+        .filter(|e| domain.is_empty() || e.domain() == domain)
+        .filter(|e| !key.is_empty() && (name_key(&e.name) == key || name_key(&e.full_name()) == key))
+        .collect();
+    match same.as_slice() {
+        [one] => Ok(one),
+        [] => Err(format!(
+            "{asked} is not an entity id among the ones exposed to the voice assistant (made up, or not exposed). \
+             Use an entity_id exactly as home_entities lists it. This is not a permission problem: if nothing \
+             matches, tell the user you could not find that device"
+        )),
+        many => Err(format!(
+            "{asked} is ambiguous, these match its name: {}. Call home_control with one of these entity_id",
+            many.iter().map(|e| format!("{} ({})", e.entity_id, e.full_name())).collect::<Vec<_>>().join(", ")
+        )),
+    }
+}
+
 fn local_now() -> String {
     let t = now() as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
@@ -1200,11 +1237,12 @@ impl Brain {
         if service.is_empty() || !service.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
             return Err("service: a service name like turn_on".into());
         }
-        let e = self
-            .exposed(false)?
-            .into_iter()
-            .find(|e| e.entity_id == entity_id)
-            .ok_or_else(|| format!("{entity_id} is not exposed to the voice assistant: see home_entities"))?;
+        let exposed = self.exposed(false)?;
+        let e = resolve_entity(&exposed, &entity_id)?.clone();
+        if e.entity_id != entity_id {
+            log::info!(event = "brain_entity_resolved", asked = entity_id.as_str(), used = e.entity_id.as_str(); "entity {entity_id} resolved by name");
+        }
+        let entity_id = e.entity_id.clone();
         let ha = self.ha().ok_or("Home Assistant is not configured")?;
         let it = lang.starts_with("it");
         match self.gate_of(&e) {
@@ -1990,6 +2028,35 @@ fn or_none(s: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn made_up_entity_ids_resolve_by_name() {
+        let ent = |id: &str, name: &str, device: &str| crate::ha::Entity {
+            entity_id: id.into(),
+            name: name.into(),
+            device: device.into(),
+            area: "Office".into(),
+            state: "on".into(),
+            device_class: String::new(),
+            attributes: json!({}),
+        };
+        let all = vec![
+            ent("light.office", "Office", ""),
+            ent("light.lightstrip_3", "Strip Office Right", ""),
+            ent("light.canvas_c887", "Lampada", "Canvas"),
+            ent("light.desk_a", "Desk", ""),
+            ent("switch.desk", "Desk", ""),
+            ent("light.desk_b", "Desk", ""),
+        ];
+        assert_eq!(resolve_entity(&all, "light.office").unwrap().entity_id, "light.office");
+        assert_eq!(resolve_entity(&all, "light.strip_office_right").unwrap().entity_id, "light.lightstrip_3");
+        assert_eq!(resolve_entity(&all, "light.canvas_lampada").unwrap().entity_id, "light.canvas_c887");
+        assert_eq!(resolve_entity(&all, "switch.desk").unwrap().entity_id, "switch.desk");
+        let e = resolve_entity(&all, "light.desk").unwrap_err();
+        assert!(e.contains("ambiguous") && e.contains("light.desk_a") && !e.contains("switch.desk"), "{e}");
+        let e = resolve_entity(&all, "light.kitchen").unwrap_err();
+        assert!(e.contains("not a permission problem"), "{e}");
+    }
 
     #[test]
     fn speakable_text() {
