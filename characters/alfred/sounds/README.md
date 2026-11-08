@@ -18,7 +18,7 @@ mono or stereo); a missing file falls back to a plain tone in the body. Regenera
 | `alarm-set.wav` | reflex: an alarm set |
 | `cancelled.wav` | reflex: a timer or an alarm removed |
 | `done.wav` | reflex answered on the screen only (how long is left, which timers, do not disturb) |
-| `success.wav` | something the user waited for worked (linked to Home Assistant): the classic "ok" |
+| `success.wav` | something the user waited for worked (linked to Home Assistant, a house command went through): the classic "ok"; a short answer after the command is then not spoken |
 | `silence.wav` | reflex "silenzio", "lascia stare", "spegni lo schermo", "buonanotte" |
 | `volume.wav` | a volume step, at the new level |
 | `bell.wav` | one ring of a finished timer or alarm (repeated with a pause) |

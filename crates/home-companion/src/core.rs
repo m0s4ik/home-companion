@@ -614,9 +614,31 @@ impl Core {
         }
     }
 
+    /// A short answer after a house command that went through: the success sound and the card
+    /// already said it, so the conversation ends now and the voice (seconds away) is swallowed
+    /// when it comes, acknowledged with `played` as a stopped answer.
+    fn end_quietly(&mut self) {
+        let Some(c) = &mut self.conv else { return };
+        c.discard_answer = true;
+        c.quiet_answer = true;
+        log::info!(event = "house_quiet", id = c.id, text = c.answer.as_str(); "short answer after a house command: not spoken");
+        self.mic_idle();
+        self.d.mic.request_reset();
+        self.stop_recorder();
+        self.listen_deadline = None;
+        self.think_deadline = Some(Instant::now() + self.cfg.think_timeout);
+        self.wave.clear();
+        self.go_idle();
+    }
+
     /// Ends the current conversation with its `conversation` line.
     fn close(&mut self, outcome: &str) {
         if let Some(mut c) = self.conv.take() {
+            let outcome = if c.quiet_answer && outcome == "stopped" {
+                "house_quiet"
+            } else {
+                outcome
+            };
             if let Some(s) = c.stream.take() {
                 s.abort();
             }
@@ -1394,13 +1416,20 @@ impl Core {
             }
             Message::Transcript(t) => self.on_transcript(t.text),
             Message::Synthesize(s) => {
+                let mut quiet = false;
                 if let Some(c) = &mut self.conv {
                     c.synth_at = Some(Instant::now());
                     if !c.discard_answer {
                         c.answer = s.text.clone();
                         crate::brain_link::tell("said", &s.text);
-                        self.ui(UiCommand::Answer(s.text));
+                        quiet = c.house_done && quiet_after_command(&s.text);
+                        if !quiet {
+                            self.ui(UiCommand::Answer(s.text));
+                        }
                     }
+                }
+                if quiet {
+                    self.end_quietly();
                 }
             }
             Message::AudioStart { format, .. } => self.on_audio_start(format),
@@ -1807,8 +1836,16 @@ impl Core {
             UiEvent::MusicToggle => self.on_music_toggle(),
             UiEvent::MusicNext => self.music_remote(crate::airplay::Remote::Next),
             UiEvent::HouseDone => {
-                if let Some(c) = &mut self.conv {
+                let first = self.conv.as_mut().is_some_and(|c| {
+                    let first = !c.house_done && !c.discard_answer;
                     c.house_done = true;
+                    first
+                });
+                // The command went through: the "ok" at once, with the card (the AI's words
+                // and their voice come many seconds later). Once per conversation, and never
+                // over an answer already speaking or the bell.
+                if first && !matches!(self.phase, Phase::Speaking | Phase::Ringing) {
+                    self.d.player.play(&self.cues.success);
                 }
             }
             UiEvent::MirrorStop => {
@@ -2458,9 +2495,31 @@ pub fn rss_mb() -> f64 {
     (pages * page / 1048576.0 * 10.0).round() / 10.0
 }
 
+/// After a house command that went through, an answer this short only confirms it ("Fatto.",
+/// "Ho acceso la luce dello studio."): not spoken. A question or a longer answer (something
+/// failed, or the user also asked something) still is.
+const QUIET_MAX_WORDS: usize = 8;
+
+fn quiet_after_command(text: &str) -> bool {
+    let t = text.trim();
+    !t.is_empty() && !t.ends_with('?') && t.split_whitespace().count() <= QUIET_MAX_WORDS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_answers_after_a_command_are_not_spoken() {
+        assert!(quiet_after_command("Fatto."));
+        assert!(quiet_after_command("Ho acceso la luce dello studio."));
+        assert!(quiet_after_command(" Done. "));
+        assert!(!quiet_after_command(""));
+        assert!(!quiet_after_command("Vuoi che accenda anche la cucina?"));
+        assert!(!quiet_after_command(
+            "Ho acceso la luce dello studio, ma in cucina non trovo nessuna lampada."
+        ));
+    }
 
     #[test]
     fn phases_round_trip() {

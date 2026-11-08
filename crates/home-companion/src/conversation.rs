@@ -55,6 +55,9 @@ pub struct Conversation {
     /// The brain carried out a house command in this conversation (its "done" card is up): a
     /// Home Assistant that falls silent afterwards ends the conversation quietly, not as an error.
     pub house_done: bool,
+    /// The answer after a house command was short ("Fatto."): the success sound already said
+    /// it, so its voice is swallowed (as `discard_answer`) and logged as `house_quiet`.
+    pub quiet_answer: bool,
     /// We ended our microphone stream with `audio-stop` (the Stop button).
     pub audio_stop_sent: bool,
     /// The answer's audio stream, while it plays.
@@ -106,6 +109,7 @@ impl Conversation {
             answer_format: None,
             discard_answer: false,
             house_done: false,
+            quiet_answer: false,
             audio_stop_sent: false,
             stream: None,
         }
