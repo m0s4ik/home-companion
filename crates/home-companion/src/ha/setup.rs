@@ -146,6 +146,9 @@ pub struct State {
     /// Home Assistant's own addresses (its network adapters): they may connect to the satellite
     /// and to the brain's tools without `satellite.allowed`.
     pub ha_addresses: Vec<String>,
+    /// The agent's instructions as the body last wrote them: while Home Assistant still has these
+    /// (the user did not edit them), a newer version of the body's instructions replaces them.
+    pub prompt_written: String,
 }
 
 /// Home Assistant's own addresses, from its network adapters (`network`, admin only): the
@@ -911,11 +914,17 @@ pub fn repair(
             } else {
                 st.agent_sub = create_agent(api, &ai_id, &st.mcp_entry, body)?;
                 st.agent_ours = true;
+                st.prompt_written = body.prompt.clone();
                 log::info!(event = "ha_setup"; "agent created under {}", s(&ai, "title"));
             }
             save(st);
-        } else if forced("agent") {
-            add_tools(api, &ai_id, &st.agent_sub, &st.mcp_entry)?;
+        } else {
+            if forced("agent") {
+                add_tools(api, &ai_id, &st.agent_sub, &st.mcp_entry)?;
+            }
+            if refresh_prompt(api, st, body)? {
+                save(st);
+            }
         }
         let sub = st.agent_sub.clone();
         // The AI integration reloads after a new agent: its entity comes a few seconds later.
@@ -1188,6 +1197,69 @@ fn subentries(api: &mut dyn Api, ai: &str) -> Result<Vec<String>, String> {
 
 /// "Repair" on the agent: the MCP tools attached again (the rest of its settings kept).
 fn add_tools(api: &mut dyn Api, ai: &str, sub: &str, mcp: &str) -> Result<(), String> {
+    reconfigure_agent(api, ai, sub, |data| {
+        let mut apis: Vec<Value> = match data.get("llm_hass_api") {
+            Some(Value::Array(a)) => a.clone(),
+            Some(Value::String(v)) => vec![json!(v)],
+            _ => vec![],
+        };
+        let ours = json!(mcp_api(mcp));
+        if !apis.contains(&ours) {
+            apis.push(ours);
+        }
+        data.insert("llm_hass_api".into(), Value::Array(apis));
+    })
+}
+
+/// The agent's instructions replaced by the body's.
+fn set_prompt(api: &mut dyn Api, ai: &str, sub: &str, prompt: &str) -> Result<(), String> {
+    reconfigure_agent(api, ai, sub, |data| {
+        data.insert("prompt".into(), json!(prompt));
+    })
+}
+
+/// Whether the instructions Home Assistant has are still the body's (`written`, what it last
+/// wrote), so a newer version may replace them. Before the body kept a copy (`written` empty): the
+/// body's when they read like its template (they use its tools and its memory sensor).
+pub fn prompt_is_ours(current: &str, written: &str) -> bool {
+    if written.is_empty() {
+        current.contains("home_control") && current.contains("_memoria")
+    } else {
+        current == written
+    }
+}
+
+/// The body's newer instructions into the agent, unless the user changed them there: true when
+/// the state changed (the caller saves it).
+fn refresh_prompt(api: &mut dyn Api, st: &mut State, body: &Body) -> Result<bool, String> {
+    if st.agent_sub.is_empty() || st.ai_entry.is_empty() || body.prompt.trim().is_empty() {
+        return Ok(false);
+    }
+    let settings = agent_settings(api, &st.ai_entry, &st.agent_sub)?;
+    let Some(current) = settings.get("prompt").and_then(Value::as_str) else {
+        return Ok(false);
+    };
+    if current == body.prompt {
+        let changed = st.prompt_written != body.prompt;
+        st.prompt_written = body.prompt.clone();
+        return Ok(changed);
+    }
+    if !prompt_is_ours(current, &st.prompt_written) {
+        return Ok(false);
+    }
+    set_prompt(api, &st.ai_entry, &st.agent_sub, &body.prompt)?;
+    st.prompt_written = body.prompt.clone();
+    log::info!(event = "ha_setup"; "agent: newer instructions");
+    Ok(true)
+}
+
+/// The agent's reconfigure form, filled with its current settings, changed by `change` and sent.
+fn reconfigure_agent(
+    api: &mut dyn Api,
+    ai: &str,
+    sub: &str,
+    change: impl FnOnce(&mut serde_json::Map<String, Value>),
+) -> Result<(), String> {
     let (_, f) = api.rest(
         "POST",
         "/api/config/config_entries/subentries/flow",
@@ -1211,16 +1283,7 @@ fn add_tools(api: &mut dyn Api, ai: &str, sub: &str, mcp: &str) -> Result<(), St
             data.insert(s(x, "name").into(), v.clone());
         }
     }
-    let mut apis: Vec<Value> = match data.get("llm_hass_api") {
-        Some(Value::Array(a)) => a.clone(),
-        Some(Value::String(v)) => vec![json!(v)],
-        _ => vec![],
-    };
-    let ours = json!(mcp_api(mcp));
-    if !apis.contains(&ours) {
-        apis.push(ours);
-    }
-    data.insert("llm_hass_api".into(), Value::Array(apis));
+    change(&mut data);
     let (_, r) = api.rest(
         "POST",
         &format!("/api/config/config_entries/subentries/flow/{flow_id}"),
@@ -1618,6 +1681,9 @@ fn background(cfg: &SetupConfig, st: &mut State, at_start: bool, ev: &Sender<Set
             st.tools_hash = b.tools_hash.clone();
             log::info!(event = "ha_setup"; "the tools changed: Home Assistant reads them again");
         }
+        if at_start && let Err(e) = refresh_prompt(&mut api, st, &body) {
+            log::warn!(event = "ha_setup"; "agent instructions: {e}");
+        }
         let rows = check(&mut api, st, &body, cfg.brain);
         let _ = ev.send(SetupEvent::Attention(attention(&rows)));
         let _ = ev.send(SetupEvent::Rows(rows));
@@ -1657,6 +1723,16 @@ pub fn agent_prompt(character_dir: &Path, language: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn instructions_are_ours_until_the_user_edits_them() {
+        let ours = agent_prompt(Path::new("/nonexistent"), "en");
+        assert!(prompt_is_ours(&ours, &ours));
+        assert!(!prompt_is_ours("Be brief.", &ours));
+        // Before the body kept a copy: its template, by its tools and memory sensor.
+        assert!(prompt_is_ours(&ours, ""));
+        assert!(!prompt_is_ours("You are a pirate.", ""));
+    }
     use std::collections::HashMap;
 
     /// A small Home Assistant in memory: config entries, subentries, flows, the entity registry,
