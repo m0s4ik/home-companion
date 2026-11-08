@@ -138,6 +138,39 @@ impl Settings {
         self.save_logged("airplay", on.into());
     }
 
+    /// The `todo.*` lists shown on the screen (Home Assistant page → Lists and calendars);
+    /// empty = all of them.
+    pub fn lists(&self) -> Vec<String> {
+        self.string_list("lists")
+    }
+
+    pub fn save_lists(&self, lists: &[String]) {
+        self.save_string_list("lists", lists);
+    }
+
+    /// The `calendar.*` entities shown on the screen; empty = all of them.
+    pub fn calendars(&self) -> Vec<String> {
+        self.string_list("calendars")
+    }
+
+    pub fn save_calendars(&self, calendars: &[String]) {
+        self.save_string_list("calendars", calendars);
+    }
+
+    fn string_list(&self, key: &str) -> Vec<String> {
+        self.table()
+            .and_then(|t| t.get(key)?.as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect()
+    }
+
+    fn save_string_list(&self, key: &str, list: &[String]) {
+        let v: Vec<toml::Value> = list.iter().map(|s| s.as_str().into()).collect();
+        self.save_logged(key, v.into());
+    }
+
     /// "Più tardi" on the setup page: it does not come back by itself at start.
     pub fn setup_later(&self) -> bool {
         self.flag("setup_later").unwrap_or(false)
@@ -284,6 +317,26 @@ mod tests {
         assert_eq!(s.volume(), Some(40));
         std::fs::write(&s.path, "volume = 300\n").unwrap();
         assert_eq!(s.volume(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lists_and_calendars_round_trip() {
+        let dir = std::env::temp_dir().join(format!(
+            "home-companion-settings-lists-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = Settings::in_dir(&dir);
+        assert!(s.lists().is_empty() && s.calendars().is_empty());
+        s.save_lists(&["todo.shopping".into(), "todo.bring".into()]);
+        s.save_calendars(&["calendar.family".into()]);
+        s.save_language("it");
+        assert_eq!(s.lists(), ["todo.shopping", "todo.bring"]);
+        assert_eq!(s.calendars(), ["calendar.family"]);
+        s.save_lists(&[]);
+        assert!(s.lists().is_empty());
+        assert_eq!(s.calendars(), ["calendar.family"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
