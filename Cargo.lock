@@ -4427,20 +4427,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "spike-gpu"
-version = "0.1.0"
-dependencies = [
- "fontique",
- "glow",
- "libc",
- "memmap2",
- "png",
- "serde_json",
- "slint",
- "slint-build",
-]
-
-[[package]]
 name = "spike-native"
 version = "0.1.0"
 dependencies = [

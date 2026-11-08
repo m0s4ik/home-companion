@@ -54,7 +54,7 @@ jobs:
       - name: fetch TFLite Micro (pinned)
         run: crates/wakeword/tools/fetch-tflm.sh
       - name: build
-        run: cargo build --workspace --release --exclude spike-native --exclude spike-audio --exclude spike-ui --exclude spike-gpu
+        run: cargo build --workspace --release --exclude spike-native --exclude spike-audio --exclude spike-ui
       - name: test
         run: cargo test --release -p wyoming -p audio -p wakeword -p home-companion -p character -p locale
       - name: clippy
@@ -137,7 +137,7 @@ jobs:
           }
           base="libasound.so.2 libstdc++.so.6 libgcc_s.so.1 libm.so.6 libc.so.6 ld-linux-aarch64.so.1"
           check dist/home-companion-software "$base"
-          # The gbm crate links libgbm (as spike-gpu on the device); EGL/GLES are opened at run time.
+          # The gbm crate links libgbm; EGL/GLES are opened at run time.
           check dist/home-companion "$base libgbm.so.1"
           ls -l dist/
       - uses: actions/upload-artifact@v4
