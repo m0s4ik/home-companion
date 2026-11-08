@@ -320,6 +320,43 @@ setup_card_fix_text = "Qualcosa non va più: tocca e riparo."
 ready_title = "Configurazione completata"
 ready_text = "Tocca per aprire Home Assistant."
 
+# v0.2 ui
+# The brain's house commands: the "done" card ("Luce cucina: spento"), its state words (as
+# Home Assistant shows them in Italian; one without a word here shows as Home Assistant says it).
+house_state_on = "acceso"
+house_state_off = "spento"
+house_state_open = "aperto"
+house_state_closed = "chiuso"
+house_state_opening = "in apertura"
+house_state_closing = "in chiusura"
+house_done = "fatto"
+# The Yes/No card of a command that waits for an answer.
+yes = "Sì"
+no = "No"
+# Do not disturb (the line over the clock, the control center's tile).
+dnd = "Non disturbare"
+cc_dnd = "Non disturbare"
+cc_until = "Fino alle {t}"
+# Altro → Cosa dire: a page of sentences to try, by group (sentences separated by |).
+what_short = "Cosa dire"
+what_title = "Cosa dire a {name}"
+what_intro = "Di' «Okay {name}», poi per esempio:"
+what_quote = "«{s}»"
+what_time = "Ora e timer"
+what_time_say = "Che ore sono? | Metti un timer di 5 minuti | Quanto manca al timer?"
+what_alarms = "Sveglie"
+what_alarms_say = "Svegliami alle 7 | Metti una sveglia alle 6:30 nei giorni feriali | Togli la sveglia"
+what_reminders = "Promemoria e ricordi"
+what_reminders_say = "Ricordami di chiamare la mamma alle 18 | Ricorda che il gatto si chiama Neve | Cosa ho domani?"
+what_lists = "Liste"
+what_lists_say = "Aggiungi il latte alla spesa | Cosa c'è nella lista della spesa?"
+what_house = "La casa"
+what_house_say = "Spegni la luce della cucina | Chiudi la tapparella del soggiorno | Fammi vedere la telecamera dell'ingresso"
+what_music = "Musica e AirPlay"
+what_music_say = "Metti in pausa la musica | Brano successivo | Alza il volume"
+what_screen = "Lo schermo"
+what_screen_say = "Spegni lo schermo | Non disturbare per un'ora | Basta"
+
 [sample]
 # The first start's Home Assistant page (--state first-ha-found): a second instance's name.
 find_second = "Casa al mare"
@@ -340,3 +377,7 @@ memory_fact1 = "Martedì 10 novembre Andrea ha il dentista alle 15"
 memory_fact2 = "Il gatto si chiama Neve"
 reminder_text = "Chiamare la mamma"
 shop_items = "Pane|2 kg di farina|Latte|Mele"
+
+# v0.2 ui
+house_light = "Luce cucina"
+house_question = "Tapparella del soggiorno: la chiudo?"
