@@ -40,6 +40,8 @@ pub struct Cues {
     pub tap: Arc<Clip>,
     /// Back home from Home Assistant's view.
     pub home: Arc<Clip>,
+    /// Each of a timer's last ten seconds: a very soft clock tick.
+    pub tick: Arc<Clip>,
 }
 
 impl Cues {
@@ -65,6 +67,7 @@ impl Cues {
             reminder: Clip::tones(&[(659.0, 120), (784.0, 120), (1047.0, 200)], 30, AMP),
             tap: Clip::tones(&[(1200.0, 15)], 0, AMP * 0.3),
             home: Clip::tones(&[(784.0, 90), (523.0, 160)], 10, AMP * 0.6),
+            tick: Clip::tones(&[(1500.0, 12)], 0, AMP * 0.25),
         }
     }
 
@@ -88,6 +91,7 @@ impl Cues {
             ("reminder", &mut c.reminder),
             ("tap", &mut c.tap),
             ("home", &mut c.home),
+            ("tick", &mut c.tick),
         ] {
             let path = dir.join(format!("{name}.wav"));
             if !path.exists() {
