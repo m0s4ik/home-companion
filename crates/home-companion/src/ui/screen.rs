@@ -274,15 +274,18 @@ pub struct Demo {
     pub house: u8,
     /// `--state dnd`: do not disturb on.
     pub dnd: bool,
+    /// `--state thinking-answer`: Home Assistant's written answer is in, its voice not yet.
+    pub answer_early: bool,
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 47] = [
+pub const DEMO_STATES: [&str; 48] = [
     "home",
     "cards",
     "cards-setup",
     "listening",
     "thinking",
+    "thinking-answer",
     "speaking",
     "error",
     "offline",
@@ -449,6 +452,11 @@ impl Demo {
             },
             "dnd" => Demo {
                 dnd: true,
+                ..home.clone()
+            },
+            "thinking-answer" => Demo {
+                phase: Phase::Thinking,
+                answer_early: true,
                 ..home.clone()
             },
             "dnd-night" => Demo {
@@ -2084,7 +2092,13 @@ impl<S: Screen> Ui<S> {
                 .then(|| ("partlycloudy", l.text("weather_partlycloudy"), "14°")),
         );
         self.screen.set_heard(l.sample("heard"));
-        self.screen.set_answer(l.sample("answer"));
+        // While thinking the answer is not in yet, unless the demo is about the written answer
+        // coming before its voice.
+        if d.phase != Phase::Thinking || d.answer_early {
+            self.screen.set_answer(l.sample("answer"));
+        } else {
+            self.screen.set_answer("");
+        }
         let demo_wave: Vec<f32> = (0..72)
             .map(|i| {
                 let k = (i as f32 - 35.5).abs() / 36.0;
@@ -4211,6 +4225,7 @@ impl<S: Screen> Ui<S> {
         match e {
             HouseEvent::Done(id, line, undo) => {
                 self.house.borrow_mut().changed(id, line, undo, now);
+                self.send(UiEvent::HouseDone);
                 // The card is seen: a soft wake (not the screen asleep by "spegni lo schermo"
                 // just before, nor the night's, that the touch is for).
                 self.wake(WakeSource::Conversation);

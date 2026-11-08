@@ -69,6 +69,8 @@ pub enum UiEvent {
     MusicNext,
     /// "Interrompi" on the mirroring page.
     MirrorStop,
+    /// The brain's "done" card for a house command is on the screen (BrainMsg::Changed).
+    HouseDone,
     /// The control center's "do not disturb": on until this unix time (Some) or off (None), the
     /// same as the reflex.
     DoNotDisturb(Option<u64>),
@@ -1804,6 +1806,11 @@ impl Core {
             UiEvent::ControlTile(k) => self.on_control_tile(&k),
             UiEvent::MusicToggle => self.on_music_toggle(),
             UiEvent::MusicNext => self.music_remote(crate::airplay::Remote::Next),
+            UiEvent::HouseDone => {
+                if let Some(c) = &mut self.conv {
+                    c.house_done = true;
+                }
+            }
             UiEvent::MirrorStop => {
                 if let Some(m) = &self.d.music {
                     m.drop_session();
@@ -2260,6 +2267,18 @@ impl Core {
             self.think_deadline = None;
             match &self.conv {
                 Some(c) if c.discard_answer => self.close("stopped"),
+                // The command was carried out and its card is up: the AI's words never came
+                // (it hung after the tool), but nothing failed for the user.
+                Some(c) if c.house_done && self.phase == Phase::Thinking => {
+                    log::warn!(event = "timeout", stage = "thinking", house_done = true; "no answer from Home Assistant after a house command: ended quietly");
+                    self.mic_idle();
+                    self.d.mic.request_reset();
+                    self.stop_recorder();
+                    self.close("house_done_silent");
+                    self.listen_deadline = None;
+                    self.wave.clear();
+                    self.go_idle();
+                }
                 Some(_) if self.phase == Phase::Thinking => {
                     log::warn!(event = "timeout", stage = "thinking"; "no answer from Home Assistant");
                     self.fail("timeout");

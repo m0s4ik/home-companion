@@ -462,6 +462,9 @@ export component CompanionWindow inherits Window {
     in property <color> color-error: #eb4646;
     in property <string> phrase-listening: "I'm listening…";
     in property <string> phrase-thinking: "Let me think…";
+    // Home Assistant's answer is written before its voice is ready (a slow cloud voice can take
+    // half a minute): shown at once, laid out as while speaking.
+    property <bool> answer-early: root.state == "thinking" && root.answer != "";
     in property <string> phrase-error: "I didn't understand";
     // Shown in the home when there is nothing alive.
     in property <string> phrase-idle: "Say \"Okay Alfred\"";
@@ -1221,7 +1224,7 @@ export component CompanionWindow inherits Window {
             border-radius: 2px;
             background: root.state-color.with-alpha(0.35 + 0.65 * min(1, v * 1.6));
         }
-        if root.state != "speaking": Text {
+        if root.state != "speaking" && !root.answer-early: Text {
             x: Grid.col-x;
             y: root.state == "thinking" && root.heard != "" ? 356px : 376px;
             width: Grid.col-width;
@@ -1231,7 +1234,7 @@ export component CompanionWindow inherits Window {
             color: Theme.text;
             horizontal-alignment: center;
         }
-        if root.state == "thinking" && root.heard != "": Text {
+        if root.state == "thinking" && root.heard != "" && !root.answer-early: Text {
             x: Grid.col-x + 24px;
             y: 432px;
             width: Grid.col-width - 48px;
@@ -1253,7 +1256,7 @@ export component CompanionWindow inherits Window {
             horizontal-alignment: center;
             wrap: word-wrap;
         }
-        if root.state == "speaking" && root.heard != "": Text {
+        if (root.state == "speaking" || root.answer-early) && root.heard != "": Text {
             x: Grid.col-x;
             y: 348px;
             width: Grid.col-width;
@@ -1263,7 +1266,7 @@ export component CompanionWindow inherits Window {
             horizontal-alignment: center;
             overflow: elide;
         }
-        if root.state == "speaking": Text {
+        if root.state == "speaking" || root.answer-early: Text {
             x: Grid.col-x;
             y: 392px;
             width: Grid.col-width;
@@ -3315,9 +3318,9 @@ export component CompanionWindow inherits Window {
                     height: 60px;
                     text: root.state == "speaking" ? root.answer
                         : root.state == "listening" ? root.phrase-listening
-                        : root.state == "thinking" ? (root.heard != "" ? "«" + root.heard + "»" : root.phrase-thinking)
+                        : root.state == "thinking" ? (root.answer != "" ? root.answer : root.heard != "" ? "«" + root.heard + "»" : root.phrase-thinking)
                         : root.state == "error" ? root.phrase-error : root.answer;
-                    font-size: root.state == "speaking" || (root.state == "thinking" && root.heard != "") ? 24px : 28px;
+                    font-size: root.state == "speaking" || (root.state == "thinking" && (root.heard != "" || root.answer != "")) ? 24px : 28px;
                     color: Theme.text;
                     horizontal-alignment: center;
                     wrap: word-wrap;
@@ -3638,7 +3641,7 @@ export component CompanionWindow inherits Window {
             height: min(self.preferred-height, 68px);
             text: root.state == "speaking" ? root.answer
                 : root.state == "listening" ? root.phrase-listening
-                : root.state == "thinking" ? (root.heard != "" ? "«" + root.heard + "»" : root.phrase-thinking)
+                : root.state == "thinking" ? (root.answer != "" ? root.answer : root.heard != "" ? "«" + root.heard + "»" : root.phrase-thinking)
                 : root.state == "error" ? root.phrase-error : root.answer;
             font-size: 28px;
             color: Theme.text;
