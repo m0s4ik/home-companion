@@ -36,7 +36,7 @@ down. Anything else goes to Home Assistant.
 memories, reminders, the shopping list, timers and alarms, and the house **with safety gates** (covers and valves
 only after a "yes"; locks, alarms, doors and gates never by voice).
 
-Your scripts exposed to Assist work as tools, and your automations' sentence triggers still run first (Home Assistant checks them before the AI agent, even with "prefer local intents" off, whenever the request comes through the voice pipeline).
+Your scripts exposed to Assist work as tools, and your automations' sentence triggers still run first (Home Assistant checks them before the AI agent, even with "prefer local intents" off, whenever the request comes through the voice pipeline; only the answer to a follow-up question goes straight to the agent).
 
 ### 🏠 The home screen
 
