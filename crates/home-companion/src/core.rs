@@ -385,6 +385,13 @@ pub struct Core {
     mic_muted: bool,
     airplay_on: bool,
     now_playing: Option<crate::airplay::NowPlaying>,
+    /// The last spoken answer, for "ripeti".
+    tape: crate::repeat::Tape,
+    /// "Ripeti": the last answer playing again.
+    replay: Option<audio::Stream>,
+    /// "Non disturbare" until then (seconds since the epoch): no card, reminder or announcement
+    /// sounds, no final ticks; timers and alarms still ring.
+    dnd_until: Option<u64>,
 }
 
 /// A sentence ending on a word that cannot end it (a preposition, an article, "e"): the speaker
@@ -444,6 +451,9 @@ impl Core {
             mic_muted: false,
             airplay_on: true,
             now_playing: None,
+            tape: crate::repeat::Tape::default(),
+            replay: None,
+            dnd_until: None,
         }
     }
 
@@ -1029,40 +1039,95 @@ impl Core {
         self.d.mic.request_reset();
         self.listen_deadline = None;
         let now = now_unix();
-        let answer = match cmd {
+        // Sent after the conversation ends, so they are the screen's last word ("spegni lo
+        // schermo" after the view went back home).
+        let mut after: Vec<UiCommand> = Vec::new();
+        // "Ripeti": how long the replay plays (the answer stays on screen as long).
+        let mut replay_for: Option<Duration> = None;
+        let answer = match &cmd {
             Reflex::Time => {
                 let n = crate::alarms::Now::local();
                 let time = format!("{:02}:{:02}", n.hour, n.minute);
                 self.reflex_text("reflex_time", &[("time", &time)])
             }
-            Reflex::TimerStart { seconds } => {
-                let id = self.d.timers.start_local(None, seconds, now);
-                log::info!(event = "timer_started", id = id.as_str(), seconds = seconds, by = "reflex"; "timer {id}: {seconds} s (reflex)");
+            Reflex::TimerStart { seconds, name } => {
+                let seconds = *seconds;
+                let id = self.d.timers.start_local(name.clone(), seconds, now);
+                log::info!(event = "timer_started", id = id.as_str(), seconds = seconds, name = name.as_deref().unwrap_or(""), by = "reflex"; "timer {id}: {seconds} s (reflex)");
                 self.refresh_rows(true);
                 let d = crate::timers::format_left(seconds as f64);
-                self.reflex_text("reflex_timer_set", &[("duration", &d)])
+                match name {
+                    Some(n) => {
+                        self.reflex_text("reflex_timer_set_named", &[("duration", &d), ("name", n)])
+                    }
+                    None => self.reflex_text("reflex_timer_set", &[("duration", &d)]),
+                }
             }
-            Reflex::TimerCancel => {
-                let ids: Vec<String> = self.d.timers.rows(now).into_iter().map(|t| t.id).collect();
+            Reflex::TimerCancel { name } => {
+                let ids: Vec<String> = match name {
+                    Some(n) => self.d.timers.named(n),
+                    None => self.d.timers.rows(now).into_iter().map(|t| t.id).collect(),
+                };
                 for id in &ids {
                     self.d.timers.cancel(id);
                     log::info!(event = "timer_cancelled", id = id.as_str(), by = "reflex"; "timer {id} cancelled (reflex)");
                 }
                 self.refresh_rows(true);
-                match ids.len() {
-                    0 => self.reflex_text("reflex_no_timer", &[]),
-                    1 => self.reflex_text("reflex_timer_cancelled", &[]),
-                    n => self.reflex_text("reflex_timers_cancelled", &[("n", &n.to_string())]),
+                match (ids.len(), name) {
+                    (0, Some(n)) => self.reflex_text("reflex_no_timer_named", &[("name", n)]),
+                    (0, None) => self.reflex_text("reflex_no_timer", &[]),
+                    (1, Some(n)) => {
+                        self.reflex_text("reflex_timer_cancelled_named", &[("name", n)])
+                    }
+                    (1, None) => self.reflex_text("reflex_timer_cancelled", &[]),
+                    (n, _) => self.reflex_text("reflex_timers_cancelled", &[("n", &n.to_string())]),
                 }
             }
-            Reflex::TimerLeft => match self.d.timers.next_due() {
+            Reflex::TimerLeft { name: None } => match self.d.timers.next_due() {
                 Some(due) => {
                     let left = crate::timers::format_left(due - now);
                     self.reflex_text("reflex_timer_left", &[("left", &left)])
                 }
                 None => self.reflex_text("reflex_no_timer", &[]),
             },
+            Reflex::TimerLeft { name: Some(n) } => {
+                let left = self
+                    .d
+                    .timers
+                    .named(n)
+                    .iter()
+                    .filter_map(|id| self.d.timers.get(id))
+                    .map(|t| t.remaining(now))
+                    .min_by(f64::total_cmp);
+                match left {
+                    Some(l) => {
+                        let left = crate::timers::format_left(l);
+                        self.reflex_text("reflex_timer_left_named", &[("name", n), ("left", &left)])
+                    }
+                    None => self.reflex_text("reflex_no_timer_named", &[("name", n)]),
+                }
+            }
+            Reflex::TimerList => {
+                let rows = self.d.timers.rows(now);
+                if rows.is_empty() {
+                    self.reflex_text("reflex_no_timer", &[])
+                } else {
+                    let items: Vec<String> = rows
+                        .iter()
+                        .map(|r| {
+                            let key = if r.paused {
+                                "reflex_timer_item_paused"
+                            } else {
+                                "reflex_timer_item"
+                            };
+                            self.reflex_text(key, &[("name", &r.name), ("left", &r.left)])
+                        })
+                        .collect();
+                    format!("{}.", items.join("; "))
+                }
+            }
             Reflex::AlarmSet { hour, minute } => {
+                let (hour, minute) = (*hour, *minute);
                 let id = self.d.alarms.add(hour, minute, 0);
                 log::info!(event = "alarm_set", id = id, days = 0, by = "reflex"; "alarm {hour:02}:{minute:02} set (reflex)");
                 self.ui(UiCommand::Alarms(self.d.alarms.list().to_vec()));
@@ -1095,6 +1160,7 @@ impl Core {
                 self.reflex_text("reflex_volume", &[("percent", &p.to_string())])
             }
             Reflex::VolumeSet { percent } => {
+                let percent = *percent;
                 self.on_volume(VolumeRequest::Set(percent.max(5)));
                 let p = self.d.volume.as_ref().map_or(percent, |v| v.percent());
                 self.reflex_text("reflex_volume", &[("percent", &p.to_string())])
@@ -1120,20 +1186,69 @@ impl Core {
                     None => self.reflex_text("reflex_no_music", &[]),
                 }
             }
+            Reflex::Repeat => match self.tape.last(Instant::now()) {
+                Some(a) => {
+                    let s = self.d.player.open_stream(a.format);
+                    if let Err(e) = s.push(&a.pcm) {
+                        log::warn!("repeat: {e}");
+                    }
+                    s.finish();
+                    replay_for = Some(a.duration());
+                    log::info!(event = "repeat", seconds = a.duration().as_secs_f64(); "repeating the last answer ({:.1} s)", a.duration().as_secs_f64());
+                    let text = a.text.clone();
+                    self.replay = Some(s);
+                    text
+                }
+                None => self.reflex_text("reflex_nothing_to_repeat", &[]),
+            },
+            Reflex::ScreenOff => {
+                after.push(UiCommand::ScreenOff);
+                String::new()
+            }
+            Reflex::DoNotDisturb { .. } | Reflex::DoNotDisturbMorning | Reflex::GoodNight => {
+                let local = local_seconds_of_day(now as i64);
+                let until = match &cmd {
+                    Reflex::DoNotDisturb { seconds: Some(s) } => now as u64 + s,
+                    Reflex::DoNotDisturb { seconds: None } => dnd_default_until(now as i64, local),
+                    _ => next_morning(now as i64, local),
+                };
+                self.set_dnd(Some(until));
+                after.push(UiCommand::DoNotDisturb(Some(until)));
+                if cmd == Reflex::GoodNight {
+                    after.push(UiCommand::ScreenOff);
+                    String::new()
+                } else {
+                    let n = crate::alarms::Now::at(until as i64);
+                    let time = format!("{:02}:{:02}", n.hour, n.minute);
+                    self.reflex_text("reflex_dnd_on", &[("time", &time)])
+                }
+            }
+            Reflex::DoNotDisturbOff => {
+                self.set_dnd(None);
+                after.push(UiCommand::DoNotDisturb(None));
+                self.reflex_text("reflex_dnd_off", &[])
+            }
         };
         self.stop_recorder();
         log::info!(event = "reflex_done", heard = heard, answer = answer.as_str(); "reflex done: {heard:?} → {answer:?}");
         // Each reflex has its own sound: it is clear the body did it (Home Assistant answers aloud).
-        let cue = match cmd {
+        let cue = match &cmd {
             Reflex::Time => Some(&self.cues.time),
             Reflex::TimerStart { .. } => Some(&self.cues.timer_set),
             Reflex::AlarmSet { .. } => Some(&self.cues.alarm_set),
-            Reflex::TimerCancel | Reflex::AlarmCancel => Some(&self.cues.cancelled),
-            Reflex::Silence => Some(&self.cues.silence),
-            Reflex::TimerLeft => Some(&self.cues.done),
+            Reflex::TimerCancel { .. } | Reflex::AlarmCancel => Some(&self.cues.cancelled),
+            // Soft and low: the screen goes dark, the evening goes quiet.
+            Reflex::Silence | Reflex::ScreenOff | Reflex::GoodNight => Some(&self.cues.silence),
+            Reflex::TimerLeft { .. } | Reflex::TimerList => Some(&self.cues.done),
+            Reflex::DoNotDisturb { .. } | Reflex::DoNotDisturbMorning | Reflex::DoNotDisturbOff => {
+                Some(&self.cues.done)
+            }
             Reflex::MusicPause | Reflex::MusicPlay | Reflex::MusicNext | Reflex::MusicPrevious => {
                 Some(&self.cues.done)
             }
+            // The voice itself is the answer; with nothing to repeat, the done sound.
+            Reflex::Repeat if replay_for.is_some() => None,
+            Reflex::Repeat => Some(&self.cues.done),
             // The volume keys' own tick already plays at the new level.
             Reflex::VolumeUp | Reflex::VolumeDown | Reflex::VolumeSet { .. } => None,
         };
@@ -1145,16 +1260,43 @@ impl Core {
             c.answer = answer.clone();
             c.transcript_at = Some(Instant::now());
         }
-        if answer.is_empty() {
+        if answer.is_empty() && replay_for.is_none() {
             self.close("reflex");
             self.go_idle();
+            for c in after {
+                self.ui(c);
+            }
             return;
         }
         self.ui(UiCommand::Heard(heard.to_string()));
         self.ui(UiCommand::Answer(answer));
         self.wave.clear();
-        self.local_until = Some(Instant::now() + LOCAL_ANSWER);
+        // A replay ends the view when it has played (AudioEvent::Finished); this is the
+        // fallback.
+        self.local_until =
+            Some(Instant::now() + replay_for.map_or(LOCAL_ANSWER, |d| d + Duration::from_secs(2)));
         self.set_phase(Phase::Speaking);
+        for c in after {
+            self.ui(c);
+        }
+    }
+
+    /// "Non disturbare" on until then, or off.
+    fn set_dnd(&mut self, until: Option<u64>) {
+        self.dnd_until = until;
+        log::info!(event = "do_not_disturb", until = until.map_or(-1, |u| u as i64); "do not disturb {}", until.map_or("off".to_string(), |u| format!("until {u}")));
+    }
+
+    fn dnd(&self, now: f64) -> bool {
+        self.dnd_until.is_some_and(|u| now < u as f64)
+    }
+
+    /// Night hours of Settings → Screen, now.
+    fn night(&self) -> bool {
+        self.d.settings.as_ref().is_some_and(|s| {
+            let (on, start, end) = s.night();
+            crate::ui::screen::is_night(crate::alarms::Now::local().hour, on, start, end)
+        })
     }
 
     fn reflex_text(&self, key: &str, args: &[(&str, &str)]) -> String {
@@ -1349,6 +1491,7 @@ impl Core {
             Some(c) if c.discard_answer => {
                 c.audio_start_at = Some(Instant::now());
                 c.answer_format = Some(format);
+                self.tape.cancel();
                 log::debug!("answer of a stopped conversation: swallowed");
             }
             Some(c) if c.trigger != Trigger::Announcement => {
@@ -1359,6 +1502,7 @@ impl Core {
                 c.audio_start_at = Some(Instant::now());
                 c.answer_format = Some(format);
                 c.stream = Some(self.d.player.open_stream(sf));
+                self.tape.start(sf);
                 self.mic_idle();
                 self.listen_deadline = None;
                 self.think_deadline = None;
@@ -1376,7 +1520,15 @@ impl Core {
                 let mut c = Conversation::new(id, Trigger::Announcement);
                 c.audio_start_at = Some(Instant::now());
                 c.answer_format = Some(format);
+                if self.dnd(now_unix()) {
+                    // Swallowed like a stopped answer: `played` at its audio-stop.
+                    c.discard_answer = true;
+                    log::info!(event = "announcement", id = id, muted = true; "announcement {id}: muted (do not disturb)");
+                    self.conv = Some(c);
+                    return;
+                }
                 c.stream = Some(self.d.player.open_stream(sf));
+                self.tape.start(sf);
                 log::info!(event = "announcement", id = id; "announcement {id}");
                 self.conv = Some(c);
                 self.ui(UiCommand::Heard(String::new()));
@@ -1400,6 +1552,7 @@ impl Core {
         };
         c.answer_bytes += pcm.len() as u64;
         let Some(s) = &c.stream else { return };
+        self.tape.push(pcm);
         if let Err(e) = s.push(pcm) {
             log::warn!("answer audio: {e}");
         }
@@ -1416,6 +1569,11 @@ impl Core {
         };
         let now = Instant::now();
         c.audio_stop_at = Some(now);
+        if c.discard_answer || c.stream.is_none() {
+            self.tape.cancel();
+        } else {
+            self.tape.commit(&c.answer, now);
+        }
         if c.first_sample_at.is_none() && c.answer_bytes > 0 {
             c.first_sample_at = Some(now);
         }
@@ -1484,6 +1642,12 @@ impl Core {
                 } else if self.bell == Some(id) {
                     self.bell = None;
                     self.clear_ringing();
+                } else if self.replay.as_ref().is_some_and(|s| s.id() == id) {
+                    self.replay = None;
+                    if self.phase == Phase::Speaking && self.local_until.take().is_some() {
+                        self.close("reflex");
+                        self.go_idle();
+                    }
                 }
             }
             AudioEvent::Stopped(id) => log::debug!("source {} stopped", id.0),
@@ -1706,7 +1870,9 @@ impl Core {
                 }
             }
             UiEvent::Reminder => {
-                if !self.speaker_busy() {
+                if self.dnd(now_unix()) {
+                    log::info!("card sound muted (do not disturb)");
+                } else if !self.speaker_busy() {
                     self.d.player.play(&self.cues.reminder);
                 }
             }
@@ -1791,6 +1957,9 @@ impl Core {
             return;
         }
         if self.phase == Phase::Speaking && self.local_until.take().is_some() {
+            if let Some(s) = self.replay.take() {
+                s.abort();
+            }
             self.close("stopped");
             self.go_idle();
             return;
@@ -1981,6 +2150,7 @@ impl Core {
     fn speaker_busy(&self) -> bool {
         self.phase.in_conversation()
             || self.bell.is_some()
+            || self.replay.is_some()
             || self.conv.as_ref().is_some_and(|c| c.stream.is_some())
     }
 
@@ -2031,6 +2201,22 @@ impl Core {
         let now = Instant::now();
         self.ring_due();
         self.refresh_rows(false);
+        let unix = now_unix();
+        if self.dnd_until.is_some() && !self.dnd(unix) {
+            self.set_dnd(None);
+            self.ui(UiCommand::DoNotDisturb(None));
+        }
+        self.tape.expire(now);
+        if self.d.timers.in_final_seconds(unix)
+            && final_tick_allowed(
+                self.phase,
+                self.speaker_busy(),
+                self.dnd(unix),
+                self.night(),
+            )
+        {
+            self.d.player.play(&self.cues.tick);
+        }
         self.save_volume(Duration::from_secs(1));
         if self.phase == Phase::Error && self.error_until.is_some_and(|t| now >= t) {
             self.error_until = None;
@@ -2042,6 +2228,9 @@ impl Core {
         }
         if self.local_until.is_some_and(|t| now >= t) {
             self.local_until = None;
+            if let Some(s) = self.replay.take() {
+                s.abort();
+            }
             if self.phase == Phase::Speaking {
                 self.close("reflex");
                 self.go_idle();
@@ -2163,6 +2352,45 @@ impl Core {
     }
 }
 
+/// Seconds since the local midnight at `t` (seconds since the epoch).
+fn local_seconds_of_day(t: i64) -> i64 {
+    // SAFETY: localtime_r only writes into the struct we pass.
+    let tm = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        let tt = t as libc::time_t;
+        libc::localtime_r(&tt, &mut tm);
+        tm
+    };
+    tm.tm_hour as i64 * 3600 + tm.tm_min as i64 * 60 + tm.tm_sec as i64
+}
+
+/// The morning do not disturb lasts until (local time).
+const MORNING_HOUR: i64 = 7;
+
+/// The next 07:00 after `now`, given the local time of day `local` (seconds since midnight).
+/// A daylight saving change that night moves it by an hour: harmless for "until the morning".
+fn next_morning(now: i64, local: i64) -> u64 {
+    let at = now - local + MORNING_HOUR * 3600;
+    (if at <= now { at + 86_400 } else { at }) as u64
+}
+
+/// "Non disturbare" without a duration: in the evening and at night (21:00-07:00) until the
+/// morning, as one says it before going to bed; by day for an hour, so it is not forgotten on.
+fn dnd_default_until(now: i64, local: i64) -> u64 {
+    let hour = local / 3600;
+    if !(MORNING_HOUR..21).contains(&hour) {
+        next_morning(now, local)
+    } else {
+        (now + 3600) as u64
+    }
+}
+
+/// The soft tick of a timer's last seconds: only on the quiet home (not over a conversation,
+/// the bell or anything else playing), never with do not disturb or at night.
+fn final_tick_allowed(phase: Phase, speaker_busy: bool, dnd: bool, night: bool) -> bool {
+    matches!(phase, Phase::Home | Phase::Offline) && !speaker_busy && !dnd && !night
+}
+
 /// Newest level in the centre, older ones outwards on both sides.
 fn mirror(hist: &VecDeque<f32>) -> Vec<f32> {
     let half: Vec<f32> = (0..BARS / 2)
@@ -2255,5 +2483,69 @@ mod tests {
         assert!(!super::unfinished("metti una sveglia alle sette"));
         assert!(!super::unfinished("che ore sono"));
         assert!(!super::unfinished(""));
+    }
+
+    #[test]
+    fn do_not_disturb_until() {
+        let day = 86_400 * 1000; // a midnight (local time of day is given apart)
+        // 22:30: until 07:00 tomorrow; 03:00: until 07:00 today; 10:00: an hour.
+        assert_eq!(
+            next_morning(day + 22 * 3600 + 1800, 22 * 3600 + 1800),
+            (day + 86_400 + 7 * 3600) as u64
+        );
+        assert_eq!(
+            next_morning(day + 3 * 3600, 3 * 3600),
+            (day + 7 * 3600) as u64
+        );
+        assert_eq!(
+            next_morning(day + 7 * 3600, 7 * 3600),
+            (day + 86_400 + 7 * 3600) as u64
+        );
+        assert_eq!(
+            dnd_default_until(day + 22 * 3600, 22 * 3600),
+            (day + 86_400 + 7 * 3600) as u64
+        );
+        assert_eq!(
+            dnd_default_until(day + 2 * 3600, 2 * 3600),
+            (day + 7 * 3600) as u64
+        );
+        assert_eq!(
+            dnd_default_until(day + 10 * 3600, 10 * 3600),
+            (day + 11 * 3600) as u64
+        );
+        assert_eq!(
+            dnd_default_until(day + 20 * 3600, 20 * 3600),
+            (day + 21 * 3600) as u64
+        );
+        assert_eq!(
+            dnd_default_until(day + 21 * 3600, 21 * 3600),
+            (day + 86_400 + 7 * 3600) as u64
+        );
+    }
+
+    #[test]
+    fn final_ticks_only_on_a_quiet_home() {
+        assert!(final_tick_allowed(Phase::Home, false, false, false));
+        assert!(final_tick_allowed(Phase::Offline, false, false, false));
+        assert!(
+            !final_tick_allowed(Phase::Home, false, true, false),
+            "do not disturb"
+        );
+        assert!(
+            !final_tick_allowed(Phase::Home, false, false, true),
+            "night"
+        );
+        assert!(
+            !final_tick_allowed(Phase::Home, true, false, false),
+            "speaker busy"
+        );
+        for p in [
+            Phase::Listening,
+            Phase::Thinking,
+            Phase::Speaking,
+            Phase::Ringing,
+        ] {
+            assert!(!final_tick_allowed(p, false, false, false), "{p:?}");
+        }
     }
 }

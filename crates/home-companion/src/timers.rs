@@ -52,6 +52,9 @@ pub fn format_left(secs: f64) -> String {
     }
 }
 
+/// A timer ticks softly each second of its last this many seconds.
+pub const FINAL_SECONDS: u64 = 10;
+
 pub fn now_unix() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -210,6 +213,23 @@ impl Timers {
             .filter(|t| t.active && !t.finished_locally)
             .map(|t| t.due_unix)
             .min_by(f64::total_cmp)
+    }
+
+    /// A running timer is in its last [`FINAL_SECONDS`] (the soft tick each second).
+    pub fn in_final_seconds(&self, now: f64) -> bool {
+        self.list.iter().any(|t| {
+            let left = t.due_unix - now;
+            t.active && !t.finished_locally && left > 0.0 && left <= FINAL_SECONDS as f64
+        })
+    }
+
+    /// The ids of the timers shown with this name (a reflex's "il timer della pasta"), any case.
+    pub fn named(&self, name: &str) -> Vec<String> {
+        self.list
+            .iter()
+            .filter(|t| !t.finished_locally && t.label().to_lowercase() == name.to_lowercase())
+            .map(|t| t.id.clone())
+            .collect()
     }
 
     pub fn mark_rung(&mut self, id: &str) {
@@ -429,5 +449,26 @@ mod tests {
         assert!(t.cancel(&b).is_some());
         assert!(t.was_rung(&b), "a late timer-finished is ignored");
         assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn final_seconds_and_names() {
+        let mut t = Timers::in_memory();
+        let a = t.start_local(Some("Pasta".into()), 60, 0.0);
+        t.start_local(None, 100, 0.0);
+        assert!(!t.in_final_seconds(49.0));
+        assert!(t.in_final_seconds(50.0));
+        assert!(t.in_final_seconds(59.5));
+        assert!(!t.in_final_seconds(60.0), "ringing, not ticking");
+        t.toggle_pause(&a, 55.0);
+        assert!(!t.in_final_seconds(55.0), "paused");
+        assert_eq!(t.named("pasta"), vec![a.clone()]);
+        assert_eq!(t.named("Timer").len(), 1);
+        assert!(t.named("Uova").is_empty());
+        t.mark_rung(&a);
+        assert!(
+            t.named("Pasta").is_empty(),
+            "rung timers are not asked about"
+        );
     }
 }

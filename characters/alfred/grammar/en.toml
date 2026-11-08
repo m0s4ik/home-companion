@@ -3,7 +3,8 @@
 #
 # Alfred's reflexes in English; see it.toml for the format. Slots:
 # {duration} ("ten minutes", "a minute and a half"), {time} ("at seven thirty", "at seven in the
-# evening"), {percent} ("fifty percent", "fifty").
+# evening"), {percent} ("fifty percent", "fifty"), {whole_duration} ({duration} in whole minutes up
+# to three hours), {name:<key>} (a timer name of [timer_names] in the form <key>).
 format = 1
 language = "en"
 
@@ -15,9 +16,32 @@ timer_start = [
     "set timer for {duration}",
     "timer for {duration}",
     "a timer for {duration}",
+    "set {name:a} timer for {whole_duration}",
+    "start {name:a} timer for {whole_duration}",
+    "{name:bare} timer for {whole_duration}",
+    "set a timer for {name:the} for {whole_duration}",
 ]
-timer_cancel = ["cancel the timer", "stop the timer", "cancel timer", "cancel the timers", "delete the timer"]
-timer_left = ["how much time is left", "how long is left", "how much time left", "how long until the timer"]
+timer_cancel = [
+    "cancel the timer",
+    "stop the timer",
+    "cancel timer",
+    "cancel the timers",
+    "delete the timer",
+    "cancel the {name:bare} timer",
+    "stop the {name:bare} timer",
+    "delete the {name:bare} timer",
+]
+timer_left = [
+    "how much time is left",
+    "how long is left",
+    "how much time left",
+    "how long until the timer",
+    "how long for {name:the}",
+    "how long is left for {name:the}",
+    "how much time is left for {name:the}",
+    "how long is left on the {name:bare} timer",
+]
+timer_list = ["what timers do i have", "what timers are running", "which timers are running", "list the timers", "list my timers"]
 alarm_set = ["set an alarm {time}", "set the alarm {time}", "wake me up {time}", "alarm {time}"]
 alarm_cancel = ["cancel the alarm", "delete the alarm", "turn off the alarm"]
 volume_up = ["volume up", "turn the volume up", "turn it up", "louder"]
@@ -30,3 +54,31 @@ music_play = ["resume the music", "play the music", "resume", "continue the musi
 music_next = ["next song", "next track", "skip this song", "skip song", "play the next song"]
 music_previous = ["previous song", "previous track", "go back to the previous song", "play the previous song"]
 silence = ["silence", "be quiet", "never mind", "nothing", "cancel", "no thanks", "no thank you", "that's all", "no", "thanks", "thank you", "enough"]
+repeat = ["repeat", "repeat that", "can you repeat that", "say that again", "what did you say", "come again"]
+screen_off = ["turn off the screen", "turn the screen off", "switch off the screen", "screen off"]
+dnd_on = [
+    "do not disturb",
+    "don't disturb me",
+    "turn on do not disturb",
+    "do not disturb for {whole_duration}",
+    "do not disturb me for {whole_duration}",
+]
+dnd_morning = ["do not disturb until tomorrow morning", "do not disturb until morning", "do not disturb me until morning"]
+dnd_off = ["turn off do not disturb", "disable do not disturb", "stop do not disturb"]
+good_night = ["good night", "goodnight", "good night alfred", "goodnight alfred"]
+
+# The timers a name can be given by voice ("set a pasta timer for ten minutes"). A closed grammar
+# takes no free words, so the names are a list; edit it freely (label = what the screen shows).
+[timer_names]
+Pasta = { bare = "pasta", a = "a pasta", the = "the pasta" }
+Eggs = { bare = "egg", a = "an egg", the = "the eggs" }
+Oven = { bare = "oven", a = "an oven", the = "the oven" }
+Pizza = { bare = "pizza", a = "a pizza", the = "the pizza" }
+Rice = { bare = "rice", a = "a rice", the = "the rice" }
+Tea = { bare = "tea", a = "a tea", the = "the tea" }
+Coffee = { bare = "coffee", a = "a coffee", the = "the coffee" }
+Laundry = { bare = "laundry", a = "a laundry", the = "the laundry" }
+Bread = { bare = "bread", a = "a bread", the = "the bread" }
+Cake = { bare = "cake", a = "a cake", the = "the cake" }
+Meat = { bare = "meat", a = "a meat", the = "the meat" }
+Vegetables = { bare = "vegetable", a = "a vegetable", the = "the vegetables" }
