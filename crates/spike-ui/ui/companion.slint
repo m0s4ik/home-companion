@@ -3001,19 +3001,14 @@ export component CompanionWindow inherits Window {
             x: 0;
             width: root.mirror-band;
             height: root.height;
-            // Home, top left: the same button as over a sideways video.
-            MirrorHomeButton {
-                x: 24px;
-                y: 24px;
-                clicked => {
-                    root.page = "home";
-                }
-            }
-            property <length> pose-h: root.pose.width > 0
-                ? min(480px, (self.width - 48px) * root.pose.height / root.pose.width) : 480px;
             // At rest the character and his invitation are centred in the height; a
-            // conversation lifts him to make room for the phrase and Ferma under him.
-            property <length> pose-y: root.conversation ? 40px + (480px - self.pose-h)
+            // conversation lifts him to make room for the phrase and Ferma under him, never
+            // into the home button's corner (top 24 + 72 px + a gap): he is a little smaller.
+            property <length> pose-max: root.conversation ? 400px : 480px;
+            property <length> pose-h: root.pose.width > 0
+                ? min(self.pose-max, (self.width - 48px) * root.pose.height / root.pose.width) : self.pose-max;
+            animate pose-h { duration: 250ms; easing: ease-in-out; }
+            property <length> pose-y: root.conversation ? 520px - self.pose-h
                 : (self.height - (self.pose-h + 62px)) / 2;
             animate pose-y { duration: 250ms; easing: ease-in-out; }
             Image {
@@ -3072,6 +3067,15 @@ export component CompanionWindow inherits Window {
                     clicked => {
                         root.stop-clicked();
                     }
+                }
+            }
+            // Home, top left (the same button as over a sideways video), drawn last: nothing
+            // of the band ever covers it.
+            MirrorHomeButton {
+                x: 24px;
+                y: 24px;
+                clicked => {
+                    root.page = "home";
                 }
             }
         }
