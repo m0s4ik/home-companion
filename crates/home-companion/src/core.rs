@@ -159,6 +159,11 @@ pub enum UiCommand {
     VolumeNow(u8),
     /// The device is about to suspend: screen off now.
     Suspending,
+    /// "Spegni lo schermo" (a reflex): the backlight off until a touch, a key or a wake word.
+    ScreenOff,
+    /// "Non disturbare" (a reflex): no sounds nor cards' sounds, the screen dim, until this
+    /// unix time (Some) or off again (None).
+    DoNotDisturb(Option<u64>),
     /// Back from a suspend: wake and redraw the screen.
     Resumed,
     /// "Stop" or "basta" over a due reminder: its OK.

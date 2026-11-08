@@ -30,8 +30,127 @@ pub enum BrainMsg {
     TimerCancel(bool),
     /// An `alarm` event: a local alarm (hour, minute, days as in alarms.rs; 0 = once).
     Alarm(u8, u8, u8),
+    /// A house command went through (`changed`): a "done" card, with "Undo" when `undo`.
+    Changed(Changed),
+    /// A house command waits for a yes (`confirm`): a Yes/No card until `expires_at` (unix s).
+    Confirm {
+        id: i64,
+        text: String,
+        expires_at: i64,
+    },
+    /// The question `id` is over (`confirm_done`): answered (`Some`) or expired (`None`).
+    ConfirmDone { id: i64, yes: Option<bool> },
+    /// Open Home Assistant's view there (`show_view`).
+    ShowView(View),
+    /// The calendar events for the "next" card, soonest first (`upcoming`).
+    Upcoming(Vec<Upcoming>),
     /// The subscription is up (true) or lost (false).
     Present(bool),
+}
+
+/// A house command the brain carried out (BrainMsg::Changed).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Changed {
+    pub id: i64,
+    pub entity_id: String,
+    pub name: String,
+    pub service: String,
+    /// The entity's state afterwards, when Home Assistant had it already.
+    pub state: Option<String>,
+    pub undo: bool,
+}
+
+/// Where to open Home Assistant's view (BrainMsg::ShowView).
+#[derive(Debug, Clone, PartialEq)]
+pub enum View {
+    /// A dashboard path ("/lovelace/energy").
+    Path(String),
+    /// A `camera.*` entity.
+    Camera(String),
+}
+
+/// One calendar event (BrainMsg::Upcoming).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Upcoming {
+    pub start: i64,
+    pub end: i64,
+    pub all_day: bool,
+    pub title: String,
+    pub calendar: String,
+}
+
+/// The screen's Yes or No on the brain's question `id` (send it with [`BrainLink::send`]).
+pub fn confirm_answer(id: i64, yes: bool) -> Value {
+    json!({"cmd": "confirm.answer", "id": id, "yes": yes})
+}
+
+/// The screen's "Undo" on the house command `id`.
+pub fn undo(id: i64) -> Value {
+    json!({"cmd": "control.undo", "id": id})
+}
+
+/// One event line of the subscription (crates/brain/src/events.rs is the other side; both
+/// test against crates/brain/contract/events.jsonl). None: unknown or malformed, skipped.
+pub fn parse_event(v: Value) -> Option<BrainMsg> {
+    let str_of = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(String::from);
+    let int_of = |v: &Value, k: &str| v.get(k).and_then(Value::as_i64);
+    Some(match v.get("event").and_then(Value::as_str)? {
+        "notify" => BrainMsg::Notify(v),
+        "timer" => match v.get("seconds").and_then(Value::as_u64) {
+            Some(s) if s > 0 => BrainMsg::Timer(s),
+            _ => return None,
+        },
+        "timer_cancel" => {
+            BrainMsg::TimerCancel(v.get("all").and_then(Value::as_bool).unwrap_or(false))
+        }
+        "alarm" => {
+            let n = |k: &str| v.get(k).and_then(Value::as_u64).map(|x| x as u8);
+            match (n("hour"), n("minute")) {
+                (Some(h), Some(m)) if h < 24 && m < 60 => {
+                    BrainMsg::Alarm(h, m, n("days").unwrap_or(0))
+                }
+                _ => return None,
+            }
+        }
+        "changed" => BrainMsg::Changed(Changed {
+            id: int_of(&v, "id")?,
+            entity_id: str_of(&v, "entity_id")?,
+            name: str_of(&v, "name").unwrap_or_default(),
+            service: str_of(&v, "service").unwrap_or_default(),
+            state: str_of(&v, "state"),
+            undo: v.get("undo").and_then(Value::as_bool).unwrap_or(false),
+        }),
+        "confirm" => BrainMsg::Confirm {
+            id: int_of(&v, "id")?,
+            text: str_of(&v, "text")?,
+            expires_at: int_of(&v, "expires_at").unwrap_or(0),
+        },
+        "confirm_done" => BrainMsg::ConfirmDone {
+            id: int_of(&v, "id")?,
+            yes: v.get("yes").and_then(Value::as_bool),
+        },
+        "show_view" => match (str_of(&v, "path"), str_of(&v, "camera")) {
+            (Some(p), _) if p.starts_with('/') => BrainMsg::ShowView(View::Path(p)),
+            (_, Some(c)) if c.starts_with("camera.") => BrainMsg::ShowView(View::Camera(c)),
+            _ => return None,
+        },
+        "upcoming" => BrainMsg::Upcoming(
+            v.get("items")?
+                .as_array()?
+                .iter()
+                .filter_map(|i| {
+                    Some(Upcoming {
+                        start: int_of(i, "start")?,
+                        end: int_of(i, "end").unwrap_or(0),
+                        all_day: i.get("all_day").and_then(Value::as_bool).unwrap_or(false),
+                        title: str_of(i, "title")?,
+                        calendar: str_of(i, "calendar").unwrap_or_default(),
+                    })
+                })
+                .collect(),
+        ),
+        _ => return None,
+    })
 }
 
 pub struct BrainLink {
@@ -229,25 +348,8 @@ fn subscribe_loop(path: &std::path::Path, tx: &Sender<BrainMsg>) {
                 let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
                     continue;
                 };
-                let msg = match v.get("event").and_then(Value::as_str) {
-                    Some("notify") => BrainMsg::Notify(v),
-                    Some("timer") => match v.get("seconds").and_then(Value::as_u64) {
-                        Some(s) if s > 0 => BrainMsg::Timer(s),
-                        _ => continue,
-                    },
-                    Some("timer_cancel") => BrainMsg::TimerCancel(
-                        v.get("all").and_then(Value::as_bool).unwrap_or(false),
-                    ),
-                    Some("alarm") => {
-                        let n = |k: &str| v.get(k).and_then(Value::as_u64).map(|x| x as u8);
-                        match (n("hour"), n("minute")) {
-                            (Some(h), Some(m)) if h < 24 && m < 60 => {
-                                BrainMsg::Alarm(h, m, n("days").unwrap_or(0))
-                            }
-                            _ => continue,
-                        }
-                    }
-                    _ => continue,
+                let Some(msg) = parse_event(v) else {
+                    continue;
                 };
                 if tx.send(msg).is_err() {
                     return Ok(());
@@ -271,6 +373,70 @@ fn subscribe_loop(path: &std::path::Path, tx: &Sender<BrainMsg>) {
 mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
+
+    fn contract(file: &str) -> Vec<Value> {
+        file.lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    /// The brain's examples (crates/brain/contract) parse into what the screen expects.
+    #[test]
+    fn contract_events_parse() {
+        let got: Vec<BrainMsg> = contract(include_str!("../../brain/contract/events.jsonl"))
+            .into_iter()
+            .map(|v| parse_event(v.clone()).unwrap_or_else(|| panic!("{v}")))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                BrainMsg::Changed(Changed {
+                    id: 41,
+                    entity_id: "light.kitchen".into(),
+                    name: "Kitchen light".into(),
+                    service: "turn_off".into(),
+                    state: Some("off".into()),
+                    undo: true,
+                }),
+                BrainMsg::Confirm {
+                    id: 42,
+                    text: "Living room blind: close it?".into(),
+                    expires_at: 1_794_150_000,
+                },
+                BrainMsg::ConfirmDone {
+                    id: 42,
+                    yes: Some(true)
+                },
+                BrainMsg::ConfirmDone { id: 43, yes: None },
+                BrainMsg::ShowView(View::Path("/lovelace/energy".into())),
+                BrainMsg::ShowView(View::Camera("camera.front_door".into())),
+                BrainMsg::Upcoming(vec![Upcoming {
+                    start: 1_794_150_000,
+                    end: 1_794_153_600,
+                    all_day: false,
+                    title: "Dentist".into(),
+                    calendar: "calendar.family".into(),
+                }]),
+            ]
+        );
+        assert_eq!(
+            parse_event(json!({"event": "show_view", "path": "lovelace"})),
+            None
+        );
+        assert_eq!(
+            parse_event(json!({"event": "show_view", "camera": "light.x"})),
+            None
+        );
+        assert_eq!(parse_event(json!({"event": "new_in_v9"})), None);
+    }
+
+    #[test]
+    fn contract_requests_match() {
+        let req = contract(include_str!("../../brain/contract/requests.jsonl"));
+        assert_eq!(confirm_answer(42, true), req[0]);
+        assert_eq!(undo(41), req[1]);
+    }
 
     #[test]
     fn requests_and_events() {

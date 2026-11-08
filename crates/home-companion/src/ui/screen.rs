@@ -2234,6 +2234,10 @@ impl<S: Screen> Ui<S> {
                 self.volume.set(p);
                 self.screen.set_volume(p, false);
             }
+            // v0.2 contract: the Interface stream implements these on ui/backlight.rs.
+            c @ (UiCommand::ScreenOff | UiCommand::DoNotDisturb(_)) => {
+                log::debug!("{c:?} (not implemented yet)");
+            }
             UiCommand::Suspending => {
                 self.screen.set_settings_open(false);
                 self.motion.borrow_mut().awake.sleep(Instant::now());
@@ -3670,6 +3674,14 @@ impl<S: Screen> Ui<S> {
                 BrainMsg::Alarm(h, m, days) => {
                     log::info!(event = "brain_alarm"; "alarm from the brain: {h:02}:{m:02}");
                     alarms.push((h, m, days));
+                }
+                // v0.2 contract: the Interface stream shows these (cards, Yes/No, the view).
+                m @ (BrainMsg::Changed(_)
+                | BrainMsg::Confirm { .. }
+                | BrainMsg::ConfirmDone { .. }
+                | BrainMsg::ShowView(_)
+                | BrainMsg::Upcoming(_)) => {
+                    log::debug!("brain: {m:?} (not shown yet)");
                 }
                 BrainMsg::Notify(v) => {
                     let id = v["id"].as_i64().unwrap_or(0);

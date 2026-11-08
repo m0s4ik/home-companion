@@ -417,6 +417,28 @@ impl Brain {
         }
     }
 
+    /// The `todo.*` lists and `calendar.*` entities chosen on the body's screen (each token
+    /// handover; None = the body did not say, an empty list = all of them).
+    // v0.2 contract: the Brain stream fills these in (lists for the list tools, calendars for
+    // the "next" card and the morning summary).
+    pub fn set_chosen(&self, lists: Option<Vec<String>>, calendars: Option<Vec<String>>) {
+        log::debug!("chosen lists {lists:?}, calendars {calendars:?}");
+    }
+
+    /// Yes or No on the screen for the `confirm` event `id` (events.rs).
+    // v0.2 contract: the Brain stream implements it.
+    pub fn answer_confirm(&self, id: i64, yes: bool) -> Result<(), String> {
+        let _ = (id, yes);
+        Err("confirm.answer: not implemented yet".into())
+    }
+
+    /// "Undo" on the screen for the `changed` event `id` (events.rs).
+    // v0.2 contract: the Brain stream implements it.
+    pub fn undo_control(&self, id: i64) -> Result<(), String> {
+        let _ = id;
+        Err("control.undo: not implemented yet".into())
+    }
+
     fn satellite(&self) -> String {
         self.satellite.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
@@ -572,7 +594,7 @@ impl Brain {
                 match (hm, self.hub.get()) {
                     (None, _) => Err("time: HH:MM, 24 hours".into()),
                     (Some((h, m)), Some(hub)) if hub.subscribers() > 0 => {
-                        hub.broadcast(&[json!({"event": "alarm", "hour": h, "minute": m, "days": days})]);
+                        hub.broadcast(&[crate::events::alarm(h, m, days)]);
                         log::info!(event = "brain_alarm"; "alarm {h:02}:{m:02} to the device");
                         Ok(json!({"set": format!("{h:02}:{m:02}")}))
                     }
@@ -584,7 +606,7 @@ impl Brain {
                 match self.hub.get() {
                     _ if !(1..=86_400).contains(&secs) => Err("seconds: 1 to 86400".into()),
                     Some(h) if h.subscribers() > 0 => {
-                        h.broadcast(&[json!({"event": "timer", "seconds": secs})]);
+                        h.broadcast(&[crate::events::timer(secs)]);
                         log::info!(event = "brain_timer", seconds = secs; "timer of {secs} s to the device");
                         Ok(json!({"started": true, "seconds": secs}))
                     }
@@ -595,7 +617,7 @@ impl Brain {
                 let all = call.args.get("all").and_then(Value::as_bool).unwrap_or(false);
                 match self.hub.get() {
                     Some(h) if h.subscribers() > 0 => {
-                        h.broadcast(&[json!({"event": "timer_cancel", "all": all})]);
+                        h.broadcast(&[crate::events::timer_cancel(all)]);
                         log::info!(event = "brain_timer_cancel", all = all; "timer cancel to the device");
                         Ok(json!({"cancelled": if all { "all timers" } else { "the timer" }}))
                     }

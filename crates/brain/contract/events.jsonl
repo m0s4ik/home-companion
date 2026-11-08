@@ -1,0 +1,7 @@
+{"event":"changed","id":41,"entity_id":"light.kitchen","name":"Kitchen light","service":"turn_off","state":"off","undo":true}
+{"event":"confirm","id":42,"text":"Living room blind: close it?","expires_at":1794150000}
+{"event":"confirm_done","id":42,"yes":true}
+{"event":"confirm_done","id":43,"yes":null}
+{"event":"show_view","path":"/lovelace/energy"}
+{"event":"show_view","camera":"camera.front_door"}
+{"event":"upcoming","items":[{"start":1794150000,"end":1794153600,"all_day":false,"title":"Dentist","calendar":"calendar.family"}]}

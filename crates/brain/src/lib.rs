@@ -7,6 +7,7 @@ pub mod agent;
 pub mod clock;
 pub mod config;
 pub mod control;
+pub mod events;
 pub mod ha;
 pub mod jobs;
 pub mod lists;

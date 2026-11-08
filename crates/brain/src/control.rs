@@ -14,7 +14,13 @@
 //! | `{"cmd":"jobs.list"}` | `{"ok":true,"jobs":[{id,due_at,repeat,text,how,status,source,late}]}` |
 //! | `{"cmd":"jobs.cancel","id":N}` / `{"cmd":"job.ack","id":N}` | `{"ok":true,"changed":0\|1}` |
 //! | `{"cmd":"job.snooze","id":N,"minutes":M}` | `{"ok":true,"id":N\|null}`: acknowledged, the same words again in M minutes (default 10) |
-//! | `{"cmd":"subscribe"}` | `{"ok":true}`, then the reminders delivered and not yet touched, then every new `{"event":"notify",…}` on this connection |
+//! | `{"cmd":"subscribe"}` | `{"ok":true}`, then the reminders delivered and not yet touched, then every new event (events.rs) on this connection |
+//! | `{"cmd":"ha.token","token":…,"expires_at":…,"url":…,"satellite_entity":…,"allow":[…],"language":…,"lists":[…],"calendars":[…]}` | `{"ok":true}`: the body's Home Assistant link; `lists`/`calendars` are the `todo.*`/`calendar.*` entities chosen on the screen (absent = unchanged, empty = all) |
+//! | `{"cmd":"heard","text":…}` / `{"cmd":"said","text":…}` | `{"ok":true}`: the user's transcript and Home Assistant's answer |
+//! | `{"cmd":"confirm.answer","id":N,"yes":B}` | `{"ok":true}`: Yes or No on the screen for the `confirm` event `id` |
+//! | `{"cmd":"control.undo","id":N}` | `{"ok":true}`: the screen's "Undo" on the `changed` event `id` |
+//!
+//! The examples both sides test against: `contract/requests.jsonl` and `contract/events.jsonl`.
 //!
 //! Errors: `{"ok":false,"error":"…"}`. Nothing else is exposed (no TCP, no other commands).
 
@@ -95,6 +101,12 @@ pub fn answer(brain: &Brain, req: &Value) -> (Value, bool) {
                 if let Some(l) = req.get("language").and_then(Value::as_str) {
                     brain.set_language(l);
                 }
+                let entities = |k: &str| {
+                    req.get(k).and_then(Value::as_array).map(|a| {
+                        a.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>()
+                    })
+                };
+                brain.set_chosen(entities("lists"), entities("calendars"));
                 brain
                 .set_ha_token(
                     t.to_string(),
@@ -114,6 +126,11 @@ pub fn answer(brain: &Brain, req: &Value) -> (Value, bool) {
             brain.said(req.get("text").and_then(Value::as_str).unwrap_or(""));
             json!({"ok": true})
         }
+        "confirm.answer" => match req.get("yes").and_then(Value::as_bool) {
+            Some(yes) => brain.answer_confirm(id, yes).map_or_else(err, |_| json!({"ok": true})),
+            None => err("yes: true or false is required".into()),
+        },
+        "control.undo" => brain.undo_control(id).map_or_else(err, |_| json!({"ok": true})),
         "subscribe" => return (json!({"ok": true}), true),
         other => err(format!("unknown command {other:?}")),
     };
@@ -177,4 +194,38 @@ pub fn start(brain: Arc<Brain>, hub: Arc<Hub>, path: &str) -> std::io::Result<()
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every request of the contract is known (an unfinished one may still answer an error,
+    /// never "unknown command"), and `ha.token` with lists and calendars is accepted.
+    #[test]
+    fn contract_requests_are_known() {
+        let dir = std::env::temp_dir().join(format!(
+            "home-companion-brain-control-{}",
+            std::process::id()
+        ));
+        let mut cfg = crate::config::Config::default();
+        cfg.memory.dir = dir.display().to_string();
+        let brain = Brain::new(cfg).unwrap();
+        for line in include_str!("../contract/requests.jsonl").lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let req: Value = serde_json::from_str(line).unwrap();
+            let (a, subscribe) = answer(&brain, &req);
+            assert!(!subscribe);
+            let error = a["error"].as_str().unwrap_or("");
+            assert!(!error.starts_with("unknown command"), "{line}: {a}");
+            if req["cmd"] == "ha.token" {
+                assert_eq!(a["ok"], true, "{a}");
+            }
+        }
+        let (a, _) = answer(&brain, &json!({"cmd": "confirm.answer", "id": 1}));
+        assert_eq!(a["ok"], false);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
