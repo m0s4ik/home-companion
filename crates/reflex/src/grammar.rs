@@ -659,6 +659,16 @@ silence = ["silenzio"]
             named(5400, "Forno")
         );
         assert_eq!(c("timer tè tre minuti"), named(180, "Tè"));
+        assert_eq!(c("metti un timer pasta di un minuto"), named(60, "Pasta"));
+        assert_eq!(c("metti timer un minuto pasta"), named(60, "Pasta"));
+        assert_eq!(
+            c("metti un timer di dieci minuti per le uova"),
+            named(600, "Uova")
+        );
+        assert_eq!(
+            c("metti un timer del forno di venti minuti"),
+            named(1200, "Forno")
+        );
         assert_eq!(
             c("annulla il timer della pasta"),
             Some(Command::TimerCancel {

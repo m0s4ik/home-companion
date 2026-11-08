@@ -40,6 +40,15 @@ timer_start = [
     "timer {name:bare} {whole_duration}",
     "timer {name:of} {whole_duration}",
     "metti un timer per {name:the} di {whole_duration}",
+    "metti un timer {name:bare} di {whole_duration}",
+    "metti un timer {name:of} di {whole_duration}",
+    "metti timer {name:bare} {whole_duration}",
+    "metti timer {name:of} {whole_duration}",
+    "imposta un timer per {name:the} di {whole_duration}",
+    "metti un timer di {whole_duration} per {name:the}",
+    "timer di {whole_duration} per {name:the}",
+    "metti timer {whole_duration} {name:bare}",
+    "timer {whole_duration} {name:bare}",
 ]
 timer_cancel = [
     "annulla il timer",

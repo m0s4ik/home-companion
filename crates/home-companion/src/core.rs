@@ -1858,6 +1858,7 @@ impl Core {
             // the reflexes'; the screen hears it back as UiCommand::DoNotDisturb).
             UiEvent::DoNotDisturb(until) => {
                 log::info!(event = "dnd", on = until.is_some(), by = "control"; "do not disturb {}", if until.is_some() { "on" } else { "off" });
+                self.set_dnd(until);
                 self.ui(UiCommand::DoNotDisturb(until));
             }
             UiEvent::TimerStart(secs) => {
@@ -1907,13 +1908,20 @@ impl Core {
                 self.ui(UiCommand::Alarms(self.d.alarms.list().to_vec()));
             }
             UiEvent::Tap => {
-                // Not over an answer, the bell or a stream (the speaker is busy then).
-                if !self.speaker_busy() && !matches!(self.phase, Phase::Speaking | Phase::Ringing) {
+                // Not over an answer, the bell or a stream (the speaker is busy then), and not
+                // with do not disturb (the buttons are silent then, as the cards).
+                if !self.speaker_busy()
+                    && !matches!(self.phase, Phase::Speaking | Phase::Ringing)
+                    && !self.dnd(now_unix())
+                {
                     self.d.player.play(&self.cues.tap);
                 }
             }
             UiEvent::Home => {
-                if !self.speaker_busy() && !matches!(self.phase, Phase::Speaking | Phase::Ringing) {
+                if !self.speaker_busy()
+                    && !matches!(self.phase, Phase::Speaking | Phase::Ringing)
+                    && !self.dnd(now_unix())
+                {
                     self.d.player.play(&self.cues.home);
                 }
             }
