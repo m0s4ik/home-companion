@@ -3821,9 +3821,10 @@ export component CompanionWindow inherits Window {
     // view or a mirrored screen: the same card, centred at the top). In the home's
     // third card slot, above the action band; during a conversation at the top of the desk,
     // over nothing it says.
-    // (On the home it is the first card of the context band instead: cards.rs.)
+    // (On the home it is the first card of the context band instead: cards.rs; on the other
+    // desk pages none, it would cover them.)
     if root.done-shown && !root.done-popup && !root.night-home && !root.starting && !root.ringing
-        && (CasaBridge.visible || root.mirror-t > 0.001 || root.conversation || root.desk-page != "home"): DoneCard {
+        && (CasaBridge.visible || root.mirror-t > 0.001 || root.conversation): DoneCard {
         property <bool> full: CasaBridge.visible || (root.mirror-t > 0.999 && !root.mirror-sides);
         x: self.full ? (root.width - self.width) / 2 : Grid.col-x;
         // Over a full view: top centre (bottom centre while the conversation bar is at the top).
