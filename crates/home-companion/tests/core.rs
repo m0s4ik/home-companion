@@ -444,6 +444,127 @@ fn volume_keys_step_show_the_bar_and_save_at_exit() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn the_microphone_switch_wins_over_the_tile_and_talk() {
+    use home_companion::core::MicMode;
+    let (core_tx, core_rx) = mpsc::channel::<CoreEvent>();
+    let (ui_tx, ui_rx) = mpsc::channel();
+    let tx = core_tx.clone();
+    let acfg = audio::AudioConfig {
+        backend: audio::Backend::Null,
+        realtime: false,
+        ..Default::default()
+    };
+    let audio = audio::Audio::start(
+        &acfg,
+        Box::new(move |e| {
+            let _ = tx.send(CoreEvent::Audio(e));
+        }),
+    )
+    .unwrap();
+    let server = wyoming::Server::start(
+        wyoming::ServerConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            ..Default::default()
+        },
+        Box::new(|_| {}),
+    )
+    .unwrap();
+    let dir = std::env::temp_dir().join(format!("home-companion-micsw-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let settings = home_companion::settings::Settings::in_dir(&dir);
+    let mic = Arc::new(MicControl::default());
+    let deps = Deps {
+        sender: server.sender(),
+        player: audio.player(),
+        recorder: None,
+        ui: ui_tx,
+        mic: mic.clone(),
+        audio: Some(audio),
+        server: Some(server),
+        timers: Timers::in_memory(),
+        alarms: home_companion::alarms::Alarms::in_memory(),
+        settings: Some(settings.clone()),
+        volume: None,
+        wake_stats: Arc::new(Mutex::new(None)),
+        stop_flag: None,
+        reflexes: None,
+        music: None,
+    };
+    let core = std::thread::spawn(move || Core::new(CoreConfig::default(), deps).run(core_rx));
+    let settle = || std::thread::sleep(Duration::from_millis(100));
+    let cards = |rx: &Receiver<UiCommand>| -> Vec<UiCommand> {
+        rx.try_iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    UiCommand::MicSwitch(_) | UiCommand::Control { .. } | UiCommand::View(_)
+                )
+            })
+            .collect()
+    };
+    // At start: on, no card.
+    core_tx
+        .send(CoreEvent::MicSwitch {
+            on: true,
+            initial: true,
+        })
+        .unwrap();
+    settle();
+    assert!(
+        !cards(&ui_rx)
+            .iter()
+            .any(|c| matches!(c, UiCommand::MicSwitch(_)))
+    );
+    assert_eq!(mic.mode(), MicMode::Wake);
+    // Muted: the card, the tile, the microphone off.
+    core_tx
+        .send(CoreEvent::MicSwitch {
+            on: false,
+            initial: false,
+        })
+        .unwrap();
+    settle();
+    let got = cards(&ui_rx);
+    assert!(got.contains(&UiCommand::MicSwitch(false)));
+    assert!(got.contains(&UiCommand::Control {
+        airplay: None,
+        mic_on: false,
+        mic_switch_off: true,
+    }));
+    assert_eq!(mic.mode(), MicMode::Off);
+    // The tile and Talk only show the card again: no conversation, nothing saved.
+    core_tx
+        .send(CoreEvent::Ui(UiEvent::ControlTile("mic".into())))
+        .unwrap();
+    core_tx.send(CoreEvent::Ui(UiEvent::Talk)).unwrap();
+    settle();
+    let got = cards(&ui_rx);
+    assert_eq!(
+        got.iter()
+            .filter(|c| **c == UiCommand::MicSwitch(false))
+            .count(),
+        2
+    );
+    assert!(!got.contains(&UiCommand::View(Phase::Listening)));
+    assert!(!settings.mic_muted());
+    assert_eq!(mic.mode(), MicMode::Off);
+    // On again: back to the wake word.
+    core_tx
+        .send(CoreEvent::MicSwitch {
+            on: true,
+            initial: false,
+        })
+        .unwrap();
+    settle();
+    assert!(cards(&ui_rx).contains(&UiCommand::MicSwitch(true)));
+    assert_eq!(mic.mode(), MicMode::Wake);
+    core_tx.send(CoreEvent::Quit).unwrap();
+    let s = core.join().unwrap();
+    assert!(s.conversations.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A helper that is always ready and records what the body sends.
 struct FakeReflex(Arc<Mutex<Vec<reflex::proto::Request>>>);
 

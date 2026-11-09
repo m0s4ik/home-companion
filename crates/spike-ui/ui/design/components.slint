@@ -1188,6 +1188,41 @@ export component VolumeHud inherits Rectangle {
     }
 }
 
+// The microphone's switch was moved (a moment, in the middle of the screen): the microphone
+// big, struck through and red when off.
+export component MicHud inherits Rectangle {
+    in property <bool> on: true;
+    in property <string> text;
+    width: 420px;
+    height: 300px;
+    border-radius: 32px;
+    background: Theme.surface;
+    border-width: 2px;
+    border-color: root.on ? Theme.line : Theme.danger;
+    drop-shadow-blur: 24px;
+    drop-shadow-color: #000000a0;
+    Icon {
+        x: (parent.width - self.width) / 2;
+        y: 48px;
+        width: 128px;
+        height: 128px;
+        source: root.on ? Icons.microphone-32 : Icons.microphone-off-32;
+        color: root.on ? Theme.text : Theme.danger;
+    }
+    Text {
+        x: 16px;
+        y: 200px;
+        width: parent.width - 32px;
+        height: 56px;
+        text: root.text;
+        font-size: 34px;
+        font-weight: 500;
+        color: root.on ? Theme.text : Theme.danger;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
 // The control center's tile (pulled down from the top of the desk): what is on is gold, a tap
 // switches it or opens its page.
 export component ControlTile inherits Rectangle {

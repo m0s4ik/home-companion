@@ -92,6 +92,13 @@ pub enum CoreEvent {
     Reflex(ReflexEvent),
     /// AirPlay: what plays (crates/home-companion/src/airplay.rs).
     Music(crate::airplay::MusicEvent),
+    /// The microphone's switch on the device (the keys thread): on or muted; `initial` = how
+    /// it is at start (no card on screen). On the ThinkSmart View it cuts the microphones in
+    /// hardware: muted, they give only zeros.
+    MicSwitch {
+        on: bool,
+        initial: bool,
+    },
     /// SIGTERM/SIGINT, `--exit-after`, the window closed.
     Quit,
 }
@@ -184,7 +191,11 @@ pub enum UiCommand {
     Control {
         airplay: Option<Option<String>>,
         mic_on: bool,
+        /// The device's switch is on mute (the tile cannot turn the microphone back on).
+        mic_switch_off: bool,
     },
+    /// The microphone's switch was moved (or Talk pressed with it on mute): its card, on or off.
+    MicSwitch(bool),
     /// A phone or a tablet mirrors its screen here (AirPlay): who and the frame's size; the
     /// page opens when a session starts, a new size (the sender rotated) only re-lays it out.
     /// None: the session is over, the page closes back to where it was. The frames themselves
@@ -388,6 +399,8 @@ pub struct Core {
     summary: Summary,
     /// The control center's microphone switch: off, no wake word (Parla still works).
     mic_muted: bool,
+    /// The device's switch is on mute (the microphones give zeros): it wins over the tile.
+    mic_switch_off: bool,
     airplay_on: bool,
     now_playing: Option<crate::airplay::NowPlaying>,
     /// The last spoken answer, for "ripeti".
@@ -454,6 +467,7 @@ impl Core {
             quit: false,
             summary: Summary::default(),
             mic_muted: false,
+            mic_switch_off: false,
             airplay_on: true,
             now_playing: None,
             tape: crate::repeat::Tape::default(),
@@ -531,6 +545,7 @@ impl Core {
             CoreEvent::Volume(r) => self.on_volume(r),
             CoreEvent::Reflex(e) => self.on_reflex(e),
             CoreEvent::Music(e) => self.on_music(e),
+            CoreEvent::MicSwitch { on, initial } => self.on_mic_switch(on, initial),
             CoreEvent::Quit => self.quit = true,
         }
     }
@@ -1805,6 +1820,10 @@ impl Core {
     fn on_ui(&mut self, e: UiEvent) {
         log::debug!("ui: {e:?}");
         match e {
+            UiEvent::Talk if self.mic_switch_off => {
+                // It would listen to silence: the card says why.
+                self.ui(UiCommand::MicSwitch(false));
+            }
             UiEvent::Talk => match self.phase {
                 Phase::Home | Phase::Offline | Phase::Error => {
                     self.start_conversation(Trigger::Talk)
@@ -2081,7 +2100,7 @@ impl Core {
 
     /// Back to waiting for the wake word, or to nothing while the microphone is switched off.
     fn mic_idle(&self) {
-        self.d.mic.set(if self.mic_muted {
+        self.d.mic.set(if self.mic_muted || self.mic_switch_off {
             MicMode::Off
         } else {
             MicMode::Wake
@@ -2097,12 +2116,38 @@ impl Core {
         });
         self.ui(UiCommand::Control {
             airplay,
-            mic_on: !self.mic_muted,
+            mic_on: !self.mic_muted && !self.mic_switch_off,
+            mic_switch_off: self.mic_switch_off,
         });
+    }
+
+    /// The device's switch moved (or is read at start). Muted: whatever listens stops (Stop),
+    /// the wake word waits; on: back to the wake word, the detector reset (the switch's click
+    /// is in its window).
+    fn on_mic_switch(&mut self, on: bool, initial: bool) {
+        if self.mic_switch_off == !on && !initial {
+            return;
+        }
+        self.mic_switch_off = !on;
+        log::info!(event = "mic_hw_switch", on = on, initial = initial; "microphone switch {}", if on { "on" } else { "muted" });
+        if !on && self.phase == Phase::Listening {
+            self.on_stop();
+        }
+        if !self.phase.in_conversation() {
+            self.mic_idle();
+            self.d.mic.request_reset();
+        }
+        self.send_control();
+        if !initial {
+            self.ui(UiCommand::MicSwitch(on));
+        }
     }
 
     fn on_control_tile(&mut self, key: &str) {
         match key {
+            "mic" if self.mic_switch_off => {
+                self.ui(UiCommand::MicSwitch(false));
+            }
             "mic" => {
                 self.mic_muted = !self.mic_muted;
                 log::info!(event = "mic_switch", on = !self.mic_muted; "microphone {}", if self.mic_muted { "off" } else { "on" });

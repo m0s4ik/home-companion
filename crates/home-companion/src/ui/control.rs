@@ -29,6 +29,8 @@ pub struct ControlState {
     /// None: AirPlay off; Some(""): on and waiting; Some(sender): playing from it.
     pub airplay: Option<String>,
     pub mic_on: bool,
+    /// The switch on the device is on mute: the tile only tells (the switch turns it back on).
+    pub mic_switch_off: bool,
     /// Night now, and the hour it starts ("23:00").
     pub night_now: bool,
     pub night_from: String,
@@ -76,13 +78,20 @@ pub fn tiles(s: &ControlState, w: &dyn Fn(&str) -> String) -> Vec<ControlTileVie
             Some(src) if src.is_empty() => tile("airplay", "cc_airplay", w("cc_ready"), true, true),
             Some(src) => tile("airplay", "cc_airplay", src.clone(), true, true),
         },
-        tile(
-            "mic",
-            "cc_mic",
-            w(if s.mic_on { "cc_listening" } else { "cc_off" }),
-            s.mic_on,
-            true,
-        ),
+        if s.mic_switch_off {
+            ControlTileView {
+                tappable: false,
+                ..tile("mic", "cc_mic", w("cc_mic_switch"), false, true)
+            }
+        } else {
+            tile(
+                "mic",
+                "cc_mic",
+                w(if s.mic_on { "cc_listening" } else { "cc_off" }),
+                s.mic_on,
+                true,
+            )
+        },
         tile(
             "night",
             "cc_night",
@@ -126,6 +135,7 @@ mod tests {
             "cc_listening" => "In ascolto",
             "cc_linked" => "Collegato",
             "cc_until" => "Fino alle {t}",
+            "cc_mic_switch" => "Spento dalla levetta",
             k => k,
         }
         .to_string()
@@ -154,6 +164,19 @@ mod tests {
         assert_eq!(t[4].status, "Dalle 23:00");
         assert_eq!((t[5].status.as_str(), t[5].on), ("Spento", false));
         assert_eq!(t[6].status, "Collegato");
+    }
+
+    #[test]
+    fn the_switch_on_mute_makes_the_mic_tile_only_tell() {
+        let s = ControlState {
+            mic_on: false,
+            mic_switch_off: true,
+            ..Default::default()
+        };
+        let t = &tiles(&s, &w)[3];
+        assert_eq!(t.key, "mic");
+        assert_eq!((t.status.as_str(), t.on), ("Spento dalla levetta", false));
+        assert!(t.enabled && !t.tappable);
     }
 
     #[test]

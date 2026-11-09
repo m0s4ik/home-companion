@@ -63,6 +63,8 @@ pub enum WakeSource {
     /// Home Assistant's link or setup is on screen or moved on by itself (the QR code being
     /// scanned, linked, a setup step): the user is looking, the screen stays bright.
     Setup,
+    /// The microphone's switch on the device was moved.
+    MicSwitch,
 }
 
 /// Until when the screen is awake.

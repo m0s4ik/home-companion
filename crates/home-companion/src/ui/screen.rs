@@ -308,12 +308,16 @@ pub struct Demo {
     pub house: u8,
     /// `--state dnd`: do not disturb on.
     pub dnd: bool,
+    /// `--state mic-*`: the microphone off by the switch (line and tile); `mic_hud` = the
+    /// switch's card, Some(on).
+    pub mic_switch_off: bool,
+    pub mic_hud: Option<bool>,
     /// `--state thinking-answer`: Home Assistant's written answer is in, its voice not yet.
     pub answer_early: bool,
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 48] = [
+pub const DEMO_STATES: [&str; 53] = [
     "home",
     "cards",
     "cards-setup",
@@ -361,6 +365,11 @@ pub const DEMO_STATES: [&str; 48] = [
     "house-ask",
     "dnd",
     "control-dnd",
+    "mic-switch-off",
+    "mic-switch-on",
+    "mic-off",
+    "control-mic-switch",
+    "mic-off-dnd",
     "what",
 ];
 
@@ -488,6 +497,29 @@ impl Demo {
                 dnd: true,
                 ..home.clone()
             },
+            "mic-switch-off" => Demo {
+                mic_switch_off: true,
+                mic_hud: Some(false),
+                ..home.clone()
+            },
+            "mic-switch-on" => Demo {
+                mic_hud: Some(true),
+                ..home.clone()
+            },
+            "mic-off" => Demo {
+                mic_switch_off: true,
+                ..home.clone()
+            },
+            "mic-off-dnd" => Demo {
+                mic_switch_off: true,
+                dnd: true,
+                ..home.clone()
+            },
+            "control-mic-switch" => Demo {
+                control: true,
+                mic_switch_off: true,
+                ..home.clone()
+            },
             "thinking-answer" => Demo {
                 phase: Phase::Thinking,
                 answer_early: true,
@@ -565,6 +597,8 @@ impl Demo {
 
 /// How long the volume HUD stays after the last key.
 pub const VOLUME_BAR: Duration = Duration::from_secs(2);
+/// How long the card of the microphone's switch stays.
+pub const MIC_CARD: Duration = Duration::from_millis(2500);
 /// The controls over a mirrored screen that fills the panel stay this long after a touch
 /// (as the home button over Home Assistant's view).
 pub const MIRROR_CHROME: Duration = Duration::from_secs(4);
@@ -738,6 +772,8 @@ struct Desk {
     /// The core's tiles of the control center (UiCommand::Control).
     control_airplay: Option<Option<String>>,
     mic_on: bool,
+    /// The device's switch is on mute.
+    mic_switch_off: bool,
     /// The control center's Notte: night now (true) or day now (false) against the schedule,
     /// until the schedule itself comes to the same.
     night_override: Option<bool>,
@@ -775,6 +811,7 @@ pub struct Ui<S: Screen> {
     frame_timer: Timer,
     /// Hides the volume HUD.
     volume_timer: Timer,
+    mic_timer: Timer,
     /// Hides the controls over a mirrored screen that fills the panel.
     mirror_timer: Timer,
     /// Ends the undo chip.
@@ -1059,6 +1096,7 @@ impl<S: Screen> Ui<S> {
             motion: RefCell::new(motion),
             frame_timer: Timer::default(),
             volume_timer: Timer::default(),
+            mic_timer: Timer::default(),
             mirror_timer: Timer::default(),
             undo_timer: Timer::default(),
             fade: Cell::new(None),
@@ -2246,7 +2284,8 @@ impl<S: Screen> Ui<S> {
                 } else {
                     String::new()
                 }),
-                mic_on: true,
+                mic_on: !d.mic_switch_off,
+                mic_switch_off: d.mic_switch_off,
                 night_now: false,
                 night_from: "23:00".into(),
                 dnd: d.dnd.then(|| "07:00".into()),
@@ -2476,6 +2515,13 @@ impl<S: Screen> Ui<S> {
                 &format!("{} · {}", w("dnd"), w("cc_until").replace("{t}", "07:00")),
             );
         }
+        if d.mic_switch_off {
+            self.screen.set_mic_off(true, &w("mic_off_line"));
+        }
+        if let Some(on) = d.mic_hud {
+            self.screen
+                .set_mic_hud(true, on, &w(if on { "mic_hud_on" } else { "mic_hud_off" }));
+        }
         match d.house {
             1 => {
                 let word = |k: &str| {
@@ -2517,6 +2563,24 @@ impl<S: Screen> Ui<S> {
             .start(TimerMode::SingleShot, VOLUME_BAR, move || {
                 if let Some(ui) = ui.upgrade() {
                     ui.screen.set_volume(ui.volume.get(), false);
+                }
+            });
+    }
+
+    /// The card of the microphone's switch for [`MIC_CARD`], the screen woken.
+    pub fn show_mic_switch(&self, on: bool) {
+        self.wake(WakeSource::MicSwitch);
+        let text = self
+            .locale
+            .borrow()
+            .text(if on { "mic_hud_on" } else { "mic_hud_off" })
+            .to_string();
+        self.screen.set_mic_hud(true, on, &text);
+        let ui = self.this.borrow().clone();
+        self.mic_timer
+            .start(TimerMode::SingleShot, MIC_CARD, move || {
+                if let Some(ui) = ui.upgrade() {
+                    ui.screen.set_mic_hud(false, on, "");
                 }
             });
     }
@@ -2669,14 +2733,22 @@ impl<S: Screen> Ui<S> {
                 self.refresh_home();
             }
             UiCommand::Mirror(m) => self.set_mirror(m),
-            UiCommand::Control { airplay, mic_on } => {
+            UiCommand::Control {
+                airplay,
+                mic_on,
+                mic_switch_off,
+            } => {
                 {
                     let mut d = self.desk.borrow_mut();
                     d.control_airplay = airplay;
                     d.mic_on = mic_on;
+                    d.mic_switch_off = mic_switch_off;
                 }
+                let line = self.locale.borrow().text("mic_off_line").to_string();
+                self.screen.set_mic_off(!mic_on, &line);
                 self.refresh_control();
             }
+            UiCommand::MicSwitch(on) => self.show_mic_switch(on),
             UiCommand::Screenshot(path) => {
                 if let Err(e) = save_png(&self.screen, &path) {
                     log::warn!("screenshot: {e}");
@@ -2934,6 +3006,7 @@ impl<S: Screen> Ui<S> {
                 bluetooth: None,
                 airplay: d.control_airplay.clone().map(|s| s.unwrap_or_default()),
                 mic_on: d.mic_on,
+                mic_switch_off: d.mic_switch_off,
                 night_now: d.night_now,
                 night_from: format!("{:02}:00", d.night.1),
                 dnd: self.dnd_until_hm(),

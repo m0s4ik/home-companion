@@ -303,6 +303,10 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_ask_left(&self, left: f32);
     /// Do not disturb: on, its line.
     fn set_dnd(&self, on: bool, line: &str);
+    /// The microphone off: on, its line over the clock.
+    fn set_mic_off(&self, on: bool, line: &str);
+    /// The card of the microphone's switch: shown, on or off, its text.
+    fn set_mic_hud(&self, shown: bool, on: bool, text: &str);
     /// "What to say": (icon, title, examples) per group.
     fn set_what(&self, rows: &[(String, String, String)]);
     fn on_done_undo(&self, f: impl Fn() + 'static);
@@ -1105,6 +1109,15 @@ macro_rules! impl_screen {
             fn set_dnd(&self, on: bool, line: &str) {
                 $m::CompanionWindow::set_dnd_line(self, line.into());
                 $m::CompanionWindow::set_dnd(self, on);
+            }
+            fn set_mic_off(&self, on: bool, line: &str) {
+                $m::CompanionWindow::set_mic_off_line(self, line.into());
+                $m::CompanionWindow::set_mic_off(self, on);
+            }
+            fn set_mic_hud(&self, shown: bool, on: bool, text: &str) {
+                $m::CompanionWindow::set_mic_hud_text(self, text.into());
+                $m::CompanionWindow::set_mic_hud_on(self, on);
+                $m::CompanionWindow::set_mic_hud_shown(self, shown);
             }
             fn set_what(&self, rows: &[(String, String, String)]) {
                 let v: Vec<$m::WhatRow> = rows

@@ -23,7 +23,7 @@ import { Icons } from "design/icons.slint";
 import {
     Icon, BareButton, PrimaryButton, PillButton, InfoCard, TimerCard, NowPlayingCard, PageHeader,
     Tile, SectionTitle, Row, Group, TimerLine, AlarmLine, ChatUser, ChatCharacter, ChatSeparator,
-    Step, Stepper, Chip, Dialog, Separator, VolumeHud, GlyphButton, ControlTile, LevelBar, Feedback,
+    Step, Stepper, Chip, Dialog, Separator, VolumeHud, MicHud, GlyphButton, ControlTile, LevelBar, Feedback,
     DoneCard
 } from "design/components.slint";
 import { CasaScreen, CasaBridge } from "casa.slint";
@@ -683,6 +683,14 @@ export component CompanionWindow inherits Window {
     // Do not disturb: on, and its line ("Do not disturb · until 07:00").
     in property <bool> dnd: false;
     in property <string> dnd-line: "";
+    // The microphone off (the switch on the device or the control center): its line over the
+    // clock, next to do not disturb's ("Microfono spento").
+    in property <bool> mic-off: false;
+    in property <string> mic-off-line: "";
+    // The microphone's switch was moved: a big card for a moment (Rust hides it), on or off.
+    in property <bool> mic-hud-shown: false;
+    in property <bool> mic-hud-on: true;
+    in property <string> mic-hud-text: "";
     // "What to say" (Altro): the groups.
     in property <[WhatRow]> what-rows: [];
     // The volume (percent) and whether its HUD is on screen (Rust hides it after 2 s).
@@ -3023,14 +3031,15 @@ export component CompanionWindow inherits Window {
         }
     }
 
-    // ---- Do not disturb: a quiet line over the clock (and over the night's clock).
-    if root.dnd && (root.night-home || (root.desk && root.desk-page == "home")): HorizontalLayout {
+    // ---- Do not disturb and the microphone off: quiet lines over the clock (and over the
+    // night's clock), side by side when both are on.
+    if (root.dnd || root.mic-off) && (root.night-home || (root.desk && root.desk-page == "home")): HorizontalLayout {
         x: Grid.col-cx - self.width / 2;
         y: 12px;
         width: min(self.preferred-width, Grid.col-width);
         height: 32px;
         spacing: 10px;
-        Rectangle {
+        if root.dnd: Rectangle {
             width: 28px;
             Icon {
                 y: 2px;
@@ -3040,10 +3049,30 @@ export component CompanionWindow inherits Window {
                 color: root.night-home ? Theme.night : Theme.text-3;
             }
         }
-        Text {
+        if root.dnd: Text {
             text: root.dnd-line;
             font-size: 20px;
             color: root.night-home ? Theme.night : Theme.text-3;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if root.dnd && root.mic-off: Rectangle {
+            width: 14px;
+        }
+        if root.mic-off: Rectangle {
+            width: 28px;
+            Icon {
+                y: 2px;
+                width: 28px;
+                height: 28px;
+                source: Icons.microphone-off-32;
+                color: root.night-home ? Theme.night : Theme.danger;
+            }
+        }
+        if root.mic-off: Text {
+            text: root.mic-off-line;
+            font-size: 20px;
+            color: root.night-home ? Theme.night : Theme.danger;
             vertical-alignment: center;
             overflow: elide;
         }
@@ -3931,5 +3960,13 @@ export component CompanionWindow inherits Window {
         x: Grid.col-x + Grid.col-width - self.width;
         y: 16px;
         level: root.volume;
+    }
+
+    // ---- The microphone's switch moved: a big card in the middle, over everything.
+    if root.mic-hud-shown: MicHud {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        on: root.mic-hud-on;
+        text: root.mic-hud-text;
     }
 }

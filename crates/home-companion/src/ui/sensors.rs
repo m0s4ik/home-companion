@@ -20,6 +20,10 @@ use crate::core::CoreEvent;
 use crate::volume::VolumeRequest;
 
 const EV_KEY: u16 = 1;
+const EV_SW: u16 = 5;
+/// The microphone's switch: 1 = the microphone is there (on), 0 = muted. On the ThinkSmart View
+/// it is the slider on top (`gpio-keys`, "Mic Mute"), which also cuts the microphones.
+const SW_MICROPHONE_INSERT: u16 = 4;
 pub const KEY_VOLUMEDOWN: u16 = 114;
 pub const KEY_VOLUMEUP: u16 = 115;
 
@@ -33,6 +37,24 @@ fn has_key(fd: i32, code: u16) -> bool {
     // SAFETY: EVIOCGBIT writes at most `bits.len()` bytes.
     let r = unsafe { libc::ioctl(fd, req as _, bits.as_mut_ptr()) };
     r >= 0 && bits[(code / 8) as usize] & (1 << (code % 8)) != 0
+}
+
+/// The microphone's switch on `fd`, if the device has one: Some(true) = on.
+fn mic_switch(fd: i32) -> Option<bool> {
+    let mut bits = [0u8; 4];
+    // EVIOCGBIT(EV_SW, 4).
+    let req = ioc_read(0x20 + EV_SW as u64, bits.len() as u64);
+    // SAFETY: EVIOCGBIT writes at most `bits.len()` bytes.
+    let r = unsafe { libc::ioctl(fd, req as _, bits.as_mut_ptr()) };
+    if r < 0 || bits[0] & (1 << SW_MICROPHONE_INSERT) == 0 {
+        return None;
+    }
+    let mut state = [0u8; 4];
+    // EVIOCGSW(4).
+    let req = ioc_read(0x1b, state.len() as u64);
+    // SAFETY: EVIOCGSW writes at most `state.len()` bytes.
+    let r = unsafe { libc::ioctl(fd, req as _, state.as_mut_ptr()) };
+    (r >= 0).then_some(state[0] & (1 << SW_MICROPHONE_INSERT) != 0)
 }
 
 /// The `/dev/input/event*` devices with a volume key.
@@ -104,6 +126,19 @@ pub fn spawn_keys(devices: &[PathBuf], tx: &Sender<WakeSource>, volume: Option<S
             .spawn(move || {
                 let fd = file.as_raw_fd();
                 let mut buf = [0u8; 24 * 16];
+                // The microphone's switch, if this device has it: how it is now, then each move.
+                let has_switch = match (mic_switch(fd), &volume) {
+                    (Some(on), Some(v)) => {
+                        log::info!(
+                            "keys: {} has the microphone's switch ({})",
+                            p.display(),
+                            if on { "on" } else { "muted" }
+                        );
+                        let _ = v.send(CoreEvent::MicSwitch { on, initial: true });
+                        true
+                    }
+                    _ => false,
+                };
                 // A step: wake the screen, change the volume. False when the receivers are gone.
                 let step = |key: Key, repeated: bool| -> bool {
                     let (code, dir) = match key {
@@ -139,6 +174,16 @@ pub fn spawn_keys(devices: &[PathBuf], tx: &Sender<WakeSource>, volume: Option<S
                         };
                         for ev in buf[..n].chunks_exact(24) {
                             let (kind, code, value) = parse_event(ev);
+                            if has_switch && kind == EV_SW && code == SW_MICROPHONE_INSERT {
+                                let on = value != 0;
+                                if let Some(v) = &volume {
+                                    if v.send(CoreEvent::MicSwitch { on, initial: false }).is_err()
+                                    {
+                                        return;
+                                    }
+                                }
+                                continue;
+                            }
                             if kind != EV_KEY || (code != KEY_VOLUMEUP && code != KEY_VOLUMEDOWN) {
                                 continue;
                             }
