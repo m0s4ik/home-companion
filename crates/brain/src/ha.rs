@@ -302,6 +302,9 @@ pub struct Entity {
     pub device_class: String,
     /// A few attributes worth knowing (brightness, position, temperature, unit…).
     pub attributes: Value,
+    /// A group's members (its `entity_id` attribute: a light group, a Hue room): an Undo
+    /// snapshots each of them, not the group as one light.
+    pub members: Vec<String>,
 }
 
 impl Entity {
@@ -467,6 +470,11 @@ pub fn entities_from(
                     .unwrap_or("")
                     .to_string(),
                 attributes: Value::Object(kept),
+                members: attrs
+                    .get("entity_id")
+                    .and_then(Value::as_array)
+                    .map(|v| v.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                    .unwrap_or_default(),
             })
         })
         .collect();
@@ -485,6 +493,17 @@ mod tests {
             ("ha.example".into(), 8123, "/api/websocket".into())
         );
         assert!(endpoint("https://x").is_err());
+    }
+
+    #[test]
+    fn a_group_keeps_its_members() {
+        // A Hue room or a light group: an Undo snapshots each member, not the group.
+        let exposed = json!({"exposed_entities": {"light.study": {"conversation": true}}});
+        let states = json!([{"entity_id": "light.study", "state": "on",
+            "attributes": {"friendly_name": "Studio", "entity_id": ["light.a", "light.b"]}}]);
+        let e = entities_from(&exposed, &states, &json!({}), &json!([]), &json!([]));
+        assert_eq!(e[0].members, ["light.a", "light.b"]);
+        assert!(e[0].attributes.get("entity_id").is_none());
     }
 
     #[test]
@@ -514,6 +533,7 @@ mod tests {
         assert_eq!(e[0].entity_id, "light.kitchen");
         assert_eq!(e[0].area, "Cucina");
         assert_eq!(e[0].attributes["brightness"], 200);
+        assert!(e[0].members.is_empty());
         // No registry name, no device: the old friendly_name.
         assert_eq!(
             (e[0].name.as_str(), e[0].device.as_str()),

@@ -737,7 +737,9 @@ impl Brain {
         // Before the command: a snapshot of the entity for the undo (brightness, colour…).
         let scene = undo.and_then(|_| {
             let scene = undo_scene(id);
-            let data = json!({"scene_id": scene, "snapshot_entities": [e.entity_id]});
+            // A group: each member as it is (the group as one light would turn them all on).
+            let snap = if e.members.is_empty() { vec![e.entity_id.clone()] } else { e.members.clone() };
+            let data = json!({"scene_id": scene, "snapshot_entities": snap});
             let cmd = json!({"type": "call_service", "domain": "scene", "service": "create", "service_data": data});
             match ha.call(cmd, Duration::from_secs(10)) {
                 Ok(_) => Some(scene),
@@ -2356,6 +2358,7 @@ mod tests {
             state: "on".into(),
             device_class: String::new(),
             attributes: json!({}),
+            members: Vec::new(),
         };
         let all = vec![
             ent("light.office", "Office", ""),
