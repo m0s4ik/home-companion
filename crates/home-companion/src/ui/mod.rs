@@ -96,6 +96,21 @@ pub struct HaLine {
     pub repair: bool,
 }
 
+/// The cloud services' use on screen (usage.rs): the row's line and the page.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UsageView {
+    pub label: String,
+    pub line: String,
+    pub today: String,
+    pub month: String,
+    pub today_detail: String,
+    pub month_detail: String,
+    /// The tallest bar's amount (the chart's scale).
+    pub max: String,
+    /// The last days, oldest first: (label, height 0..1, amount).
+    pub bars: Vec<(String, f32, String)>,
+}
+
 /// What Settings → Home Assistant shows.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HaPageView {
@@ -321,8 +336,8 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// The Wi-Fi signal on every page header and in the control center: 0 not connected,
     /// 1..4 bars, -1 not known.
     fn set_wifi_level(&self, level: i32);
-    /// Settings: the cloud services' cost row ("" hides it).
-    fn set_usage(&self, label: &str, line: &str);
+    /// The cloud services' use: the Home Assistant page's row ("" hides it) and its page.
+    fn set_usage(&self, v: &UsageView);
     /// The microphone off: on, its line over the clock.
     fn set_mic_off(&self, on: bool, line: &str);
     /// The card of the microphone's switch: shown, on or off, its text.
@@ -540,6 +555,9 @@ macro_rules! impl_screen {
                     ha_working_short,
                     ha_working,
                     ha_working_wait,
+                    usage_today,
+                    usage_month,
+                    usage_note,
                     mirror,
                     mirror_back,
                     mirror_waiting,
@@ -1176,9 +1194,24 @@ macro_rules! impl_screen {
             fn set_wifi_level(&self, level: i32) {
                 self.global::<$m::Status>().set_wifi_level(level)
             }
-            fn set_usage(&self, label: &str, line: &str) {
-                $m::CompanionWindow::set_usage_label(self, label.into());
-                $m::CompanionWindow::set_usage_line(self, line.into());
+            fn set_usage(&self, v: &UsageView) {
+                $m::CompanionWindow::set_usage_label(self, v.label.as_str().into());
+                $m::CompanionWindow::set_usage_line(self, v.line.as_str().into());
+                $m::CompanionWindow::set_usage_today(self, v.today.as_str().into());
+                $m::CompanionWindow::set_usage_month(self, v.month.as_str().into());
+                $m::CompanionWindow::set_usage_today_detail(self, v.today_detail.as_str().into());
+                $m::CompanionWindow::set_usage_month_detail(self, v.month_detail.as_str().into());
+                $m::CompanionWindow::set_usage_max(self, v.max.as_str().into());
+                let bars: Vec<$m::UsageBar> = v
+                    .bars
+                    .iter()
+                    .map(|(label, h, cost)| $m::UsageBar {
+                        label: label.as_str().into(),
+                        height: *h,
+                        cost: cost.as_str().into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_usage_bars(self, model!(bars));
             }
             fn set_mic_off(&self, on: bool, line: &str) {
                 $m::CompanionWindow::set_mic_off_line(self, line.into());

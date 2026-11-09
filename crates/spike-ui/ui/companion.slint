@@ -103,6 +103,14 @@ export struct ShopRow {
 
 // A check of Settings → Home Assistant: level 0 ok, 1 warn, 2 bad, 3 skipped, 4 not checked;
 // `repair` = a "Repair" on the row (it puts back a choice changed in Home Assistant).
+// A day of the cloud services' use: its label (every few days), the bar's height (0..1), the
+// amount.
+export struct UsageBar {
+    label: string,
+    height: float,
+    cost: string,
+}
+
 export struct HaRow {
     id: string,
     label: string,
@@ -221,6 +229,9 @@ export struct Words {
     ha_working_short: string,
     ha_working: string,
     ha_working_wait: string,
+    usage_today: string,
+    usage_month: string,
+    usage_note: string,
     mirror: string,
     mirror_back: string,
     mirror_waiting: string,
@@ -596,10 +607,16 @@ export component CompanionWindow inherits Window {
     in property <string> tile-chat: "";
     in property <string> tile-timers: "";
     in property <string> tile-settings: "";
-    // Settings: what the cloud services cost, roughly ("Consumo IA", "oggi 12 domande · ~0.08 $ ·
-    // mese ~1.4 $"); "" until there is something to count.
+    // What the cloud services cost, roughly: the Home Assistant page's row ("Consumo IA",
+    // "oggi ~0.08 $ · mese ~1.4 $"; "" until there is something to count) and its page.
     in property <string> usage-label: "";
     in property <string> usage-line: "";
+    in property <string> usage-today: "";
+    in property <string> usage-month: "";
+    in property <string> usage-today-detail: "";
+    in property <string> usage-month-detail: "";
+    in property <string> usage-max: "";
+    in property <[UsageBar]> usage-bars: [];
     // Music (AirPlay later): nothing plays yet, so its tile, card and page stay hidden.
     in property <bool> music-playing: false;
     in property <string> music-title: "";
@@ -2076,7 +2093,7 @@ export component CompanionWindow inherits Window {
                     text: root.t.section-device;
                 }
                 Group {
-                    height: (root.usage-line != "" ? 5 : 4) * 76px;
+                    height: 4 * 76px;
                     Row {
                         y: 0;
                         width: parent.width;
@@ -2104,16 +2121,8 @@ export component CompanionWindow inherits Window {
                         label: root.t.info;
                         value: root.version;
                     }
-                    if root.usage-line != "": Row {
-                        y: 228px;
-                        width: parent.width;
-                        kind: "";
-                        icon: Icons.brain-28;
-                        label: root.usage-label;
-                        value: root.usage-line;
-                    }
                     Row {
-                        y: root.usage-line != "" ? 304px : 228px;
+                        y: 228px;
                         width: parent.width;
                         icon: Icons.power-sleep-28;
                         label: root.t.suspend-row;
@@ -2195,6 +2204,20 @@ export component CompanionWindow inherits Window {
                         }
                     }
                 }
+                if root.usage-line != "": Group {
+                    height: 76px;
+                    Row {
+                        width: parent.width;
+                        first: true;
+                        icon: Icons.brain-28;
+                        label: root.usage-label;
+                        value: root.usage-line;
+                        clicked => {
+                            root.page-back = "ha";
+                            root.page = "usage";
+                        }
+                    }
+                }
                 for r in root.ha-rows: HaCheck {
                     check: r;
                     repair-label: root.t.ha-repair;
@@ -2242,6 +2265,112 @@ export component CompanionWindow inherits Window {
                     root.ha-check();
                 }
             }
+        }
+    }
+
+    // ---- Home Assistant → the cloud services' use: today and this month, the last 30 days.
+    if root.desk && root.desk-page == "usage": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.usage-label;
+            clock: root.clock;
+            back => {
+                root.page = "ha";
+            }
+        }
+        // The two totals.
+        for t[i] in [
+            { label: root.t.usage-today, value: root.usage-today, detail: root.usage-today-detail },
+            { label: root.t.usage-month, value: root.usage-month, detail: root.usage-month-detail },
+        ]: Rectangle {
+            x: Grid.col-x + i * (Grid.col-width + 24px) / 2;
+            y: Grid.page-y;
+            width: (Grid.col-width - 24px) / 2;
+            height: 148px;
+            border-radius: Grid.card-radius;
+            background: Theme.surface;
+            Text {
+                x: 24px;
+                y: 16px;
+                text: t.label;
+                font-size: 20px;
+                color: Theme.text-3;
+            }
+            Text {
+                x: 24px;
+                y: 40px;
+                text: t.value;
+                font-family: "Inter Tnum";
+                font-size: 40px;
+                color: Theme.text;
+            }
+            Text {
+                x: 24px;
+                y: 92px;
+                width: parent.width - 48px;
+                text: t.detail;
+                font-size: 18px;
+                color: Theme.text-2;
+                wrap: word-wrap;
+            }
+        }
+        // The last 30 days, today on the right; the tallest bar's amount on top.
+        chart := Rectangle {
+            x: Grid.col-x;
+            y: Grid.page-y + 148px + 20px;
+            width: Grid.col-width;
+            height: 260px;
+            border-radius: Grid.card-radius;
+            background: Theme.surface;
+            property <length> pad: 24px;
+            property <length> plot-h: self.height - 2 * self.pad - 28px - 24px;
+            property <length> step: (self.width - 2 * self.pad) / max(1, root.usage-bars.length);
+            Text {
+                x: chart.pad;
+                y: 12px;
+                text: root.usage-max;
+                font-family: "Inter Tnum";
+                font-size: 18px;
+                color: Theme.text-3;
+            }
+            Rectangle {
+                x: chart.pad;
+                y: chart.pad + 24px + chart.plot-h;
+                width: parent.width - 2 * chart.pad;
+                height: 1px;
+                background: Theme.line;
+            }
+            for b[i] in root.usage-bars: Rectangle {
+                x: chart.pad + i * chart.step + chart.step * 0.15;
+                y: chart.pad + 24px;
+                width: chart.step * 0.7;
+                height: chart.plot-h + 28px;
+                Rectangle {
+                    y: chart.plot-h - self.height;
+                    width: parent.width;
+                    height: max(b.height > 0 ? 3px : 0px, chart.plot-h * b.height);
+                    border-radius: 3px;
+                    background: i == root.usage-bars.length - 1 ? Theme.accent : Theme.accent.with-alpha(0.55);
+                }
+                Text {
+                    x: (parent.width - self.width) / 2;
+                    y: chart.plot-h + 6px;
+                    text: b.label;
+                    font-family: "Inter Tnum";
+                    font-size: 16px;
+                    color: Theme.text-3;
+                }
+            }
+        }
+        Text {
+            x: Grid.col-x;
+            y: chart.y + chart.height + 16px;
+            width: Grid.col-width;
+            text: root.t.usage-note;
+            font-size: 18px;
+            color: Theme.text-3;
+            wrap: word-wrap;
         }
     }
 

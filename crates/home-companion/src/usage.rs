@@ -120,6 +120,50 @@ impl Usage {
     }
 }
 
+/// What the screen shows: today, this month, the last days.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct View {
+    pub today: Day,
+    pub month: Day,
+    pub today_cost: f64,
+    pub month_cost: f64,
+    /// The last [`VIEW_DAYS`] days, oldest first: (day of the month, cost).
+    pub days: Vec<(u32, f64)>,
+}
+
+/// Days in the chart.
+pub const VIEW_DAYS: usize = 30;
+
+impl Usage {
+    /// The view at `now` (seconds since the epoch, local days).
+    pub fn view(&self, now: i64, p: &Prices) -> View {
+        let today = local_day(now);
+        let month = today.get(..7).unwrap_or(&today).to_string();
+        let mut m = Day::default();
+        for (_, d) in self.days.iter().filter(|(k, _)| k.starts_with(&month)) {
+            m.questions += d.questions;
+            m.stt_seconds += d.stt_seconds;
+            m.tts_seconds += d.tts_seconds;
+        }
+        let days = (0..VIEW_DAYS as i64)
+            .rev()
+            .map(|k| {
+                let day = local_day(now - k * 86_400);
+                let n = day.get(8..).and_then(|d| d.parse().ok()).unwrap_or(0);
+                (n, self.days.get(&day).map_or(0.0, |d| d.cost(p)))
+            })
+            .collect();
+        let t = self.days.get(&today).copied().unwrap_or_default();
+        View {
+            today: t,
+            month: m,
+            today_cost: t.cost(p),
+            month_cost: m.cost(p),
+            days,
+        }
+    }
+}
+
 /// Today's date in local time, "2026-11-09".
 pub fn local_day(t: i64) -> String {
     // SAFETY: localtime_r only writes into the struct we pass.
@@ -190,5 +234,22 @@ mod tests {
         let again = Usage::in_dir(&dir);
         assert_eq!(again.days, u.days);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_view_has_thirty_days_ending_today() {
+        let p = Prices::default();
+        let now = 1_794_200_000; // 2026-11-09
+        let mut u = Usage::default();
+        let today = local_day(now);
+        u.add(&today, 60.0, 60.0, "");
+        u.add(&local_day(now - 2 * 86_400), 0.0, 0.0, "");
+        let v = u.view(now, &p);
+        assert_eq!(v.days.len(), VIEW_DAYS);
+        assert!(v.days[VIEW_DAYS - 1].1 > 0.0, "today last");
+        assert_eq!(v.days[VIEW_DAYS - 2].1, 0.0);
+        assert!(v.days[VIEW_DAYS - 3].1 > 0.0);
+        assert_eq!(v.today.questions, 1);
+        assert!(v.month.questions >= 1);
     }
 }

@@ -341,7 +341,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 57] = [
+pub const DEMO_STATES: [&str; 58] = [
     "home",
     "cards",
     "cards-setup",
@@ -363,6 +363,7 @@ pub const DEMO_STATES: [&str; 57] = [
     "music",
     "setup",
     "ha",
+    "usage",
     "ha-working",
     "ha-done",
     "ha-pick",
@@ -622,6 +623,7 @@ impl Demo {
                 ..page("ha")
             },
             "ha-pick" => page("ha-pick"),
+            "usage" => page("usage"),
             "suspend" => Demo {
                 dialog: "suspend",
                 ..page("settings")
@@ -2651,6 +2653,19 @@ impl<S: Screen> Ui<S> {
         if let Some(v) = d.volume {
             self.screen.set_volume(v, true);
         }
+        // Sample use for the Home Assistant page's row and the use page.
+        if matches!(d.page, "ha" | "usage") {
+            let mut u = crate::usage::Usage::default();
+            let now = DEMO_NOW as i64;
+            for k in 0..30i64 {
+                let q = [3u32, 8, 12, 5, 0, 9, 14, 6, 11, 7][(k % 10) as usize];
+                let day = crate::usage::local_day(now - k * 86_400);
+                for _ in 0..q {
+                    u.add(&day, 4.0, 6.0, "");
+                }
+            }
+            self.show_usage(&u.view(now, &crate::usage::Prices::default()));
+        }
         if d.page == "what" {
             self.refresh_what();
         }
@@ -2745,6 +2760,48 @@ impl<S: Screen> Ui<S> {
         read();
         self.wifi_timer
             .start(TimerMode::Repeated, Duration::from_secs(15), read);
+    }
+
+    /// The cloud services' use: its row on the Home Assistant page and its page (the chart).
+    fn show_usage(&self, v: &crate::usage::View) {
+        use crate::usage::dollars;
+        let l = self.locale.borrow();
+        let line = l
+            .text("usage_line")
+            .replace("{today}", &dollars(v.today_cost))
+            .replace("{month}", &dollars(v.month_cost));
+        let detail = |d: &crate::usage::Day| {
+            l.text("usage_detail")
+                .replace("{q}", &d.questions.to_string())
+                .replace("{stt}", &format!("{:.1}", d.stt_seconds / 60.0))
+                .replace("{tts}", &format!("{:.1}", d.tts_seconds / 60.0))
+        };
+        let max = v.days.iter().map(|d| d.1).fold(0.0f64, f64::max);
+        let bars: Vec<(String, f32, String)> = v
+            .days
+            .iter()
+            .enumerate()
+            .map(|(i, (day, cost))| {
+                // A label every 5 days and on today.
+                let label = if i % 5 == 4 || i + 1 == v.days.len() {
+                    day.to_string()
+                } else {
+                    String::new()
+                };
+                let h = if max > 0.0 { (cost / max) as f32 } else { 0.0 };
+                (label, h, dollars(*cost))
+            })
+            .collect();
+        self.screen.set_usage(&super::UsageView {
+            label: l.text("usage_label").to_string(),
+            line,
+            today: format!("~{} $", dollars(v.today_cost)),
+            month: format!("~{} $", dollars(v.month_cost)),
+            today_detail: detail(&v.today),
+            month_detail: detail(&v.month),
+            max: format!("{} $", dollars(max)),
+            bars,
+        });
     }
 
     /// The card of the microphone's switch for [`MIC_CARD`], the screen woken.
@@ -2929,19 +2986,7 @@ impl<S: Screen> Ui<S> {
                 self.refresh_control();
             }
             UiCommand::MicSwitch(on) => self.show_mic_switch(on),
-            UiCommand::Usage {
-                questions,
-                today,
-                month,
-            } => {
-                let l = self.locale.borrow();
-                let line = l
-                    .text("usage_line")
-                    .replace("{q}", &questions.to_string())
-                    .replace("{today}", &crate::usage::dollars(today))
-                    .replace("{month}", &crate::usage::dollars(month));
-                self.screen.set_usage(l.text("usage_label"), &line);
-            }
+            UiCommand::Usage(v) => self.show_usage(&v),
             UiCommand::Screenshot(path) => {
                 if let Err(e) = save_png(&self.screen, &path) {
                     log::warn!("screenshot: {e}");

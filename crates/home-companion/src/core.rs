@@ -196,12 +196,8 @@ pub enum UiCommand {
     },
     /// The microphone's switch was moved (or Talk pressed with it on mute): its card, on or off.
     MicSwitch(bool),
-    /// The cloud services' use: questions today, rough cost today and this month (US $).
-    Usage {
-        questions: u32,
-        today: f64,
-        month: f64,
-    },
+    /// The cloud services' use: today, this month, the last days (usage.rs).
+    Usage(crate::usage::View),
     /// A phone or a tablet mirrors its screen here (AirPlay): who and the frame's size; the
     /// page opens when a session starts, a new size (the sender rotated) only re-lays it out.
     /// None: the session is over, the page closes back to where it was. The frames themselves
@@ -691,13 +687,8 @@ impl Core {
     /// Today's questions and the rough cost today and this month, for Settings.
     fn send_usage(&self) {
         let Some(u) = &self.usage else { return };
-        let day = crate::usage::local_day(crate::timers::now_unix() as i64);
-        let (q, today, month) = u.summary(&day, &self.cfg.usage_prices);
-        self.ui(UiCommand::Usage {
-            questions: q,
-            today,
-            month,
-        });
+        let now = crate::timers::now_unix() as i64;
+        self.ui(UiCommand::Usage(u.view(now, &self.cfg.usage_prices)));
     }
 
     fn send(&self, m: &Message) -> bool {
