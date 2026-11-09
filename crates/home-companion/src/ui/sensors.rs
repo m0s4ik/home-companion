@@ -24,6 +24,9 @@ const EV_SW: u16 = 5;
 /// The microphone's switch: 1 = the microphone is there (on), 0 = muted. On the ThinkSmart View
 /// it is the slider on top (`gpio-keys`, "Mic Mute"), which also cuts the microphones.
 const SW_MICROPHONE_INSERT: u16 = 4;
+/// A headset jack reports SW_MICROPHONE_INSERT too (a headset's microphone plugged in), next to
+/// this one: such a device is not the switch.
+const SW_HEADPHONE_INSERT: u16 = 2;
 pub const KEY_VOLUMEDOWN: u16 = 114;
 pub const KEY_VOLUMEUP: u16 = 115;
 
@@ -39,6 +42,12 @@ fn has_key(fd: i32, code: u16) -> bool {
     r >= 0 && bits[(code / 8) as usize] & (1 << (code % 8)) != 0
 }
 
+/// Whether a device with these switches (EVIOCGBIT(EV_SW) bits) is a microphone's switch: the
+/// microphone's bit without the headphone's (a jack has both).
+fn is_mic_switch(bits: u8) -> bool {
+    bits & (1 << SW_MICROPHONE_INSERT) != 0 && bits & (1 << SW_HEADPHONE_INSERT) == 0
+}
+
 /// The microphone's switch on `fd`, if the device has one: Some(true) = on.
 fn mic_switch(fd: i32) -> Option<bool> {
     let mut bits = [0u8; 4];
@@ -46,7 +55,7 @@ fn mic_switch(fd: i32) -> Option<bool> {
     let req = ioc_read(0x20 + EV_SW as u64, bits.len() as u64);
     // SAFETY: EVIOCGBIT writes at most `bits.len()` bytes.
     let r = unsafe { libc::ioctl(fd, req as _, bits.as_mut_ptr()) };
-    if r < 0 || bits[0] & (1 << SW_MICROPHONE_INSERT) == 0 {
+    if r < 0 || !is_mic_switch(bits[0]) {
         return None;
     }
     let mut state = [0u8; 4];
@@ -312,6 +321,14 @@ pub fn spawn_motion(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_switch_is_not_a_headset_jack() {
+        // ThinkSmart View: gpio-keys SW = 0x210 (microphone, camera cover), the jack 0x14.
+        assert!(super::is_mic_switch(0x10));
+        assert!(!super::is_mic_switch(0x14));
+        assert!(!super::is_mic_switch(0x00));
+    }
+
     use super::*;
 
     #[test]
