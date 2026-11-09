@@ -99,6 +99,41 @@ const CONFIRM_MS: i64 = 60_000;
 const UNDO_MS: i64 = 120_000;
 const UNDO_KEPT: usize = 16;
 
+/// The question before a command that needs a yes, in the user's words: "Chiudo Tapparella
+/// salone?", "Sposto Tapparella salone al 30%?"; a service without a verb here keeps its name.
+pub fn confirm_question(name: &str, service: &str, data: &Value, it: bool) -> String {
+    let pos = data.get("position").and_then(Value::as_i64);
+    let verb = match (service, it) {
+        ("open_cover" | "open_valve", true) => "Apro",
+        ("open_cover" | "open_valve", false) => "Open",
+        ("close_cover" | "close_valve", true) => "Chiudo",
+        ("close_cover" | "close_valve", false) => "Close",
+        ("stop_cover", true) => "Fermo",
+        ("stop_cover", false) => "Stop",
+        ("turn_on", true) => "Accendo",
+        ("turn_on", false) => "Turn on",
+        ("turn_off", true) => "Spengo",
+        ("turn_off", false) => "Turn off",
+        ("set_cover_position" | "set_valve_position", _) => {
+            let p = pos.map_or(String::new(), |p| format!(" {p}%"));
+            return if it {
+                format!("Sposto {name} al{p}?")
+            } else {
+                format!("Move {name} to{p}?")
+            };
+        }
+        _ => {
+            let s = service.replace('_', " ");
+            return if it {
+                format!("{name} ({s}): confermi?")
+            } else {
+                format!("{name} ({s}): confirm?")
+            };
+        }
+    };
+    format!("{verb} {name}?")
+}
+
 /// The service that undoes `service`, when there is a clear one.
 fn inverse(service: &str) -> Option<&'static str> {
     Some(match service {
@@ -1597,20 +1632,21 @@ impl Brain {
                             self.broadcast(&[crate::events::confirm_done(o.id, None)]);
                         }
                         log::info!(event = "brain_gate", gate = "confirm", domain = e.domain(); "house command waits for a yes");
-                        let what = format!("{} ({})", e.full_name(), service.replace('_', " "));
-                        let text = if it {
-                            format!("{what}: confermi?")
-                        } else {
-                            format!("{what}: confirm?")
-                        };
+                        let pending_data = self
+                            .pending_control
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .as_ref()
+                            .map(|p| p.data.clone())
+                            .unwrap_or_default();
+                        let text = confirm_question(&e.full_name(), &service, &pending_data, it);
                         self.broadcast(&[crate::events::confirm(
                             id,
                             &text,
                             now() + CONFIRM_MS / 1000,
                         )]);
                         return Ok(json!({"needs_confirmation": true, "confirm_id": id,
-                            "ask": if it { format!("Ask: '{what}: confermi?' in Italian, one short question") }
-                                   else { format!("Ask: '{what}: confirm?', one short question") },
+                            "ask": format!("Ask exactly: '{text}' (one short question)"),
                             "then": "only after the user answers, call home_control again with the same arguments and this confirm_id"}));
                     }
                 }
@@ -2432,5 +2468,17 @@ mod tests {
                 + local_now().split(' ').nth(1).unwrap().len()
         );
         assert_eq!(date_of(0).len(), 10);
+    }
+
+    #[test]
+    fn confirm_questions_in_the_user_words() {
+        use super::confirm_question as q;
+        assert_eq!(q("Tapparella salone", "close_cover", &json!({}), true), "Chiudo Tapparella salone?");
+        assert_eq!(q("Living blind", "open_cover", &json!({}), false), "Open Living blind?");
+        assert_eq!(
+            q("Tapparella salone", "set_cover_position", &json!({"position": 30}), true),
+            "Sposto Tapparella salone al 30%?"
+        );
+        assert_eq!(q("X", "set_foo", &json!({}), true), "X (set foo): confermi?");
     }
 }
