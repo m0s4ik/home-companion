@@ -4124,11 +4124,14 @@ impl<S: Screen> Ui<S> {
                         p.asked = false;
                         let fine = !p.rows.iter().any(|r| r.level == Level::Bad);
                         if p.status.is_empty() && fine {
-                            p.status =
-                                word(&self.locale.borrow(), "ha_ready", &self.character.name);
+                            // No line over the rows (it moved them): the character bows and
+                            // says it.
                             p.done = true;
                             drop(p);
-                            self.send(UiEvent::Success);
+                            self.motion.borrow_mut().seq.done(Instant::now());
+                            let said =
+                                word(&self.locale.borrow(), "ha_ready_say", &self.character.name);
+                            self.send(UiEvent::Say(said));
                         }
                     }
                 }

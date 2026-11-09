@@ -38,6 +38,9 @@ pub enum UiEvent {
     Home,
     /// Something the user waited for worked (linked to Home Assistant): the "ok" sound.
     Success,
+    /// Something the character says aloud in Home Assistant's voice (Home Assistant's setup is
+    /// done: "Tutto pronto"): the success sound now, the words when they come.
+    Say(String),
     Talk,
     Stop,
     MessageOk(usize),
@@ -438,6 +441,8 @@ pub struct Core {
     /// A reflex's answer waiting for its voice.
     voice_wait: Option<VoiceWait>,
     next_voice_id: u64,
+    /// A UiEvent::Say waiting for its voice: its id and until when it is still worth saying.
+    say_wait: Option<(u64, Instant)>,
 }
 
 /// A sentence ending on a word that cannot end it (a preposition, an article, "e"): the speaker
@@ -504,6 +509,7 @@ impl Core {
             dnd_until: None,
             voice_wait: None,
             next_voice_id: 1,
+            say_wait: None,
         }
     }
 
@@ -1424,6 +1430,25 @@ impl Core {
 
     /// The voice of a reflex's answer: played if still awaited, else (late) dropped.
     fn on_voice(&mut self, r: crate::voice::VoiceReply) {
+        // Words of a UiEvent::Say: played if they came in time and nothing else speaks.
+        if let Some((id, until)) = self.say_wait
+            && id == r.id
+        {
+            self.say_wait = None;
+            if let Some(sp) = r.speech
+                && Instant::now() < until
+                && !self.speaker_busy()
+                && matches!(self.phase, Phase::Home | Phase::Offline)
+            {
+                let s = self.d.player.open_stream(sp.format);
+                if let Err(e) = s.push(&sp.pcm) {
+                    log::warn!("say: {e}");
+                }
+                s.finish();
+                log::info!(event = "say", seconds = sp.duration().as_secs_f64(); "said aloud");
+            }
+            return;
+        }
         let Some(w) = self.voice_wait.take_if(|w| w.id == r.id) else {
             log::debug!("voice {}: too late, not played", r.id);
             return;
@@ -2102,6 +2127,19 @@ impl Core {
                     && !self.dnd(now_unix())
                 {
                     self.d.player.play(&self.cues.home);
+                }
+            }
+            UiEvent::Say(text) => {
+                if !self.speaker_busy() && !matches!(self.phase, Phase::Speaking | Phase::Ringing) {
+                    self.d.player.play(&self.cues.success);
+                }
+                if let Some(v) = &self.d.voice
+                    && !self.dnd(now_unix())
+                {
+                    let id = self.next_voice_id;
+                    self.next_voice_id += 1;
+                    v.say(id, &text, self.ha.is_connected());
+                    self.say_wait = Some((id, Instant::now() + Duration::from_secs(6)));
                 }
             }
             UiEvent::Success => {

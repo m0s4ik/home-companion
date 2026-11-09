@@ -578,10 +578,14 @@ fn engine_voices(api: &mut dyn Api, engine: &str, language: &str) -> Vec<Pick> {
     if engine.is_empty() || language.is_empty() {
         return Vec::new();
     }
-    let Ok(r) =
-        api.ws(json!({"type": "tts/engine/voices", "engine_id": engine, "language": language}))
-    else {
-        return Vec::new();
+    let r = match api
+        .ws(json!({"type": "tts/engine/voices", "engine_id": engine, "language": language}))
+    {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!(event = "ha_setup"; "voices of {engine} ({language}): {e}");
+            return Vec::new();
+        }
     };
     r.get("voices")
         .and_then(Value::as_array)
@@ -761,7 +765,9 @@ fn voice_to_set(
     let offered = |id: &str| voices.iter().any(|v| v.id == id);
     if choice_pending {
         st.applied_voice = chosen.clone();
-        if !offered(chosen) {
+        // An empty list is a failed read, not an engine without that voice: the user picked it
+        // from Home Assistant's own list.
+        if !voices.is_empty() && !offered(chosen) {
             log::info!(event = "ha_setup"; "voice {chosen}: not offered by {engine} ({language})");
             return None;
         }
