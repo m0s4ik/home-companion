@@ -80,7 +80,17 @@ struct DoneControl {
     id: i64,
     entity_id: String,
     undo_service: &'static str,
+    /// The scene that holds the entity as it was before (Home Assistant's `scene.create` with
+    /// `snapshot_entities`): an undo puts back brightness and colour too, not just on/off.
+    /// None when the snapshot failed: the inverse service then.
+    scene: Option<String>,
     at_ms: i64,
+}
+
+/// The scene of a snapshot: one of [`UNDO_KEPT`] slots, so at most that many scenes exist in Home
+/// Assistant (scenes made by `scene.create` live in memory only, until it restarts).
+fn undo_scene(id: i64) -> String {
+    format!("home_companion_undo_{}", id.rem_euclid(UNDO_KEPT as i64))
 }
 
 /// How long a question waits for a yes, and how long an "Undo" stays possible.
@@ -644,6 +654,26 @@ impl Brain {
             return Err("not allowed: this device cannot be undone without a yes".into());
         }
         let ha = self.ha().ok_or("Home Assistant is not configured")?;
+        if let Some(scene) = &d.scene {
+            let scene_entity = format!("scene.{scene}");
+            match ha.control(&scene_entity, "turn_on", &json!({}), Duration::from_secs(10)) {
+                Ok(()) => {
+                    log::info!(event = "brain_undo", entity = d.entity_id.as_str(), how = "scene"; "undone: {} as it was", d.entity_id);
+                    *self.entities.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    let id = self.next_id();
+                    self.broadcast(&[crate::events::changed(
+                        id,
+                        &e.entity_id,
+                        &e.full_name(),
+                        d.undo_service,
+                        state_after(d.undo_service, &e.state),
+                        false,
+                    )]);
+                    return Ok(());
+                }
+                Err(err) => log::warn!(event = "brain_undo", how = "scene"; "{scene_entity}: {err}; the inverse service instead"),
+            }
+        }
         self.run_control(ha, &e, d.undo_service, &json!({}), false)
     }
 
@@ -658,16 +688,29 @@ impl Brain {
         data: &Value,
         undo_ok: bool,
     ) -> Result<(), String> {
+        let id = self.next_id();
+        let undo = inverse(service).filter(|_| undo_ok);
+        // Before the command: a snapshot of the entity for the undo (brightness, colour…).
+        let scene = undo.and_then(|_| {
+            let scene = undo_scene(id);
+            let data = json!({"scene_id": scene, "snapshot_entities": [e.entity_id]});
+            let cmd = json!({"type": "call_service", "domain": "scene", "service": "create", "service_data": data});
+            match ha.call(cmd, Duration::from_secs(10)) {
+                Ok(_) => Some(scene),
+                Err(err) => {
+                    log::warn!(event = "brain_undo", how = "snapshot"; "scene.create for {}: {err}", e.entity_id);
+                    None
+                }
+            }
+        });
         ha.control(&e.entity_id, service, data, Duration::from_secs(10))?;
         // The state changed: the cached list is stale.
         *self.entities.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        let id = self.next_id();
-        let undo = inverse(service).filter(|_| undo_ok);
         if let Some(u) = undo {
             let mut v = self.done_controls.lock().unwrap_or_else(|e| e.into_inner());
             let at = now_ms();
             v.retain(|d| at - d.at_ms <= UNDO_MS);
-            v.push(DoneControl { id, entity_id: e.entity_id.clone(), undo_service: u, at_ms: at });
+            v.push(DoneControl { id, entity_id: e.entity_id.clone(), undo_service: u, scene, at_ms: at });
             let extra = v.len().saturating_sub(UNDO_KEPT);
             v.drain(..extra);
         }

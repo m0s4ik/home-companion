@@ -277,7 +277,7 @@ fn house_gates_need_a_spoken_yes_and_never_open_doors() {
             .iter()
             .filter(|c| c["type"] == "call_service")
             .map(|c| format!("{}.{} {}", c["domain"].as_str().unwrap(), c["service"].as_str().unwrap(),
-                c["service_data"]["entity_id"].as_str().unwrap()))
+                c["service_data"]["entity_id"].as_str().unwrap_or("")))
             .collect()
     };
     // A light: at once.
@@ -306,7 +306,8 @@ fn house_gates_need_a_spoken_yes_and_never_open_doors() {
     assert!(!err && r["done"] == true, "{r}");
     assert_eq!(
         services(&f),
-        ["light.turn_on light.cucina", "cover.close_cover cover.soggiorno"]
+        // The light: a snapshot for its Undo first; the shutter after a yes has no Undo.
+        ["scene.create ", "light.turn_on light.cucina", "cover.close_cover cover.soggiorno"]
     );
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -640,7 +641,17 @@ fn a_house_command_is_reported_and_can_be_undone() {
     let c2 = screen.event("changed");
     assert_eq!((c2["service"].as_str(), c2["state"].as_str(), c2["undo"].as_bool()),
         (Some("turn_on"), Some("on"), Some(false)), "{c2}");
-    assert_eq!(services(&f), ["light.turn_off light.cucina", "light.turn_on light.cucina"]);
+    // A snapshot before the command, the snapshot's scene for the undo (brightness, colour…).
+    let snap = f.calls.lock().unwrap().iter().find(|c| c["service"] == "create").cloned().unwrap();
+    assert_eq!((snap["domain"].as_str(), snap["service_data"]["snapshot_entities"].clone()),
+        (Some("scene"), json!(["light.cucina"])), "{snap}");
+    assert!(snap["service_data"].get("entity_id").is_none(), "{snap}");
+    let scene = format!("scene.{}", snap["service_data"]["scene_id"].as_str().unwrap());
+    assert_eq!(services(&f), [
+        format!("scene.create "),
+        "light.turn_off light.cucina".to_string(),
+        format!("scene.turn_on {scene}"),
+    ]);
     // Once only; an unknown id is an error.
     assert!(b.undo_control(c["id"].as_i64().unwrap()).is_err());
     assert!(b.undo_control(12345).is_err());
