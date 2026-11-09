@@ -1346,8 +1346,10 @@ impl<S: Screen> Ui<S> {
         let ui = Rc::downgrade(self);
         self.screen.on_done_undo(move || {
             if let Some(ui) = ui.upgrade() {
+                // Newest first, as an undo goes: a later snapshot (a group's, taken after its
+                // lights went off) must not be put back over the earlier ones.
                 let ids = ui.house.borrow_mut().undo();
-                for id in ids.unwrap_or_default() {
+                for id in ids.unwrap_or_default().into_iter().rev() {
                     log::info!(event = "house_undo", id = id; "house: undo {id}");
                     ui.brain_do(brain_link::undo(id));
                 }
@@ -2360,7 +2362,19 @@ impl<S: Screen> Ui<S> {
                 paused: l.text("paused"),
             };
             let name = &self.character.name;
+            // house-done-card(s): the "done" card first in the band, after its pop-up.
+            let done = (d.house == 1 && d.house_card_only).then(|| {
+                let first = if d.house_group {
+                    l.text("house_and_more")
+                        .replace("{name}", "Studio sinistra")
+                        .replace("{n}", "3")
+                } else {
+                    l.sample("house_light").to_string()
+                };
+                (first, l.text("house_state_off").to_string(), true)
+            });
             let alive = Alive {
+                done,
                 setup: d.setup_card.then(|| {
                     (
                         word(&l, "setup_card_complete_title", name),
@@ -3581,7 +3595,17 @@ impl<S: Screen> Ui<S> {
             .filter(|_| self.screen.get_page() != super::mirror::PAGE)
             .map(|i| super::mirror::card(l.text("mirror"), l.text("mirror_back"), i));
         let ready = d.setup_ready.then(|| (w("ready_title"), w("ready_text")));
+        // A house command that went through, after its pop-up: the first card.
+        let done = {
+            let h = self.house.borrow();
+            h.done.as_ref().filter(|_| !h.popup()).map(|c| {
+                let (line, _, _) = c.texts(l.text("house_and_more"), l.text("house_others"));
+                let (name, state) = house::split_line(&line);
+                (name.to_string(), state.to_string(), c.undo)
+            })
+        };
         let alive = Alive {
+            done,
             status: offline.then(|| (w("offline_title"), w("offline_text"))),
             setup,
             ready,
@@ -4480,6 +4504,8 @@ impl<S: Screen> Ui<S> {
         }
         self.screen
             .set_done_popup(h.popup(), h.popup_left(Instant::now()));
+        // On the home the card is one of the context band's (cards.rs).
+        self.refresh_home();
         let left = h.ask_left(self.now());
         self.ask_left.set(left);
         match &h.ask {

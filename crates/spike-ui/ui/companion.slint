@@ -1152,7 +1152,8 @@ export component CompanionWindow inherits Window {
                     }
                 }
                 if c.kind != "timer" && c.kind != "music": InfoCard {
-                    icon: c.kind == "status" ? Icons.cloud-off-32
+                    icon: c.kind == "done" || c.kind == "done-undo" ? Icons.check-circle-32
+                        : c.kind == "status" ? Icons.cloud-off-32
                         : c.kind == "setup" ? Icons.view-dashboard-32
                         : c.kind == "message" ? Icons.bell-32
                         : c.kind == "reminder" ? Icons.calendar-clock-32
@@ -1176,10 +1177,15 @@ export component CompanionWindow inherits Window {
                         : c.kind == "more" || c.kind == "answer" ? Theme.text-2 : Theme.accent;
                     title: c.title;
                     text: c.text;
-                    action: c.kind == "message" || c.kind == "reminder" || c.kind.starts-with("hc-") ? root.t.ok : "";
+                    action: c.kind == "done-undo" ? root.t.undo
+                        : c.kind == "message" || c.kind == "reminder" || c.kind.starts-with("hc-") ? root.t.ok : "";
                     closable: c.kind == "mirror" || c.kind == "ready";
                     action-clicked => {
-                        root.message-ok(i);
+                        if (c.kind == "done-undo") {
+                            root.done-undo-clicked();
+                        } else {
+                            root.message-ok(i);
+                        }
                     }
                     close-clicked => {
                         if (c.kind == "ready") {
@@ -3747,7 +3753,9 @@ export component CompanionWindow inherits Window {
     // view or a mirrored screen: the same card, centred at the top). In the home's
     // third card slot, above the action band; during a conversation at the top of the desk,
     // over nothing it says.
-    if root.done-shown && !root.done-popup && !root.night-home && !root.starting && !root.ringing: DoneCard {
+    // (On the home it is the first card of the context band instead: cards.rs.)
+    if root.done-shown && !root.done-popup && !root.night-home && !root.starting && !root.ringing
+        && (CasaBridge.visible || root.mirror-t > 0.001 || root.conversation || root.desk-page != "home"): DoneCard {
         property <bool> full: CasaBridge.visible || (root.mirror-t > 0.999 && !root.mirror-sides);
         x: self.full ? (root.width - self.width) / 2 : Grid.col-x;
         // Over a full view: top centre (bottom centre while the conversation bar is at the top).

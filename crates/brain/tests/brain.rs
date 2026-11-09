@@ -32,6 +32,8 @@ struct Fake {
     calendar: Arc<Mutex<Value>>,
     /// Areas of exposed entities: (entity_id, area name).
     areas: Vec<(&'static str, &'static str)>,
+    /// Groups among the exposed entities: (entity_id, members).
+    groups: Vec<(&'static str, Vec<&'static str>)>,
 }
 
 /// "2026-11-05T17:00:00Z" for a time in seconds (UTC).
@@ -132,8 +134,13 @@ fn answer(f: &Fake, cmd: &Value) -> Value {
         (Some("get_states"), _, _) => json!(
             f.exposed
                 .iter()
-                .map(|(id, name, class)| json!({"entity_id": id, "state": "open",
-                    "attributes": {"friendly_name": name, "device_class": class}}))
+                .map(|(id, name, class)| {
+                    let mut a = json!({"friendly_name": name, "device_class": class});
+                    if let Some((_, m)) = f.groups.iter().find(|(g, _)| g == id) {
+                        a["entity_id"] = json!(m);
+                    }
+                    json!({"entity_id": id, "state": "open", "attributes": a})
+                })
                 .chain(
                     f.states
                         .iter()
@@ -767,6 +774,8 @@ fn a_whole_room_in_one_call() {
             ("light.cucina", "Cucina"),
             ("cover.studio", "Studio"),
         ],
+        // light.studio is the room's group (a Hue room): done through its lights, not twice.
+        groups: vec![("light.studio", vec!["light.studio_sx", "light.libreria"])],
         ..Fake::default()
     };
     let (cfg, dir) = setup("room", &fake_ha(f.clone()));
@@ -778,8 +787,8 @@ fn a_whole_room_in_one_call() {
         json!({"area": "studio", "service": "turn_off"}),
     );
     assert!(!err, "{r}");
-    assert_eq!(r["done"].as_array().unwrap().len(), 3, "{r}");
-    for _ in 0..3 {
+    assert_eq!(r["done"].as_array().unwrap().len(), 2, "{r}");
+    for _ in 0..2 {
         assert_eq!(screen.event("changed")["undo"], true);
     }
     let lights: Vec<String> = services(&f)
@@ -790,7 +799,6 @@ fn a_whole_room_in_one_call() {
         lights,
         [
             "light.turn_off light.libreria",
-            "light.turn_off light.studio",
             "light.turn_off light.studio_sx"
         ]
     );

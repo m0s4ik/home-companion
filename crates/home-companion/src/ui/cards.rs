@@ -2,7 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Andrea Mattera
 
 //! The home's middle band: at most three cards, the most urgent first:
-//! (1) the body's own status (Home Assistant not answering), (1b) the setup in Home Assistant
+//! (0) a house command that just went through ("Studio: spento", with Undo while it can be
+//! undone; after its big pop-up, for its 20 s), (1) the body's own status (Home Assistant not answering), (1b) the setup in Home Assistant
 //! asking for the user ("Complete" when an AI appeared, or something to fix: it opens the
 //! Home Assistant page), (2) messages that need an OK (one
 //! card, "1 di 3" when more wait), (2b) a screen mirroring the user left for the home (it
@@ -26,6 +27,8 @@ pub const LONG_ANSWER: usize = 160;
 /// What may become a card.
 #[derive(Debug, Default)]
 pub struct Alive<'a> {
+    /// (what, its state, Undo) of a house command that just went through.
+    pub done: Option<(String, String, bool)>,
     /// (title, text) when the body has a problem to tell.
     pub status: Option<(String, String)>,
     /// (title, text) when the setup in Home Assistant needs the user.
@@ -70,6 +73,9 @@ pub fn pick(a: &Alive, w: &CardWords) -> Vec<CardView> {
         remaining: 0.0,
         paused: false,
     };
+    if let Some((t, x, undo)) = &a.done {
+        out.push(card(if *undo { "done-undo" } else { "done" }, t, x));
+    }
     if let Some((t, x)) = &a.status {
         out.push(card("status", t, x));
     }
@@ -289,6 +295,28 @@ impl HaCards {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_done_house_command_is_the_first_card() {
+        let timers = [];
+        let msgs = [("Promemoria".to_string(), "Dentista".to_string())];
+        let a = Alive {
+            done: Some(("Studio".into(), "spento".into(), true)),
+            status: Some(("Offline".into(), "x".into())),
+            messages: &msgs,
+            timers: &timers,
+            ..Default::default()
+        };
+        let w = CardWords {
+            of: &|i, n| format!("{i} di {n}"),
+            more_timers: &|n| format!("+{n}"),
+            paused: "In pausa",
+        };
+        let c = pick(&a, &w);
+        let kinds: Vec<&str> = c.iter().map(|c| c.kind).collect();
+        assert_eq!(kinds, ["done-undo", "status", "reminder"]);
+        assert_eq!((c[0].title.as_str(), c[0].text.as_str()), ("Studio", "spento"));
+    }
+
     fn timer(name: &str, left: &str) -> TimerView {
         TimerView {
             id: name.into(),
@@ -333,6 +361,7 @@ mod tests {
         ];
         let timers = vec![timer("Uova", "07:42")];
         let a = Alive {
+            done: None,
             status: Some(("Home Assistant non risponde".into(), "Riprovo".into())),
             setup: None,
             messages: &msgs,

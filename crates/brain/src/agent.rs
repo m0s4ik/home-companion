@@ -1443,9 +1443,18 @@ impl Brain {
                 }
                 found
             };
+        // A group whose members are all in the list too (a Hue room in its own area): its lights
+        // are done one by one already.
+        let ids: Vec<&str> = targets.iter().map(|e| e.entity_id.as_str()).collect();
+        let targets: Vec<&crate::ha::Entity> = targets
+            .iter()
+            .filter(|e| {
+                e.members.is_empty() || !e.members.iter().all(|m| ids.contains(&m.as_str()))
+            })
+            .collect();
         let ha = self.ha().ok_or("Home Assistant is not configured")?;
         let (mut done, mut skipped, mut failed) = (Vec::new(), Vec::new(), Vec::new());
-        for e in &targets {
+        for e in targets {
             if self.gate_of(e) != Gate::Allow {
                 skipped.push(e.full_name());
                 continue;
