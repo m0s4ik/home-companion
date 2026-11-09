@@ -117,6 +117,20 @@ pub fn pick(
         pool.push((shopping.to_string(), name_of(shopping)));
     }
     let wanted = wanted.trim();
+    // "the shopping list" when no list has that name ("Casa" on Bring!): the default one.
+    let shopping_word = {
+        let w = normalize(wanted);
+        w.contains("spesa") || w.contains("shopping") || w.contains("grocer")
+    };
+    let by_name = |w: &str| {
+        let w = normalize(w);
+        pool.iter().any(|(id, n)| normalize(n) == w || normalize(id).ends_with(&w))
+    };
+    let wanted = if !wanted.is_empty() && (pool.len() == 1 || (shopping_word && !by_name(wanted))) {
+        ""
+    } else {
+        wanted
+    };
     if wanted.is_empty() {
         if !shopping.is_empty() {
             return Ok((shopping.to_string(), name_of(shopping)));
@@ -261,6 +275,24 @@ impl Lists<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shopping_list_by_any_name() {
+        let k = |v: &[(&str, &str)]| -> Vec<(String, String)> {
+            v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+        };
+        // One list, called "Casa" (Bring!): "spesa" and any name mean it.
+        let one = k(&[("todo.casa", "Casa")]);
+        assert_eq!(pick(&one, &[], "", "spesa").unwrap().0, "todo.casa");
+        assert_eq!(pick(&one, &[], "", "lista della spesa").unwrap().0, "todo.casa");
+        // Several: "spesa" is the shopping one, or the first; a real name still wins.
+        let two = k(&[("todo.casa", "Casa"), ("todo.lavori", "Lavori")]);
+        assert_eq!(pick(&two, &[], "", "spesa").unwrap().0, "todo.casa");
+        assert_eq!(pick(&two, &[], "", "lavori").unwrap().0, "todo.lavori");
+        let named = k(&[("todo.lavori", "Lavori"), ("todo.spesa", "Spesa")]);
+        assert_eq!(pick(&named, &[], "", "spesa").unwrap().0, "todo.spesa");
+        assert!(pick(&two, &[], "", "garage").is_err());
+    }
 
     fn item(uid: &str, s: &str, done: bool) -> Item {
         Item {
