@@ -15,6 +15,13 @@
 //! | `vad` | end of speech "relaxed" | yes (idem) |
 //! | `ai_task` | an AI task entity for the memory jobs | no: the user's; "skipped" without |
 //!
+//! The user may choose, on the screen, the AI the agent lives under, the speech-to-text and the
+//! voice of the pipeline "<name>" ([`Choice`], in the body's settings): whatever Home Assistant
+//! has, listed as it lists them ([`Choices`]). Nothing chosen = the AI the agent already lives
+//! under (else the first) and the preferred pipeline's speech-to-text and voice. Choosing another
+//! AI moves the agent: a new one under it, the pipeline on it, the old one removed (only when the
+//! body made it); an AI with speech-to-text or voice entities of its own preselects them.
+//!
 //! What exists is never changed by itself: what the body made is in `<state_dir>/ha-setup.json`
 //! (with the satellite's options as they were) and [`unlink`] removes exactly that. A row that
 //! differs because of the user's choice in Home Assistant (another pipeline on the satellite, the
@@ -149,7 +156,77 @@ pub struct State {
     /// The agent's instructions as the body last wrote them: while Home Assistant still has these
     /// (the user did not edit them), a newer version of the body's instructions replaces them.
     pub prompt_written: String,
+    /// Agents the body made under an AI it moved away from, still to remove (entry, subentry).
+    pub retired_agents: Vec<(String, String)>,
+    /// The pipeline follows the agent at the next run (an AI chosen on the screen).
+    pub pipeline_move: bool,
+    /// The speech-to-text and the voice chosen on the screen as last put into the pipeline:
+    /// another choice is put in once; a later change made in Home Assistant stays.
+    pub applied_stt: String,
+    pub applied_tts: String,
+    /// The AI task entity the body made Home Assistant's preferred one (none was): it follows
+    /// the chosen AI while it is still the preferred one, and goes with "Unlink".
+    pub ai_task_set: String,
 }
+
+/// What the user chose on the screen (`[assistant]` in the body's settings): an AI integration's
+/// entry, an `stt.*` and a `tts.*` entity; empty = not chosen.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Choice {
+    pub ai: String,
+    pub stt: String,
+    pub tts: String,
+}
+
+/// One thing Home Assistant has, to choose on the screen: its id and its name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Pick {
+    pub id: String,
+    pub name: String,
+}
+
+/// What may be chosen, and what is in use now (the AI the agent lives under, the pipeline's
+/// engines; empty = none).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Choices {
+    pub ai: Vec<Pick>,
+    pub stt: Vec<Pick>,
+    pub tts: Vec<Pick>,
+    pub current: Choice,
+}
+
+impl Choices {
+    /// The options of one kind ("ai", "stt", "tts").
+    pub fn of(&self, kind: &str) -> &[Pick] {
+        match kind {
+            "ai" => &self.ai,
+            "stt" => &self.stt,
+            _ => &self.tts,
+        }
+    }
+
+    /// The id in use of one kind.
+    pub fn current_of(&self, kind: &str) -> &str {
+        match kind {
+            "ai" => &self.current.ai,
+            "stt" => &self.current.stt,
+            _ => &self.current.tts,
+        }
+    }
+
+    /// The name of what is in use of one kind ("" = none).
+    pub fn current_name(&self, kind: &str) -> String {
+        let id = self.current_of(kind);
+        self.of(kind)
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| id.to_string())
+    }
+}
+
+/// The kinds of choice, in screen order.
+pub const CHOICES: [&str; 3] = ["ai", "stt", "tts"];
 
 /// Home Assistant's own addresses, from its network adapters (`network`, admin only): the
 /// enabled ones (all of them when none is), never loopback. Empty when it cannot tell.
@@ -247,6 +324,8 @@ pub struct Body {
     pub mcp_port: u16,
     /// The agent's instructions (the character's persona and how to use the tools).
     pub prompt: String,
+    /// What the user chose on the screen.
+    pub choice: Choice,
 }
 
 impl Body {
@@ -348,6 +427,34 @@ impl Seen {
             .collect()
     }
 
+    /// An entity of an integration's entry in a domain ("stt", "tts", "ai_task").
+    fn own(&self, entry: &str, domain: &str) -> Option<String> {
+        let prefix = format!("{domain}.");
+        self.registry
+            .iter()
+            .filter(|e| s(e, "config_entry_id") == entry)
+            .map(|e| s(e, "entity_id"))
+            .find(|id| id.starts_with(&prefix) && self.state(id).is_some())
+            .map(String::from)
+    }
+
+    /// Every entity of a domain Home Assistant has, by name.
+    fn picks(&self, domain: &str) -> Vec<Pick> {
+        let prefix = format!("{domain}.");
+        let mut v: Vec<Pick> = self
+            .states
+            .iter()
+            .map(|e| s(e, "entity_id"))
+            .filter(|id| id.starts_with(&prefix))
+            .map(|id| Pick {
+                id: id.to_string(),
+                name: self.friendly(id),
+            })
+            .collect();
+        v.sort_by_key(|p| p.name.to_lowercase());
+        v
+    }
+
     fn friendly(&self, entity: &str) -> String {
         self.state(entity)
             .and_then(|st| st.pointer("/attributes/friendly_name"))
@@ -431,13 +538,145 @@ fn find_mcp(seen: &Seen, st: &State, body: &Body) -> Option<String> {
         .map(|e| s(e, "entry_id").to_string())
 }
 
-/// The AI to use: the one the agent lives under while it exists, else the first one.
-fn find_ai<'a>(seen: &'a Seen, st: &State) -> Option<&'a Value> {
+/// The AI to use: the one chosen on the screen while it exists, else the one the agent lives
+/// under, else the first one.
+fn find_ai<'a>(seen: &'a Seen, st: &State, chosen: &str) -> Option<&'a Value> {
     let ais = seen.ais();
-    ais.iter()
-        .find(|e| s(e, "entry_id") == st.ai_entry)
+    let by_id = |id: &str| {
+        (!id.is_empty())
+            .then(|| ais.iter().find(|e| s(e, "entry_id") == id))
+            .flatten()
+    };
+    by_id(chosen)
+        .or(by_id(&st.ai_entry))
         .or(ais.first())
         .copied()
+}
+
+/// What may be chosen and what is in use, as Home Assistant has it.
+fn choices_of(seen: &Seen, st: &State, body: &Body) -> Choices {
+    let ai = seen
+        .ais()
+        .iter()
+        .map(|e| Pick {
+            id: s(e, "entry_id").to_string(),
+            name: s(e, "title").to_string(),
+        })
+        .collect();
+    let pipeline = seen.pipeline(&st.pipeline);
+    let engine = |k: &str| pipeline.map(|p| s(p, k).to_string()).unwrap_or_default();
+    Choices {
+        ai,
+        stt: seen.picks("stt"),
+        tts: seen.picks("tts"),
+        current: Choice {
+            ai: find_ai(seen, st, &body.choice.ai)
+                .map(|e| s(e, "entry_id").to_string())
+                .unwrap_or_default(),
+            stt: engine("stt_engine"),
+            tts: engine("tts_engine"),
+        },
+    }
+}
+
+/// What may be chosen on the screen (Home Assistant read once).
+pub fn choices(api: &mut dyn Api, st: &State, body: &Body) -> Result<Choices, String> {
+    Ok(choices_of(&read(api)?, st, body))
+}
+
+/// The user chose `id` for `kind` ("ai", "stt", "tts") on the screen: `choice` changed (the
+/// caller saves it and `st`, then runs [`repair`]). An AI with speech-to-text or voice entities
+/// of its own preselects them; the pipeline follows at the next run even where it was changed
+/// in Home Assistant.
+pub fn choose(
+    api: &mut dyn Api,
+    st: &mut State,
+    choice: &mut Choice,
+    kind: &str,
+    id: &str,
+) -> Result<(), String> {
+    match kind {
+        "ai" => {
+            let seen = read(api)?;
+            choice.ai = id.to_string();
+            if let Some(stt) = seen.own(id, "stt") {
+                choice.stt = stt;
+                st.applied_stt.clear();
+            }
+            if let Some(tts) = seen.own(id, "tts") {
+                choice.tts = tts;
+                st.applied_tts.clear();
+            }
+            st.pipeline_move = true;
+        }
+        "stt" => {
+            choice.stt = id.to_string();
+            st.applied_stt.clear();
+        }
+        "tts" => {
+            choice.tts = id.to_string();
+            st.applied_tts.clear();
+        }
+        _ => return Err(format!("choose: {kind}")),
+    }
+    Ok(())
+}
+
+/// The first language an engine supports for `language` (Home Assistant sorts them best first).
+fn engine_language(api: &mut dyn Api, kind: &str, engine: &str, language: &str) -> Option<String> {
+    let r = api
+        .ws(json!({"type": format!("{kind}/engine/list"), "language": language}))
+        .ok()?;
+    r.get("providers")?
+        .as_array()?
+        .iter()
+        .find(|p| s(p, "engine_id") == engine)?
+        .get("supported_languages")?
+        .as_array()?
+        .first()?
+        .as_str()
+        .map(String::from)
+}
+
+/// The pipeline's fields for a speech-to-text (`stt`) or voice (`tts`) engine in the pipeline's
+/// language: the preferred pipeline's own when it uses that engine (its voice too), else the
+/// engine's first language for it and its default voice.
+fn engine_fields(
+    api: &mut dyn Api,
+    seen: &Seen,
+    kind: &str,
+    engine: &str,
+    language: &str,
+) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    let lang_key = format!("{kind}_language");
+    out.insert(format!("{kind}_engine"), json!(engine));
+    let pref = seen
+        .pipeline(&seen.preferred)
+        .filter(|p| s(p, &format!("{kind}_engine")) == engine && !s(p, &lang_key).is_empty());
+    if let Some(p) = pref {
+        let v = p[&lang_key].clone();
+        out.insert(lang_key, v);
+        if kind == "tts" {
+            out.insert(
+                "tts_voice".into(),
+                p.get("tts_voice").cloned().unwrap_or(Value::Null),
+            );
+        }
+    } else {
+        let lang =
+            engine_language(api, kind, engine, language).unwrap_or_else(|| language.to_string());
+        out.insert(lang_key, json!(lang));
+        if kind == "tts" {
+            out.insert("tts_voice".into(), Value::Null);
+        }
+    }
+    out
+}
+
+/// A choice still to put into the pipeline: chosen, existing, not put in yet.
+fn pending<'a>(seen: &Seen, chosen: &'a str, applied: &str) -> Option<&'a str> {
+    (!chosen.is_empty() && chosen != applied && seen.state(chosen).is_some()).then_some(chosen)
 }
 
 /// The agent's current settings, read from its reconfigure form (Home Assistant has no other
@@ -493,6 +732,16 @@ pub type BrainFn = fn() -> Option<BrainInfo>;
 
 /// Every row, read-only. `brain` = what the brain says (None: it does not answer).
 pub fn check(api: &mut dyn Api, st: &State, body: &Body, brain: BrainFn) -> Vec<Row> {
+    check_all(api, st, body, brain).0
+}
+
+/// Every row and what may be chosen on the screen (None: Home Assistant could not be read).
+pub fn check_all(
+    api: &mut dyn Api,
+    st: &State,
+    body: &Body,
+    brain: BrainFn,
+) -> (Vec<Row>, Option<Choices>) {
     let seen = match read(api) {
         Ok(s) => s,
         Err(e) => {
@@ -502,11 +751,12 @@ pub fn check(api: &mut dyn Api, st: &State, body: &Body, brain: BrainFn) -> Vec<
                     .iter()
                     .map(|id| Row::new(id, Level::Unknown, "unknown")),
             );
-            return rows;
+            return (rows, None);
         }
     };
     let mut cache = AgentCache::default();
-    rows_of(api, &seen, st, body, brain, &mut cache)
+    let rows = rows_of(api, &seen, st, body, brain, &mut cache);
+    (rows, Some(choices_of(&seen, st, body)))
 }
 
 #[derive(Default)]
@@ -563,7 +813,7 @@ fn rows_of(
     });
 
     // The AI and the agent.
-    let ai = find_ai(seen, st);
+    let ai = find_ai(seen, st, &body.choice.ai);
     rows.push(match ai {
         None => Row::new("ai", Level::Skipped, "none"),
         Some(e) if entry_state(e) != "loaded" => Row::new("ai", Level::Bad, "not_loaded")
@@ -893,15 +1143,27 @@ pub fn repair(
 
     // 3. The agent, under the AI (if there is one).
     let mut agent: Option<String> = None;
-    if let Some(ai) = find_ai(&seen, st).cloned() {
+    if let Some(ai) = find_ai(&seen, st, &body.choice.ai).cloned() {
         let ai_id = s(&ai, "entry_id").to_string();
         if ai_id != st.ai_entry {
-            // Another AI (or the first): a new agent under it; the old one went with its AI.
+            // Another AI (chosen on the screen, or the first): a new agent under it, the
+            // pipeline on it. The old one is removed afterwards if the body made it (it went
+            // with its AI if that is gone).
+            if !st.ai_entry.is_empty() && !st.agent_sub.is_empty() {
+                if st.agent_ours && seen.entry(&st.ai_entry).is_some() {
+                    st.retired_agents
+                        .push((st.ai_entry.clone(), st.agent_sub.clone()));
+                }
+                st.pipeline_move = true;
+            }
             st.ai_entry = ai_id.clone();
             st.agent_sub.clear();
+            st.agent_ours = false;
+            save(st);
         }
         if st.agent_sub.is_empty() {
-            // One made before (by the prototype, or the state file was lost)?
+            // One made before (by the prototype, by the body before a move back, or the state
+            // file was lost)?
             let subs =
                 api.ws(json!({"type": "config_entries/subentries/list", "entry_id": ai_id}))?;
             if let Some(sub) = subs
@@ -911,6 +1173,11 @@ pub fn repair(
                 .find(|x| s(x, "subentry_type") == "conversation" && s(x, "title") == body.name)
             {
                 st.agent_sub = s(sub, "subentry_id").to_string();
+                let retired = (ai_id.clone(), st.agent_sub.clone());
+                if st.retired_agents.contains(&retired) {
+                    st.retired_agents.retain(|r| *r != retired);
+                    st.agent_ours = true;
+                }
             } else {
                 st.agent_sub = create_agent(api, &ai_id, &st.mcp_entry, body)?;
                 st.agent_ours = true;
@@ -953,20 +1220,51 @@ pub fn repair(
             let engine_gone = engine != DEFAULT_AGENT && seen.state(engine).is_none();
             // The agent changed under the body (a new AI, the first AI): ours to follow. A
             // choice the user made: only with "Repair".
-            let follows = engine_gone || (engine == DEFAULT_AGENT && want_agent != DEFAULT_AGENT);
-            if (follows || forced("pipeline"))
-                && (engine != want_agent || p.get("prefer_local_intents") == Some(&json!(true)))
-            {
-                let mut upd = p.clone();
-                let o = upd.as_object_mut().ok_or("pipeline")?;
+            let follows = engine_gone
+                || st.pipeline_move
+                || (engine == DEFAULT_AGENT && want_agent != DEFAULT_AGENT);
+            let agent_moves = (follows || forced("pipeline"))
+                && (engine != want_agent || p.get("prefer_local_intents") == Some(&json!(true)));
+            // The speech-to-text and the voice chosen on the screen, once.
+            let stt = pending(&seen, &body.choice.stt, &st.applied_stt).map(String::from);
+            let tts = pending(&seen, &body.choice.tts, &st.applied_tts).map(String::from);
+            let mut upd = p.clone();
+            let o = upd.as_object_mut().ok_or("pipeline")?;
+            let language = s(&p, "language").to_string();
+            let mut voice_moves = false;
+            for (kind, engine) in [("stt", &stt), ("tts", &tts)] {
+                if let Some(e) = engine
+                    && s(&p, &format!("{kind}_engine")) != e
+                {
+                    o.extend(engine_fields(api, &seen, kind, e, &language));
+                    voice_moves = true;
+                }
+            }
+            if agent_moves || voice_moves {
                 o.remove("id");
-                o.insert("conversation_engine".into(), json!(want_agent));
-                o.insert("prefer_local_intents".into(), json!(false));
+                if agent_moves {
+                    o.insert("conversation_engine".into(), json!(want_agent));
+                    o.insert("prefer_local_intents".into(), json!(false));
+                }
                 o.insert("type".into(), json!("assist_pipeline/pipeline/update"));
                 o.insert("pipeline_id".into(), json!(st.pipeline));
                 api.ws(upd)?;
-                log::info!(event = "ha_setup"; "pipeline: agent {want_agent}");
+                log::info!(
+                    event = "ha_setup";
+                    "pipeline: agent {}, speech-to-text {}, voice {}",
+                    if agent_moves { want_agent.as_str() } else { "kept" },
+                    stt.as_deref().unwrap_or("kept"),
+                    tts.as_deref().unwrap_or("kept")
+                );
             }
+            st.pipeline_move = false;
+            if let Some(e) = stt {
+                st.applied_stt = e;
+            }
+            if let Some(e) = tts {
+                st.applied_tts = e;
+            }
+            save(st);
         }
         None => {
             let pref = seen
@@ -990,6 +1288,24 @@ pub fn repair(
                 .cloned()
                 .unwrap_or(Value::Null);
             new.insert("conversation_language".into(), lang);
+            // The speech-to-text and the voice chosen on the screen, if any.
+            let language = s(&pref, "language").to_string();
+            let stt = pending(&seen, &body.choice.stt, "").map(String::from);
+            let tts = pending(&seen, &body.choice.tts, "").map(String::from);
+            for (kind, engine) in [("stt", &stt), ("tts", &tts)] {
+                if let Some(e) = engine
+                    && s(&pref, &format!("{kind}_engine")) != e
+                {
+                    new.extend(engine_fields(api, &seen, kind, e, &language));
+                }
+            }
+            if let Some(e) = stt {
+                st.applied_stt = e;
+            }
+            if let Some(e) = tts {
+                st.applied_tts = e;
+            }
+            st.pipeline_move = false;
             // The body hears its own wake word.
             new.insert("wake_word_entity".into(), Value::Null);
             new.insert("wake_word_id".into(), Value::Null);
@@ -1004,6 +1320,14 @@ pub fn repair(
             save(st);
             log::info!(event = "ha_setup"; "pipeline created");
         }
+    }
+    // The agents left behind by a move, now that the pipeline is on the new one.
+    retire_agents(api, &seen, st);
+    save(st);
+    // The memory jobs' AI task: the chosen AI's, while Home Assistant has none of the user's.
+    if !body.choice.ai.is_empty() && !st.ai_entry.is_empty() {
+        follow_ai_task(api, &seen, st);
+        save(st);
     }
     seen = read(api)?;
     progress(&rows_of(api, &seen, st, body, brain, &mut cache));
@@ -1082,6 +1406,52 @@ pub fn repair(
     let rows = rows_of(api, &seen, st, body, brain, &mut cache);
     progress(&rows);
     Ok(rows)
+}
+
+/// Removes the agents the body made under an AI it moved away from (errors are logged and
+/// retried at the next run; an agent whose AI is gone went with it).
+fn retire_agents(api: &mut dyn Api, seen: &Seen, st: &mut State) {
+    let mut keep = Vec::new();
+    for (entry, sub) in std::mem::take(&mut st.retired_agents) {
+        if seen.entry(&entry).is_none() || (entry == st.ai_entry && sub == st.agent_sub) {
+            continue;
+        }
+        match api.ws(
+            json!({"type": "config_entries/subentries/delete", "entry_id": entry,
+                            "subentry_id": sub}),
+        ) {
+            Ok(_) => log::info!(event = "ha_setup"; "the agent under the AI left behind removed"),
+            Err(e) => {
+                log::warn!(event = "ha_setup"; "the agent left behind: {e}");
+                keep.push((entry, sub));
+            }
+        }
+    }
+    st.retired_agents = keep;
+}
+
+/// The AI task entity of the chosen AI as Home Assistant's preferred one, when there is none
+/// or it is the one the body set before; a choice of the user is never changed.
+fn follow_ai_task(api: &mut dyn Api, seen: &Seen, st: &mut State) {
+    let Some(task) = seen.own(&st.ai_entry, "ai_task") else {
+        return;
+    };
+    let Ok(prefs) = api.ws(json!({"type": "ai_task/preferences/get"})) else {
+        return;
+    };
+    let now = s(&prefs, "gen_data_entity_id").to_string();
+    if now == task {
+        return;
+    }
+    if now.is_empty() || now == st.ai_task_set {
+        match api.ws(json!({"type": "ai_task/preferences/set", "gen_data_entity_id": task})) {
+            Ok(_) => {
+                log::info!(event = "ha_setup"; "AI task: {task}");
+                st.ai_task_set = task;
+            }
+            Err(e) => log::warn!(event = "ha_setup"; "AI task: {e}"),
+        }
+    }
 }
 
 /// A new agent "<name>" under the AI integration, the MCP tools attached.
@@ -1306,7 +1676,8 @@ fn reconfigure_agent(
 }
 
 /// "Unlink": the satellite's options back as they were, then what the body made removed (the
-/// pipeline, the agent, the MCP and the Wyoming integrations), newest first. Errors are logged
+/// pipeline, the agent and any left behind by a move, the preferred AI task it set, the MCP and
+/// the Wyoming integrations), newest first. Errors are logged
 /// and the rest goes on.
 pub fn unlink(api: &mut dyn Api, st: &State) -> Vec<String> {
     let mut errors = Vec::new();
@@ -1336,6 +1707,22 @@ pub fn unlink(api: &mut dyn Api, st: &State) -> Vec<String> {
                               "subentry_id": st.agent_sub}),
         );
         note("agent", r.map(|_| ()));
+    }
+    for (entry, sub) in &st.retired_agents {
+        let r = api.ws(
+            json!({"type": "config_entries/subentries/delete", "entry_id": entry,
+                              "subentry_id": sub}),
+        );
+        note("agent", r.map(|_| ()));
+    }
+    if !st.ai_task_set.is_empty() {
+        let now = api
+            .ws(json!({"type": "ai_task/preferences/get"}))
+            .map(|p| s(&p, "gen_data_entity_id").to_string());
+        if now.as_deref() == Ok(st.ai_task_set.as_str()) {
+            let r = api.ws(json!({"type": "ai_task/preferences/set", "gen_data_entity_id": null}));
+            note("ai_task", r.map(|_| ()));
+        }
     }
     for (ours, id, what) in [
         (st.mcp_ours, &st.mcp_entry, "mcp"),
@@ -1475,6 +1862,8 @@ pub enum SetupCmd {
     Repair,
     /// "Repair" on a row.
     RepairRow(String),
+    /// A choice on the screen: its kind ("ai", "stt", "tts") and what was picked; then a repair.
+    Choose(String, String),
     /// Remove what the body made, then the link.
     Unlink,
 }
@@ -1484,6 +1873,8 @@ pub enum SetupEvent {
     /// Working (true) or done (false).
     Busy(bool),
     Rows(Vec<Row>),
+    /// What may be chosen on the screen, and what is in use.
+    Choices(Choices),
     /// A run ended badly: the locale key of the reason, and its error.
     Failed(String),
     /// After a check by itself: something needs the user (a home card).
@@ -1505,6 +1896,8 @@ pub struct SetupConfig {
     pub brain: BrainFn,
     /// Home Assistant's addresses as the satellite's server lets them in.
     pub learned: Option<Learned>,
+    /// The body's settings: the choices made on the screen ([`Choice`]).
+    pub settings: crate::settings::Settings,
 }
 
 pub struct Setup {
@@ -1535,6 +1928,7 @@ fn body_of(cfg: &SetupConfig) -> Result<Body, String> {
         wyoming_port: cfg.wyoming_port,
         mcp_port: cfg.mcp_port,
         prompt: cfg.prompt.clone(),
+        choice: cfg.settings.assistant(),
     })
 }
 
@@ -1585,18 +1979,27 @@ fn run(cfg: SetupConfig, cmds: Receiver<SetupCmd>, ev: Sender<SetupEvent>, stop:
         let brain = cfg.brain;
         let t0 = Instant::now();
         let result = (|| -> Result<(), String> {
-            let body = body_of(&cfg)?;
+            let mut body = body_of(&cfg)?;
             let mut api = connect(&cfg)?;
             if cmd != SetupCmd::Unlink && learn_addresses(&mut api, &mut st, &cfg.learned) {
                 let _ = st.save(&cfg.state_file);
             }
             match &cmd {
                 SetupCmd::Check => {
-                    let rows = check(&mut api, &st, &body, brain);
+                    let (rows, choices) = check_all(&mut api, &st, &body, brain);
                     let _ = ev.send(SetupEvent::Attention(st.configured && attention(&rows)));
                     let _ = ev.send(SetupEvent::Rows(rows));
+                    if let Some(c) = choices {
+                        let _ = ev.send(SetupEvent::Choices(c));
+                    }
                 }
-                SetupCmd::Repair | SetupCmd::RepairRow(_) => {
+                SetupCmd::Repair | SetupCmd::RepairRow(_) | SetupCmd::Choose(..) => {
+                    if let SetupCmd::Choose(kind, id) = &cmd {
+                        choose(&mut api, &mut st, &mut body.choice, kind, id)?;
+                        cfg.settings.save_assistant(&body.choice);
+                        let _ = st.save(&cfg.state_file);
+                        log::info!(event = "ha_setup"; "chosen on the screen: {kind} {id}");
+                    }
                     let scope = match &cmd {
                         SetupCmd::RepairRow(id) => Scope::Row(id.clone()),
                         _ => Scope::Missing,
@@ -1626,6 +2029,9 @@ fn run(cfg: SetupConfig, cmds: Receiver<SetupCmd>, ev: Sender<SetupEvent>, stop:
                         if not_ok.is_empty() { "all fine".to_string() } else { format!("still to fix: {}", not_ok.join(", ")) }
                     );
                     let _ = ev.send(SetupEvent::Attention(attention(&rows)));
+                    if let Ok(c) = choices(&mut api, &st, &body) {
+                        let _ = ev.send(SetupEvent::Choices(c));
+                    }
                 }
                 SetupCmd::Unlink => {
                     let errors = unlink(&mut api, &st);
@@ -1684,9 +2090,12 @@ fn background(cfg: &SetupConfig, st: &mut State, at_start: bool, ev: &Sender<Set
         if at_start && let Err(e) = refresh_prompt(&mut api, st, &body) {
             log::warn!(event = "ha_setup"; "agent instructions: {e}");
         }
-        let rows = check(&mut api, st, &body, cfg.brain);
+        let (rows, choices) = check_all(&mut api, st, &body, cfg.brain);
         let _ = ev.send(SetupEvent::Attention(attention(&rows)));
         let _ = ev.send(SetupEvent::Rows(rows));
+        if let Some(c) = choices {
+            let _ = ev.send(SetupEvent::Choices(c));
+        }
         Ok(())
     })();
     if let Err(e) = r {
@@ -1750,6 +2159,7 @@ mod tests {
         next: u32,
         reloads: Vec<String>,
         writes: u32,
+        ai_task_pref: Option<String>,
     }
 
     impl FakeHa {
@@ -1806,6 +2216,54 @@ mod tests {
                 "supported_subentry_types": {"conversation": {}, "ai_task_data": {}}}),
             );
             id
+        }
+
+        /// An AI integration of any provider, with its own speech-to-text, voice and AI task
+        /// entities (`voice`) or only an AI task (`slug` names its entities).
+        fn add_provider(&mut self, domain: &str, title: &str, slug: &str, voice: bool) -> String {
+            let id = self.id();
+            self.entries
+                .push(json!({"entry_id": id, "domain": domain, "title": title,
+                "state": "loaded",
+                "supported_subentry_types": {"conversation": {}, "ai_task_data": {}}}));
+            let mut domains = vec!["ai_task"];
+            if voice {
+                domains.extend(["stt", "tts"]);
+            }
+            for d in domains {
+                let sub = self.id();
+                self.add_entity(
+                    &id,
+                    Some(&sub),
+                    &format!("{d}.{slug}"),
+                    &sub,
+                    json!({"attributes": {"friendly_name": format!("{title} {d}")}}),
+                );
+            }
+            id
+        }
+
+        fn alfred(&self) -> Value {
+            self.pipelines
+                .iter()
+                .find(|p| p["name"] == "Alfred")
+                .unwrap()
+                .clone()
+        }
+
+        /// The conversation entities under an AI.
+        fn agents(&self, ai: &str) -> Vec<String> {
+            self.registry
+                .iter()
+                .filter(|e| {
+                    e["config_entry_id"] == ai
+                        && e["entity_id"]
+                            .as_str()
+                            .unwrap()
+                            .starts_with("conversation.")
+                })
+                .map(|e| e["entity_id"].as_str().unwrap().to_string())
+                .collect()
         }
 
         fn pipeline_names(&self) -> Vec<Value> {
@@ -1913,7 +2371,24 @@ mod tests {
                 }
                 "config/entity_registry/list" => Value::Array(self.registry.clone()),
                 "get_states" => Value::Array(self.states.clone()),
-                "ai_task/preferences/get" => json!({"gen_data_entity_id": null}),
+                "ai_task/preferences/get" => json!({"gen_data_entity_id": self.ai_task_pref}),
+                "ai_task/preferences/set" => {
+                    self.writes += 1;
+                    self.ai_task_pref = msg["gen_data_entity_id"].as_str().map(String::from);
+                    json!({"gen_data_entity_id": self.ai_task_pref})
+                }
+                "stt/engine/list" | "tts/engine/list" => {
+                    let kind = &t[..3];
+                    assert_eq!(msg["language"], "it");
+                    let providers: Vec<Value> = self
+                        .states
+                        .iter()
+                        .map(|e| e["entity_id"].as_str().unwrap())
+                        .filter(|e| e.starts_with(&format!("{kind}.")))
+                        .map(|e| json!({"engine_id": e, "supported_languages": ["it-IT", "it-CH"]}))
+                        .collect();
+                    json!({"providers": providers})
+                }
                 "call_service" => {
                     self.writes += 1;
                     let e = msg["service_data"]["entity_id"].clone();
@@ -1939,7 +2414,14 @@ mod tests {
                         .entry(ai.into())
                         .or_default()
                         .retain(|x| x["subentry_id"] != sub);
+                    let gone: Vec<Value> = self
+                        .registry
+                        .iter()
+                        .filter(|e| e["config_subentry_id"] == sub)
+                        .map(|e| e["entity_id"].clone())
+                        .collect();
                     self.registry.retain(|e| e["config_subentry_id"] != sub);
+                    self.states.retain(|s| !gone.contains(&s["entity_id"]));
                     json!(null)
                 }
                 _ => return Err(format!("fake: {t}")),
@@ -2044,13 +2526,20 @@ mod tests {
                                     .or_default()
                                     .push(json!({"subentry_id": sub,
                                 "subentry_type": "conversation", "title": title, "data": body}));
-                                self.add_entity(
-                                    &ai,
-                                    Some(&sub),
-                                    "conversation.alfred",
-                                    &sub,
-                                    json!({}),
-                                );
+                                // Home Assistant's entity ids are unique: "_2" while the
+                                // first is still there.
+                                let mut entity = "conversation.alfred".to_string();
+                                for n in 2.. {
+                                    if !self
+                                        .states
+                                        .iter()
+                                        .any(|s| s["entity_id"] == entity.as_str())
+                                    {
+                                        break;
+                                    }
+                                    entity = format!("conversation.alfred_{n}");
+                                }
+                                self.add_entity(&ai, Some(&sub), &entity, &sub, json!({}));
                                 json!({"type": "create_entry"})
                             }
                         }
@@ -2068,6 +2557,7 @@ mod tests {
             wyoming_port: 10700,
             mcp_port: 10701,
             prompt: "Sei Alfred.".into(),
+            choice: Choice::default(),
         }
     }
 
@@ -2094,6 +2584,182 @@ mod tests {
 
     fn run(ha: &mut FakeHa, st: &mut State, file: &Path, scope: Scope) -> Vec<Row> {
         repair(ha, st, file, &body(), brain, scope, &mut |_| {}).unwrap()
+    }
+
+    /// A choice on the screen, as the thread does it: chosen, then a repair.
+    fn pick(ha: &mut FakeHa, st: &mut State, file: &Path, b: &mut Body, kind: &str, id: &str) {
+        choose(ha, st, &mut b.choice, kind, id).unwrap();
+        repair(ha, st, file, b, brain, Scope::Missing, &mut |_| {}).unwrap();
+    }
+
+    #[test]
+    fn the_ai_the_speech_to_text_and_the_voice_are_the_users_choice() {
+        let mut ha = FakeHa::new();
+        let gemini = ha.add_provider(
+            "google_generative_ai_conversation",
+            "Google Gemini",
+            "gemini",
+            true,
+        );
+        let openai = ha.add_provider("openai_conversation", "OpenAI", "openai", true);
+        let claude = ha.add_provider("anthropic", "Claude", "claude", false);
+        let file = tmp("choice");
+        let mut st = State::default();
+        let mut b = body();
+        // Nothing chosen: as before, the first AI and the preferred pipeline's voice.
+        repair(
+            &mut ha,
+            &mut st,
+            &file,
+            &b,
+            brain,
+            Scope::Missing,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(st.ai_entry, gemini);
+        assert_eq!(ha.alfred()["stt_engine"], "stt.cloud");
+        assert_eq!(ha.ai_task_pref, None, "no choice, nothing touched");
+        let c = choices(&mut ha, &st, &b).unwrap();
+        let ids = |v: &[Pick]| v.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&c.ai), [gemini.clone(), openai.clone(), claude.clone()]);
+        assert_eq!(
+            ids(&c.stt),
+            ["stt.gemini", "stt.openai", "stt.cloud"],
+            "every stt.* Home Assistant has, by name"
+        );
+        assert_eq!(c.current.ai, gemini);
+        assert_eq!(c.current.stt, "stt.cloud");
+        assert_eq!(c.current_name("ai"), "Google Gemini");
+
+        // OpenAI: the agent moves, the pipeline follows with OpenAI's own stt and tts.
+        pick(&mut ha, &mut st, &file, &mut b, "ai", &openai);
+        assert_eq!(
+            b.choice,
+            Choice {
+                ai: openai.clone(),
+                stt: "stt.openai".into(),
+                tts: "tts.openai".into()
+            }
+        );
+        assert_eq!(st.ai_entry, openai);
+        assert!(ha.agents(&gemini).is_empty(), "the old agent is removed");
+        assert!(ha.subs[&gemini].is_empty());
+        assert!(st.retired_agents.is_empty());
+        let agent = ha.agents(&openai);
+        assert_eq!(agent.len(), 1);
+        let p = ha.alfred();
+        assert_eq!(p["conversation_engine"], agent[0].as_str());
+        assert_eq!(
+            (p["stt_engine"].as_str(), p["stt_language"].as_str()),
+            (Some("stt.openai"), Some("it-IT"))
+        );
+        assert_eq!(p["tts_engine"], "tts.openai");
+        assert_eq!(p["tts_voice"], Value::Null, "the engine's default voice");
+        assert_eq!(p["prefer_local_intents"], false);
+        assert_eq!(ha.ai_task_pref.as_deref(), Some("ai_task.openai"));
+        let sub = &ha.subs[&openai][0];
+        assert_eq!(sub["data"]["prompt"], "Sei Alfred.");
+        assert_eq!(
+            sub["data"]["llm_hass_api"],
+            json!([format!("mcp-{}", st.mcp_entry)])
+        );
+        let rows = check(&mut ha, &st, &b, brain);
+        for id in ["ai", "agent", "pipeline", "ai_task"] {
+            assert_eq!(level(&rows, id).0, Level::Ok, "{id}: {rows:?}");
+        }
+        assert_eq!(State::load(&file), st);
+
+        // An AI without voices of its own: the agent moves, stt and tts stay.
+        pick(&mut ha, &mut st, &file, &mut b, "ai", &claude);
+        assert!(ha.agents(&openai).is_empty());
+        let p = ha.alfred();
+        assert_eq!(p["conversation_engine"], ha.agents(&claude)[0].as_str());
+        assert_eq!(p["stt_engine"], "stt.openai");
+        assert_eq!(p["tts_engine"], "tts.openai");
+        assert_eq!(
+            ha.ai_task_pref.as_deref(),
+            Some("ai_task.claude"),
+            "set by the body: it follows"
+        );
+
+        // Back to Gemini.
+        pick(&mut ha, &mut st, &file, &mut b, "ai", &gemini);
+        assert!(ha.agents(&claude).is_empty());
+        let p = ha.alfred();
+        assert_eq!(p["conversation_engine"], ha.agents(&gemini)[0].as_str());
+        assert_eq!(p["stt_engine"], "stt.gemini");
+
+        // The preferred pipeline's engine: its own language and voice.
+        pick(&mut ha, &mut st, &file, &mut b, "tts", "tts.cloud");
+        let p = ha.alfred();
+        assert_eq!(
+            (p["tts_engine"].as_str(), p["tts_voice"].as_str()),
+            (Some("tts.cloud"), Some("v"))
+        );
+        assert_eq!(p["stt_engine"], "stt.gemini", "only the voice changed");
+
+        // A change made later in Home Assistant stays.
+        let mut changed = ha.alfred();
+        changed["stt_engine"] = json!("stt.cloud");
+        changed["type"] = json!("assist_pipeline/pipeline/update");
+        changed["pipeline_id"] = changed["id"].clone();
+        ha.ws(changed).unwrap();
+        repair(
+            &mut ha,
+            &mut st,
+            &file,
+            &b,
+            brain,
+            Scope::Missing,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(ha.alfred()["stt_engine"], "stt.cloud");
+
+        // The user's own AI task stays.
+        ha.ai_task_pref = Some("ai_task.openai".into());
+        pick(&mut ha, &mut st, &file, &mut b, "ai", &claude);
+        assert_eq!(ha.ai_task_pref.as_deref(), Some("ai_task.openai"));
+        pick(&mut ha, &mut st, &file, &mut b, "ai", &gemini);
+
+        // Unlink: the user's three AIs, nothing else.
+        ha.ai_task_pref = Some(st.ai_task_set.clone());
+        assert!(unlink(&mut ha, &st).is_empty());
+        assert_eq!(ha.entries.len(), 3);
+        assert!(ha.subs.values().all(|v| v.is_empty()));
+        assert_eq!(ha.pipelines.len(), 1);
+        assert_eq!(ha.ai_task_pref, None);
+    }
+
+    #[test]
+    fn a_choice_made_before_the_pipeline_exists() {
+        let mut ha = FakeHa::new();
+        ha.add_provider("anthropic", "Claude", "claude", false);
+        let openai = ha.add_provider("openai_conversation", "OpenAI", "openai", true);
+        let file = tmp("choice-first");
+        let mut st = State::default();
+        let mut b = body();
+        choose(&mut ha, &mut st, &mut b.choice, "ai", &openai).unwrap();
+        repair(
+            &mut ha,
+            &mut st,
+            &file,
+            &b,
+            brain,
+            Scope::Missing,
+            &mut |_| {},
+        )
+        .unwrap();
+        let p = ha.alfred();
+        assert_eq!(p["stt_engine"], "stt.openai");
+        assert_eq!(p["tts_engine"], "tts.openai");
+        assert_eq!(p["conversation_engine"], ha.agents(&openai)[0].as_str());
+        assert_eq!(st.applied_stt, "stt.openai");
+        // A choice that is gone from Home Assistant: the agent's AI, as before.
+        b.choice.ai = "gone".into();
+        let rows = check(&mut ha, &st, &b, brain);
+        assert_eq!(level(&rows, "agent").0, Level::Ok);
     }
 
     #[test]

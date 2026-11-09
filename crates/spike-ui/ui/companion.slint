@@ -27,7 +27,7 @@ import {
     DoneCard
 } from "design/components.slint";
 import { CasaScreen, CasaBridge } from "casa.slint";
-import { WeatherPage, ListsPage, EventRow, ForecastRow, ChoiceRow } from "ha-pages.slint";
+import { WeatherPage, ListsPage, PickPage, EventRow, ForecastRow, ChoiceRow, PickRow } from "ha-pages.slint";
 export { ForecastRow, ChoiceRow } from "ha-pages.slint";
 export { CasaBridge, CasaMenuRow } from "casa.slint";
 export { Feedback } from "design/components.slint";
@@ -652,6 +652,11 @@ export component CompanionWindow inherits Window {
     in property <bool> ha-done: false;
     in property <bool> ha-configured: false;
     in property <bool> ha-linked: false;
+    // The choices of the Home Assistant page (the AI, speech-to-text, voice) and the open one.
+    in property <[PickRow]> ha-picks: [];
+    in property <string> ha-pick-title: "";
+    in property <string> ha-pick-hint: "";
+    in property <[ChoiceRow]> ha-pick-rows: [];
     in property <string> tile-memories: "";
     in property <string> tile-reminders: "";
     // Settings.
@@ -767,6 +772,9 @@ export component CompanionWindow inherits Window {
     callback ha-repair(string);
     callback ha-unlink();
     callback ha-ok();
+    // A choice of the Home Assistant page opened (its kind), one picked (its id).
+    callback ha-pick(string);
+    callback ha-picked(string);
     // Memories: delete one fact, forget everything (confirmed), cancel a reminder.
     callback memory-delete(int);
     callback memories-forget();
@@ -2167,6 +2175,21 @@ export component CompanionWindow inherits Window {
                         overflow: elide;
                     }
                 }
+                if root.ha-picks.length > 0: Group {
+                    height: root.ha-picks.length * 76px;
+                    for r[i] in root.ha-picks: Row {
+                        y: i * 76px;
+                        width: parent.width;
+                        first: i == 0;
+                        label: r.label;
+                        value: r.value;
+                        clicked => {
+                            if !root.ha-busy {
+                                root.ha-pick(r.id);
+                            }
+                        }
+                    }
+                }
                 for r in root.ha-rows: HaCheck {
                     check: r;
                     repair-label: root.t.ha-repair;
@@ -2213,6 +2236,23 @@ export component CompanionWindow inherits Window {
                 } else if !root.ha-busy {
                     root.ha-check();
                 }
+            }
+        }
+    }
+
+    // ---- Home Assistant → one choice (the AI, speech-to-text, voice): a tap picks, back to the page.
+    if root.desk && root.desk-page == "ha-pick": Rectangle {
+        PickPage {
+            title: root.ha-pick-title;
+            clock: root.clock;
+            hint: root.ha-pick-hint;
+            rows: root.ha-pick-rows;
+            back => {
+                root.page = "ha";
+            }
+            picked(id) => {
+                root.page = "ha";
+                root.ha-picked(id);
             }
         }
     }

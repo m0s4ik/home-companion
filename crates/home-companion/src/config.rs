@@ -816,6 +816,7 @@ impl Config {
             prompt: crate::ha::setup::agent_prompt(character, &self.character.language),
             brain: crate::brain_link::brain_info,
             learned: None,
+            settings: crate::settings::Settings::in_dir(&self.state_dir()),
         })
     }
 

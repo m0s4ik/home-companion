@@ -147,6 +147,26 @@ fn word(t: &Locale, key: &str, name: &str) -> String {
     t.text(key).replace("{name}", name)
 }
 
+/// The choice rows of the Home Assistant page: (kind, label, the one in use) for each kind with
+/// something to choose between (two options or more); "—" when none is in use.
+fn ha_picks(
+    c: &crate::ha::setup::Choices,
+    text: impl Fn(&str) -> String,
+) -> Vec<(String, String, String)> {
+    crate::ha::setup::CHOICES
+        .iter()
+        .filter(|k| c.of(k).len() >= 2)
+        .map(|k| {
+            let now = c.current_name(k);
+            (
+                k.to_string(),
+                text(&format!("ha_choice_{k}")),
+                if now.is_empty() { "—".into() } else { now },
+            )
+        })
+        .collect()
+}
+
 /// The body's words of a language (locales/<code>.toml).
 pub fn set_body_text<S: Screen>(app: &S, t: &Locale, name: &str) {
     app.set_words(&|k| word(t, k, name));
@@ -321,7 +341,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 56] = [
+pub const DEMO_STATES: [&str; 57] = [
     "home",
     "cards",
     "cards-setup",
@@ -345,6 +365,7 @@ pub const DEMO_STATES: [&str; 56] = [
     "ha",
     "ha-working",
     "ha-done",
+    "ha-pick",
     "memories",
     "shopping",
     "reminders",
@@ -600,6 +621,7 @@ impl Demo {
                 ha: 2,
                 ..page("ha")
             },
+            "ha-pick" => page("ha-pick"),
             "suspend" => Demo {
                 dialog: "suspend",
                 ..page("settings")
@@ -908,6 +930,9 @@ struct HaPage {
     asked: bool,
     /// Something needs the user (checked by itself): a line on Settings.
     attention: bool,
+    /// What may be chosen (the AI, speech-to-text, voice) and the choice open on screen.
+    choices: crate::ha::setup::Choices,
+    picking: String,
     /// `--state ha`: set up already (no state file).
     demo_configured: bool,
 }
@@ -1569,6 +1594,25 @@ impl<S: Screen> Ui<S> {
         self.screen.on_ha_repair(move |id| {
             if let Some(ui) = ui.upgrade() {
                 ui.ha_send(crate::ha::setup::SetupCmd::RepairRow(id), true);
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_ha_pick(move |kind| {
+            if let Some(ui) = ui.upgrade() {
+                ui.ha_page.borrow_mut().picking = kind;
+                ui.render_ha();
+                ui.screen.set_page("ha-pick");
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_ha_picked(move |id| {
+            if let Some(ui) = ui.upgrade() {
+                let kind = std::mem::take(&mut ui.ha_page.borrow_mut().picking);
+                let same = ui.ha_page.borrow().choices.current_of(&kind) == id;
+                if !kind.is_empty() && !same {
+                    log::info!(event = "ha_setup"; "{kind} chosen on the screen: {id}");
+                    ui.ha_send(crate::ha::setup::SetupCmd::Choose(kind, id), true);
+                }
             }
         });
         let ui = Rc::downgrade(self);
@@ -2474,7 +2518,7 @@ impl<S: Screen> Ui<S> {
                     .replace("{n}", &items.len().to_string()),
             );
         }
-        if d.page == "ha" && d.ha <= 2 {
+        if (d.page == "ha" && d.ha <= 2) || d.page == "ha-pick" {
             use crate::ha::setup::{Level, Row};
             let row = |id: &str, level, what: &str, args: &[(&str, &str)], repair| Row {
                 id: id.into(),
@@ -2498,25 +2542,59 @@ impl<S: Screen> Ui<S> {
                     false,
                 ),
                 row("mcp", Level::Ok, "ok", &[("time", "14:02")], false),
-                row("ai", Level::Ok, "ok", &[("ai", "Google Gemini")], false),
+                row("ai", Level::Ok, "ok", &[("ai", "OpenAI")], false),
                 row(
                     "agent",
                     Level::Ok,
                     "ok",
-                    &[("agent", "conversation.alfred"), ("ai", "Google Gemini")],
+                    &[("agent", "conversation.alfred"), ("ai", "OpenAI")],
                     false,
                 ),
                 row(
                     "pipeline",
                     Level::Ok,
                     "ok",
-                    &[("stt", "Google AI STT"), ("tts", "Google AI TTS")],
+                    &[("stt", "OpenAI STT"), ("tts", "OpenAI TTS")],
                     false,
                 ),
                 row("satellite", Level::Warn, "changed_preferred", &[], true),
                 row("vad", Level::Ok, "ok", &[], false),
                 row("ai_task", Level::Skipped, "none", &[], false),
             ];
+            // Three AIs, the speech-to-text and the voices Home Assistant has (sample data).
+            let picks = |v: &[(&str, &str)]| -> Vec<crate::ha::setup::Pick> {
+                v.iter()
+                    .map(|(id, name)| crate::ha::setup::Pick {
+                        id: id.to_string(),
+                        name: name.to_string(),
+                    })
+                    .collect()
+            };
+            p.choices = crate::ha::setup::Choices {
+                ai: picks(&[
+                    ("gemini", "Google Gemini"),
+                    ("openai", "OpenAI"),
+                    ("claude", "Claude"),
+                ]),
+                stt: picks(&[
+                    ("stt.google_ai_stt", "Google AI STT"),
+                    ("stt.home_assistant_cloud", "Home Assistant Cloud"),
+                    ("stt.openai_stt", "OpenAI STT"),
+                ]),
+                tts: picks(&[
+                    ("tts.google_ai_tts", "Google AI TTS"),
+                    ("tts.home_assistant_cloud", "Home Assistant Cloud"),
+                    ("tts.openai_tts", "OpenAI TTS"),
+                ]),
+                current: crate::ha::setup::Choice {
+                    ai: "openai".into(),
+                    stt: "stt.openai_stt".into(),
+                    tts: "tts.openai_tts".into(),
+                },
+            };
+            if d.page == "ha-pick" {
+                p.picking = "ai".into();
+            }
             if d.ha == 1 {
                 p.busy = true;
             }
@@ -3885,12 +3963,30 @@ impl<S: Screen> Ui<S> {
         } else {
             p.status.clone()
         };
+        let picks = ha_picks(&p.choices, |k| word(&l, k, name));
+        if !p.picking.is_empty() {
+            let rows: Vec<(String, String, bool)> = p
+                .choices
+                .of(&p.picking)
+                .iter()
+                .map(|o| {
+                    let on = o.id == p.choices.current_of(&p.picking);
+                    (o.id.clone(), o.name.clone(), on)
+                })
+                .collect();
+            self.screen.set_ha_pick(
+                &word(&l, &format!("ha_choice_{}", p.picking), name),
+                &word(&l, &format!("ha_choice_{}_hint", p.picking), name),
+                &rows,
+            );
+        }
         self.screen.set_ha_page(&super::HaPageView {
             rows: lines,
             status,
             busy: p.busy,
             configured: p.demo_configured || self.ha_configured(),
             done: p.done && !p.busy,
+            picks,
         });
     }
 
@@ -3925,6 +4021,7 @@ impl<S: Screen> Ui<S> {
                     }
                 }
                 SetupEvent::Rows(rows) => p.rows = rows,
+                SetupEvent::Choices(c) => p.choices = c,
                 SetupEvent::Failed(why) => {
                     let (key, err) = why.split_once('\u{1f}').unwrap_or((why.as_str(), ""));
                     p.status = word(&self.locale.borrow(), key, &self.character.name)
@@ -4741,6 +4838,43 @@ fn load_cover(path: &std::path::Path) -> Option<Image> {
 mod tests {
     use super::*;
     use crate::ha::discover::{Found, Outcome};
+
+    #[test]
+    fn the_home_assistant_page_offers_what_has_more_than_one_option() {
+        use crate::ha::setup::{Choice, Choices, Pick};
+        let pick = |id: &str, name: &str| Pick {
+            id: id.into(),
+            name: name.into(),
+        };
+        let c = Choices {
+            ai: vec![pick("a", "Gemini"), pick("b", "Claude")],
+            stt: vec![pick("stt.one", "Cloud")],
+            tts: vec![pick("tts.one", "Cloud"), pick("tts.two", "Piper")],
+            current: Choice {
+                ai: "b".into(),
+                stt: "stt.one".into(),
+                tts: String::new(),
+            },
+        };
+        let rows = ha_picks(&c, |k| format!("[{k}]"));
+        assert_eq!(
+            rows,
+            [
+                ("ai".into(), "[ha_choice_ai]".into(), "Claude".into()),
+                ("tts".into(), "[ha_choice_tts]".into(), "—".into()),
+            ]
+        );
+        assert!(ha_picks(&Choices::default(), |k| k.into()).is_empty());
+        let dir = locale::repo_locales();
+        for lang in ["it", "en"] {
+            let l = locale::load(&dir, lang).unwrap();
+            for k in crate::ha::setup::CHOICES {
+                for key in [format!("ha_choice_{k}"), format!("ha_choice_{k}_hint")] {
+                    assert_ne!(l.text(&key), key, "{lang}");
+                }
+            }
+        }
+    }
 
     /// The first-start pages' controls on a headless window: each one does what it says.
     #[test]

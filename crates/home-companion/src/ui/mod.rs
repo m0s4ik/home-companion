@@ -106,6 +106,8 @@ pub struct HaPageView {
     pub configured: bool,
     /// Ended well after the user asked: "All set" and an OK.
     pub done: bool,
+    /// The choices (kind, label, the one in use): the AI, speech-to-text, voice.
+    pub picks: Vec<(String, String, String)>,
 }
 
 /// What plays (AirPlay later; nothing yet).
@@ -294,6 +296,11 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn on_ha_check(&self, f: impl Fn() + 'static);
     fn on_ha_repair(&self, f: impl Fn(String) + 'static);
     fn on_ha_unlink(&self, f: impl Fn() + 'static);
+    /// A choice of the Home Assistant page: its title, a line, (id, name, in use) of each option.
+    fn set_ha_pick(&self, title: &str, hint: &str, rows: &[(String, String, bool)]);
+    /// A choice opened (its kind) / one picked (its id).
+    fn on_ha_pick(&self, f: impl Fn(String) + 'static);
+    fn on_ha_picked(&self, f: impl Fn(String) + 'static);
     /// The OK after "All set".
     fn on_ha_ok(&self, f: impl Fn() + 'static);
     /// v0.2: a house command went through (the "done" card: shown, its line, with Undo).
@@ -1088,6 +1095,35 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_ha_busy(self, v.busy);
                 $m::CompanionWindow::set_ha_configured(self, v.configured);
                 $m::CompanionWindow::set_ha_done(self, v.done);
+                let picks: Vec<$m::PickRow> = v
+                    .picks
+                    .iter()
+                    .map(|(id, label, value)| $m::PickRow {
+                        id: id.as_str().into(),
+                        label: label.as_str().into(),
+                        value: value.as_str().into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_ha_picks(self, model!(picks));
+            }
+            fn set_ha_pick(&self, title: &str, hint: &str, rows: &[(String, String, bool)]) {
+                let v: Vec<$m::ChoiceRow> = rows
+                    .iter()
+                    .map(|(i, n, on)| $m::ChoiceRow {
+                        id: i.as_str().into(),
+                        name: n.as_str().into(),
+                        on: *on,
+                    })
+                    .collect();
+                $m::CompanionWindow::set_ha_pick_title(self, title.into());
+                $m::CompanionWindow::set_ha_pick_hint(self, hint.into());
+                $m::CompanionWindow::set_ha_pick_rows(self, model!(v));
+            }
+            fn on_ha_pick(&self, f: impl Fn(String) + 'static) {
+                $m::CompanionWindow::on_ha_pick(self, move |id| f(id.into()))
+            }
+            fn on_ha_picked(&self, f: impl Fn(String) + 'static) {
+                $m::CompanionWindow::on_ha_picked(self, move |id| f(id.into()))
             }
             fn set_ha_linked(&self, linked: bool) {
                 $m::CompanionWindow::set_ha_linked(self, linked)

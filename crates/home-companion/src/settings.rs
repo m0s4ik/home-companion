@@ -6,7 +6,8 @@
 //! `[casa_home_button] edge = "right", offset = 720` (where the user dragged the home button
 //! of "Casa": an edge and the offset along it, in the view's logical pixels),
 //! `ha_url = "http://ha.example:8123"` (Home Assistant picked on the first-start page
-//! when the configuration has no `[home_assistant] url`).
+//! when the configuration has no `[home_assistant] url`), `[assistant]` (the AI, speech-to-text
+//! and voice chosen on the Home Assistant page).
 
 use std::path::{Path, PathBuf};
 
@@ -169,6 +170,31 @@ impl Settings {
     fn save_string_list(&self, key: &str, list: &[String]) {
         let v: Vec<toml::Value> = list.iter().map(|s| s.as_str().into()).collect();
         self.save_logged(key, v.into());
+    }
+
+    /// Home Assistant page → the AI, the speech-to-text and the voice chosen on the screen
+    /// (`[assistant] ai = <config entry>, stt = "stt.…", tts = "tts.…"`); empty = not chosen.
+    pub fn assistant(&self) -> crate::ha::setup::Choice {
+        let t = self
+            .table()
+            .and_then(|t| t.get("assistant")?.as_table().cloned())
+            .unwrap_or_default();
+        let get = |k: &str| t.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        crate::ha::setup::Choice {
+            ai: get("ai"),
+            stt: get("stt"),
+            tts: get("tts"),
+        }
+    }
+
+    pub fn save_assistant(&self, c: &crate::ha::setup::Choice) {
+        let mut t = toml::Table::new();
+        for (k, v) in [("ai", &c.ai), ("stt", &c.stt), ("tts", &c.tts)] {
+            if !v.is_empty() {
+                t.insert(k.into(), v.as_str().into());
+            }
+        }
+        self.save_logged("assistant", t.into());
     }
 
     /// "Più tardi" on the setup page: it does not come back by itself at start.
@@ -336,6 +362,15 @@ mod tests {
         assert_eq!(s.calendars(), ["calendar.family"]);
         s.save_lists(&[]);
         assert!(s.lists().is_empty());
+        assert_eq!(s.assistant(), Default::default());
+        let c = crate::ha::setup::Choice {
+            ai: "01ENTRY".into(),
+            stt: "stt.example".into(),
+            tts: String::new(),
+        };
+        s.save_assistant(&c);
+        assert_eq!(s.assistant(), c);
+        assert_eq!(s.lists(), Vec::<String>::new());
         assert_eq!(s.calendars(), ["calendar.family"]);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -28,6 +28,13 @@ export struct ChoiceRow {
     on: bool,
 }
 
+// A choice of the Home Assistant page ("ai", "stt", "tts"): what, and the one in use.
+export struct PickRow {
+    id: string,
+    label: string,
+    value: string,
+}
+
 component WeatherGlyph inherits Icon {
     in property <string> kind;
     width: 32px;
@@ -261,6 +268,57 @@ export component ListsPage inherits Rectangle {
                     on: r.on;
                     toggled(v) => {
                         root.toggled(r.id);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// One choice of the Home Assistant page: what Home Assistant has (its AIs, its speech-to-text,
+// its voices), the one in use with a check; a tap picks one.
+export component PickPage inherits Rectangle {
+    in property <string> title;
+    in property <string> clock;
+    in property <string> hint;
+    in property <[ChoiceRow]> rows;
+    callback back();
+    callback picked(string);
+    PageHeader {
+        x: Grid.col-x;
+        y: Grid.header-y;
+        title: root.title;
+        clock: root.clock;
+        back => {
+            root.back();
+        }
+    }
+    Flickable {
+        x: Grid.col-x;
+        y: Grid.page-y;
+        width: Grid.col-width;
+        height: Grid.page-height;
+        content-height: max(self.height, pick-col.preferred-height);
+        pick-col := VerticalLayout {
+            alignment: start;
+            spacing: 8px;
+            Text {
+                text: root.hint;
+                font-size: 20px;
+                color: Theme.text-3;
+                wrap: word-wrap;
+            }
+            Group {
+                height: root.rows.length * 76px;
+                for r[i] in root.rows: Row {
+                    y: i * 76px;
+                    width: parent.width;
+                    first: i == 0;
+                    label: r.name;
+                    kind: "check";
+                    on: r.on;
+                    clicked => {
+                        root.picked(r.id);
                     }
                 }
             }
