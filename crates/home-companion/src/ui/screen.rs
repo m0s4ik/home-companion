@@ -4185,6 +4185,8 @@ impl<S: Screen> Ui<S> {
         if settings {
             self.refresh_settings();
             self.refresh_tiles();
+            // The home's "to fix" card follows the attention at once.
+            self.refresh_home();
         }
     }
 
