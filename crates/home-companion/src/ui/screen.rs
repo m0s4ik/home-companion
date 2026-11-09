@@ -934,6 +934,9 @@ struct HaPage {
     /// What may be chosen (the AI, speech-to-text, voice) and the choice open on screen.
     choices: crate::ha::setup::Choices,
     picking: String,
+    /// What the setup is doing right now, for the pop-up while it works ("Passo a ChatGPT…",
+    /// then each row as it is done).
+    step: String,
     /// `--state ha`: set up already (no state file).
     demo_configured: bool,
 }
@@ -1614,6 +1617,18 @@ impl<S: Screen> Ui<S> {
                 let same = ui.ha_page.borrow().choices.current_of(&kind) == id;
                 if !kind.is_empty() && !same {
                     log::info!(event = "ha_setup"; "{kind} chosen on the screen: {id}");
+                    {
+                        let mut p = ui.ha_page.borrow_mut();
+                        let name = p
+                            .choices
+                            .of(&kind)
+                            .iter()
+                            .find(|o| o.id == id)
+                            .map(|o| o.name.clone())
+                            .unwrap_or_default();
+                        p.step = word(&ui.locale.borrow(), "ha_step_switch", &ui.character.name)
+                            .replace("{what}", &name);
+                    }
                     ui.ha_send(crate::ha::setup::SetupCmd::Choose(kind, id), true);
                 }
             }
@@ -4007,6 +4022,7 @@ impl<S: Screen> Ui<S> {
             configured: p.demo_configured || self.ha_configured(),
             done: p.done && !p.busy,
             picks,
+            step: p.step.clone(),
         });
     }
 
@@ -4028,6 +4044,9 @@ impl<S: Screen> Ui<S> {
                 SetupEvent::Busy(b) => {
                     let was = p.busy;
                     p.busy = b;
+                    if !b {
+                        p.step.clear();
+                    }
                     if was && !b && p.asked {
                         p.asked = false;
                         let fine = !p.rows.iter().any(|r| r.level == Level::Bad);
@@ -4040,7 +4059,21 @@ impl<S: Screen> Ui<S> {
                         }
                     }
                 }
-                SetupEvent::Rows(rows) => p.rows = rows,
+                SetupEvent::Rows(rows) => {
+                    // While it works: the row that just changed says what it did.
+                    if p.busy {
+                        if let Some(r) = rows.iter().find(|r| !p.rows.contains(r)) {
+                            let l = self.locale.borrow();
+                            let name = &self.character.name;
+                            p.step = format!(
+                                "{} · {}",
+                                word(&l, &format!("ha_row_{}", r.id), name),
+                                r.detail(|k| word(&l, k, name))
+                            );
+                        }
+                    }
+                    p.rows = rows;
+                }
                 SetupEvent::Choices(c) => p.choices = c,
                 SetupEvent::Failed(why) => {
                     let (key, err) = why.split_once('\u{1f}').unwrap_or((why.as_str(), ""));

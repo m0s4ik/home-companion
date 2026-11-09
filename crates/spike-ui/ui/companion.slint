@@ -219,6 +219,8 @@ export struct Words {
     ha_unlink: string,
     ha_unlink_question: string,
     ha_working_short: string,
+    ha_working: string,
+    ha_working_wait: string,
     mirror: string,
     mirror_back: string,
     mirror_waiting: string,
@@ -648,6 +650,8 @@ export component CompanionWindow inherits Window {
     in property <[HaRow]> ha-rows: [];
     in property <string> ha-line: "";
     in property <bool> ha-busy: false;
+    // What the setup does right now (the pop-up while busy).
+    in property <string> ha-step: "";
     // The run asked on the screen ended well: "All set" and an OK to close it.
     in property <bool> ha-done: false;
     in property <bool> ha-configured: false;
@@ -3851,6 +3855,16 @@ export component CompanionWindow inherits Window {
         closed => {
             root.done-ok-clicked();
         }
+    }
+
+    // ---- Home Assistant's setup at work (after a choice, Configure, Check and repair): the
+    // pop-up with a turning icon over the page, nothing to touch until it is done.
+    if root.ha-busy && root.desk && (root.desk-page == "ha" || root.desk-page == "ha-pick"): Dialog {
+        icon: Icons.refresh-44;
+        spinning: true;
+        busy-bar: true;
+        title: root.t.ha-working;
+        text: root.ha-step != "" ? root.ha-step : root.t.ha-working-wait;
     }
 
     // ---- A house command waits for a yes (covers, valves): the question, No and Yes, the time

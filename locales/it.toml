@@ -244,6 +244,8 @@ ha_unlink_question = "Scollego {name}? Tolgo da Home Assistant quello che ho agg
 ha_working = "Sto lavorando su Home Assistant…"
 ha_ready = "Tutto pronto: {name} è configurato."
 ha_working_short = "In corso…"
+ha_working_wait = "Ci vuole qualche secondo."
+ha_step_switch = "Passo a {what}…"
 # Screen mirroring (AirPlay from a phone or a tablet): the page's title, the home card's hint, the
 # line before the first picture arrives.
 mirror = "Duplicazione schermo"

@@ -246,6 +246,8 @@ ha_unlink_question = "Unlink {name}? What I added to Home Assistant goes, and th
 ha_working = "Working on Home Assistant…"
 ha_ready = "All set: {name} is set up."
 ha_working_short = "Working…"
+ha_working_wait = "It takes a few seconds."
+ha_step_switch = "Switching to {what}…"
 # Screen mirroring (AirPlay from a phone or a tablet): the page's title, the home card's hint, the
 # line before the first picture arrives.
 mirror = "Screen mirroring"

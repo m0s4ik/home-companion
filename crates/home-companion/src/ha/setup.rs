@@ -1017,6 +1017,49 @@ fn flow(api: &mut dyn Api, handler: &str, data: Value) -> Result<Value, String> 
     Ok(r)
 }
 
+/// The other pipelines named as the body's: renamed "<name> (backup)" ("(backup 2)"…). Their new
+/// names.
+fn rename_namesakes(api: &mut dyn Api, seen: &Seen, st: &State) -> Result<Vec<String>, String> {
+    let Some(ours) = seen.pipeline(&st.pipeline) else {
+        return Ok(Vec::new());
+    };
+    let name = s(ours, "name").to_string();
+    let mut taken: Vec<String> = seen
+        .pipelines
+        .iter()
+        .map(|p| s(p, "name").to_string())
+        .collect();
+    let mut out = Vec::new();
+    for p in seen
+        .pipelines
+        .iter()
+        .filter(|p| s(p, "id") != st.pipeline && s(p, "name") == name)
+    {
+        let new_name = (1..)
+            .map(|i| {
+                if i == 1 {
+                    format!("{name} (backup)")
+                } else {
+                    format!("{name} (backup {i})")
+                }
+            })
+            .find(|n| !taken.contains(n))
+            .unwrap_or_default();
+        let mut upd = p.clone();
+        let o = upd.as_object_mut().ok_or("pipeline")?;
+        let id = s(p, "id").to_string();
+        o.remove("id");
+        o.insert("name".into(), json!(new_name));
+        o.insert("type".into(), json!("assist_pipeline/pipeline/update"));
+        o.insert("pipeline_id".into(), json!(id));
+        api.ws(upd)?;
+        log::info!(event = "ha_setup"; "pipeline {id} had the body's name: now {new_name:?}");
+        taken.push(new_name.clone());
+        out.push(new_name);
+    }
+    Ok(out)
+}
+
 fn select(api: &mut dyn Api, entity: &str, option: &str) -> Result<(), String> {
     api.ws(
         json!({"type": "call_service", "domain": "select", "service": "select_option",
@@ -1330,6 +1373,13 @@ pub fn repair(
         save(st);
     }
     seen = read(api)?;
+    // Another pipeline with the body's pipeline's name (an older setup, a copy): the satellite's
+    // select names pipelines, so Home Assistant would take the first of the two. Renamed
+    // "<name> (backup)", nothing deleted; a satellite left on it comes back to the body's.
+    let renamed = rename_namesakes(api, &seen, st)?;
+    if !renamed.is_empty() {
+        seen = read(api)?;
+    }
     progress(&rows_of(api, &seen, st, body, brain, &mut cache));
 
     // 5. The satellite's selects: set the first time; afterwards the user's choice.
@@ -1356,7 +1406,8 @@ pub fn repair(
         seen = read(api)?;
         if let Some(sel) = pipe_sel {
             let first = st.satellite_select.is_empty();
-            if (first || forced("satellite")) && seen.current(&sel) != pipe_name {
+            let on_namesake = renamed.contains(&seen.current(&sel));
+            if (first || forced("satellite") || on_namesake) && seen.current(&sel) != pipe_name {
                 // The new pipeline is among the options a moment after it was made.
                 let (sel2, name2) = (sel.clone(), pipe_name.clone());
                 wait_for(api, 10, |api| {
@@ -2356,6 +2407,30 @@ mod tests {
                         p.as_object_mut().unwrap().remove(k);
                     }
                     p["id"] = id.clone();
+                    // A select shows its pipeline by name: renaming the first one of a name
+                    // that a select shows renames it there too (Home Assistant keeps its id).
+                    let old = self
+                        .pipelines
+                        .iter()
+                        .find(|x| x["id"] == id)
+                        .map(|x| x["name"].clone())
+                        .ok_or("no pipeline")?;
+                    let first = self
+                        .pipelines
+                        .iter()
+                        .find(|x| x["name"] == old)
+                        .map(|x| x["id"].clone());
+                    if old != p["name"] && first == Some(id.clone()) {
+                        for st in self.states.iter_mut() {
+                            if st["state"] == old
+                                && st["entity_id"]
+                                    .as_str()
+                                    .is_some_and(|e| e.starts_with("select."))
+                            {
+                                st["state"] = p["name"].clone();
+                            }
+                        }
+                    }
                     let slot = self
                         .pipelines
                         .iter_mut()
@@ -2837,6 +2912,51 @@ mod tests {
         let p = ha.pipelines.iter().find(|p| p["name"] == "Alfred").unwrap();
         assert_eq!(p["conversation_engine"], "conversation.alfred");
         assert!(!attention(&rows));
+    }
+
+    #[test]
+    fn a_namesake_pipeline_becomes_a_backup_and_the_satellite_comes_back() {
+        let mut ha = FakeHa::new();
+        ha.add_ai();
+        let file = tmp("namesake");
+        let mut st = State::default();
+        run(&mut ha, &mut st, &file, Scope::Missing);
+        // An older "Alfred" (an earlier setup), listed first: the satellite's select on
+        // "Alfred" means that one.
+        let mut old = ha
+            .pipelines
+            .iter()
+            .find(|p| p["id"] == st.pipeline)
+            .unwrap()
+            .clone();
+        old["id"] = json!("old");
+        old["conversation_engine"] = json!("conversation.old");
+        ha.pipelines.insert(0, old);
+        ha.ws(json!({"type": "call_service", "service_data": {"entity_id": "select.alfred_assistant", "option": "Alfred"}})).unwrap();
+
+        let rows = run(&mut ha, &mut st, &file, Scope::Missing);
+        let names: Vec<String> = ha
+            .pipelines
+            .iter()
+            .map(|p| p["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(names.contains(&"Alfred (backup)".to_string()), "{names:?}");
+        assert_eq!(names.iter().filter(|n| *n == "Alfred").count(), 1);
+        assert_eq!(
+            ha.pipelines.iter().find(|p| p["id"] == "old").unwrap()["conversation_engine"],
+            "conversation.old",
+            "kept"
+        );
+        assert_eq!(
+            ha.current("select.alfred_assistant"),
+            "Alfred",
+            "back on the body's"
+        );
+        assert_eq!(level(&rows, "satellite").0, Level::Ok, "{rows:?}");
+        // Again: nothing more to do.
+        let writes = ha.writes;
+        run(&mut ha, &mut st, &file, Scope::Missing);
+        assert_eq!(ha.writes, writes);
     }
 
     #[test]

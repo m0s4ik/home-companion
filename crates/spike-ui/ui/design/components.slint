@@ -1092,6 +1092,10 @@ export component Dialog inherits Rectangle {
     in property <string> confirm;
     in property <image> confirm-icon;
     in property <bool> closable: false;
+    // Working: the icon turns (a wait with nothing to touch); `busy-bar`: a light running
+    // along a line under the text, so it is clearly alive.
+    in property <bool> spinning: false;
+    in property <bool> busy-bar: false;
     in property <float> left: -1;
     in property <bool> scrim: true;
     in property <color> border: Theme.accent.with-alpha(0.5);
@@ -1120,7 +1124,8 @@ export component Dialog inherits Rectangle {
         y: (parent.height - self.height) / 2;
         width: root.box-width;
         height: self.buttons-y + (root.buttons ? 88px + 24px : 0px)
-            + (root.left >= 0 ? 4px + 24px : 0px) + (root.buttons || root.left >= 0 ? 12px : 8px);
+            + (root.left >= 0 || root.busy-bar ? 4px + 24px : 0px)
+            + (root.buttons || root.left >= 0 || root.busy-bar ? 12px : 8px);
         border-radius: 32px;
         // 90 % opaque: what is behind shows faintly (no blur on this device).
         background: Theme.surface.with-alpha(0.9);
@@ -1162,6 +1167,7 @@ export component Dialog inherits Rectangle {
             height: 48px;
             source: root.icon;
             color: root.icon-color;
+            rotation-angle: root.spinning ? mod(animation-tick() / 1ms, 1200) / 1200 * 360deg : 0deg;
         }
         title-text := Text {
             x: 40px;
@@ -1253,6 +1259,24 @@ export component Dialog inherits Rectangle {
                     Feedback.tap();
                     root.answered(true);
                 }
+            }
+        }
+        // Working: a short light that runs along the line, over and over.
+        if root.busy-bar: Rectangle {
+            x: 48px;
+            y: box.buttons-y + (root.buttons ? 88px + 24px : 0px);
+            width: parent.width - 96px;
+            height: 4px;
+            border-radius: 2px;
+            background: Theme.line;
+            clip: true;
+            property <float> t: mod(animation-tick() / 1ms, 1400) / 1400;
+            Rectangle {
+                x: (parent.width + self.width) * parent.t - self.width;
+                width: parent.width * 0.3;
+                height: parent.height;
+                border-radius: 2px;
+                background: Theme.accent;
             }
         }
         // The time left: a thin line that shrinks.
