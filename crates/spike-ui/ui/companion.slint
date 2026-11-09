@@ -2163,7 +2163,8 @@ export component CompanionWindow inherits Window {
                     wrap: word-wrap;
                 }
                 // The final OK: a green line that cannot be missed.
-                if root.ha-done: Rectangle {
+                // "All set" is said by the character now (it bows): the box only with words in it.
+                if root.ha-done && root.ha-line != "": Rectangle {
                     height: 72px;
                     border-radius: 16px;
                     background: Theme.ok.with-alpha(0.16);
@@ -3991,6 +3992,7 @@ export component CompanionWindow inherits Window {
     // ---- Home Assistant's setup at work (after a choice, Configure, Check and repair): the
     // pop-up with a turning icon over the page, nothing to touch until it is done.
     if root.ha-popup && root.desk && (root.desk-page == "ha" || root.desk-page == "ha-pick"): Dialog {
+        centre-x: root.width / 2;
         icon: Icons.refresh-44;
         spinning: true;
         busy-bar: true;
