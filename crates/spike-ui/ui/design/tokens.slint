@@ -51,12 +51,13 @@ export global Type {
 }
 
 export global Grid {
-    // The two zones. The stage (x 0..512) belongs to the character: nothing is drawn over it.
-    out property <length> stage-width: 512px;
-    // The desk column, where everything else lives: x 560..1232, centre 896.
-    out property <length> col-x: 560px;
-    out property <length> col-width: 672px;
-    out property <length> col-cx: 896px;
+    // The two zones. The stage (x 0..424, a third of the screen: the character's 27 % and 3 %
+    // on each side) belongs to the character: nothing is drawn over it.
+    out property <length> stage-width: 424px;
+    // The desk column, where everything else lives: x 424..1232, centre 828.
+    out property <length> col-x: 424px;
+    out property <length> col-width: 808px;
+    out property <length> col-cx: 828px;
     // Bands of the desk column (y): page header 32..96, time band 48..290, middle band 312..600
     // (pages: 112..608, scrolling inside), action band 640..776.
     out property <length> header-y: 32px;

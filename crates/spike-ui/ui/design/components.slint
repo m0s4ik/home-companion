@@ -1043,185 +1043,90 @@ export component DoneCard inherits Rectangle {
     }
 }
 
-// A house command just went through and can be undone: a pop-up in the middle (no scrim, as
-// light as the microphone's card), Undo as the large gold-ringed target (a wrong command is put right at once), an X to close it, the time left
-// as a thin line under it; after it the small DoneCard stays. A tap around it closes it.
-export component UndoPopup inherits Rectangle {
-    // The thing ("Luce cucina") and what it is now ("spento").
-    in property <string> name;
-    in property <string> state;
-    in property <string> undo-label;
-    in property <float> left: 1;
-    in property <length> centre-x: root.width / 2;
-    callback undo();
-    callback ok();
+
+// --- Overlays --------------------------------------------------------------------------------
+
+// Alfred's pop-up: the one style of every dialog, question and passing card (change it here).
+// A box in the middle with a gold border: an icon on top, a title, a text (gold when `text-gold`,
+// the state of a thing), extra content in the children (laid out between the text and the
+// buttons; the box is `box-width` wide and children's `parent` is the pop-up itself, so they use
+// that width, not parent.width), then up to two large ringed buttons (`cancel` plain, `confirm`
+// gold; none: a card that only tells), a close X (`closable`), the time left as a thin line
+// (`left` 0..1, below 0: none). `scrim` darkens what is behind (a question that needs an answer:
+// taps outside do nothing); without it a tap outside closes, like the X.
+export component Dialog inherits Rectangle {
+    in property <image> icon;
+    in property <color> icon-color: Theme.accent;
+    in property <string> title;
+    in property <string> text;
+    in property <bool> text-gold: false;
+    in property <string> cancel;
+    in property <string> confirm;
+    in property <image> confirm-icon;
+    in property <bool> closable: false;
+    in property <float> left: -1;
+    in property <bool> scrim: true;
+    in property <color> border: Theme.accent.with-alpha(0.5);
+    in property <length> box-width: 672px;
+    in property <length> content-height: 0px;
+    // Centred on the desk (Alfred's dialogs), or on the whole screen (over Home Assistant).
+    in property <length> centre-x: Grid.col-cx;
+    callback answered(bool);
+    callback closed();
+    background: root.scrim ? Theme.scrim : transparent;
     TouchArea {
         clicked => {
-            root.ok();
+            if (!root.scrim) {
+                root.closed();
+            }
         }
     }
+    property <bool> buttons: root.cancel != "" || root.confirm != "";
     box := Rectangle {
+        property <length> top-pad: root.icon.width > 0 ? 104px : 48px;
+        property <length> body-y: title-text.y + title-text.preferred-height
+            + (root.text != "" ? 8px + body-text.preferred-height : 0px);
+        property <length> buttons-y: self.body-y + 32px + root.content-height
+            + (root.content-height > 0 ? 24px : 0px);
         x: root.centre-x - self.width / 2;
         y: (parent.height - self.height) / 2;
-        width: 520px;
-        // Grows with the names (a group lists up to three lines).
-        height: name-text.y + name-text.height + 4px + 36px + 32px + 88px + 24px + 4px + 36px;
+        width: root.box-width;
+        height: self.buttons-y + (root.buttons ? 88px + 24px : 0px)
+            + (root.left >= 0 ? 4px + 24px : 0px) + (root.buttons || root.left >= 0 ? 12px : 8px);
         border-radius: 32px;
         // 90 % opaque: what is behind shows faintly (no blur on this device).
         background: Theme.surface.with-alpha(0.9);
         border-width: 2px;
-        border-color: Theme.accent.with-alpha(0.5);
+        border-color: root.border;
         drop-shadow-blur: 24px;
         drop-shadow-color: #000000a0;
         TouchArea { }
-        // Close, top right (a 72 px target).
-        close-touch := TouchArea {
+        if root.closable: close-touch := TouchArea {
             x: parent.width - 12px - 72px;
             y: 12px;
             width: 72px;
             height: 72px;
             clicked => {
                 Feedback.tap();
-                root.ok();
+                root.closed();
             }
-        }
-        Rectangle {
-            x: close-touch.x + 12px;
-            y: close-touch.y + 12px;
-            width: 48px;
-            height: 48px;
-            border-radius: 24px;
-            background: close-touch.pressed ? Theme.surface-2 : transparent;
-            Icon {
-                x: 6px;
-                y: 6px;
-                width: 36px;
-                height: 36px;
-                source: Icons.close-36;
-                color: Theme.text-3;
-            }
-        }
-        Icon {
-            x: (parent.width - self.width) / 2;
-            y: 40px;
-            width: 48px;
-            height: 48px;
-            source: Icons.check-circle-48;
-            color: Theme.accent;
-        }
-        // The name (a group: one per line, smaller), the state under it in gold.
-        name-text := Text {
-            x: 40px;
-            y: 112px;
-            width: parent.width - 80px;
-            height: max(48px, self.preferred-height);
-            text: root.name;
-            font-size: 34px;
-            color: Theme.text;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-            wrap: word-wrap;
-        }
-        state-text := Text {
-            x: 40px;
-            y: name-text.y + name-text.height + 4px;
-            width: parent.width - 80px;
-            height: 36px;
-            text: root.state;
-            font-size: 26px;
-            color: Theme.accent;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-            overflow: elide;
-        }
-        Rectangle {
-            x: 48px;
-            y: state-text.y + 36px + 32px;
-            width: parent.width - 96px;
-            height: 88px;
-            border-radius: self.height / 2;
-            background: undo-touch.pressed ? Theme.accent.with-alpha(0.18) : transparent;
-            border-width: 2px;
-            border-color: Theme.accent;
-            HorizontalLayout {
-                alignment: center;
-                spacing: 16px;
-                Rectangle {
-                    width: 36px;
-                    Icon {
-                        y: (parent.height - self.height) / 2;
-                        width: 36px;
-                        height: 36px;
-                        source: Icons.undo-36;
-                        color: Theme.accent;
-                    }
-                }
-                Text {
-                    text: root.undo-label;
-                    font-size: 32px;
-                    font-weight: 500;
-                    color: Theme.accent;
-                    vertical-alignment: center;
-                }
-            }
-            undo-touch := TouchArea {
-                clicked => {
-                    Feedback.tap();
-                    root.undo();
-                }
-            }
-        }
-        // The time left: a thin line that shrinks.
-        Rectangle {
-            x: 48px;
-            y: state-text.y + 36px + 32px + 88px + 24px;
-            width: parent.width - 96px;
-            height: 4px;
-            border-radius: 2px;
-            background: Theme.line;
             Rectangle {
-                x: 0;
-                width: parent.width * root.left;
-                height: parent.height;
-                border-radius: 2px;
-                background: Theme.accent.with-alpha(0.8);
+                x: 12px;
+                y: 12px;
+                width: 48px;
+                height: 48px;
+                border-radius: 24px;
+                background: close-touch.pressed ? Theme.surface-2 : transparent;
+                Icon {
+                    x: 6px;
+                    y: 6px;
+                    width: 36px;
+                    height: 36px;
+                    source: Icons.close-36;
+                    color: Theme.text-3;
+                }
             }
         }
-    }
-}
-
-// --- Overlays --------------------------------------------------------------------------------
-
-// A dialog on the desk (never over the stage): a static scrim over the whole screen, a surface
-// in the desk column with a title, a text and two pills (Annulla ring, the action gold). Taps
-// outside do nothing (the question needs an answer). Extra content goes in the children, laid
-// out between the text and the pills; the content box is 672 px wide (children's `parent` is
-// the dialog itself, so they use 672px, not parent.width).
-export component Dialog inherits Rectangle {
-    in property <image> icon;
-    in property <color> icon-color: Theme.accent;
-    in property <string> title;
-    in property <string> text;
-    in property <string> cancel;
-    in property <string> confirm;
-    in property <length> content-height: 0px;
-    // Centred on the desk (Alfred's dialogs), or on the whole screen (over Home Assistant).
-    in property <length> centre-x: Grid.col-cx;
-    callback answered(bool);
-    background: Theme.scrim;
-    TouchArea { }
-    box := Rectangle {
-        property <length> top-pad: root.icon.width > 0 ? 104px : 40px;
-        x: root.centre-x - self.width / 2;
-        y: (parent.height - self.height) / 2;
-        width: 672px;
-        height: self.top-pad + title-text.preferred-height + 16px
-            + (root.text != "" ? body-text.preferred-height + 24px : 0px)
-            + root.content-height + 24px + 64px + 32px;
-        border-radius: 28px;
-        background: Theme.surface;
-        border-width: 1px;
-        border-color: Theme.line;
         if root.icon.width > 0: Icon {
             x: (parent.width - self.width) / 2;
             y: 40px;
@@ -1242,42 +1147,100 @@ export component Dialog inherits Rectangle {
         }
         body-text := Text {
             x: 48px;
-            y: title-text.y + title-text.preferred-height + 16px;
+            y: title-text.y + title-text.preferred-height + 8px;
             width: parent.width - 96px;
             text: root.text;
-            font-size: 24px;
-            color: Theme.text-2;
+            font-size: root.text-gold ? 26px : 24px;
+            color: root.text-gold ? Theme.accent : Theme.text-2;
             horizontal-alignment: center;
             wrap: word-wrap;
             visible: root.text != "";
         }
         Rectangle {
             x: 0;
-            y: title-text.y + title-text.preferred-height + 16px
-                + (root.text != "" ? body-text.preferred-height + 24px : 0px);
+            y: box.body-y + 24px;
             width: parent.width;
             height: root.content-height;
             @children
         }
-        PillButton {
-            x: parent.width / 2 - 12px - self.width;
-            y: parent.height - 32px - 64px;
-            width: 220px;
-            label: root.cancel;
-            clicked => {
-                Feedback.tap();
-                root.answered(false);
+        // The buttons: one alone takes the width; two share it.
+        property <length> btn-w: root.cancel != "" && root.confirm != ""
+            ? (self.width - 96px - 16px) / 2 : self.width - 96px;
+        if root.cancel != "": cancel-btn := Rectangle {
+            x: 48px;
+            y: box.buttons-y;
+            width: box.btn-w;
+            height: 88px;
+            border-radius: self.height / 2;
+            background: cancel-touch.pressed ? Theme.surface-2 : transparent;
+            border-width: 2px;
+            border-color: Theme.text.with-alpha(0.28);
+            Text {
+                text: root.cancel;
+                font-size: 30px;
+                font-weight: 500;
+                color: Theme.text;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            cancel-touch := TouchArea {
+                clicked => {
+                    Feedback.tap();
+                    root.answered(false);
+                }
             }
         }
-        PillButton {
-            x: parent.width / 2 + 12px;
-            y: parent.height - 32px - 64px;
-            width: 220px;
-            primary: true;
-            label: root.confirm;
-            clicked => {
-                Feedback.tap();
-                root.answered(true);
+        if root.confirm != "": Rectangle {
+            x: root.cancel != "" ? 48px + box.btn-w + 16px : 48px;
+            y: box.buttons-y;
+            width: box.btn-w;
+            height: 88px;
+            border-radius: self.height / 2;
+            background: confirm-touch.pressed ? Theme.accent.with-alpha(0.18) : transparent;
+            border-width: 2px;
+            border-color: Theme.accent;
+            HorizontalLayout {
+                alignment: center;
+                spacing: 16px;
+                if root.confirm-icon.width > 0: Rectangle {
+                    width: 36px;
+                    Icon {
+                        y: (parent.height - self.height) / 2;
+                        width: 36px;
+                        height: 36px;
+                        source: root.confirm-icon;
+                        color: Theme.accent;
+                    }
+                }
+                Text {
+                    text: root.confirm;
+                    font-size: 30px;
+                    font-weight: 500;
+                    color: Theme.accent;
+                    vertical-alignment: center;
+                }
+            }
+            confirm-touch := TouchArea {
+                clicked => {
+                    Feedback.tap();
+                    root.answered(true);
+                }
+            }
+        }
+        // The time left: a thin line that shrinks.
+        if root.left >= 0: Rectangle {
+            x: 48px;
+            y: box.buttons-y + (root.buttons ? 88px + 24px : 0px);
+            width: parent.width - 96px;
+            height: 4px;
+            border-radius: 2px;
+            background: Theme.line;
+            Rectangle {
+                x: 0;
+                width: parent.width * root.left;
+                height: parent.height;
+                border-radius: 2px;
+                background: Theme.accent.with-alpha(0.8);
             }
         }
     }
@@ -1335,40 +1298,6 @@ export component VolumeHud inherits Rectangle {
     }
 }
 
-// The microphone's switch was moved (a moment, in the middle of the screen): the microphone
-// big, struck through and red when off.
-export component MicHud inherits Rectangle {
-    in property <bool> on: true;
-    in property <string> text;
-    width: 420px;
-    height: 300px;
-    border-radius: 32px;
-    background: Theme.surface;
-    border-width: 2px;
-    border-color: root.on ? Theme.line : Theme.danger;
-    drop-shadow-blur: 24px;
-    drop-shadow-color: #000000a0;
-    Icon {
-        x: (parent.width - self.width) / 2;
-        y: 48px;
-        width: 128px;
-        height: 128px;
-        source: root.on ? Icons.microphone-32 : Icons.microphone-off-32;
-        color: root.on ? Theme.text : Theme.danger;
-    }
-    Text {
-        x: 16px;
-        y: 200px;
-        width: parent.width - 32px;
-        height: 56px;
-        text: root.text;
-        font-size: 34px;
-        font-weight: 500;
-        color: root.on ? Theme.text : Theme.danger;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-}
 
 // The control center's tile (pulled down from the top of the desk): what is on is gold, a tap
 // switches it or opens its page.

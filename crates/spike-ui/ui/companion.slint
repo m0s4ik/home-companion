@@ -23,8 +23,8 @@ import { Icons } from "design/icons.slint";
 import {
     Icon, BareButton, PrimaryButton, PillButton, InfoCard, TimerCard, NowPlayingCard, PageHeader,
     Tile, SectionTitle, Row, Group, TimerLine, AlarmLine, ChatUser, ChatCharacter, ChatSeparator,
-    Step, Stepper, Chip, Dialog, Separator, VolumeHud, MicHud, GlyphButton, ControlTile, LevelBar, Feedback,
-    DoneCard, UndoPopup
+    Step, Stepper, Chip, Dialog, Separator, VolumeHud, GlyphButton, ControlTile, LevelBar, Feedback,
+    DoneCard
 } from "design/components.slint";
 import { CasaScreen, CasaBridge } from "casa.slint";
 import { WeatherPage, ListsPage, EventRow, ForecastRow, ChoiceRow } from "ha-pages.slint";
@@ -1564,14 +1564,18 @@ export component CompanionWindow inherits Window {
         property <bool> compact: self.n-tiles > 4;
         property <bool> dense: self.n-tiles > 6;
         property <length> row-step: self.dense ? 124px : self.compact ? 160px : 220px;
-        property <int> i-settings: self.music-tile ? 3 : 2;
-        property <int> i-ha: self.i-settings + 1;
+        // Two columns across the desk column.
+        property <length> tile-w: (Grid.col-width - 24px) / 2;
+        // Settings last, in the bottom right corner (a gap on its left when the count is odd).
+        property <int> i-ha: self.music-tile ? 3 : 2;
+        property <int> i-settings: self.n-tiles - 1 + mod(self.n-tiles, 2);
         property <int> i-memories: self.i-ha + 1;
         property <int> i-reminders: self.i-memories + 1;
         property <int> i-shopping: self.i-memories + (root.brain-present ? 2 : 0);
         Tile {
             x: Grid.col-x;
             y: 128px;
+            width: parent.tile-w;
             compact: parent.compact;
             dense: parent.dense;
             icon: Icons.forum-48;
@@ -1582,8 +1586,9 @@ export component CompanionWindow inherits Window {
             }
         }
         Tile {
-            x: Grid.col-x + 348px;
+            x: Grid.col-x + parent.tile-w + 24px;
             y: 128px;
+            width: parent.tile-w;
             compact: parent.compact;
             dense: parent.dense;
             icon: Icons.timer-48;
@@ -1596,6 +1601,7 @@ export component CompanionWindow inherits Window {
         if altro-page.music-tile: Tile {
             x: Grid.col-x;
             y: 128px + parent.row-step;
+            width: parent.tile-w;
             compact: parent.compact;
             dense: parent.dense;
             icon: Icons.music-note-48;
@@ -1606,8 +1612,9 @@ export component CompanionWindow inherits Window {
             }
         }
         Tile {
-            x: Grid.col-x + mod(parent.i-settings, 2) * 348px;
+            x: Grid.col-x + mod(parent.i-settings, 2) * (parent.tile-w + 24px);
             y: 128px + floor(parent.i-settings / 2) * parent.row-step;
+            width: parent.tile-w;
             compact: parent.compact;
             dense: parent.dense;
             icon: Icons.cog-48;
@@ -1619,8 +1626,9 @@ export component CompanionWindow inherits Window {
         }
         // Home Assistant: the setup's checks (linked), else the QR code.
         Tile {
-            x: Grid.col-x + mod(parent.i-ha, 2) * 348px;
+            x: Grid.col-x + mod(parent.i-ha, 2) * (parent.tile-w + 24px);
             y: 128px + floor(parent.i-ha / 2) * parent.row-step;
+            width: parent.tile-w;
             compact: parent.compact;
             dense: parent.dense;
             icon: Icons.view-dashboard-48;
@@ -1632,8 +1640,9 @@ export component CompanionWindow inherits Window {
             }
         }
         if root.brain-present: Tile {
-            x: Grid.col-x + mod(parent.i-memories, 2) * 348px;
+            x: Grid.col-x + mod(parent.i-memories, 2) * (parent.tile-w + 24px);
             y: 128px + floor(parent.i-memories / 2) * parent.row-step;
+            width: parent.tile-w;
             compact: parent.compact;
             dense: parent.dense;
             icon: Icons.brain-48;
@@ -1645,8 +1654,9 @@ export component CompanionWindow inherits Window {
             }
         }
         if root.brain-present: Tile {
-            x: Grid.col-x + mod(parent.i-reminders, 2) * 348px;
+            x: Grid.col-x + mod(parent.i-reminders, 2) * (parent.tile-w + 24px);
             y: 128px + floor(parent.i-reminders / 2) * parent.row-step;
+            width: parent.tile-w;
             compact: parent.compact;
             dense: parent.dense;
             icon: Icons.calendar-clock-48;
@@ -1658,8 +1668,9 @@ export component CompanionWindow inherits Window {
             }
         }
         if root.shopping-on: Tile {
-            x: Grid.col-x + mod(parent.i-shopping, 2) * 348px;
+            x: Grid.col-x + mod(parent.i-shopping, 2) * (parent.tile-w + 24px);
             y: 128px + floor(parent.i-shopping / 2) * parent.row-step;
+            width: parent.tile-w;
             compact: parent.compact;
             dense: parent.dense;
             icon: Icons.cart-48;
@@ -3770,15 +3781,22 @@ export component CompanionWindow inherits Window {
 
     // ---- The same command, undoable: the big pop-up first, over everything (Home Assistant's
     // view and a mirrored screen included), centred on the screen as the microphone's card.
-    if root.done-shown && root.done-popup && !root.starting: UndoPopup {
-        name: root.done-name;
-        state: root.done-state;
-        undo-label: root.t.undo;
+    if root.done-shown && root.done-popup && !root.starting: Dialog {
+        scrim: false;
+        closable: true;
+        box-width: 520px;
+        centre-x: root.width / 2;
+        icon: Icons.check-circle-48;
+        title: root.done-name;
+        text: root.done-state;
+        text-gold: true;
+        confirm: root.t.undo;
+        confirm-icon: Icons.undo-36;
         left: root.done-left;
-        undo => {
+        answered(yes) => {
             root.done-undo-clicked();
         }
-        ok => {
+        closed => {
             root.done-ok-clicked();
         }
     }
@@ -3791,23 +3809,8 @@ export component CompanionWindow inherits Window {
         title: root.ask-text;
         cancel: root.t.no;
         confirm: root.t.yes;
-        content-height: 20px;
-        centre-x: CasaBridge.visible || root.mirror-t > 0.001 ? root.width / 2 : Grid.col-cx;
-        Rectangle {
-            x: 48px;
-            y: 8px;
-            width: 672px - 96px;
-            height: 4px;
-            border-radius: 2px;
-            background: Theme.line;
-            Rectangle {
-                x: 0;
-                width: parent.width * root.ask-left;
-                height: parent.height;
-                border-radius: 2px;
-                background: Theme.accent;
-            }
-        }
+        left: root.ask-left;
+        centre-x: root.width / 2;
         answered(yes) => {
             root.ask-answered(yes);
         }
@@ -3858,6 +3861,8 @@ export component CompanionWindow inherits Window {
         // Three rows of compact tiles (seven: the last row starts with "do not disturb").
         for t[i] in root.control-tiles: ControlTile {
             compact: true;
+            // Three to a row across the column.
+            width: (Grid.col-width - 2 * 24px) / 3;
             x: 24px + mod(i, 3) * (self.width + 24px);
             y: 24px + floor(i / 3) * (self.height + 12px);
             icon: t.key == "wifi" ? (t.on ? Icons.wifi-32 : Icons.wifi-off-32)
@@ -3992,10 +3997,13 @@ export component CompanionWindow inherits Window {
     }
 
     // ---- The microphone's switch moved: a big card in the middle, over everything.
-    if root.mic-hud-shown: MicHud {
-        x: (root.width - self.width) / 2;
-        y: (root.height - self.height) / 2;
-        on: root.mic-hud-on;
-        text: root.mic-hud-text;
+    if root.mic-hud-shown: Dialog {
+        scrim: false;
+        box-width: 420px;
+        centre-x: root.width / 2;
+        icon: root.mic-hud-on ? Icons.microphone-32 : Icons.microphone-off-32;
+        icon-color: root.mic-hud-on ? Theme.text : Theme.danger;
+        border: root.mic-hud-on ? Theme.line : Theme.danger;
+        title: root.mic-hud-text;
     }
 }

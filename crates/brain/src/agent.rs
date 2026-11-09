@@ -95,7 +95,7 @@ fn undo_scene(id: i64) -> String {
 }
 
 /// How long a question waits for a yes, and how long an "Undo" stays possible.
-const CONFIRM_MS: i64 = 60_000;
+const CONFIRM_MS: i64 = 30_000;
 const UNDO_MS: i64 = 120_000;
 const UNDO_KEPT: usize = 16;
 
@@ -681,7 +681,7 @@ impl Brain {
         self.run_control(ha, &e, &p.service, &p.data, false)
     }
 
-    /// Questions nobody answered for a minute are closed (`confirm_done` with null); called
+    /// Questions nobody answered for 30 s are closed (`confirm_done` with null); called
     /// every few seconds from main with the current time (ms).
     pub fn expire_confirms(&self, at_ms: i64) {
         let gone = {

@@ -951,7 +951,7 @@ fn a_blind_asks_on_the_screen_and_a_yes_there_does_it_without_undo() {
     let id = c["id"].as_i64().unwrap();
     assert_eq!(r["confirm_id"], id);
     assert!(c["text"].as_str().unwrap().contains("Tapparella soggiorno"));
-    assert!(c["expires_at"].as_i64().unwrap() - brain::memory::now() > 50);
+    assert!(c["expires_at"].as_i64().unwrap() - brain::memory::now() > 25);
     // Nothing happened yet; the model has moved on and the user taps Yes.
     assert!(services(&f).is_empty());
     b.answer_confirm(id, true).unwrap();
