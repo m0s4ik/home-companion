@@ -1169,14 +1169,17 @@ impl Brain {
             });
             v.push(ToolSpec {
                 name: "home_control",
-                description: "Do something on one device: a service of its own domain (light: turn_on, \
+                description: "Do something on a device: a service of its own domain (light: turn_on, \
                               turn_off, toggle with data brightness_pct; cover: open_cover, \
                               close_cover, stop_cover, set_cover_position with data position; climate: \
                               set_temperature with data temperature; media_player: media_pause, \
                               volume_set…). If the answer says needs_confirmation, ask the user the \
                               question it gives and, only after they answer, call again with the same \
                               arguments and confirm_id. Locks, alarms, doors, gates and garage doors are \
-                              never controlled by voice.",
+                              never controlled by voice. For a whole room or several devices ('spegni le \
+                              luci dello studio', 'turn off the kitchen lights') give area (and domain) \
+                              or entity_ids instead of entity_id: one call does every device that may \
+                              be done at once, and says which ones; never pick just one of them.",
                 parameters: obj(
                     json!({
                         "entity_id": {"type": "string"},
@@ -1191,9 +1194,12 @@ impl Brain {
                                 "percentage": {"type": "integer"},
                                 "volume_level": {"type": "number"}
                             }},
-                        "confirm_id": {"type": "integer"}
+                        "confirm_id": {"type": "integer"},
+                        "area": {"type": "string", "description": "every device of this area (with domain)"},
+                        "domain": {"type": "string", "description": "with area: light, switch, cover… (default light)"},
+                        "entity_ids": {"type": "array", "items": {"type": "string"}, "description": "several devices at once"}
                     }),
-                    &["entity_id", "service"],
+                    &["service"],
                 ),
             });
         }
@@ -1383,6 +1389,84 @@ impl Brain {
         )))
     }
 
+    /// home_control on a room (`area` + `domain`) or a list (`entity_ids`): every device that may
+    /// be done at once, each with its own card and Undo (the screen groups them); the ones that
+    /// need a yes or are never done by voice are only named back.
+    fn home_control_many(
+        &self,
+        args: &Value,
+        service: &str,
+        data: &Value,
+    ) -> Result<Value, String> {
+        let exposed = self.exposed(false)?;
+        let targets: Vec<crate::ha::Entity> =
+            if let Some(ids) = args.get("entity_ids").and_then(Value::as_array) {
+                ids.iter()
+                    .filter_map(Value::as_str)
+                    .map(|id| resolve_entity(&exposed, id).cloned())
+                    .collect::<Result<_, _>>()?
+            } else {
+                let area = args
+                    .get("area")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_lowercase();
+                if area.is_empty() {
+                    return Err("entity_id, entity_ids or area: which devices?".into());
+                }
+                let domain = args
+                    .get("domain")
+                    .and_then(Value::as_str)
+                    .unwrap_or("light")
+                    .trim()
+                    .to_string();
+                let found: Vec<_> = exposed
+                    .iter()
+                    .filter(|e| e.area.trim().to_lowercase() == area && e.domain() == domain)
+                    .cloned()
+                    .collect();
+                if found.is_empty() {
+                    let mut areas: Vec<&str> = exposed
+                        .iter()
+                        .map(|e| e.area.as_str())
+                        .filter(|a| !a.is_empty())
+                        .collect();
+                    areas.sort_unstable();
+                    areas.dedup();
+                    return Err(format!(
+                        "no exposed {domain} in area {area:?}; areas: {}",
+                        areas.join(", ")
+                    ));
+                }
+                found
+            };
+        let ha = self.ha().ok_or("Home Assistant is not configured")?;
+        let (mut done, mut skipped, mut failed) = (Vec::new(), Vec::new(), Vec::new());
+        for e in &targets {
+            if self.gate_of(e) != Gate::Allow {
+                skipped.push(e.full_name());
+                continue;
+            }
+            match self.run_control(ha, e, service, data, true) {
+                Ok(()) => done.push(e.full_name()),
+                Err(err) => failed.push(format!("{}: {err}", e.full_name())),
+            }
+        }
+        log::info!(event = "brain_house_many", done = done.len(), skipped = skipped.len(), failed = failed.len(); "house: {service} on {} devices", done.len());
+        if done.is_empty() && !failed.is_empty() {
+            return Err(failed.join("; "));
+        }
+        let mut r = json!({"done": done});
+        if !skipped.is_empty() {
+            r["not_done_need_yes_or_never"] = json!(skipped);
+        }
+        if !failed.is_empty() {
+            r["failed"] = json!(failed);
+        }
+        Ok(r)
+    }
+
     fn home_control(&self, args: &Value, lang: &str) -> Result<Value, String> {
         let get = |k: &str| {
             args.get(k)
@@ -1399,6 +1483,9 @@ impl Brain {
             .unwrap_or(json!({}));
         if service.is_empty() || !service.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
             return Err("service: a service name like turn_on".into());
+        }
+        if entity_id.is_empty() {
+            return self.home_control_many(args, &service, &data);
         }
         let exposed = self.exposed(false)?;
         let e = resolve_entity(&exposed, &entity_id)?.clone();

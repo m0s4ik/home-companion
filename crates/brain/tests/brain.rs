@@ -30,6 +30,8 @@ struct Fake {
     states: Vec<(&'static str, &'static str)>,
     /// The `calendar.get_events` answer (`{"calendar.x": {"events": […]}}`).
     calendar: Arc<Mutex<Value>>,
+    /// Areas of exposed entities: (entity_id, area name).
+    areas: Vec<(&'static str, &'static str)>,
 }
 
 /// "2026-11-05T17:00:00Z" for a time in seconds (UTC).
@@ -143,10 +145,17 @@ fn answer(f: &Fake, cmd: &Value) -> Value {
         (Some("call_service"), Some("calendar"), Some("get_events")) => {
             json!({"context": {}, "response": f.calendar.lock().unwrap().clone()})
         }
-        (Some("config/entity_registry/list_for_display"), _, _) => json!({"entities": []}),
-        (Some("config/device_registry/list"), _, _) | (Some("config/area_registry/list"), _, _) => {
-            json!([])
+        (Some("config/entity_registry/list_for_display"), _, _) => json!({"entities":
+            f.areas.iter().map(|(id, a)| json!({"ei": id, "ai": a.to_lowercase()})).collect::<Vec<_>>()}),
+        (Some("config/area_registry/list"), _, _) => {
+            json!(
+                f.areas
+                    .iter()
+                    .map(|(_, a)| json!({"area_id": a.to_lowercase(), "name": a}))
+                    .collect::<Vec<_>>()
+            )
         }
+        (Some("config/device_registry/list"), _, _) => json!([]),
         (Some("todo/item/list"), _, _) => json!({"items": t.iter().map(|(u, s, st)|
             json!({"uid": u, "summary": s, "status": st})).collect::<Vec<_>>()}),
         (Some("call_service"), _, Some("add_item")) => {
@@ -738,6 +747,79 @@ fn upcoming_events_on_subscribe_and_with_the_chosen_calendars() {
         .refresh_upcoming(now + 60 + 601)
         .expect("the events changed");
     assert_eq!(ev["items"], json!([]));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_whole_room_in_one_call() {
+    let f = Fake {
+        exposed: vec![
+            ("light.studio", "Studio", ""),
+            ("light.studio_sx", "Studio SX", ""),
+            ("light.libreria", "Libreria", ""),
+            ("light.cucina", "Luce cucina", ""),
+            ("cover.studio", "Tapparella studio", "shutter"),
+        ],
+        areas: vec![
+            ("light.studio", "Studio"),
+            ("light.studio_sx", "Studio"),
+            ("light.libreria", "Studio"),
+            ("light.cucina", "Cucina"),
+            ("cover.studio", "Studio"),
+        ],
+        ..Fake::default()
+    };
+    let (cfg, dir) = setup("room", &fake_ha(f.clone()));
+    let b = Arc::new(Brain::new(cfg).unwrap());
+    let mut screen = Screen::connect(&b, &dir);
+    let (r, err) = tool(
+        &b,
+        "home_control",
+        json!({"area": "studio", "service": "turn_off"}),
+    );
+    assert!(!err, "{r}");
+    assert_eq!(r["done"].as_array().unwrap().len(), 3, "{r}");
+    for _ in 0..3 {
+        assert_eq!(screen.event("changed")["undo"], true);
+    }
+    let lights: Vec<String> = services(&f)
+        .into_iter()
+        .filter(|s| s.starts_with("light."))
+        .collect();
+    assert_eq!(
+        lights,
+        [
+            "light.turn_off light.libreria",
+            "light.turn_off light.studio",
+            "light.turn_off light.studio_sx"
+        ]
+    );
+    // The shutter needs a yes: not with the room (named back only).
+    let (r, err) = tool(
+        &b,
+        "home_control",
+        json!({"area": "Studio", "domain": "cover", "service": "close_cover"}),
+    );
+    assert!(!err, "{r}");
+    assert_eq!(r["done"], json!([]));
+    assert_eq!(
+        r["not_done_need_yes_or_never"].as_array().unwrap().len(),
+        1,
+        "{r}"
+    );
+    // A list; an unknown area says which areas there are.
+    let (r, err) = tool(
+        &b,
+        "home_control",
+        json!({"entity_ids": ["light.cucina", "light.libreria"], "service": "turn_on"}),
+    );
+    assert!(!err && r["done"].as_array().unwrap().len() == 2, "{r}");
+    let (r, err) = tool(
+        &b,
+        "home_control",
+        json!({"area": "Garage", "service": "turn_off"}),
+    );
+    assert!(err && r.to_string().contains("Cucina"), "{r}");
     let _ = std::fs::remove_dir_all(dir);
 }
 
