@@ -2615,6 +2615,7 @@ impl<S: Screen> Ui<S> {
             }
             if d.ha == 1 {
                 p.busy = true;
+                p.asked = true;
             }
             if d.ha == 2 {
                 p.done = true;
@@ -4023,6 +4024,8 @@ impl<S: Screen> Ui<S> {
             done: p.done && !p.busy,
             picks,
             step: p.step.clone(),
+            // The pop-up only for what the user asked (a check when the page opens is silent).
+            popup: p.busy && p.asked,
         });
     }
 

@@ -110,6 +110,8 @@ pub struct HaPageView {
     pub picks: Vec<(String, String, String)>,
     /// What the setup is doing right now (the pop-up while busy; "" = "a few seconds").
     pub step: String,
+    /// The working pop-up is up: a run the user asked for.
+    pub popup: bool,
 }
 
 /// What plays (AirPlay later; nothing yet).
@@ -1101,6 +1103,7 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_ha_line(self, v.status.as_str().into());
                 $m::CompanionWindow::set_ha_busy(self, v.busy);
                 $m::CompanionWindow::set_ha_step(self, v.step.as_str().into());
+                $m::CompanionWindow::set_ha_popup(self, v.popup);
                 $m::CompanionWindow::set_ha_configured(self, v.configured);
                 $m::CompanionWindow::set_ha_done(self, v.done);
                 let picks: Vec<$m::PickRow> = v
