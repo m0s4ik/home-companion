@@ -205,6 +205,7 @@ pub fn ha_setup(cfg: &Config, action: &str, row: Option<&str>) -> Result<(), Str
         mcp_port: sc.mcp_port,
         prompt: sc.prompt.clone(),
         choice: sc.settings.assistant(),
+        voices: sc.voices.clone(),
     };
     let token = auth.access_token().map_err(|e| e.to_string())?;
     let mut api = setup::HaApi::connect(url, &token)?;

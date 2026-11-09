@@ -41,6 +41,12 @@ thinking = "Ci penso…"
 error = "Non ho capito"
 offline = "Sono in pausa: non riesco a parlare con casa"
 
+# A butler: a man's voice, calm. Voice ids of Home Assistant's text-to-speech engines (OpenAI's
+# cedar, onyx, ash, echo; Google Gemini's charon, orus), tried in order; used until the user picks
+# a voice on the Home Assistant page.
+[voice]
+prefer = ["cedar", "onyx", "ash", "echo", "charon", "orus"]
+
 # Animations (format: ../README.md, "Animations"), made with tools/make-animation.py from the frames
 # of the previous Python screen (440x760, 16 fps). The loading clip contains the idle loop
 # (frames 0-63) and the wake-up (96-175), so the three share one sheet.

@@ -104,6 +104,14 @@ listed in `alfred/sounds/README.md`. Optional one by one: a missing file is a pl
 `stopword/<name>.json` (+ its `.tflite`): an optional microWakeWord model ("basta", "stop") the body listens to only
 while the character thinks, speaks or rings; it works as the Stop button. The first `*.json` alphabetically is used.
 
+## Voice
+
+`[voice] prefer` in character.toml (optional): the voices that suit the character, best first, as the voice ids of
+Home Assistant's text-to-speech engines (`tts/engine/voices`: OpenAI's `cedar`, `onyx`…, Google Gemini's `charon`…).
+When the body puts a voice engine into its pipeline (the pipeline is made, or another engine is chosen on the Home
+Assistant page) and the user has not picked a voice ("Voice" on that page), the first id the engine offers is used;
+none offered = the engine's default voice.
+
 ## Reflexes
 
 `grammar/<lang>.toml` (optional): the phrases the body does by itself without Home Assistant: `time`, `timer_start`, `timer_cancel`, `timer_left`, `alarm_set`, `alarm_cancel`, `volume_up`, `volume_down`,
@@ -150,6 +158,9 @@ offline = "I'm on a break: I can't reach home"
 [phrases.it]
 idle = "Di' «Okay Alfred»"
 # …
+
+[voice]                          # optional (see "Voice")
+prefer = ["cedar", "onyx", "ash", "echo", "charon", "orus"]
 ```
 
 ## Checking a character

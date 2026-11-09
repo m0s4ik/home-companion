@@ -136,6 +136,9 @@ pub struct Character {
     pub background: Rgb,
     /// Where the mouth is in the idle pose: a double tap there opens the language menu.
     pub mouth: Crop,
+    /// The voices that suit the character (`[voice] prefer`), best first: voice ids of any
+    /// text-to-speech engine; the first one the engine offers is used when the user chose none.
+    pub voices: Vec<String>,
     colors: BTreeMap<State, Rgb>,
     crop: Crop,
     crop_override: BTreeMap<State, Crop>,
@@ -274,6 +277,32 @@ struct Raw {
     phrases: BTreeMap<String, Phrases>,
     #[serde(default)]
     animations: BTreeMap<String, RawAnimation>,
+    #[serde(default)]
+    voice: RawVoice,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawVoice {
+    #[serde(default)]
+    prefer: Vec<String>,
+}
+
+/// The character's preferred voices (`[voice] prefer` in `dir/character.toml`), read without
+/// checking the rest of the package: empty when there are none or the file cannot be read.
+pub fn preferred_voices(dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("character.toml"))
+        .ok()
+        .and_then(|t| toml::from_str::<toml::Table>(&t).ok())
+        .and_then(|t| {
+            let list = t.get("voice")?.get("prefer")?.as_array()?.clone();
+            Some(
+                list.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect(),
+            )
+        })
+        .unwrap_or_default()
 }
 
 #[derive(Deserialize)]
@@ -544,6 +573,7 @@ pub fn load(dir: &Path) -> Result<Character, Vec<String>> {
         pose_size,
         background,
         mouth,
+        voices: raw.voice.prefer,
         colors,
         crop,
         crop_override,
@@ -917,6 +947,9 @@ mod tests {
         assert_eq!(c.languages().collect::<Vec<_>>(), ["en", "it"]);
         assert_eq!(c.phrases("it").listening, "Ti ascolto…");
         assert_eq!(c.phrases("xx").listening, "I'm listening…"); // unknown language: the first one
+        assert_eq!(c.voices[..2], ["cedar", "onyx"]);
+        assert_eq!(preferred_voices(&c.dir), c.voices);
+        assert!(preferred_voices(Path::new("/nonexistent")).is_empty());
         assert_eq!(
             c.pose(State::Offline).1,
             Crop {

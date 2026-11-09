@@ -9,7 +9,7 @@
 //! | `wyoming` | the Wyoming integration for the satellite (`host`, `port`) | yes |
 //! | `mcp` | the MCP integration on home-companion-brain's tools (`http://<body>:<port>/mcp`) | yes; reloaded by "Check and repair" |
 //! | `ai` | an AI integration with conversation agents (Gemini, OpenAI, Anthropic, Ollama…) | no: the user adds it; "skipped" without |
-//! | `agent` | the agent "<name>" under it, the MCP tools attached | yes |
+//! | `agent` | the agent "<name>" under it, the MCP tools attached, web search on where the AI has it | yes |
 //! | `pipeline` | the pipeline "<name>": speech-to-text and voice copied from the preferred one, the agent, local intents off | yes |
 //! | `satellite` | the satellite on that pipeline | yes (first time; afterwards only with "Repair") |
 //! | `vad` | end of speech "relaxed" | yes (idem) |
@@ -20,7 +20,9 @@
 //! has, listed as it lists them ([`Choices`]). Nothing chosen = the AI the agent already lives
 //! under (else the first) and the preferred pipeline's speech-to-text and voice. Choosing another
 //! AI moves the agent: a new one under it, the pipeline on it, the old one removed (only when the
-//! body made it); an AI with speech-to-text or voice entities of its own preselects them.
+//! body made it); an AI with speech-to-text or voice entities of its own preselects them. The
+//! voice engine's voices (`tts/engine/voices`) may be chosen too; until one is, a voice engine the
+//! body puts in speaks with the character's preferred voice when it has one.
 //!
 //! What exists is never changed by itself: what the body made is in `<state_dir>/ha-setup.json`
 //! (with the satellite's options as they were) and [`unlink`] removes exactly that. A row that
@@ -164,18 +166,25 @@ pub struct State {
     /// another choice is put in once; a later change made in Home Assistant stays.
     pub applied_stt: String,
     pub applied_tts: String,
+    /// The voice (timbre) chosen on the screen as last put into the pipeline, likewise.
+    pub applied_voice: String,
+    /// Web search was switched on (or tried) on the agent the body made: once, so the user
+    /// may switch it off again in Home Assistant.
+    pub web_search_done: bool,
     /// The AI task entity the body made Home Assistant's preferred one (none was): it follows
     /// the chosen AI while it is still the preferred one, and goes with "Unlink".
     pub ai_task_set: String,
 }
 
 /// What the user chose on the screen (`[assistant]` in the body's settings): an AI integration's
-/// entry, an `stt.*` and a `tts.*` entity; empty = not chosen.
+/// entry, an `stt.*` and a `tts.*` entity, one of that voice's timbres (a `voice_id` of the
+/// engine); empty = not chosen.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Choice {
     pub ai: String,
     pub stt: String,
     pub tts: String,
+    pub voice: String,
 }
 
 /// One thing Home Assistant has, to choose on the screen: its id and its name.
@@ -192,15 +201,19 @@ pub struct Choices {
     pub ai: Vec<Pick>,
     pub stt: Vec<Pick>,
     pub tts: Vec<Pick>,
+    /// The timbres of the pipeline's voice engine in the pipeline's language.
+    pub voice: Vec<Pick>,
+    /// In use: `voice` empty = the engine's default timbre.
     pub current: Choice,
 }
 
 impl Choices {
-    /// The options of one kind ("ai", "stt", "tts").
+    /// The options of one kind ("ai", "stt", "tts", "voice").
     pub fn of(&self, kind: &str) -> &[Pick] {
         match kind {
             "ai" => &self.ai,
             "stt" => &self.stt,
+            "voice" => &self.voice,
             _ => &self.tts,
         }
     }
@@ -210,6 +223,7 @@ impl Choices {
         match kind {
             "ai" => &self.current.ai,
             "stt" => &self.current.stt,
+            "voice" => &self.current.voice,
             _ => &self.current.tts,
         }
     }
@@ -226,7 +240,7 @@ impl Choices {
 }
 
 /// The kinds of choice, in screen order.
-pub const CHOICES: [&str; 3] = ["ai", "stt", "tts"];
+pub const CHOICES: [&str; 4] = ["ai", "stt", "tts", "voice"];
 
 /// Home Assistant's own addresses, from its network adapters (`network`, admin only): the
 /// enabled ones (all of them when none is), never loopback. Empty when it cannot tell.
@@ -326,6 +340,9 @@ pub struct Body {
     pub prompt: String,
     /// What the user chose on the screen.
     pub choice: Choice,
+    /// The character's voices (`[voice] prefer` in its character.toml): when the body puts a
+    /// voice engine into the pipeline and no timbre was chosen, the first one the engine offers.
+    pub voices: Vec<String>,
 }
 
 impl Body {
@@ -553,8 +570,34 @@ fn find_ai<'a>(seen: &'a Seen, st: &State, chosen: &str) -> Option<&'a Value> {
         .copied()
 }
 
+/// The timbres a voice engine has for a language (`tts/engine/voices`; empty when it has none
+/// to choose from or cannot tell).
+fn engine_voices(api: &mut dyn Api, engine: &str, language: &str) -> Vec<Pick> {
+    if engine.is_empty() || language.is_empty() {
+        return Vec::new();
+    }
+    let Ok(r) =
+        api.ws(json!({"type": "tts/engine/voices", "engine_id": engine, "language": language}))
+    else {
+        return Vec::new();
+    };
+    r.get("voices")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|v| !s(v, "voice_id").is_empty())
+        .map(|v| Pick {
+            id: s(v, "voice_id").to_string(),
+            name: match s(v, "name") {
+                "" => s(v, "voice_id").to_string(),
+                n => n.to_string(),
+            },
+        })
+        .collect()
+}
+
 /// What may be chosen and what is in use, as Home Assistant has it.
-fn choices_of(seen: &Seen, st: &State, body: &Body) -> Choices {
+fn choices_of(api: &mut dyn Api, seen: &Seen, st: &State, body: &Body) -> Choices {
     let ai = seen
         .ais()
         .iter()
@@ -565,29 +608,34 @@ fn choices_of(seen: &Seen, st: &State, body: &Body) -> Choices {
         .collect();
     let pipeline = seen.pipeline(&st.pipeline);
     let engine = |k: &str| pipeline.map(|p| s(p, k).to_string()).unwrap_or_default();
+    let voice = engine_voices(api, &engine("tts_engine"), &engine("tts_language"));
     Choices {
         ai,
         stt: seen.picks("stt"),
         tts: seen.picks("tts"),
+        voice,
         current: Choice {
             ai: find_ai(seen, st, &body.choice.ai)
                 .map(|e| s(e, "entry_id").to_string())
                 .unwrap_or_default(),
             stt: engine("stt_engine"),
             tts: engine("tts_engine"),
+            voice: engine("tts_voice"),
         },
     }
 }
 
 /// What may be chosen on the screen (Home Assistant read once).
 pub fn choices(api: &mut dyn Api, st: &State, body: &Body) -> Result<Choices, String> {
-    Ok(choices_of(&read(api)?, st, body))
+    let seen = read(api)?;
+    Ok(choices_of(api, &seen, st, body))
 }
 
-/// The user chose `id` for `kind` ("ai", "stt", "tts") on the screen: `choice` changed (the
-/// caller saves it and `st`, then runs [`repair`]). An AI with speech-to-text or voice entities
-/// of its own preselects them; the pipeline follows at the next run even where it was changed
-/// in Home Assistant.
+/// The user chose `id` for `kind` ("ai", "stt", "tts", "voice") on the screen: `choice` changed
+/// (the caller saves it and `st`, then runs [`repair`]). An AI with speech-to-text or voice
+/// entities of its own preselects them; the pipeline follows at the next run even where it was
+/// changed in Home Assistant. Another voice engine forgets the timbre chosen for the old one
+/// (its default, or the character's, until one is chosen again).
 pub fn choose(
     api: &mut dyn Api,
     st: &mut State,
@@ -604,6 +652,10 @@ pub fn choose(
                 st.applied_stt.clear();
             }
             if let Some(tts) = seen.own(id, "tts") {
+                if choice.tts != tts {
+                    choice.voice.clear();
+                    st.applied_voice.clear();
+                }
                 choice.tts = tts;
                 st.applied_tts.clear();
             }
@@ -614,8 +666,16 @@ pub fn choose(
             st.applied_stt.clear();
         }
         "tts" => {
+            if choice.tts != id {
+                choice.voice.clear();
+                st.applied_voice.clear();
+            }
             choice.tts = id.to_string();
             st.applied_tts.clear();
+        }
+        "voice" => {
+            choice.voice = id.to_string();
+            st.applied_voice.clear();
         }
         _ => return Err(format!("choose: {kind}")),
     }
@@ -672,6 +732,37 @@ fn engine_fields(
         }
     }
     out
+}
+
+/// The timbre to put into the pipeline for its voice `engine` in `language`: the one chosen on
+/// the screen, once (only while the engine offers it); else, when the body has just put the
+/// engine in (`engine_set`) and nothing is chosen, the character's first preferred timbre the
+/// engine offers. None = the pipeline's timbre stays.
+fn voice_to_set(
+    api: &mut dyn Api,
+    st: &mut State,
+    body: &Body,
+    engine: &str,
+    language: &str,
+    engine_set: bool,
+) -> Option<String> {
+    let chosen = &body.choice.voice;
+    let choice_pending = !chosen.is_empty() && *chosen != st.applied_voice;
+    let character = engine_set && chosen.is_empty() && !body.voices.is_empty();
+    if !choice_pending && !character {
+        return None;
+    }
+    let voices = engine_voices(api, engine, language);
+    let offered = |id: &str| voices.iter().any(|v| v.id == id);
+    if choice_pending {
+        st.applied_voice = chosen.clone();
+        if !offered(chosen) {
+            log::info!(event = "ha_setup"; "voice {chosen}: not offered by {engine} ({language})");
+            return None;
+        }
+        return Some(chosen.clone());
+    }
+    body.voices.iter().find(|v| offered(v)).cloned()
 }
 
 /// A choice still to put into the pipeline: chosen, existing, not put in yet.
@@ -756,7 +847,7 @@ pub fn check_all(
     };
     let mut cache = AgentCache::default();
     let rows = rows_of(api, &seen, st, body, brain, &mut cache);
-    (rows, Some(choices_of(&seen, st, body)))
+    (rows, Some(choices_of(api, &seen, st, body)))
 }
 
 #[derive(Default)]
@@ -1225,6 +1316,7 @@ pub fn repair(
                 st.agent_sub = create_agent(api, &ai_id, &st.mcp_entry, body)?;
                 st.agent_ours = true;
                 st.prompt_written = body.prompt.clone();
+                st.web_search_done = true;
                 log::info!(event = "ha_setup"; "agent created under {}", s(&ai, "title"));
             }
             save(st);
@@ -1233,6 +1325,15 @@ pub fn repair(
                 add_tools(api, &ai_id, &st.agent_sub, &st.mcp_entry)?;
             }
             if refresh_prompt(api, st, body)? {
+                save(st);
+            }
+            // Agents the body made before it switched web search on: once.
+            if st.agent_ours && !st.web_search_done {
+                match agent_web_search(api, &ai_id, &st.agent_sub) {
+                    Ok(()) => log::info!(event = "ha_setup"; "agent: web search on"),
+                    Err(e) => log::info!(event = "ha_setup"; "agent: without web search ({e})"),
+                }
+                st.web_search_done = true;
                 save(st);
             }
         }
@@ -1275,13 +1376,33 @@ pub fn repair(
             let o = upd.as_object_mut().ok_or("pipeline")?;
             let language = s(&p, "language").to_string();
             let mut voice_moves = false;
+            let mut tts_set = false;
             for (kind, engine) in [("stt", &stt), ("tts", &tts)] {
                 if let Some(e) = engine
                     && s(&p, &format!("{kind}_engine")) != e
                 {
                     o.extend(engine_fields(api, &seen, kind, e, &language));
                     voice_moves = true;
+                    tts_set |= kind == "tts";
                 }
+            }
+            // The timbre: chosen on the screen, or the character's with a new engine.
+            let (engine, lang) = (
+                o.get("tts_engine")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                o.get("tts_language")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            );
+            let timbre = voice_to_set(api, st, body, &engine, &lang, tts_set);
+            if let Some(v) = &timbre
+                && o.get("tts_voice").and_then(Value::as_str) != Some(v)
+            {
+                o.insert("tts_voice".into(), json!(v));
+                voice_moves = true;
             }
             if agent_moves || voice_moves {
                 o.remove("id");
@@ -1294,10 +1415,11 @@ pub fn repair(
                 api.ws(upd)?;
                 log::info!(
                     event = "ha_setup";
-                    "pipeline: agent {}, speech-to-text {}, voice {}",
+                    "pipeline: agent {}, speech-to-text {}, voice {}, timbre {}",
                     if agent_moves { want_agent.as_str() } else { "kept" },
                     stt.as_deref().unwrap_or("kept"),
-                    tts.as_deref().unwrap_or("kept")
+                    tts.as_deref().unwrap_or("kept"),
+                    timbre.as_deref().unwrap_or("kept")
                 );
             }
             st.pipeline_move = false;
@@ -1347,6 +1469,20 @@ pub fn repair(
             }
             if let Some(e) = tts {
                 st.applied_tts = e;
+            }
+            // The timbre: chosen on the screen, else the character's (the body puts the engine in).
+            let (engine, lang) = (
+                new.get("tts_engine")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                new.get("tts_language")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            );
+            if let Some(v) = voice_to_set(api, st, body, &engine, &lang, true) {
+                new.insert("tts_voice".into(), json!(v));
             }
             st.pipeline_move = false;
             // The body hears its own wake word.
@@ -1505,12 +1641,14 @@ fn follow_ai_task(api: &mut dyn Api, seen: &Seen, st: &mut State) {
     }
 }
 
-/// A new agent "<name>" under the AI integration, the MCP tools attached.
+/// A new agent "<name>" under the AI integration, the MCP tools attached; web search on when
+/// the AI offers it (see [`submit_with_search`]), else as before.
 fn create_agent(api: &mut dyn Api, ai: &str, mcp: &str, body: &Body) -> Result<String, String> {
+    let start = json!({"handler": [ai, "conversation"], "show_advanced_options": false});
     let (_, f) = api.rest(
         "POST",
         "/api/config/config_entries/subentries/flow",
-        Some(json!({"handler": [ai, "conversation"], "show_advanced_options": false})),
+        Some(start.clone()),
     )?;
     let flow_id = s(&f, "flow_id").to_string();
     let fields: Vec<Value> = f
@@ -1552,45 +1690,28 @@ fn create_agent(api: &mut dyn Api, ai: &str, mcp: &str, body: &Body) -> Result<S
         .filter(|n| !data.contains_key(*n))
         .collect();
     if !unknown.is_empty() {
-        let _ = api.rest(
-            "DELETE",
-            &format!("/api/config/config_entries/subentries/flow/{flow_id}"),
-            None,
-        );
+        drop_flow(api, &flow_id);
         return Err(format!("agent: unknown required fields {unknown:?}"));
     }
     let before: Vec<String> = subentries(api, ai)?;
-    let (_, mut r) = api.rest(
-        "POST",
-        &format!("/api/config/config_entries/subentries/flow/{flow_id}"),
-        Some(Value::Object(data.clone())),
-    )?;
-    // Some integrations ask a second form (the model settings when not recommended): defaults.
-    for _ in 0..3 {
-        if s(&r, "type") != "form" {
-            break;
+    let mut restore = None;
+    let r = match submit_with_search(api, &f, &data) {
+        Ok((r, true)) => r,
+        Ok((r, false)) => {
+            restore = data.get("recommended").cloned();
+            r
         }
-        let id = s(&r, "flow_id").to_string();
-        let mut d = serde_json::Map::new();
-        for x in r
-            .get("data_schema")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let n = s(x, "name");
-            if let Some(v) = data.get(n).or(x.get("default")) {
-                d.insert(n.into(), v.clone());
-            }
-        }
-        r = api
-            .rest(
+        Err(e) => {
+            // No web search here (or the AI refused it): the agent as it always was.
+            log::info!(event = "ha_setup"; "agent: without web search ({e})");
+            let (_, f) = api.rest(
                 "POST",
-                &format!("/api/config/config_entries/subentries/flow/{id}"),
-                Some(Value::Object(d)),
-            )?
-            .1;
-    }
+                "/api/config/config_entries/subentries/flow",
+                Some(start),
+            )?;
+            submit_plain(api, s(&f, "flow_id"), &data)?
+        }
+    };
     if s(&r, "type") != "create_entry" {
         return Err(format!(
             "agent: {} {}",
@@ -1599,10 +1720,175 @@ fn create_agent(api: &mut dyn Api, ai: &str, mcp: &str, body: &Body) -> Result<S
         ));
     }
     let after = subentries(api, ai)?;
-    after
+    let sub = after
         .into_iter()
         .find(|x| !before.contains(x))
-        .ok_or_else(|| "agent: not found after creation".into())
+        .ok_or_else(|| "agent: not found after creation".to_string())?;
+    if let Some(v) = restore {
+        reconfigure_agent(api, ai, &sub, |d| {
+            d.insert("recommended".into(), v);
+        })?;
+    }
+    Ok(sub)
+}
+
+fn drop_flow(api: &mut dyn Api, flow_id: &str) {
+    let _ = api.rest(
+        "DELETE",
+        &format!("/api/config/config_entries/subentries/flow/{flow_id}"),
+        None,
+    );
+}
+
+/// The agent's first form sent with `data`; a further form (the model settings when not
+/// recommended) gets its defaults.
+fn submit_plain(
+    api: &mut dyn Api,
+    flow_id: &str,
+    data: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    let (_, mut r) = api.rest(
+        "POST",
+        &format!("/api/config/config_entries/subentries/flow/{flow_id}"),
+        Some(Value::Object(data.clone())),
+    )?;
+    for _ in 0..3 {
+        if s(&r, "type") != "form" {
+            break;
+        }
+        let id = s(&r, "flow_id").to_string();
+        let d = fill(&r, data, false);
+        r = api
+            .rest(
+                "POST",
+                &format!("/api/config/config_entries/subentries/flow/{id}"),
+                Some(Value::Object(d)),
+            )?
+            .1;
+    }
+    Ok(r)
+}
+
+/// A form's switch that turns a web search on: a boolean whose name ends in "search" or
+/// "search_tool" (`web_search`, `enable_google_search_tool`…), not its refinements (where the
+/// user is, citations…).
+fn is_search_switch(field: &Value) -> bool {
+    let n = s(field, "name");
+    (n.ends_with("search") || n.ends_with("search_tool"))
+        && (s(field, "type") == "boolean" || field.pointer("/selector/boolean").is_some())
+}
+
+/// A form's data: `ours` first, else what it shows (the current value, its default); web search
+/// switches on when `search`.
+fn fill(
+    form: &Value,
+    ours: &serde_json::Map<String, Value>,
+    search: bool,
+) -> serde_json::Map<String, Value> {
+    let mut d = serde_json::Map::new();
+    for x in form
+        .get("data_schema")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let n = s(x, "name");
+        if search && is_search_switch(x) {
+            d.insert(n.into(), json!(true));
+        } else if let Some(v) = ours
+            .get(n)
+            .or(x.pointer("/description/suggested_value"))
+            .or(x.get("default"))
+        {
+            d.insert(n.into(), v.clone());
+        }
+    }
+    d
+}
+
+fn has_field(form: &Value, test: impl Fn(&Value) -> bool) -> bool {
+    form.get("data_schema")
+        .and_then(Value::as_array)
+        .is_some_and(|a| a.iter().any(test))
+}
+
+/// An agent's flow (`first` = its first form, `data` = the body's values for it) sent with web
+/// search on. Some AIs show the switch in the first form, others only in the model settings
+/// after "recommended" is off: then "recommended" goes off and the model settings keep their
+/// defaults. Err, with the flow dropped, when no form has the switch or the AI refuses it (one
+/// that allows no search together with tools): the caller goes on without. Ok(false) = saved
+/// without a switch anywhere, only "recommended" turned off: the caller puts it back. (A web
+/// search costs extra on the AI's bill, each time the agent searches.)
+fn submit_with_search(
+    api: &mut dyn Api,
+    first: &Value,
+    data: &serde_json::Map<String, Value>,
+) -> Result<(Value, bool), String> {
+    let mut form = first.clone();
+    let mut d = fill(&form, data, true);
+    let mut found = has_field(&form, is_search_switch);
+    if !found {
+        if !has_field(&form, |x| s(x, "name") == "recommended") {
+            drop_flow(api, s(&form, "flow_id"));
+            return Err("no web search option".into());
+        }
+        d.insert("recommended".into(), json!(false));
+    }
+    for _ in 0..4 {
+        let id = s(&form, "flow_id").to_string();
+        let (_, r) = api.rest(
+            "POST",
+            &format!("/api/config/config_entries/subentries/flow/{id}"),
+            Some(Value::Object(d)),
+        )?;
+        match s(&r, "type") {
+            "create_entry" | "abort" => return Ok((r, found)),
+            "form" => {}
+            t => return Err(format!("{t} {}", r.get("errors").unwrap_or(&Value::Null))),
+        }
+        let refused = r
+            .get("errors")
+            .and_then(Value::as_object)
+            .is_some_and(|e| !e.is_empty());
+        found |= has_field(&r, is_search_switch);
+        if refused || !found {
+            drop_flow(api, s(&r, "flow_id"));
+            return Err(if refused {
+                format!("refused: {}", r["errors"])
+            } else {
+                "no web search option".into()
+            });
+        }
+        d = fill(&r, data, true);
+        form = r;
+    }
+    drop_flow(api, s(&form, "flow_id"));
+    Err("too many forms".into())
+}
+
+/// Web search switched on in the agent the body made, its other settings kept (see
+/// [`submit_with_search`]).
+fn agent_web_search(api: &mut dyn Api, ai: &str, sub: &str) -> Result<(), String> {
+    let (_, f) = api.rest(
+        "POST",
+        "/api/config/config_entries/subentries/flow",
+        Some(
+            json!({"handler": [ai, "conversation"], "show_advanced_options": false,
+                    "subentry_id": sub, "source": "reconfigure"}),
+        ),
+    )?;
+    let before = fill(&f, &serde_json::Map::new(), false).remove("recommended");
+    match submit_with_search(api, &f, &serde_json::Map::new())? {
+        (_, true) => Ok(()),
+        (_, false) => {
+            if let Some(v) = before {
+                reconfigure_agent(api, ai, sub, |d| {
+                    d.insert("recommended".into(), v);
+                })?;
+            }
+            Err("no web search option".into())
+        }
+    }
 }
 
 fn subentries(api: &mut dyn Api, ai: &str) -> Result<Vec<String>, String> {
@@ -1943,6 +2229,8 @@ pub struct SetupConfig {
     pub wyoming_port: u16,
     pub mcp_port: u16,
     pub prompt: String,
+    /// The character's preferred voices ([`Body::voices`]).
+    pub voices: Vec<String>,
     /// The brain's status (None: it does not answer).
     pub brain: BrainFn,
     /// Home Assistant's addresses as the satellite's server lets them in.
@@ -1980,6 +2268,7 @@ fn body_of(cfg: &SetupConfig) -> Result<Body, String> {
         mcp_port: cfg.mcp_port,
         prompt: cfg.prompt.clone(),
         choice: cfg.settings.assistant(),
+        voices: cfg.voices.clone(),
     })
 }
 
@@ -2211,6 +2500,14 @@ mod tests {
         reloads: Vec<String>,
         writes: u32,
         ai_task_pref: Option<String>,
+        /// The timbres of a voice engine (`tts/engine/voices`).
+        voices: HashMap<String, Vec<&'static str>>,
+        /// Where an AI keeps its web search switch: "first" (the first form), "model" (the
+        /// model settings, shown when not recommended), "refuse" (first form, refused with
+        /// tools attached); none = no switch.
+        search: HashMap<String, &'static str>,
+        /// A flow on its second form: the first form's data.
+        steps: HashMap<String, Value>,
     }
 
     impl FakeHa {
@@ -2365,11 +2662,36 @@ mod tests {
                 }
                 f
             };
-            json!([
+            let mut form = json!([
                 field("name", true),
                 field("prompt", false),
                 field("llm_hass_api", false),
                 field("recommended", false)
+            ]);
+            if matches!(self.search.get(ai), Some(&"first" | &"refuse")) {
+                let mut f = field("enable_google_search_tool", false);
+                f["type"] = json!("boolean");
+                f["default"] = json!(false);
+                form.as_array_mut().unwrap().push(f);
+            }
+            form
+        }
+
+        /// The model settings form (OpenAI's shape): the switch and its refinements.
+        fn model_form(data: &Value) -> Value {
+            let field = |n: &str, ty: &str, default: Value| {
+                let mut f = json!({"name": n, "type": ty, "default": default});
+                if let Some(v) = data.get(n) {
+                    f["description"] = json!({"suggested_value": v});
+                }
+                f
+            };
+            json!([
+                field("reasoning_effort", "select", json!("low")),
+                field("web_search", "boolean", json!(false)),
+                field("web_search_context_size", "select", json!("medium")),
+                field("web_search_user_location", "boolean", json!(false)),
+                field("web_search_inline_citations", "boolean", json!(false))
             ])
         }
     }
@@ -2451,6 +2773,18 @@ mod tests {
                     self.writes += 1;
                     self.ai_task_pref = msg["gen_data_entity_id"].as_str().map(String::from);
                     json!({"gen_data_entity_id": self.ai_task_pref})
+                }
+                "tts/engine/voices" => {
+                    assert_eq!(msg["language"], "it-IT");
+                    let e = msg["engine_id"].as_str().unwrap();
+                    match self.voices.get(e) {
+                        Some(v) => json!({"voices": v.iter().map(|id| {
+                            let mut name = id.to_string();
+                            name[..1].make_ascii_uppercase();
+                            json!({"voice_id": id, "name": name})
+                        }).collect::<Vec<_>>()}),
+                        None => json!({"voices": null}),
+                    }
                 }
                 "stt/engine/list" | "tts/engine/list" => {
                     let kind = &t[..3];
@@ -2560,6 +2894,7 @@ mod tests {
                     }
                     ("DELETE", ["flow", id] | ["subentries", "flow", id]) => {
                         self.flows.remove(*id);
+                        self.steps.remove(*id);
                         json!(null)
                     }
                     ("POST", ["entry", id, "reload"]) => {
@@ -2580,6 +2915,43 @@ mod tests {
                     }
                     ("POST", ["subentries", "flow", id]) => {
                         let (ai, sub) = self.flows.remove(*id).ok_or("no flow")?;
+                        let mut body = body;
+                        let mode = self.search.get(&ai).copied().unwrap_or("");
+                        if let Some(mut first) = self.steps.remove(*id) {
+                            // The model settings: merged into the first form's data.
+                            for (k, v) in body.as_object().unwrap() {
+                                first[k] = v.clone();
+                            }
+                            body = first;
+                        } else if mode == "model" && body["recommended"] == false {
+                            let old = sub
+                                .as_ref()
+                                .and_then(|s| {
+                                    self.subs[&ai].iter().find(|x| &x["subentry_id"] == s)
+                                })
+                                .map(|x| x["data"].clone())
+                                .unwrap_or(json!({}));
+                            self.steps.insert(id.to_string(), body);
+                            self.flows.insert(id.to_string(), (ai, sub));
+                            return Ok((
+                                200,
+                                json!({"type": "form", "flow_id": id, "errors": {},
+                                "data_schema": FakeHa::model_form(&old)}),
+                            ));
+                        } else if mode == "refuse"
+                            && body["enable_google_search_tool"] == true
+                            && body["llm_hass_api"]
+                                .as_array()
+                                .is_some_and(|a| !a.is_empty())
+                        {
+                            let form = self.agent_form(&ai, sub.as_deref());
+                            self.flows.insert(id.to_string(), (ai, sub));
+                            return Ok((
+                                200,
+                                json!({"type": "form", "flow_id": id, "data_schema": form,
+                                "errors": {"enable_google_search_tool": "invalid_google_search_option"}}),
+                            ));
+                        }
                         self.writes += 1;
                         match sub {
                             Some(sub) => {
@@ -2633,6 +3005,7 @@ mod tests {
             mcp_port: 10701,
             prompt: "Sei Alfred.".into(),
             choice: Choice::default(),
+            voices: Vec::new(),
         }
     }
 
@@ -2714,7 +3087,8 @@ mod tests {
             Choice {
                 ai: openai.clone(),
                 stt: "stt.openai".into(),
-                tts: "tts.openai".into()
+                tts: "tts.openai".into(),
+                voice: String::new(),
             }
         );
         assert_eq!(st.ai_entry, openai);
@@ -2805,6 +3179,249 @@ mod tests {
         assert!(ha.subs.values().all(|v| v.is_empty()));
         assert_eq!(ha.pipelines.len(), 1);
         assert_eq!(ha.ai_task_pref, None);
+    }
+
+    #[test]
+    fn the_voice_is_chosen_among_the_engines_and_follows_it() {
+        let mut ha = FakeHa::new();
+        let openai = ha.add_provider("openai_conversation", "OpenAI", "openai", true);
+        let gemini = ha.add_provider(
+            "google_generative_ai_conversation",
+            "Google Gemini",
+            "gemini",
+            true,
+        );
+        ha.voices
+            .insert("tts.openai".into(), vec!["marin", "cedar", "onyx"]);
+        ha.voices
+            .insert("tts.gemini".into(), vec!["kore", "charon"]);
+        ha.voices.insert("tts.cloud".into(), vec!["v"]);
+        let file = tmp("voice");
+        let mut st = State::default();
+        let mut b = body();
+        choose(&mut ha, &mut st, &mut b.choice, "ai", &openai).unwrap();
+        repair(
+            &mut ha,
+            &mut st,
+            &file,
+            &b,
+            brain,
+            Scope::Missing,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(ha.alfred()["tts_voice"], Value::Null, "no character voices");
+
+        // The engine's voices, in Home Assistant's order; none chosen = its default.
+        let c = choices(&mut ha, &st, &b).unwrap();
+        let ids = |v: &[Pick]| v.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&c.voice), ["marin", "cedar", "onyx"]);
+        assert_eq!(c.voice[1].name, "Cedar");
+        assert_eq!(c.current.voice, "");
+
+        // A voice picked on the screen goes into the pipeline, once.
+        pick(&mut ha, &mut st, &file, &mut b, "voice", "onyx");
+        assert_eq!(b.choice.voice, "onyx");
+        assert_eq!(ha.alfred()["tts_voice"], "onyx");
+        assert_eq!(ha.alfred()["tts_engine"], "tts.openai", "the engine stays");
+        assert_eq!(
+            choices(&mut ha, &st, &b).unwrap().current_name("voice"),
+            "Onyx"
+        );
+        let mut changed = ha.alfred();
+        changed["tts_voice"] = json!("marin");
+        changed["type"] = json!("assist_pipeline/pipeline/update");
+        changed["pipeline_id"] = changed["id"].clone();
+        ha.ws(changed).unwrap();
+        repair(
+            &mut ha,
+            &mut st,
+            &file,
+            &b,
+            brain,
+            Scope::Missing,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(
+            ha.alfred()["tts_voice"],
+            "marin",
+            "changed in Home Assistant: stays"
+        );
+
+        // Another engine: the voice chosen for the old one is forgotten.
+        pick(&mut ha, &mut st, &file, &mut b, "tts", "tts.gemini");
+        assert_eq!(b.choice.voice, "");
+        let p = ha.alfred();
+        assert_eq!(
+            (p["tts_engine"].as_str(), p["tts_voice"].as_str()),
+            (Some("tts.gemini"), None),
+            "the engine's default"
+        );
+        assert_eq!(
+            ids(&choices(&mut ha, &st, &b).unwrap().voice),
+            ["kore", "charon"]
+        );
+        // A voice the engine does not have is not sent.
+        pick(&mut ha, &mut st, &file, &mut b, "voice", "onyx");
+        assert_eq!(ha.alfred()["tts_voice"], Value::Null);
+        assert_eq!(st.applied_voice, "onyx", "tried once");
+
+        // An engine with one voice: nothing to choose.
+        pick(&mut ha, &mut st, &file, &mut b, "ai", &gemini);
+        pick(&mut ha, &mut st, &file, &mut b, "tts", "tts.cloud");
+        assert_eq!(choices(&mut ha, &st, &b).unwrap().voice.len(), 1);
+        assert_eq!(State::load(&file), st);
+    }
+
+    #[test]
+    fn the_characters_voice_when_the_body_sets_the_engine() {
+        let mut ha = FakeHa::new();
+        let openai = ha.add_provider("openai_conversation", "OpenAI", "openai", true);
+        ha.voices
+            .insert("tts.openai".into(), vec!["marin", "cedar", "onyx"]);
+        ha.voices.insert("tts.cloud".into(), vec!["v", "w"]);
+        let file = tmp("voice-character");
+        let mut st = State::default();
+        let mut b = Body {
+            voices: vec!["charon".into(), "onyx".into(), "cedar".into()],
+            ..body()
+        };
+        // The pipeline made with the preferred one's engine: the first of the character's it has
+        // (none here: the preferred pipeline's voice stays).
+        repair(
+            &mut ha,
+            &mut st,
+            &file,
+            &b,
+            brain,
+            Scope::Missing,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(ha.alfred()["tts_voice"], "v");
+        // Another engine put in by the body: the character's.
+        pick(&mut ha, &mut st, &file, &mut b, "ai", &openai);
+        assert_eq!(ha.alfred()["tts_voice"], "onyx");
+        // The user's choice wins.
+        pick(&mut ha, &mut st, &file, &mut b, "voice", "marin");
+        assert_eq!(ha.alfred()["tts_voice"], "marin");
+        // Without a choice and with the pipeline in place, the body leaves the voice alone.
+        b.choice.voice.clear();
+        st.applied_voice.clear();
+        repair(
+            &mut ha,
+            &mut st,
+            &file,
+            &b,
+            brain,
+            Scope::Missing,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(ha.alfred()["tts_voice"], "marin");
+
+        // A new pipeline with an engine that has one of the character's voices.
+        let mut ha = FakeHa::new();
+        ha.voices.insert("tts.cloud".into(), vec!["v", "cedar"]);
+        let mut st = State::default();
+        repair(
+            &mut ha,
+            &mut st,
+            &file,
+            &b,
+            brain,
+            Scope::Missing,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(ha.alfred()["tts_voice"], "cedar");
+    }
+
+    #[test]
+    fn web_search_on_where_the_ai_has_it() {
+        let file = tmp("search");
+        let data = |ha: &FakeHa, ai: &str| ha.subs[ai][0]["data"].clone();
+        // In the model settings (OpenAI's shape): "recommended" off, the switch on, its
+        // refinements as they were.
+        let mut ha = FakeHa::new();
+        let ai = ha.add_ai();
+        ha.search.insert(ai.clone(), "model");
+        let mut st = State::default();
+        run(&mut ha, &mut st, &file, Scope::Missing);
+        let d = data(&ha, &ai);
+        assert_eq!(d["web_search"], true);
+        assert_eq!(d["recommended"], false);
+        assert_eq!(d["web_search_user_location"], false);
+        assert_eq!(d["web_search_inline_citations"], false);
+        assert_eq!(d["reasoning_effort"], "low");
+        assert_eq!(d["prompt"], "Sei Alfred.");
+        assert!(st.web_search_done);
+        assert!(
+            ha.flows.is_empty() && ha.steps.is_empty(),
+            "no flow left open"
+        );
+
+        // In the first form.
+        let mut ha = FakeHa::new();
+        let ai = ha.add_ai();
+        ha.search.insert(ai.clone(), "first");
+        let mut st = State::default();
+        run(&mut ha, &mut st, &file, Scope::Missing);
+        let d = data(&ha, &ai);
+        assert_eq!(
+            (&d["enable_google_search_tool"], &d["recommended"]),
+            (&json!(true), &json!(true))
+        );
+
+        // Refused with tools attached: the agent as before.
+        let mut ha = FakeHa::new();
+        let ai = ha.add_ai();
+        ha.search.insert(ai.clone(), "refuse");
+        let mut st = State::default();
+        run(&mut ha, &mut st, &file, Scope::Missing);
+        assert_eq!(ha.subs[&ai].len(), 1);
+        let d = data(&ha, &ai);
+        assert_ne!(d["enable_google_search_tool"], true);
+        assert_eq!(d["llm_hass_api"], json!([format!("mcp-{}", st.mcp_entry)]));
+        assert!(ha.flows.is_empty());
+
+        // No switch anywhere: "recommended" stays on.
+        let mut ha = FakeHa::new();
+        let ai = ha.add_ai();
+        let mut st = State::default();
+        run(&mut ha, &mut st, &file, Scope::Missing);
+        assert_eq!(ha.subs[&ai].len(), 1);
+        assert_eq!(data(&ha, &ai)["recommended"], true);
+
+        // An agent the body made before: switched on at the next repair, once.
+        let mut ha = FakeHa::new();
+        let ai = ha.add_ai();
+        let mut st = State::default();
+        run(&mut ha, &mut st, &file, Scope::Missing);
+        ha.search.insert(ai.clone(), "model");
+        st.web_search_done = false;
+        run(&mut ha, &mut st, &file, Scope::Missing);
+        let d = data(&ha, &ai);
+        assert_eq!(
+            (&d["web_search"], &d["prompt"]),
+            (&json!(true), &json!("Sei Alfred."))
+        );
+        assert!(st.web_search_done);
+        assert_eq!(State::load(&file).web_search_done, true);
+        // Switched off by the user: it stays off.
+        ha.subs.get_mut(&ai).unwrap()[0]["data"]["web_search"] = json!(false);
+        run(&mut ha, &mut st, &file, Scope::Missing);
+        assert_eq!(data(&ha, &ai)["web_search"], false);
+        // Not the body's agent: never touched.
+        let mut st2 = State {
+            web_search_done: false,
+            agent_ours: false,
+            ..st.clone()
+        };
+        run(&mut ha, &mut st2, &file, Scope::Missing);
+        assert_eq!(data(&ha, &ai)["web_search"], false);
+        assert!(!st2.web_search_done);
     }
 
     #[test]

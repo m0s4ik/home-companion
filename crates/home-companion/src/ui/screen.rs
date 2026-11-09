@@ -148,7 +148,8 @@ fn word(t: &Locale, key: &str, name: &str) -> String {
 }
 
 /// The choice rows of the Home Assistant page: (kind, label, the one in use) for each kind with
-/// something to choose between (two options or more); "—" when none is in use.
+/// something to choose between (two options or more); "—" when none is in use (the voice: the
+/// engine's own default).
 fn ha_picks(
     c: &crate::ha::setup::Choices,
     text: impl Fn(&str) -> String,
@@ -161,7 +162,11 @@ fn ha_picks(
             (
                 k.to_string(),
                 text(&format!("ha_choice_{k}")),
-                if now.is_empty() { "—".into() } else { now },
+                match (now.is_empty(), *k) {
+                    (true, "voice") => text("ha_choice_voice_default"),
+                    (true, _) => "—".into(),
+                    _ => now,
+                },
             )
         })
         .collect()
@@ -338,6 +343,8 @@ pub struct Demo {
     pub mic_hud: Option<bool>,
     /// `--state thinking-answer`: Home Assistant's written answer is in, its voice not yet.
     pub answer_early: bool,
+    /// `--state ha-pick` / `ha-pick-voice`: what the choice page lists ("ai", "voice").
+    pub pick: &'static str,
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
@@ -622,7 +629,15 @@ impl Demo {
                 ha: 2,
                 ..page("ha")
             },
-            "ha-pick" => page("ha-pick"),
+            "ha-pick" => Demo {
+                pick: "ai",
+                ..page("ha-pick")
+            },
+            // Not a golden one: the voices of the voice engine in use.
+            "ha-pick-voice" => Demo {
+                pick: "voice",
+                ..page("ha-pick")
+            },
             "usage" => page("usage"),
             "suspend" => Demo {
                 dialog: "suspend",
@@ -2606,14 +2621,23 @@ impl<S: Screen> Ui<S> {
                     ("tts.home_assistant_cloud", "Home Assistant Cloud"),
                     ("tts.openai_tts", "OpenAI TTS"),
                 ]),
+                voice: picks(&[
+                    ("marin", "Marin"),
+                    ("cedar", "Cedar"),
+                    ("alloy", "Alloy"),
+                    ("ash", "Ash"),
+                    ("echo", "Echo"),
+                    ("onyx", "Onyx"),
+                ]),
                 current: crate::ha::setup::Choice {
                     ai: "openai".into(),
                     stt: "stt.openai_stt".into(),
                     tts: "tts.openai_tts".into(),
+                    voice: "cedar".into(),
                 },
             };
             if d.page == "ha-pick" {
-                p.picking = "ai".into();
+                p.picking = d.pick.into();
             }
             if d.ha == 1 {
                 p.busy = true;
@@ -4979,10 +5003,12 @@ mod tests {
             ai: vec![pick("a", "Gemini"), pick("b", "Claude")],
             stt: vec![pick("stt.one", "Cloud")],
             tts: vec![pick("tts.one", "Cloud"), pick("tts.two", "Piper")],
+            voice: vec![pick("cedar", "Cedar"), pick("marin", "Marin")],
             current: Choice {
                 ai: "b".into(),
                 stt: "stt.one".into(),
                 tts: String::new(),
+                voice: String::new(),
             },
         };
         let rows = ha_picks(&c, |k| format!("[{k}]"));
@@ -4991,6 +5017,11 @@ mod tests {
             [
                 ("ai".into(), "[ha_choice_ai]".into(), "Claude".into()),
                 ("tts".into(), "[ha_choice_tts]".into(), "—".into()),
+                (
+                    "voice".into(),
+                    "[ha_choice_voice]".into(),
+                    "[ha_choice_voice_default]".into()
+                ),
             ]
         );
         assert!(ha_picks(&Choices::default(), |k| k.into()).is_empty());
@@ -5002,6 +5033,7 @@ mod tests {
                     assert_ne!(l.text(&key), key, "{lang}");
                 }
             }
+            assert_ne!(l.text("ha_choice_voice_default"), "ha_choice_voice_default");
         }
     }
 

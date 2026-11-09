@@ -172,8 +172,9 @@ impl Settings {
         self.save_logged(key, v.into());
     }
 
-    /// Home Assistant page → the AI, the speech-to-text and the voice chosen on the screen
-    /// (`[assistant] ai = <config entry>, stt = "stt.…", tts = "tts.…"`); empty = not chosen.
+    /// Home Assistant page → the AI, the speech-to-text, the voice engine and its voice chosen on
+    /// the screen (`[assistant] ai = <config entry>, stt = "stt.…", tts = "tts.…", voice = "<id>"`);
+    /// empty = not chosen.
     pub fn assistant(&self) -> crate::ha::setup::Choice {
         let t = self
             .table()
@@ -184,12 +185,18 @@ impl Settings {
             ai: get("ai"),
             stt: get("stt"),
             tts: get("tts"),
+            voice: get("voice"),
         }
     }
 
     pub fn save_assistant(&self, c: &crate::ha::setup::Choice) {
         let mut t = toml::Table::new();
-        for (k, v) in [("ai", &c.ai), ("stt", &c.stt), ("tts", &c.tts)] {
+        for (k, v) in [
+            ("ai", &c.ai),
+            ("stt", &c.stt),
+            ("tts", &c.tts),
+            ("voice", &c.voice),
+        ] {
             if !v.is_empty() {
                 t.insert(k.into(), v.as_str().into());
             }
@@ -367,6 +374,7 @@ mod tests {
             ai: "01ENTRY".into(),
             stt: "stt.example".into(),
             tts: String::new(),
+            voice: "cedar".into(),
         };
         s.save_assistant(&c);
         assert_eq!(s.assistant(), c);

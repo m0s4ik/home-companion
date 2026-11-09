@@ -814,6 +814,7 @@ impl Config {
             wyoming_port: self.bind_addr()?.port(),
             mcp_port: self.home_assistant.mcp_port,
             prompt: crate::ha::setup::agent_prompt(character, &self.character.language),
+            voices: character::preferred_voices(character),
             brain: crate::brain_link::brain_info,
             learned: None,
             settings: crate::settings::Settings::in_dir(&self.state_dir()),
