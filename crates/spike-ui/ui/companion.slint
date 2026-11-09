@@ -794,6 +794,8 @@ export component CompanionWindow inherits Window {
     callback ha-repair(string);
     callback ha-unlink();
     callback ha-ok();
+    // The failure's pop-up closed.
+    callback ha-dismiss();
     // A choice of the Home Assistant page opened (its kind), one picked (its id).
     callback ha-pick(string);
     callback ha-picked(string);
@@ -2156,39 +2158,14 @@ export component CompanionWindow inherits Window {
             ha-col := VerticalLayout {
                 alignment: start;
                 spacing: 8px;
-                if !root.ha-done: Text {
-                    text: root.ha-line != "" ? root.ha-line : root.t.ha-intro;
+                // Only the introduction, before the first setup: what the setup is doing is in
+                // the pop-up, "all set" is said by the character, a failure is a pop-up (nothing
+                // here changes size, the rows stay put).
+                if !root.ha-configured: Text {
+                    text: root.t.ha-intro;
                     font-size: 22px;
-                    color: root.ha-busy ? Theme.accent : Theme.text-2;
+                    color: Theme.text-2;
                     wrap: word-wrap;
-                }
-                // The final OK: a green line that cannot be missed.
-                // "All set" is said by the character now (it bows): the box only with words in it.
-                if root.ha-done && root.ha-line != "": Rectangle {
-                    height: 72px;
-                    border-radius: 16px;
-                    background: Theme.ok.with-alpha(0.16);
-                    border-width: 2px;
-                    border-color: Theme.ok;
-                    Icon {
-                        x: 20px;
-                        y: 22px;
-                        width: 28px;
-                        height: 28px;
-                        source: Icons.check-28;
-                        color: Theme.ok;
-                    }
-                    Text {
-                        x: 60px;
-                        width: parent.width - 80px;
-                        height: parent.height;
-                        text: root.ha-line;
-                        font-size: 26px;
-                        font-weight: 500;
-                        color: Theme.text;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
                 }
                 if root.ha-picks.length > 0: Group {
                     height: root.ha-picks.length * 76px;
@@ -3991,6 +3968,18 @@ export component CompanionWindow inherits Window {
 
     // ---- Home Assistant's setup at work (after a choice, Configure, Check and repair): the
     // pop-up with a turning icon over the page, nothing to touch until it is done.
+    // ---- Home Assistant's setup ended badly: its reason, until OK.
+    if !root.ha-busy && root.ha-line != "" && root.desk && (root.desk-page == "ha" || root.desk-page == "ha-pick"): Dialog {
+        icon: Icons.alert-circle-64;
+        icon-color: Theme.danger;
+        title: root.ha-line;
+        confirm: root.t.ok;
+        centre-x: root.width / 2;
+        answered(yes) => {
+            root.ha-dismiss();
+        }
+    }
+
     if root.ha-popup && root.desk && (root.desk-page == "ha" || root.desk-page == "ha-pick"): Dialog {
         centre-x: root.width / 2;
         icon: Icons.refresh-44;

@@ -322,6 +322,7 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn on_ha_picked(&self, f: impl Fn(String) + 'static);
     /// The OK after "All set".
     fn on_ha_ok(&self, f: impl Fn() + 'static);
+    fn on_ha_dismiss(&self, f: impl Fn() + 'static);
     /// v0.2: a house command went through (the "done" card: shown, its line, with Undo).
     fn set_done(&self, shown: bool, line: &str, undo: bool);
     /// The big Undo pop-up (before the card): up, its time left (1..0).
@@ -1241,6 +1242,9 @@ macro_rules! impl_screen {
             }
             fn on_ask_answered(&self, f: impl Fn(bool) + 'static) {
                 $m::CompanionWindow::on_ask_answered(self, f)
+            }
+            fn on_ha_dismiss(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_ha_dismiss(self, f)
             }
             fn on_ha_ok(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_ha_ok(self, f)

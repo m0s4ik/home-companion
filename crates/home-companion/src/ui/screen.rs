@@ -1651,6 +1651,13 @@ impl<S: Screen> Ui<S> {
             }
         });
         let ui = Rc::downgrade(self);
+        let ui2 = Rc::downgrade(self);
+        self.screen.on_ha_dismiss(move || {
+            if let Some(ui) = ui2.upgrade() {
+                ui.ha_page.borrow_mut().status.clear();
+                ui.render_ha();
+            }
+        });
         self.screen.on_ha_ok(move || {
             if let Some(ui) = ui.upgrade() {
                 let after_link = {
@@ -4064,11 +4071,8 @@ impl<S: Screen> Ui<S> {
                 repair: r.repair,
             })
             .collect();
-        let status = if p.busy {
-            word(&l, "ha_working", name)
-        } else {
-            p.status.clone()
-        };
+        // The line is only a failure now (the pop-up says what it is doing).
+        let status = if p.busy { String::new() } else { p.status.clone() };
         let picks = ha_picks(&p.choices, |k| word(&l, k, name));
         if !p.picking.is_empty() {
             let rows: Vec<(String, String, bool)> = p
