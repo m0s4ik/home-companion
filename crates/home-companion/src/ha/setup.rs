@@ -2214,6 +2214,8 @@ pub enum SetupCmd {
     Choose(String, String),
     /// Remove what the body made, then the link.
     Unlink,
+    /// The AI's precise use, when its integration counts it (ha/usage.rs); quiet, no "busy".
+    Usage,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2229,6 +2231,8 @@ pub enum SetupEvent {
     Attention(bool),
     /// Done: what the body made is gone, the link too.
     Unlinked,
+    /// The AI's precise use (None: its integration does not count it, the body estimates).
+    Usage(Option<crate::usage::Precise>),
 }
 
 pub struct SetupConfig {
@@ -2309,6 +2313,7 @@ fn run(cfg: SetupConfig, cmds: Receiver<SetupCmd>, ev: Sender<SetupEvent>, stop:
     const DAY: u64 = 24 * 3600;
     let started = Instant::now();
     let mut started_check_done = false;
+    let mut usage = super::usage::Tracker::default();
     loop {
         if stop() {
             return;
@@ -2335,6 +2340,10 @@ fn run(cfg: SetupConfig, cmds: Receiver<SetupCmd>, ev: Sender<SetupEvent>, stop:
             }
             continue;
         };
+        if cmd == SetupCmd::Usage {
+            usage_run(&cfg, &st, &mut usage, &ev);
+            continue;
+        }
         if ev.send(SetupEvent::Busy(true)).is_err() {
             return;
         }
@@ -2395,6 +2404,8 @@ fn run(cfg: SetupConfig, cmds: Receiver<SetupCmd>, ev: Sender<SetupEvent>, stop:
                         send_choices(&cfg, &ev, c);
                     }
                 }
+                // Answered above, without "busy".
+                SetupCmd::Usage => {}
                 SetupCmd::Unlink => {
                     let errors = unlink(&mut api, &st);
                     if errors.is_empty() {
@@ -2428,6 +2439,28 @@ fn run(cfg: SetupConfig, cmds: Receiver<SetupCmd>, ev: Sender<SetupEvent>, stop:
         if ev.send(SetupEvent::Busy(false)).is_err() {
             return;
         }
+    }
+}
+
+/// The AI's precise use to the screen; nothing sent when Home Assistant does not answer (the
+/// screen keeps what it has).
+fn usage_run(
+    cfg: &SetupConfig,
+    st: &State,
+    tracker: &mut super::usage::Tracker,
+    ev: &Sender<SetupEvent>,
+) {
+    if !cfg.auth.is_linked() || st.ai_entry.is_empty() {
+        let _ = ev.send(SetupEvent::Usage(None));
+        return;
+    }
+    let r = connect(cfg)
+        .and_then(|mut api| tracker.refresh(&mut api, &st.ai_entry, auth::now_secs() as i64));
+    match r {
+        Ok(p) => {
+            let _ = ev.send(SetupEvent::Usage(p));
+        }
+        Err(e) => log::info!(event = "usage"; "precise use: {e}"),
     }
 }
 

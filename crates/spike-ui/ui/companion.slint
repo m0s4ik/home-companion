@@ -229,9 +229,6 @@ export struct Words {
     ha_working_short: string,
     ha_working: string,
     ha_working_wait: string,
-    usage_today: string,
-    usage_month: string,
-    usage_note: string,
     mirror: string,
     mirror_back: string,
     mirror_waiting: string,
@@ -611,11 +608,14 @@ export component CompanionWindow inherits Window {
     // "oggi ~0.08 $ · mese ~1.4 $"; "" until there is something to count) and its page.
     in property <string> usage-label: "";
     in property <string> usage-line: "";
+    in property <string> usage-today-label: "";
     in property <string> usage-today: "";
     in property <string> usage-month: "";
-    in property <string> usage-today-detail: "";
-    in property <string> usage-month-detail: "";
+    in property <string> usage-detail: "";
+    in property <string> usage-chart-label: "";
     in property <string> usage-max: "";
+    in property <string> usage-note: "";
+    in property <bool> usage-precise: false;
     in property <[UsageBar]> usage-bars: [];
     // Music (AirPlay later): nothing plays yet, so its tile, card and page stay hidden.
     in property <bool> music-playing: false;
@@ -2246,7 +2246,8 @@ export component CompanionWindow inherits Window {
         }
     }
 
-    // ---- Home Assistant → the cloud services' use: today and this month, the last 30 days.
+    // ---- Home Assistant → the AI's use: today large, this month, the last 30 days, and where the
+    // numbers come from (an estimate of the body, or the integration that counts them).
     if root.desk && root.desk-page == "usage": Rectangle {
         PageHeader {
             x: Grid.col-x;
@@ -2257,97 +2258,104 @@ export component CompanionWindow inherits Window {
                 root.page = "ha";
             }
         }
-        // The two totals.
-        for t[i] in [
-            { label: root.t.usage-today, value: root.usage-today, detail: root.usage-today-detail },
-            { label: root.t.usage-month, value: root.usage-month, detail: root.usage-month-detail },
-        ]: Rectangle {
-            x: Grid.col-x + i * (Grid.col-width + 24px) / 2;
+        SectionTitle {
+            x: Grid.col-x + 8px;
             y: Grid.page-y;
-            width: (Grid.col-width - 24px) / 2;
-            height: 148px;
-            border-radius: Grid.card-radius;
-            background: Theme.surface;
-            Text {
-                x: 24px;
-                y: 16px;
-                text: t.label;
-                font-size: 20px;
-                color: Theme.text-3;
-            }
-            Text {
-                x: 24px;
-                y: 40px;
-                text: t.value;
-                font-family: "Inter Tnum";
-                font-size: 40px;
-                color: Theme.text;
-            }
-            Text {
-                x: 24px;
-                y: 92px;
-                width: parent.width - 48px;
-                text: t.detail;
-                font-size: 18px;
-                color: Theme.text-2;
-                wrap: word-wrap;
-            }
+            text: root.usage-today-label;
         }
-        // The last 30 days, today on the right; the tallest bar's amount on top.
-        chart := Rectangle {
+        Text {
             x: Grid.col-x;
-            y: Grid.page-y + 148px + 20px;
-            width: Grid.col-width;
-            height: 260px;
-            border-radius: Grid.card-radius;
-            background: Theme.surface;
-            property <length> pad: 24px;
-            property <length> plot-h: self.height - 2 * self.pad - 28px - 24px;
-            property <length> step: (self.width - 2 * self.pad) / max(1, root.usage-bars.length);
-            Text {
-                x: chart.pad;
-                y: 12px;
+            y: Grid.page-y + 36px;
+            text: root.usage-today;
+            font-family: "Inter Tnum";
+            font-size: 96px;
+            font-weight: 300;
+            color: Theme.text;
+        }
+        Text {
+            x: Grid.col-x + 8px;
+            y: Grid.page-y + 156px;
+            text: root.usage-month;
+            font-family: "Inter Tnum";
+            font-size: 24px;
+            color: Theme.text-2;
+        }
+        if root.usage-detail != "": Text {
+            x: Grid.col-x + 8px;
+            y: Grid.page-y + 190px;
+            width: Grid.col-width - 16px;
+            text: root.usage-detail;
+            font-family: "Inter Tnum";
+            font-size: 20px;
+            color: Theme.text-3;
+            overflow: elide;
+        }
+        // The last 30 days: thin bars on a baseline, today gold, the tallest day's amount on a
+        // faint top line, the day of the month under today and every week before it.
+        chart := Rectangle {
+            x: Grid.col-x + 8px;
+            y: Grid.page-y + 236px;
+            width: Grid.col-width - 16px;
+            height: 268px;
+            property <length> top: 72px;
+            property <length> plot-h: 156px;
+            property <length> step: self.width / max(1, root.usage-bars.length);
+            property <length> bar-w: min(10px, self.step * 0.5);
+            SectionTitle {
+                x: 0;
+                y: 0;
+                text: root.usage-chart-label;
+            }
+            if root.usage-max != "": Rectangle {
+                y: chart.top;
+                height: 1px;
+                background: Theme.line.with-alpha(0.6);
+            }
+            if root.usage-max != "": Text {
+                x: parent.width - self.width;
+                y: chart.top - 26px;
                 text: root.usage-max;
                 font-family: "Inter Tnum";
                 font-size: 18px;
                 color: Theme.text-3;
             }
             Rectangle {
-                x: chart.pad;
-                y: chart.pad + 24px + chart.plot-h;
-                width: parent.width - 2 * chart.pad;
-                height: 1px;
+                y: chart.top + chart.plot-h;
+                height: 2px;
                 background: Theme.line;
             }
             for b[i] in root.usage-bars: Rectangle {
-                x: chart.pad + i * chart.step + chart.step * 0.15;
-                y: chart.pad + 24px;
-                width: chart.step * 0.7;
-                height: chart.plot-h + 28px;
-                Rectangle {
+                x: i * chart.step;
+                y: chart.top;
+                width: chart.step;
+                height: chart.plot-h + 40px;
+                property <bool> today: i == root.usage-bars.length - 1;
+                if b.height > 0: Rectangle {
+                    x: (parent.width - chart.bar-w) / 2;
                     y: chart.plot-h - self.height;
-                    width: parent.width;
-                    height: max(b.height > 0 ? 3px : 0px, chart.plot-h * b.height);
-                    border-radius: 3px;
-                    background: i == root.usage-bars.length - 1 ? Theme.accent : Theme.accent.with-alpha(0.55);
+                    width: chart.bar-w;
+                    height: max(3px, chart.plot-h * b.height);
+                    border-radius: chart.bar-w / 2;
+                    background: parent.today ? Theme.accent : Theme.text-3.with-alpha(0.55);
                 }
-                Text {
+                if b.label != "": Text {
                     x: (parent.width - self.width) / 2;
-                    y: chart.plot-h + 6px;
+                    y: chart.plot-h + 10px;
                     text: b.label;
                     font-family: "Inter Tnum";
-                    font-size: 16px;
-                    color: Theme.text-3;
+                    font-size: 18px;
+                    color: parent.today ? Theme.accent : Theme.text-3;
                 }
             }
         }
+        // Where the numbers come from: the way to precise ones, or that they are.
         Text {
-            x: Grid.col-x;
-            y: chart.y + chart.height + 16px;
-            width: Grid.col-width;
-            text: root.t.usage-note;
-            font-size: 18px;
-            color: Theme.text-3;
+            x: Grid.col-x + 8px;
+            y: chart.y + chart.height + 8px;
+            width: Grid.col-width - 16px;
+            text: root.usage-note;
+            font-size: 20px;
+            color: root.usage-precise ? Theme.text-3 : Theme.text-2;
             wrap: word-wrap;
         }
     }

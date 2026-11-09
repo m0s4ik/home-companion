@@ -8,6 +8,10 @@
 //! so the screen can say "about 0.05 $ today": an order of magnitude, not the bill.
 //!
 //! Kept in `<state_dir>/usage.json`, the last [`KEEP_DAYS`] days.
+//!
+//! When the agent lives under the "OpenAI with Token & Cost Tracking" integration
+//! (`openai_usage`), that integration counts what really went through it: its sensors are read
+//! instead ([`Precise`], fetched by `ha::usage`) and the screen says which numbers it shows.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -129,6 +133,139 @@ pub struct View {
     pub month_cost: f64,
     /// The last [`VIEW_DAYS`] days, oldest first: (day of the month, cost).
     pub days: Vec<(u32, f64)>,
+    /// Where the numbers come from.
+    pub source: Source,
+}
+
+/// The body's estimate, or the precise numbers of the `openai_usage` integration.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum Source {
+    #[default]
+    Estimate,
+    /// Today's requests and tokens, when their sensors are on.
+    Precise {
+        requests: Option<u64>,
+        tokens: Option<u64>,
+    },
+}
+
+/// The `openai_usage` integration's numbers, as read from Home Assistant (US dollars).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Precise {
+    pub today_cost: f64,
+    pub month_cost: f64,
+    pub requests: Option<u64>,
+    pub tokens: Option<u64>,
+    /// The last [`VIEW_DAYS`] days, oldest first: (day of the month, cost).
+    pub days: Vec<(u32, f64)>,
+}
+
+impl View {
+    /// What the screen shows: the integration's numbers when there are some, else the estimate.
+    pub fn choose(estimate: &View, precise: Option<&Precise>) -> View {
+        let Some(p) = precise else {
+            return View {
+                source: Source::Estimate,
+                ..estimate.clone()
+            };
+        };
+        View {
+            today: Day::default(),
+            month: Day::default(),
+            today_cost: p.today_cost,
+            month_cost: p.month_cost,
+            days: p.days.clone(),
+            source: Source::Precise {
+                requests: p.requests,
+                tokens: p.tokens,
+            },
+        }
+    }
+
+    pub fn is_precise(&self) -> bool {
+        matches!(self.source, Source::Precise { .. })
+    }
+}
+
+/// The last [`VIEW_DAYS`] local days up to `now`, oldest first, each with the highest value
+/// a daily counter reached that day (`points`: seconds since the epoch, value). A daily counter
+/// only grows until midnight, so its maximum is the day's total.
+pub fn daily_max(points: &[(i64, f64)], now: i64) -> Vec<(u32, f64)> {
+    let mut by_day: BTreeMap<String, f64> = BTreeMap::new();
+    for &(t, v) in points {
+        if v.is_finite() && v >= 0.0 {
+            let e = by_day.entry(local_day(t)).or_insert(0.0);
+            *e = e.max(v);
+        }
+    }
+    (0..VIEW_DAYS as i64)
+        .rev()
+        .map(|k| {
+            let day = local_day(now - k * 86_400);
+            let n = day.get(8..).and_then(|d| d.parse().ok()).unwrap_or(0);
+            (n, by_day.get(&day).copied().unwrap_or(0.0))
+        })
+        .collect()
+}
+
+/// Local midnight of the day `t` falls in (seconds since the epoch).
+pub fn local_midnight(t: i64) -> i64 {
+    // SAFETY: localtime_r and mktime only read and write the struct we pass.
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        let tt = t as libc::time_t;
+        libc::localtime_r(&tt, &mut tm);
+        tm.tm_hour = 0;
+        tm.tm_min = 0;
+        tm.tm_sec = 0;
+        tm.tm_isdst = -1;
+        libc::mktime(&mut tm) as i64
+    }
+}
+
+/// Home Assistant's times ("2026-11-09T10:12:13.123456+00:00", "...Z") → seconds since the
+/// epoch.
+pub fn parse_time(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() < 19 || b[4] != b'-' || b[7] != b'-' || !matches!(b[10], b'T' | b' ') {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
+    let (y, mo, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (h, mi, se) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || se > 60 {
+        return None;
+    }
+    // Skip the fraction; then Z, nothing (UTC) or ±HH:MM.
+    let rest = s[19..].trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
+    let offset = match rest {
+        "" | "Z" | "z" => 0,
+        _ => {
+            let sign = match rest.as_bytes()[0] {
+                b'+' => 1,
+                b'-' => -1,
+                _ => return None,
+            };
+            let hm = rest[1..].replace(':', "");
+            let oh: i64 = hm.get(..2)?.parse().ok()?;
+            let om: i64 = match hm.get(2..4) {
+                Some(m) => m.parse().ok()?,
+                None => 0,
+            };
+            sign * (oh * 3600 + om * 60)
+        }
+    };
+    Some(days_from_civil(y, mo, d) * 86_400 + h * 3600 + mi * 60 + se - offset)
+}
+
+/// Days since 1970-01-01 of a civil date (H. Hinnant's algorithm).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
 }
 
 /// Days in the chart.
@@ -160,6 +297,7 @@ impl Usage {
             today_cost: t.cost(p),
             month_cost: m.cost(p),
             days,
+            source: Source::Estimate,
         }
     }
 }
@@ -188,6 +326,17 @@ pub fn dollars(x: f64) -> String {
     } else {
         format!("{x:.1}")
     }
+}
+
+/// An amount on the screen with the language's decimal separator: an estimate as
+/// [`dollars`] with "~" in front ("~0,04"), a precise one with a digit more ("0,018", "12,34").
+pub fn amount(x: f64, precise: bool, sep: &str) -> String {
+    let n = match (precise, x < 1.0) {
+        (false, _) => format!("~{}", dollars(x)),
+        (true, true) => format!("{x:.3}"),
+        (true, false) => format!("{x:.2}"),
+    };
+    n.replace('.', sep)
 }
 
 #[cfg(test)]
@@ -251,5 +400,78 @@ mod tests {
         assert!(v.days[VIEW_DAYS - 3].1 > 0.0);
         assert_eq!(v.today.questions, 1);
         assert!(v.month.questions >= 1);
+        assert_eq!(v.source, Source::Estimate);
+    }
+
+    #[test]
+    fn times_of_home_assistant() {
+        assert_eq!(parse_time("1970-01-01T00:00:00+00:00"), Some(0));
+        assert_eq!(parse_time("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            parse_time("2026-11-09T10:12:13.123456+00:00"),
+            Some(1_794_219_133)
+        );
+        assert_eq!(
+            parse_time("2026-11-09T11:12:13.5+01:00"),
+            Some(1_794_219_133)
+        );
+        assert_eq!(parse_time("2026-11-09T05:12:13-05:00"), Some(1_794_219_133));
+        assert_eq!(parse_time("2026-11-09"), None);
+        assert_eq!(parse_time("unknown"), None);
+    }
+
+    #[test]
+    fn a_daily_counter_gives_each_days_maximum() {
+        let now = 1_794_200_000;
+        let today = local_midnight(now);
+        let yesterday = local_midnight(today - 3600);
+        let points = [
+            // Yesterday it grew to 0.30, then reset at midnight.
+            (yesterday + 3600, 0.10),
+            (yesterday + 7200, 0.30),
+            (today, 0.0),
+            (today + 60, 0.02),
+            (today + 120, 0.05),
+            (today + 180, f64::NAN),
+        ];
+        let d = daily_max(&points, now);
+        assert_eq!(d.len(), VIEW_DAYS);
+        assert_eq!(d[VIEW_DAYS - 1].1, 0.05);
+        assert_eq!(d[VIEW_DAYS - 2].1, 0.30);
+        assert_eq!(d[0].1, 0.0);
+        let n: u32 = local_day(now)[8..].parse().unwrap();
+        assert_eq!(d[VIEW_DAYS - 1].0, n);
+        assert!(local_midnight(now) <= now && now - local_midnight(now) < 86_400 + 3600);
+    }
+
+    #[test]
+    fn precise_numbers_win_when_there_are_some() {
+        let est = View {
+            today_cost: 0.5,
+            days: vec![(1, 0.5)],
+            ..Default::default()
+        };
+        assert_eq!(View::choose(&est, None), est);
+        let p = Precise {
+            today_cost: 0.018,
+            month_cost: 1.234,
+            requests: Some(7),
+            tokens: None,
+            days: vec![(1, 0.018)],
+        };
+        let v = View::choose(&est, Some(&p));
+        assert!(v.is_precise());
+        assert_eq!(v.today_cost, 0.018);
+        assert_eq!(v.days, p.days);
+        assert_eq!(
+            v.source,
+            Source::Precise {
+                requests: Some(7),
+                tokens: None
+            }
+        );
+        assert_eq!(amount(0.0181, true, ","), "0,018");
+        assert_eq!(amount(12.345, true, "."), "12.35");
+        assert_eq!(amount(0.0412, false, ","), "~0,04");
     }
 }

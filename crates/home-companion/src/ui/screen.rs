@@ -147,6 +147,81 @@ fn word(t: &Locale, key: &str, name: &str) -> String {
     t.text(key).replace("{name}", name)
 }
 
+/// The use of the AI in words: the Home Assistant page's row (today only) and the use page
+/// (today large, this month, one quiet line, the last days' bars, where the numbers come from).
+/// An estimate says so ("~", "estimated") and tells where precise numbers come from.
+fn usage_view(v: &crate::usage::View, text: impl Fn(&str) -> String) -> super::UsageView {
+    use crate::usage::{Source, amount};
+    let sep = match text("decimal_separator") {
+        s if s == "decimal_separator" => ".".to_string(),
+        s => s,
+    };
+    let precise = v.is_precise();
+    let money = |x: f64| amount(x, precise, &sep);
+    let key = |estimate: &str, exact: &str| text(if precise { exact } else { estimate });
+    let detail = match v.source {
+        Source::Estimate if v.today.questions > 0 => text("usage_detail")
+            .replace("{q}", &v.today.questions.to_string())
+            .replace(
+                "{stt}",
+                &format!("{:.1}", v.today.stt_seconds / 60.0).replace('.', &sep),
+            )
+            .replace(
+                "{tts}",
+                &format!("{:.1}", v.today.tts_seconds / 60.0).replace('.', &sep),
+            ),
+        Source::Estimate => String::new(),
+        Source::Precise { requests, tokens } => [
+            requests.map(|n| text("usage_requests").replace("{n}", &n.to_string())),
+            tokens.map(|n| text("usage_tokens").replace("{n}", &n.to_string())),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · "),
+    };
+    let max = v.days.iter().map(|d| d.1).fold(0.0f64, f64::max);
+    let n = v.days.len();
+    let bars = v
+        .days
+        .iter()
+        .enumerate()
+        .map(|(i, (day, cost))| {
+            // Today and every week before it.
+            let label = if (n - 1 - i) % 7 == 0 {
+                day.to_string()
+            } else {
+                String::new()
+            };
+            let h = if max > 0.0 { (cost / max) as f32 } else { 0.0 };
+            (label, h, money(*cost))
+        })
+        .collect();
+    super::UsageView {
+        label: text("usage_label"),
+        line: key("usage_line_estimate", "usage_line_precise")
+            .replace("{today}", &money(v.today_cost)),
+        today_label: key("usage_today_estimate", "usage_today"),
+        today: format!("{} $", money(v.today_cost)),
+        month: text("usage_month_line").replace("{month}", &money(v.month_cost)),
+        detail,
+        chart_label: text("usage_days"),
+        max: if max > 0.0 {
+            format!("{} $", money(max))
+        } else {
+            String::new()
+        },
+        bars,
+        // Where to get the integration on a line of its own (a link is not broken across lines).
+        note: if precise {
+            text("usage_source")
+        } else {
+            format!("{}\n{}", text("usage_hint"), crate::ha::usage::WHERE)
+        },
+        precise,
+    }
+}
+
 /// The choice rows of the Home Assistant page: (kind, label, the one in use) for each kind with
 /// something to choose between (two options or more); "—" when none is in use (the voice: the
 /// engine's own default).
@@ -335,6 +410,8 @@ pub struct Demo {
     pub dnd: bool,
     /// `--state house-done-card`: the small "done" card, after the Undo pop-up.
     pub house_card_only: bool,
+    /// `--state usage-precise`: the use page with the numbers of the `openai_usage` integration.
+    pub usage_precise: bool,
     /// `--state house-done-group*`: four lights off by one sentence, one card.
     pub house_group: bool,
     /// `--state mic-*`: the microphone off by the switch (line and tile); `mic_hud` = the
@@ -348,7 +425,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 58] = [
+pub const DEMO_STATES: [&str; 59] = [
     "home",
     "cards",
     "cards-setup",
@@ -371,6 +448,7 @@ pub const DEMO_STATES: [&str; 58] = [
     "setup",
     "ha",
     "usage",
+    "usage-precise",
     "ha-working",
     "ha-done",
     "ha-pick",
@@ -639,6 +717,10 @@ impl Demo {
                 ..page("ha-pick")
             },
             "usage" => page("usage"),
+            "usage-precise" => Demo {
+                usage_precise: true,
+                ..page("usage")
+            },
             "suspend" => Demo {
                 dialog: "suspend",
                 ..page("settings")
@@ -917,6 +999,11 @@ pub struct Ui<S: Screen> {
     /// The setup of Home Assistant (crate::ha::setup) and what its page shows.
     ha_setup: RefCell<Option<crate::ha::setup::Setup>>,
     ha_page: RefCell<HaPage>,
+    /// The AI's use: the core's estimate, the integration's precise numbers (when it counts
+    /// them) and when those were last asked for (crate::ha::usage).
+    usage_estimate: RefCell<Option<crate::usage::View>>,
+    usage_precise: RefCell<Option<crate::usage::Precise>>,
+    usage_asked: Cell<Option<Instant>>,
     /// The last "keep bright" while the QR code page listens.
     ha_keep: Cell<Option<Instant>>,
     /// The first start's welcome page is still to be answered.
@@ -1195,6 +1282,9 @@ impl<S: Screen> Ui<S> {
             card_kinds: RefCell::new(Vec::new()),
             ha_setup: RefCell::new(None),
             ha_page: RefCell::new(HaPage::default()),
+            usage_estimate: RefCell::new(None),
+            usage_precise: RefCell::new(None),
+            usage_asked: Cell::new(None),
             ha_keep: Cell::new(None),
             language_pending: Cell::new(opts_first.language),
             find: RefCell::new(None),
@@ -2696,7 +2786,19 @@ impl<S: Screen> Ui<S> {
                     u.add(&day, 4.0, 6.0, "");
                 }
             }
-            self.show_usage(&u.view(now, &crate::usage::Prices::default()));
+            let est = u.view(now, &crate::usage::Prices::default());
+            if d.usage_precise {
+                // The integration's numbers: a little under the estimate, to the tenth of a cent.
+                let days: Vec<(u32, f64)> = est.days.iter().map(|&(n, c)| (n, c * 0.83)).collect();
+                *self.usage_precise.borrow_mut() = Some(crate::usage::Precise {
+                    today_cost: days.last().map_or(0.0, |d| d.1),
+                    month_cost: est.month_cost * 0.83,
+                    requests: Some(est.today.questions as u64 * 2),
+                    tokens: Some(est.today.questions as u64 * 3_150),
+                    days,
+                });
+            }
+            self.show_usage(&est);
         }
         if d.page == "what" {
             self.refresh_what();
@@ -2794,46 +2896,43 @@ impl<S: Screen> Ui<S> {
             .start(TimerMode::Repeated, Duration::from_secs(15), read);
     }
 
-    /// The cloud services' use: its row on the Home Assistant page and its page (the chart).
+    /// The cloud services' use: the core's estimate came in (it changes after each
+    /// conversation).
     fn show_usage(&self, v: &crate::usage::View) {
-        use crate::usage::dollars;
+        *self.usage_estimate.borrow_mut() = Some(v.clone());
+        self.render_usage();
+    }
+
+    /// Its row on the Home Assistant page and its page (the chart): the integration's numbers
+    /// when it counts them, else the estimate; nothing before either is known.
+    fn render_usage(&self) {
+        let estimate = self.usage_estimate.borrow().clone();
+        let precise = self.usage_precise.borrow().clone();
+        if estimate.is_none() && precise.is_none() {
+            return;
+        }
+        let v = crate::usage::View::choose(&estimate.unwrap_or_default(), precise.as_ref());
         let l = self.locale.borrow();
-        let line = l
-            .text("usage_line")
-            .replace("{today}", &dollars(v.today_cost))
-            .replace("{month}", &dollars(v.month_cost));
-        let detail = |d: &crate::usage::Day| {
-            l.text("usage_detail")
-                .replace("{q}", &d.questions.to_string())
-                .replace("{stt}", &format!("{:.1}", d.stt_seconds / 60.0))
-                .replace("{tts}", &format!("{:.1}", d.tts_seconds / 60.0))
-        };
-        let max = v.days.iter().map(|d| d.1).fold(0.0f64, f64::max);
-        let bars: Vec<(String, f32, String)> = v
-            .days
-            .iter()
-            .enumerate()
-            .map(|(i, (day, cost))| {
-                // A label every 5 days and on today.
-                let label = if i % 5 == 4 || i + 1 == v.days.len() {
-                    day.to_string()
-                } else {
-                    String::new()
-                };
-                let h = if max > 0.0 { (cost / max) as f32 } else { 0.0 };
-                (label, h, dollars(*cost))
-            })
-            .collect();
-        self.screen.set_usage(&super::UsageView {
-            label: l.text("usage_label").to_string(),
-            line,
-            today: format!("~{} $", dollars(v.today_cost)),
-            month: format!("~{} $", dollars(v.month_cost)),
-            today_detail: detail(&v.today),
-            month_detail: detail(&v.month),
-            max: format!("{} $", dollars(max)),
-            bars,
-        });
+        let name = &self.character.name;
+        self.screen
+            .set_usage(&usage_view(&v, |k| word(&l, k, name)));
+    }
+
+    /// The precise use asked of Home Assistant once at start, then every minute while its row
+    /// or its page is on screen (and at once when they open).
+    fn tick_usage(&self, opened: bool) {
+        const EVERY: Duration = Duration::from_secs(60);
+        let last = self.usage_asked.get();
+        if last.is_some_and(|t| t.elapsed() < if opened { EVERY / 4 } else { EVERY }) {
+            return;
+        }
+        if last.is_some() && !matches!(self.screen.get_page().as_str(), "ha" | "usage") {
+            return;
+        }
+        if let Some(s) = self.ha_setup.borrow().as_ref() {
+            self.usage_asked.set(Some(Instant::now()));
+            let _ = s.tx.send(crate::ha::setup::SetupCmd::Usage);
+        }
     }
 
     /// The card of the microphone's switch for [`MIC_CARD`], the screen woken.
@@ -3638,7 +3737,11 @@ impl<S: Screen> Ui<S> {
             "altro" => self.refresh_tiles(),
             "memories" => self.refresh_memories(),
             "what" => self.refresh_what(),
-            "ha" => self.ha_send(crate::ha::setup::SetupCmd::Check, false),
+            "ha" => {
+                self.ha_send(crate::ha::setup::SetupCmd::Check, false);
+                self.tick_usage(true);
+            }
+            "usage" => self.tick_usage(true),
             _ => {}
         }
         // The mirroring card is there only while its page is not.
@@ -3658,6 +3761,7 @@ impl<S: Screen> Ui<S> {
         self.refresh_settings();
         self.refresh_tiles();
         self.refresh_ringing();
+        self.render_usage();
         let l = self.locale.borrow();
         let wifi = std::fs::read_to_string("/sys/class/net/wlan0/operstate")
             .map(|s| s.trim() == "up")
@@ -4113,6 +4217,16 @@ impl<S: Screen> Ui<S> {
         if let Some(s) = self.ha_setup.borrow().as_ref() {
             got.extend(s.rx.try_iter());
         }
+        self.tick_usage(false);
+        // The precise use is quiet: no wake, no page to redraw.
+        got.retain(|ev| {
+            let SetupEvent::Usage(p) = ev else {
+                return true;
+            };
+            *self.usage_precise.borrow_mut() = p.clone();
+            self.render_usage();
+            false
+        });
         if got.is_empty() {
             return;
         }
@@ -4168,9 +4282,13 @@ impl<S: Screen> Ui<S> {
                     p.attention = a;
                     settings = true;
                 }
+                // Taken above.
+                SetupEvent::Usage(_) => {}
                 SetupEvent::Unlinked => {
                     *p = HaPage::default();
                     drop(p);
+                    *self.usage_precise.borrow_mut() = None;
+                    self.render_usage();
                     log::info!(event = "ha_setup"; "unlinked: what the body made is removed, the link too");
                     self.ha_linked.set(false);
                     settings = true;
@@ -5180,5 +5298,58 @@ mod tests {
             assert_eq!(p("\tsignal: -70 dBm"), 2);
             assert_eq!(p("\tsignal: -82 dBm"), 1);
         }
+    }
+
+    #[test]
+    fn the_use_says_whether_it_is_an_estimate() {
+        use crate::usage::{Precise, Source, VIEW_DAYS, View};
+        let it = locale::load(&locale::repo_locales(), "it").unwrap();
+        let text = |k: &str| super::word(&it, k, "Alfred");
+        let mut days: Vec<(u32, f64)> = (1..=VIEW_DAYS as u32).map(|d| (d, 0.0)).collect();
+        days[10].1 = 0.2;
+        days[VIEW_DAYS - 1].1 = 0.05;
+        let est = View {
+            today_cost: 0.05,
+            month_cost: 1.25,
+            days: days.clone(),
+            source: Source::Estimate,
+            ..Default::default()
+        };
+        let u = super::usage_view(&est, text);
+        assert_eq!(u.line, "oggi ~0,05 $ (stima)");
+        assert_eq!(u.today_label, "Oggi · stima");
+        assert_eq!(u.today, "~0,05 $");
+        assert_eq!(u.month, "Questo mese ~1,2 $");
+        assert_eq!(u.max, "~0,20 $");
+        assert!(
+            u.note.contains("github.com/m0s4ik/ha-openai-usage"),
+            "{}",
+            u.note
+        );
+        assert!(u.note.contains("Alfred") && !u.precise);
+        assert_eq!(u.detail, "", "no questions today");
+        // Labels: today and every week before it.
+        let labelled: Vec<usize> = (0..VIEW_DAYS)
+            .filter(|&i| !u.bars[i].0.is_empty())
+            .collect();
+        assert_eq!(labelled, [1, 8, 15, 22, 29]);
+        assert_eq!(u.bars[10].1, 1.0);
+        let p = Precise {
+            today_cost: 0.0181,
+            month_cost: 1.234,
+            requests: Some(7),
+            tokens: Some(21_500),
+            days,
+        };
+        let u = super::usage_view(&View::choose(&est, Some(&p)), text);
+        assert_eq!(u.line, "oggi 0,018 $");
+        assert_eq!(u.today_label, "Oggi");
+        assert_eq!(u.month, "Questo mese 1,23 $");
+        assert_eq!(u.detail, "7 richieste · 21500 token");
+        assert!(u.note.starts_with("Numeri precisi") && u.precise);
+        let en = locale::load(&locale::repo_locales(), "en").unwrap();
+        let u = super::usage_view(&est, |k: &str| super::word(&en, k, "Alfred"));
+        assert_eq!(u.line, "today ~0.05 $ (estimate)");
+        assert_eq!(u.today_label, "Today · estimated");
     }
 }

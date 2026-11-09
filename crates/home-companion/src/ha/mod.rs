@@ -19,6 +19,7 @@ pub mod link;
 pub mod setup;
 pub mod todo;
 pub mod tts;
+pub mod usage;
 pub mod weather;
 pub mod ws;
 

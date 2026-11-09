@@ -100,15 +100,23 @@ pub struct HaLine {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UsageView {
     pub label: String,
+    /// The Home Assistant page's row: today only.
     pub line: String,
+    /// The page: "Today" (or "Today · estimated") over today's amount, this month's line and
+    /// one quiet line of details.
+    pub today_label: String,
     pub today: String,
     pub month: String,
-    pub today_detail: String,
-    pub month_detail: String,
-    /// The tallest bar's amount (the chart's scale).
+    pub detail: String,
+    /// Over the chart ("Last 30 days").
+    pub chart_label: String,
+    /// The tallest bar's amount (the chart's top line; empty without any use).
     pub max: String,
     /// The last days, oldest first: (label, height 0..1, amount).
     pub bars: Vec<(String, f32, String)>,
+    /// At the bottom: where precise numbers come from, or that they are precise.
+    pub note: String,
+    pub precise: bool,
 }
 
 /// What Settings → Home Assistant shows.
@@ -556,9 +564,6 @@ macro_rules! impl_screen {
                     ha_working_short,
                     ha_working,
                     ha_working_wait,
-                    usage_today,
-                    usage_month,
-                    usage_note,
                     mirror,
                     mirror_back,
                     mirror_waiting,
@@ -1198,11 +1203,14 @@ macro_rules! impl_screen {
             fn set_usage(&self, v: &UsageView) {
                 $m::CompanionWindow::set_usage_label(self, v.label.as_str().into());
                 $m::CompanionWindow::set_usage_line(self, v.line.as_str().into());
+                $m::CompanionWindow::set_usage_today_label(self, v.today_label.as_str().into());
                 $m::CompanionWindow::set_usage_today(self, v.today.as_str().into());
                 $m::CompanionWindow::set_usage_month(self, v.month.as_str().into());
-                $m::CompanionWindow::set_usage_today_detail(self, v.today_detail.as_str().into());
-                $m::CompanionWindow::set_usage_month_detail(self, v.month_detail.as_str().into());
+                $m::CompanionWindow::set_usage_detail(self, v.detail.as_str().into());
+                $m::CompanionWindow::set_usage_chart_label(self, v.chart_label.as_str().into());
                 $m::CompanionWindow::set_usage_max(self, v.max.as_str().into());
+                $m::CompanionWindow::set_usage_note(self, v.note.as_str().into());
+                $m::CompanionWindow::set_usage_precise(self, v.precise);
                 let bars: Vec<$m::UsageBar> = v
                     .bars
                     .iter()
