@@ -4072,7 +4072,11 @@ impl<S: Screen> Ui<S> {
             })
             .collect();
         // The line is only a failure now (the pop-up says what it is doing).
-        let status = if p.busy { String::new() } else { p.status.clone() };
+        let status = if p.busy {
+            String::new()
+        } else {
+            p.status.clone()
+        };
         let picks = ha_picks(&p.choices, |k| word(&l, k, name));
         if !p.picking.is_empty() {
             let rows: Vec<(String, String, bool)> = p
