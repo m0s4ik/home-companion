@@ -58,7 +58,8 @@ pub struct Brain {
     upcoming: Mutex<UpcomingState>,
     /// Ids for `confirm` and `changed` events.
     seq: std::sync::atomic::AtomicI64,
-    /// House commands that can be undone from the screen (the last 5, for 2 minutes).
+    /// House commands that can be undone from the screen (the last 16, for 2 minutes: one Undo can
+    /// take back a group, one command per light).
     done_controls: Mutex<Vec<DoneControl>>,
     /// A Yes/No tapped on the screen, for the model's waiting `home_control` call to find.
     screen_answer: Mutex<Option<(i64, bool)>>,
@@ -96,7 +97,7 @@ fn undo_scene(id: i64) -> String {
 /// How long a question waits for a yes, and how long an "Undo" stays possible.
 const CONFIRM_MS: i64 = 60_000;
 const UNDO_MS: i64 = 120_000;
-const UNDO_KEPT: usize = 5;
+const UNDO_KEPT: usize = 16;
 
 /// The service that undoes `service`, when there is a clear one.
 fn inverse(service: &str) -> Option<&'static str> {
@@ -239,7 +240,10 @@ pub fn tools() -> Vec<ToolSpec> {
             name: "list_read",
             description: "What is on the shopping list (or another to-do list, with list): open \
                           items. Read them back briefly.",
-            parameters: obj(json!({"list": {"type": "string", "description": "which list: its name (e.g. 'Spesa', 'Garden') or entity id; leave out for the shopping list"}}), &[]),
+            parameters: obj(
+                json!({"list": {"type": "string", "description": "which list: its name (e.g. 'Spesa', 'Garden') or entity id; leave out for the shopping list"}}),
+                &[],
+            ),
         },
         ToolSpec {
             name: "list_done",
@@ -286,7 +290,10 @@ fn name_key(s: &str) -> String {
 /// The exposed entity a model meant: its exact id, or else the one whose name (with or without its
 /// device) reads like the id it made up ("light.strip_office_right" for "Strip Office Right"). The error says
 /// what to do instead, and that it is not a permission problem (models tend to say so).
-pub fn resolve_entity<'a>(exposed: &'a [crate::ha::Entity], asked: &str) -> Result<&'a crate::ha::Entity, String> {
+pub fn resolve_entity<'a>(
+    exposed: &'a [crate::ha::Entity],
+    asked: &str,
+) -> Result<&'a crate::ha::Entity, String> {
     if let Some(e) = exposed.iter().find(|e| e.entity_id == asked) {
         return Ok(e);
     }
@@ -295,7 +302,9 @@ pub fn resolve_entity<'a>(exposed: &'a [crate::ha::Entity], asked: &str) -> Resu
     let same: Vec<&crate::ha::Entity> = exposed
         .iter()
         .filter(|e| domain.is_empty() || e.domain() == domain)
-        .filter(|e| !key.is_empty() && (name_key(&e.name) == key || name_key(&e.full_name()) == key))
+        .filter(|e| {
+            !key.is_empty() && (name_key(&e.name) == key || name_key(&e.full_name()) == key)
+        })
         .collect();
     match same.as_slice() {
         [one] => Ok(one),
@@ -306,7 +315,10 @@ pub fn resolve_entity<'a>(exposed: &'a [crate::ha::Entity], asked: &str) -> Resu
         )),
         many => Err(format!(
             "{asked} is ambiguous, these match its name: {}. Call home_control with one of these entity_id",
-            many.iter().map(|e| format!("{} ({})", e.entity_id, e.full_name())).collect::<Vec<_>>().join(", ")
+            many.iter()
+                .map(|e| format!("{} ({})", e.entity_id, e.full_name()))
+                .collect::<Vec<_>>()
+                .join(", ")
         )),
     }
 }
@@ -526,7 +538,11 @@ impl Brain {
     /// The language chosen on the body's screen (each token handover).
     pub fn set_language(&self, lang: &str) {
         let lang = lang.trim();
-        if lang.is_empty() || !lang.chars().all(|c| c.is_ascii_alphabetic() || c == '-' || c == '_') {
+        if lang.is_empty()
+            || !lang
+                .chars()
+                .all(|c| c.is_ascii_alphabetic() || c == '-' || c == '_')
+        {
             return;
         }
         let mut l = self.language.lock().unwrap_or_else(|e| e.into_inner());
@@ -555,11 +571,17 @@ impl Brain {
         }
         if let Some(c) = calendars {
             let c = clean(c, "calendar.");
-            let mut cur = self.chosen_calendars.lock().unwrap_or_else(|e| e.into_inner());
+            let mut cur = self
+                .chosen_calendars
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if *cur != c {
                 *cur = c;
                 // The "next" card is read again at the next pass.
-                self.upcoming.lock().unwrap_or_else(|e| e.into_inner()).checked = 0;
+                self.upcoming
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .checked = 0;
             }
         }
     }
@@ -579,7 +601,10 @@ impl Brain {
     /// on, a yes carries out the pending command itself.
     pub fn answer_confirm(&self, id: i64, yes: bool) -> Result<(), String> {
         let p = {
-            let pending = self.pending_control.lock().unwrap_or_else(|e| e.into_inner());
+            let pending = self
+                .pending_control
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             pending
                 .as_ref()
                 .filter(|p| p.id == id)
@@ -594,7 +619,10 @@ impl Brain {
             return Ok(());
         }
         {
-            let mut pending = self.pending_control.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending = self
+                .pending_control
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if pending.as_ref().is_none_or(|q| q.id != id) {
                 return Err("no such question (it was answered meanwhile)".into());
             }
@@ -622,8 +650,14 @@ impl Brain {
     /// every few seconds from main with the current time (ms).
     pub fn expire_confirms(&self, at_ms: i64) {
         let gone = {
-            let mut pending = self.pending_control.lock().unwrap_or_else(|e| e.into_inner());
-            if pending.as_ref().is_some_and(|p| at_ms - p.asked_ms > CONFIRM_MS) {
+            let mut pending = self
+                .pending_control
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if pending
+                .as_ref()
+                .is_some_and(|p| at_ms - p.asked_ms > CONFIRM_MS)
+            {
                 pending.take()
             } else {
                 None
@@ -642,7 +676,10 @@ impl Brain {
             let mut v = self.done_controls.lock().unwrap_or_else(|e| e.into_inner());
             let at = now_ms();
             v.retain(|d| at - d.at_ms <= UNDO_MS);
-            let i = v.iter().position(|d| d.id == id).ok_or("nothing to undo (too late?)")?;
+            let i = v
+                .iter()
+                .position(|d| d.id == id)
+                .ok_or("nothing to undo (too late?)")?;
             v.remove(i)
         };
         let e = self
@@ -656,7 +693,12 @@ impl Brain {
         let ha = self.ha().ok_or("Home Assistant is not configured")?;
         if let Some(scene) = &d.scene {
             let scene_entity = format!("scene.{scene}");
-            match ha.control(&scene_entity, "turn_on", &json!({}), Duration::from_secs(10)) {
+            match ha.control(
+                &scene_entity,
+                "turn_on",
+                &json!({}),
+                Duration::from_secs(10),
+            ) {
                 Ok(()) => {
                     log::info!(event = "brain_undo", entity = d.entity_id.as_str(), how = "scene"; "undone: {} as it was", d.entity_id);
                     *self.entities.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -671,7 +713,9 @@ impl Brain {
                     )]);
                     return Ok(());
                 }
-                Err(err) => log::warn!(event = "brain_undo", how = "scene"; "{scene_entity}: {err}; the inverse service instead"),
+                Err(err) => {
+                    log::warn!(event = "brain_undo", how = "scene"; "{scene_entity}: {err}; the inverse service instead")
+                }
             }
         }
         self.run_control(ha, &e, d.undo_service, &json!({}), false)
@@ -710,7 +754,13 @@ impl Brain {
             let mut v = self.done_controls.lock().unwrap_or_else(|e| e.into_inner());
             let at = now_ms();
             v.retain(|d| at - d.at_ms <= UNDO_MS);
-            v.push(DoneControl { id, entity_id: e.entity_id.clone(), undo_service: u, scene, at_ms: at });
+            v.push(DoneControl {
+                id,
+                entity_id: e.entity_id.clone(),
+                undo_service: u,
+                scene,
+                at_ms: at,
+            });
             let extra = v.len().saturating_sub(UNDO_KEPT);
             v.drain(..extra);
         }
@@ -726,7 +776,10 @@ impl Brain {
     }
 
     fn satellite(&self) -> String {
-        self.satellite.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.satellite
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// FNV-1a of the tools as MCP lists them (names, descriptions, schemas).
@@ -744,8 +797,10 @@ impl Brain {
 
     /// Home Assistant read the tools (MCP `tools/list`).
     pub fn tools_listed(&self) {
-        self.tools_listed_at
-            .store(crate::memory::now() as u64, std::sync::atomic::Ordering::Relaxed);
+        self.tools_listed_at.store(
+            crate::memory::now() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     /// A fact stored directly (tests, tools).
@@ -814,7 +869,11 @@ impl Brain {
             }
             "list_add" | "list_read" | "list_done" | "list_remove" => match self.ha() {
                 Some(ha) => self.pick_list(&s("list")).and_then(|(entity, name)| {
-                    let l = crate::lists::Lists { ha, entity: &entity, timeout: t };
+                    let l = crate::lists::Lists {
+                        ha,
+                        entity: &entity,
+                        timeout: t,
+                    };
                     let items: Vec<String> = call
                         .args
                         .get("items")
@@ -846,11 +905,12 @@ impl Brain {
                 let m = self.mem();
                 jobs::pending(m.db())
                     .map(|v| {
-                        json!(v
-                            .iter()
-                            .map(|j| json!({"id": j.id, "when": local_time_text(j.due_at),
+                        json!(
+                            v.iter()
+                                .map(|j| json!({"id": j.id, "when": local_time_text(j.due_at),
                                 "text": j.text, "repeat": j.repeat, "how": j.how}))
-                            .collect::<Vec<_>>())
+                                .collect::<Vec<_>>()
+                        )
                     })
                     .map_err(|e| e.to_string())
             }
@@ -872,7 +932,9 @@ impl Brain {
                 let t = s("time");
                 let hm = t
                     .split_once(':')
-                    .and_then(|(h, m)| Some((h.trim().parse::<u8>().ok()?, m.trim().parse::<u8>().ok()?)))
+                    .and_then(|(h, m)| {
+                        Some((h.trim().parse::<u8>().ok()?, m.trim().parse::<u8>().ok()?))
+                    })
                     .filter(|(h, m)| *h < 24 && *m < 60);
                 let days = match s("days").as_str() {
                     "weekdays" => 0b0011111,
@@ -887,11 +949,17 @@ impl Brain {
                         log::info!(event = "brain_alarm"; "alarm {h:02}:{m:02} to the device");
                         Ok(json!({"set": format!("{h:02}:{m:02}")}))
                     }
-                    _ => Err("the device's screen is not connected: the alarm cannot be set".into()),
+                    _ => {
+                        Err("the device's screen is not connected: the alarm cannot be set".into())
+                    }
                 }
             }
             "timer" => {
-                let secs = call.args.get("seconds").and_then(Value::as_i64).unwrap_or(0);
+                let secs = call
+                    .args
+                    .get("seconds")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
                 match self.hub.get() {
                     _ if !(1..=86_400).contains(&secs) => Err("seconds: 1 to 86400".into()),
                     Some(h) if h.subscribers() > 0 => {
@@ -903,14 +971,20 @@ impl Brain {
                 }
             }
             "timer_cancel" => {
-                let all = call.args.get("all").and_then(Value::as_bool).unwrap_or(false);
+                let all = call
+                    .args
+                    .get("all")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 match self.hub.get() {
                     Some(h) if h.subscribers() > 0 => {
                         h.broadcast(&[crate::events::timer_cancel(all)]);
                         log::info!(event = "brain_timer_cancel", all = all; "timer cancel to the device");
                         Ok(json!({"cancelled": if all { "all timers" } else { "the timer" }}))
                     }
-                    _ => Err("the device's screen is not connected: the timer cannot be stopped".into()),
+                    _ => Err(
+                        "the device's screen is not connected: the timer cannot be stopped".into(),
+                    ),
                 }
             }
             "home_control" => self.home_control(&call.args, &self.language()),
@@ -1007,7 +1081,13 @@ impl Brain {
         let mut v: Vec<ToolSpec> = tools()
             .into_iter()
             .filter(|t| !matches!(t.name, "home_assist" | "home_state" | "web_search"))
-            .filter(|t| lists || !matches!(t.name, "list_add" | "list_read" | "list_done" | "list_remove"))
+            .filter(|t| {
+                lists
+                    || !matches!(
+                        t.name,
+                        "list_add" | "list_read" | "list_done" | "list_remove"
+                    )
+            })
             .collect();
         v.push(ToolSpec {
             name: "timer",
@@ -1137,7 +1217,11 @@ impl Brain {
         let call = ToolCall {
             id: String::new(),
             name: name.to_string(),
-            args: if args.is_object() { args.clone() } else { json!({}) },
+            args: if args.is_object() {
+                args.clone()
+            } else {
+                json!({})
+            },
         };
         let v = self.tool(&call, Duration::from_secs(25), session);
         let err = v.get("error").is_some();
@@ -1171,7 +1255,8 @@ impl Brain {
         let gap = self.cfg.memory.session_gap_minutes as i64 * 60;
         let m = self.mem();
         let session = m.session(gap, at).unwrap_or(0);
-        if let Err(e) = m.add_exchange(session, at, &user, &answer, "home_assistant", "", 0, (0, 0)) {
+        if let Err(e) = m.add_exchange(session, at, &user, &answer, "home_assistant", "", 0, (0, 0))
+        {
             log::warn!(event = "brain_memory"; "exchange not saved: {e}");
         }
     }
@@ -1196,8 +1281,16 @@ impl Brain {
             .mem()
             .meta("gates")
             .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .and_then(|v| v.get(&e.entity_id).and_then(Value::as_str).and_then(gate_from));
-        chosen.unwrap_or_else(|| self.cfg.safety.entity_gate(&e.entity_id, &e.device_class, &e.full_name()))
+            .and_then(|v| {
+                v.get(&e.entity_id)
+                    .and_then(Value::as_str)
+                    .and_then(gate_from)
+            });
+        chosen.unwrap_or_else(|| {
+            self.cfg
+                .safety
+                .entity_gate(&e.entity_id, &e.device_class, &e.full_name())
+        })
     }
 
     fn home_entities(&self, area: &str, domain: &str) -> Result<Value, String> {
@@ -1219,11 +1312,20 @@ impl Brain {
         }
         // Many and no filter: an overview by area and domain first.
         if hits.len() > 60 && area.is_empty() && domain.is_empty() {
-            let mut by: std::collections::BTreeMap<String, std::collections::BTreeMap<String, usize>> =
-                Default::default();
+            let mut by: std::collections::BTreeMap<
+                String,
+                std::collections::BTreeMap<String, usize>,
+            > = Default::default();
             for e in &hits {
-                let a = if e.area.is_empty() { "(no area)".to_string() } else { e.area.clone() };
-                *by.entry(a).or_default().entry(e.domain().to_string()).or_default() += 1;
+                let a = if e.area.is_empty() {
+                    "(no area)".to_string()
+                } else {
+                    e.area.clone()
+                };
+                *by.entry(a)
+                    .or_default()
+                    .entry(e.domain().to_string())
+                    .or_default() += 1;
             }
             let lines: Vec<String> = by
                 .iter()
@@ -1252,8 +1354,16 @@ impl Brain {
                     .filter(|m| !m.is_empty())
                     .map(|m| format!(" {}", Value::Object(m.clone())))
                     .unwrap_or_default();
-                let class = if e.device_class.is_empty() { String::new() } else { format!(" ({})", e.device_class) };
-                let device = if e.device.is_empty() { String::new() } else { format!(" [{}]", e.device) };
+                let class = if e.device_class.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", e.device_class)
+                };
+                let device = if e.device.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", e.device)
+                };
                 format!(
                     "{} | {}{device}{class} | {} | {}{attrs} | {}",
                     e.entity_id,
@@ -1274,9 +1384,19 @@ impl Brain {
     }
 
     fn home_control(&self, args: &Value, lang: &str) -> Result<Value, String> {
-        let get = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let get = |k: &str| {
+            args.get(k)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
         let (entity_id, service) = (get("entity_id"), get("service"));
-        let data = args.get("data").filter(|d| d.is_object()).cloned().unwrap_or(json!({}));
+        let data = args
+            .get("data")
+            .filter(|d| d.is_object())
+            .cloned()
+            .unwrap_or(json!({}));
         if service.is_empty() || !service.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
             return Err("service: a service name like turn_on".into());
         }
@@ -1303,52 +1423,76 @@ impl Brain {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .as_ref()
-                    .filter(|p| Some(p.id) == confirm_id && p.entity_id == entity_id && p.service == service)
+                    .filter(|p| {
+                        Some(p.id) == confirm_id && p.entity_id == entity_id && p.service == service
+                    })
                     .cloned();
-                let screen_done = self.last_answered.lock().unwrap_or_else(|e| e.into_inner()).filter(|(id, _)| Some(*id) == confirm_id);
+                let screen_done = self
+                    .last_answered
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .filter(|(id, _)| Some(*id) == confirm_id);
                 match (same, screen_done) {
                     (Some(p), _) => match self.wait_answer(p.id, p.asked_ms) {
                         Some(yes) => {
                             {
-                                let mut pending = self.pending_control.lock().unwrap_or_else(|e| e.into_inner());
+                                let mut pending = self
+                                    .pending_control
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner());
                                 if pending.as_ref().is_some_and(|q| q.id == p.id) {
                                     *pending = None;
                                 }
                             }
                             if now_ms() - p.asked_ms > CONFIRM_MS {
                                 self.broadcast(&[crate::events::confirm_done(p.id, None)]);
-                                return Err("the question expired: do nothing and say so briefly".into());
+                                return Err(
+                                    "the question expired: do nothing and say so briefly".into()
+                                );
                             }
                             self.broadcast(&[crate::events::confirm_done(p.id, Some(yes))]);
                             if !yes {
-                                return Err("the user did not confirm: do nothing and say so briefly".into());
+                                return Err(
+                                    "the user did not confirm: do nothing and say so briefly"
+                                        .into(),
+                                );
                             }
                             log::info!(event = "brain_gate", gate = "confirmed", domain = e.domain(); "house command confirmed");
                             self.run_control(ha, &e, &p.service, &p.data, false)?;
                             return Ok(json!({"done": true}));
                         }
                         None => {
-                            return Err("no spoken yes from the user yet: ask the question and wait for \
+                            return Err(
+                                "no spoken yes from the user yet: ask the question and wait for \
                                         their answer before calling again"
-                                .into());
+                                    .into(),
+                            );
                         }
                     },
                     // The user already answered on the screen while the model was talking.
                     (None, Some((_, true))) => {
-                        return Ok(json!({"done": true, "note": "the user said yes on the screen: already done"}));
+                        return Ok(
+                            json!({"done": true, "note": "the user said yes on the screen: already done"}),
+                        );
                     }
                     (None, Some((_, false))) => {
-                        return Err("the user said no on the screen: do nothing and say so briefly".into());
+                        return Err(
+                            "the user said no on the screen: do nothing and say so briefly".into(),
+                        );
                     }
                     (None, None) => {
                         let id = self.next_id();
-                        let old = self.pending_control.lock().unwrap_or_else(|e| e.into_inner()).replace(PendingControl {
-                            id,
-                            entity_id: entity_id.clone(),
-                            service: service.clone(),
-                            data,
-                            asked_ms: now_ms(),
-                        });
+                        let old = self
+                            .pending_control
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .replace(PendingControl {
+                                id,
+                                entity_id: entity_id.clone(),
+                                service: service.clone(),
+                                data,
+                                asked_ms: now_ms(),
+                            });
                         *self.screen_answer.lock().unwrap_or_else(|e| e.into_inner()) = None;
                         *self.last_answered.lock().unwrap_or_else(|e| e.into_inner()) = None;
                         if let Some(o) = old {
@@ -1356,8 +1500,16 @@ impl Brain {
                         }
                         log::info!(event = "brain_gate", gate = "confirm", domain = e.domain(); "house command waits for a yes");
                         let what = format!("{} ({})", e.full_name(), service.replace('_', " "));
-                        let text = if it { format!("{what}: confermi?") } else { format!("{what}: confirm?") };
-                        self.broadcast(&[crate::events::confirm(id, &text, now() + CONFIRM_MS / 1000)]);
+                        let text = if it {
+                            format!("{what}: confermi?")
+                        } else {
+                            format!("{what}: confirm?")
+                        };
+                        self.broadcast(&[crate::events::confirm(
+                            id,
+                            &text,
+                            now() + CONFIRM_MS / 1000,
+                        )]);
                         return Ok(json!({"needs_confirmation": true, "confirm_id": id,
                             "ask": if it { format!("Ask: '{what}: confermi?' in Italian, one short question") }
                                    else { format!("Ask: '{what}: confirm?', one short question") },
@@ -1440,7 +1592,11 @@ impl Brain {
     /// the lists chosen on the screen, else the shopping list.
     fn pick_list(&self, wanted: &str) -> Result<(String, String), String> {
         let shopping = self.cfg.lists.shopping.as_str();
-        let chosen = self.chosen_lists.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let chosen = self
+            .chosen_lists
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         // The names are needed only to match a name or to find the default among several.
         let known = if wanted.trim().is_empty() && !shopping.is_empty() {
             Vec::new()
@@ -1452,7 +1608,11 @@ impl Brain {
 
     /// The calendars to read: the chosen ones, or every `calendar.*` of Home Assistant.
     fn calendar_entities(&self) -> Vec<String> {
-        let chosen = self.chosen_calendars.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let chosen = self
+            .chosen_calendars
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         if !chosen.is_empty() {
             return chosen;
         }
@@ -1476,7 +1636,9 @@ impl Brain {
             "service_data": {"duration": {"hours": crate::calendar::HORIZON_HOURS}},
             "return_response": true, "target": {"entity_id": cals}});
         match ha.call(cmd, Duration::from_secs(15)) {
-            Ok(v) => Some(crate::calendar::to_event(&crate::calendar::upcoming_from(&v, at))),
+            Ok(v) => Some(crate::calendar::to_event(&crate::calendar::upcoming_from(
+                &v, at,
+            ))),
             Err(e) => {
                 log::warn!(event = "brain_calendar"; "calendars: {e}");
                 None
@@ -1507,7 +1669,13 @@ impl Brain {
 
     /// The `show_view` tool: Home Assistant's view opens on a dashboard path or a camera.
     fn show_view(&self, args: &Value) -> Result<Value, String> {
-        let get = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let get = |k: &str| {
+            args.get(k)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
         let (path, camera) = (get("path"), get("camera"));
         match (path.is_empty(), camera.is_empty()) {
             (false, true) => {
@@ -1517,7 +1685,9 @@ impl Brain {
                     && !path.contains("..")
                     && path.chars().all(|c| c.is_ascii_graphic() && c != '\\');
                 if !ok {
-                    return Err("path: a dashboard path starting with /, like /lovelace/energy".into());
+                    return Err(
+                        "path: a dashboard path starting with /, like /lovelace/energy".into(),
+                    );
                 }
             }
             (true, false) => {
@@ -1549,7 +1719,13 @@ impl Brain {
 
     /// The `announce` tool: a message said by the voice satellites.
     fn announce_tool(&self, args: &Value) -> Result<Value, String> {
-        let message = sanitize(args.get("message").and_then(Value::as_str).unwrap_or("").trim(), 200);
+        let message = sanitize(
+            args.get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim(),
+            200,
+        );
         if message.is_empty() {
             return Err("message: what to say".into());
         }
@@ -1612,7 +1788,9 @@ impl Brain {
             r => r.to_string(),
         };
         if !jobs::valid_how(&how) || !jobs::valid_repeat(&repeat) {
-            return Err("how: card_then_voice, card or voice; repeat: once, daily or weekly".into());
+            return Err(
+                "how: card_then_voice, card or voice; repeat: once, daily or weekly".into(),
+            );
         }
         let at = now();
         if when <= at - 60 {
@@ -1912,7 +2090,10 @@ impl Brain {
     }
 
     pub fn learned_allow(&self) -> Vec<std::net::IpAddr> {
-        self.learned_allow.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.learned_allow
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn status(&self) -> Value {
@@ -1981,7 +2162,13 @@ impl Brain {
             .collect();
         // The "next" card: read now when the last read is old, else the one we have.
         let _ = self.refresh_upcoming(now());
-        if let Some(u) = self.upcoming.lock().unwrap_or_else(|e| e.into_inner()).last.clone() {
+        if let Some(u) = self
+            .upcoming
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .last
+            .clone()
+        {
             v.push(u);
         }
         v
@@ -2091,12 +2278,31 @@ mod tests {
             ent("switch.desk", "Desk", ""),
             ent("light.desk_b", "Desk", ""),
         ];
-        assert_eq!(resolve_entity(&all, "light.office").unwrap().entity_id, "light.office");
-        assert_eq!(resolve_entity(&all, "light.strip_office_right").unwrap().entity_id, "light.lightstrip_3");
-        assert_eq!(resolve_entity(&all, "light.canvas_lampada").unwrap().entity_id, "light.canvas_c887");
-        assert_eq!(resolve_entity(&all, "switch.desk").unwrap().entity_id, "switch.desk");
+        assert_eq!(
+            resolve_entity(&all, "light.office").unwrap().entity_id,
+            "light.office"
+        );
+        assert_eq!(
+            resolve_entity(&all, "light.strip_office_right")
+                .unwrap()
+                .entity_id,
+            "light.lightstrip_3"
+        );
+        assert_eq!(
+            resolve_entity(&all, "light.canvas_lampada")
+                .unwrap()
+                .entity_id,
+            "light.canvas_c887"
+        );
+        assert_eq!(
+            resolve_entity(&all, "switch.desk").unwrap().entity_id,
+            "switch.desk"
+        );
         let e = resolve_entity(&all, "light.desk").unwrap_err();
-        assert!(e.contains("ambiguous") && e.contains("light.desk_a") && !e.contains("switch.desk"), "{e}");
+        assert!(
+            e.contains("ambiguous") && e.contains("light.desk_a") && !e.contains("switch.desk"),
+            "{e}"
+        );
         let e = resolve_entity(&all, "light.kitchen").unwrap_err();
         assert!(e.contains("not a permission problem"), "{e}");
     }

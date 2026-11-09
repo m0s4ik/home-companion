@@ -79,13 +79,17 @@ impl Client {
             return Err(LlmError::NoAi);
         }
         let timeout = Duration::from_secs_f32(self.cfg.timeout_seconds);
-        ha.generate(&format!("{system}\n\n{ask}"), &self.cfg.task_entity, timeout)
-            .map_err(|e| {
-                if e.contains("did not answer") || e.contains("connect") || e.contains("closed") {
-                    LlmError::Unreachable(e)
-                } else {
-                    LlmError::Refused(e)
-                }
-            })
+        ha.generate(
+            &format!("{system}\n\n{ask}"),
+            &self.cfg.task_entity,
+            timeout,
+        )
+        .map_err(|e| {
+            if e.contains("did not answer") || e.contains("connect") || e.contains("closed") {
+                LlmError::Unreachable(e)
+            } else {
+                LlmError::Refused(e)
+            }
+        })
     }
 }

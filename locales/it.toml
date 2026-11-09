@@ -366,6 +366,8 @@ house_state_closed = "chiuso"
 house_state_opening = "in apertura"
 house_state_closing = "in chiusura"
 house_done = "fatto"
+house_and_more = "{name} e altri {n}"
+house_others = "e altri {n}"
 # The Yes/No card of a command that waits for an answer.
 yes = "Sì"
 no = "No"
@@ -424,4 +426,5 @@ calendar_names = "Famiglia|Lavoro"
 
 # v0.2 ui
 house_light = "Luce cucina"
+house_lights = "Studio sinistra, Studio centro, Studio destra, Libreria"
 house_question = "Tapparella del soggiorno: la chiudo?"

@@ -47,7 +47,17 @@ fn domain_words(domain: &str) -> &'static [&'static str] {
     match domain {
         "alarm_control_panel" => &["allarm", "antifurt", "alarm", "disarm"],
         "lock" => &["serratur", "lucchett", "chiavistell", "lock", "unlock"],
-        "door" => &["garage", "cancell", "portone", "portoncin", "basculant", "serrand", "porta", "door", "gate"],
+        "door" => &[
+            "garage",
+            "cancell",
+            "portone",
+            "portoncin",
+            "basculant",
+            "serrand",
+            "porta",
+            "door",
+            "gate",
+        ],
         "cover" => &[
             "tapparell",
             "persian",
@@ -232,19 +242,49 @@ mod tests {
     fn entity_gates_from_standard_labels() {
         let c = SafetyCfg::default();
         assert_eq!(c.entity_gate("lock.front", "", "Front door"), Gate::Never);
-        assert_eq!(c.entity_gate("alarm_control_panel.home", "", "Allarme"), Gate::Never);
-        assert_eq!(c.entity_gate("cover.garage", "garage", "Basculante"), Gate::Never);
-        assert_eq!(c.entity_gate("cover.ingresso", "gate", "Ingresso"), Gate::Never);
+        assert_eq!(
+            c.entity_gate("alarm_control_panel.home", "", "Allarme"),
+            Gate::Never
+        );
+        assert_eq!(
+            c.entity_gate("cover.garage", "garage", "Basculante"),
+            Gate::Never
+        );
+        assert_eq!(
+            c.entity_gate("cover.ingresso", "gate", "Ingresso"),
+            Gate::Never
+        );
         assert_eq!(c.entity_gate("cover.x", "", "Cancello"), Gate::Never);
-        assert_eq!(c.entity_gate("cover.soggiorno", "shutter", "Tapparella"), Gate::Confirm);
+        assert_eq!(
+            c.entity_gate("cover.soggiorno", "shutter", "Tapparella"),
+            Gate::Confirm
+        );
         assert_eq!(c.entity_gate("cover.x", "", "Tenda"), Gate::Confirm);
-        assert_eq!(c.entity_gate("valve.acqua", "water", "Acqua"), Gate::Confirm);
+        assert_eq!(
+            c.entity_gate("valve.acqua", "water", "Acqua"),
+            Gate::Confirm
+        );
         assert_eq!(c.entity_gate("switch.relay_3", "", "Garage"), Gate::Never);
-        assert_eq!(c.entity_gate("switch.shelly", "", "Apri portone"), Gate::Never);
-        assert_eq!(c.entity_gate("switch.tapparelle", "", "Tapparelle"), Gate::Confirm);
-        assert_eq!(c.entity_gate("switch.p1", "", "Pulsante Serranda Switch 1"), Gate::Never);
-        assert_eq!(c.entity_gate("switch.portatile", "", "Portatile"), Gate::Allow);
-        assert_eq!(c.entity_gate("light.garage", "", "Luce garage"), Gate::Allow);
+        assert_eq!(
+            c.entity_gate("switch.shelly", "", "Apri portone"),
+            Gate::Never
+        );
+        assert_eq!(
+            c.entity_gate("switch.tapparelle", "", "Tapparelle"),
+            Gate::Confirm
+        );
+        assert_eq!(
+            c.entity_gate("switch.p1", "", "Pulsante Serranda Switch 1"),
+            Gate::Never
+        );
+        assert_eq!(
+            c.entity_gate("switch.portatile", "", "Portatile"),
+            Gate::Allow
+        );
+        assert_eq!(
+            c.entity_gate("light.garage", "", "Luce garage"),
+            Gate::Allow
+        );
         assert_eq!(c.entity_gate("light.cucina", "", "Cucina"), Gate::Allow);
         assert_eq!(c.entity_gate("climate.casa", "", "Termostato"), Gate::Allow);
     }

@@ -310,6 +310,8 @@ pub struct Demo {
     pub dnd: bool,
     /// `--state house-done-card`: the small "done" card, after the Undo pop-up.
     pub house_card_only: bool,
+    /// `--state house-done-group*`: four lights off by one sentence, one card.
+    pub house_group: bool,
     /// `--state mic-*`: the microphone off by the switch (line and tile); `mic_hud` = the
     /// switch's card, Some(on).
     pub mic_switch_off: bool,
@@ -319,7 +321,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 54] = [
+pub const DEMO_STATES: [&str; 56] = [
     "home",
     "cards",
     "cards-setup",
@@ -364,6 +366,8 @@ pub const DEMO_STATES: [&str; 54] = [
     "first-ha-none",
     "house-done",
     "house-done-card",
+    "house-done-group",
+    "house-done-group-card",
     "house-done-speaking",
     "house-ask",
     "dnd",
@@ -480,6 +484,19 @@ impl Demo {
             "house-done-card" => Demo {
                 house: 1,
                 cards: true,
+                house_card_only: true,
+                ..home.clone()
+            },
+            "house-done-group" => Demo {
+                house: 1,
+                cards: true,
+                house_group: true,
+                ..home.clone()
+            },
+            "house-done-group-card" => Demo {
+                house: 1,
+                cards: true,
+                house_group: true,
                 house_card_only: true,
                 ..home.clone()
             },
@@ -1329,8 +1346,8 @@ impl<S: Screen> Ui<S> {
         let ui = Rc::downgrade(self);
         self.screen.on_done_undo(move || {
             if let Some(ui) = ui.upgrade() {
-                let id = ui.house.borrow_mut().undo();
-                if let Some(id) = id {
+                let ids = ui.house.borrow_mut().undo();
+                for id in ids.unwrap_or_default() {
                     log::info!(event = "house_undo", id = id; "house: undo {id}");
                     ui.brain_do(brain_link::undo(id));
                 }
@@ -2545,11 +2562,26 @@ impl<S: Screen> Ui<S> {
                     let x = l.text(k);
                     (x != k).then(|| x.to_string())
                 };
-                let line =
-                    house::done_line(l.sample("house_light"), Some("off"), "turn_off", &word);
+                // One light, or (house-done-group) four switched off by one sentence.
+                let names: Vec<String> = if d.house_group {
+                    l.sample("house_lights")
+                        .split(", ")
+                        .map(str::to_string)
+                        .collect()
+                } else {
+                    vec![l.sample("house_light").to_string()]
+                };
+                let mut cards = house::HouseCards::default();
+                let t0 = Instant::now();
+                for (i, n) in names.iter().enumerate() {
+                    let line = house::done_line(n, Some("off"), "turn_off", &word);
+                    cards.changed(i as i64, line, true, t0);
+                }
+                let card = cards.done.expect("a card");
+                let (line, name, state) =
+                    card.texts(l.text("house_and_more"), l.text("house_others"));
                 self.screen.set_done(true, &line, true);
-                let (name, state) = house::split_line(&line);
-                self.screen.set_done_parts(name, state);
+                self.screen.set_done_parts(&name, &state);
                 self.screen.set_done_popup(!d.house_card_only, 0.62);
             }
             2 => self.screen.set_ask(true, l.sample("house_question"), 0.62),
@@ -4355,8 +4387,10 @@ impl<S: Screen> Ui<S> {
         let now = Instant::now();
         match e {
             HouseEvent::Done(id, line, undo) => {
-                self.house.borrow_mut().changed(id, line, undo, now);
-                self.send(UiEvent::HouseDone);
+                // One sound for a group (one command per light).
+                if !self.house.borrow_mut().changed(id, line, undo, now) {
+                    self.send(UiEvent::HouseDone);
+                }
                 // The card is seen: a soft wake (not the screen asleep by "spegni lo schermo"
                 // just before, nor the night's, that the touch is for).
                 self.wake(WakeSource::Conversation);
@@ -4434,9 +4468,12 @@ impl<S: Screen> Ui<S> {
         let h = self.house.borrow().clone();
         match &h.done {
             Some(d) => {
-                self.screen.set_done(true, &d.line, d.undo);
-                let (name, state) = house::split_line(&d.line);
-                self.screen.set_done_parts(name, state);
+                let (line, name, state) = {
+                    let l = self.locale.borrow();
+                    d.texts(l.text("house_and_more"), l.text("house_others"))
+                };
+                self.screen.set_done(true, &line, d.undo);
+                self.screen.set_done_parts(&name, &state);
             }
             None => self.screen.set_done(false, "", false),
         }

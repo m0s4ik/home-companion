@@ -37,8 +37,14 @@ pub fn upcoming_from(result: &Value, now: i64) -> Vec<Event> {
     let by_calendar = result.get("response").unwrap_or(result);
     let mut out = Vec::new();
     for (calendar, v) in by_calendar.as_object().into_iter().flatten() {
-        for e in v.get("events").and_then(Value::as_array).into_iter().flatten() {
-            let Some((start, all_day)) = e.get("start").and_then(Value::as_str).and_then(when) else {
+        for e in v
+            .get("events")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some((start, all_day)) = e.get("start").and_then(Value::as_str).and_then(when)
+            else {
                 continue;
             };
             let end = e
@@ -47,13 +53,22 @@ pub fn upcoming_from(result: &Value, now: i64) -> Vec<Event> {
                 .and_then(when)
                 .map_or(start, |(t, _)| t);
             let title = crate::safety::sanitize(
-                e.get("summary").and_then(Value::as_str).unwrap_or("").trim(),
+                e.get("summary")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim(),
                 80,
             );
             if title.is_empty() || end <= now || start >= now + HORIZON_HOURS * 3600 {
                 continue;
             }
-            out.push(Event { start, end, all_day, title, calendar: calendar.clone() });
+            out.push(Event {
+                start,
+                end,
+                all_day,
+                title,
+                calendar: calendar.clone(),
+            });
         }
     }
     out.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.title.cmp(&b.title)));

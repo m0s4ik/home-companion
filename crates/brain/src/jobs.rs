@@ -144,7 +144,16 @@ pub fn snooze(db: &Connection, id: i64, minutes: i64, at: i64) -> rusqlite::Resu
         return Ok(None);
     }
     ack(db, id)?;
-    add(db, at + minutes.clamp(1, 24 * 60) * 60, "", &j.text, &j.how, "snooze", at).map(Some)
+    add(
+        db,
+        at + minutes.clamp(1, 24 * 60) * 60,
+        "",
+        &j.text,
+        &j.how,
+        "snooze",
+        at,
+    )
+    .map(Some)
 }
 
 /// What one scheduler pass decided (the brain carries it out: events to the body, voice).
@@ -242,14 +251,26 @@ mod tests {
     fn snooze_brings_the_words_back_once() {
         let c = db();
         let t0 = 1_000_000;
-        let id = add(&c, t0, "daily", "pillola", "card_then_voice", "voice", t0 - 100).unwrap();
+        let id = add(
+            &c,
+            t0,
+            "daily",
+            "pillola",
+            "card_then_voice",
+            "voice",
+            t0 - 100,
+        )
+        .unwrap();
         // Not delivered yet: nothing to snooze.
         assert_eq!(snooze(&c, id, 10, t0 - 50).unwrap(), None);
         let p = pass(&c, t0 + 5, false, 120, true).unwrap();
         assert_eq!(p.deliver.len(), 1);
         let again = snooze(&c, id, 10, t0 + 20).unwrap().unwrap();
         let j = get(&c, again).unwrap().unwrap();
-        assert_eq!((j.due_at, j.repeat.as_str(), j.text.as_str()), (t0 + 620, "", "pillola"));
+        assert_eq!(
+            (j.due_at, j.repeat.as_str(), j.text.as_str()),
+            (t0 + 620, "", "pillola")
+        );
         assert_eq!(j.status, "pending");
         assert_eq!(get(&c, id).unwrap().unwrap().status, "acknowledged");
         // Twice: the first one is acknowledged already.

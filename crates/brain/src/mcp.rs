@@ -32,9 +32,7 @@ pub fn answer(brain: &Brain, msg: &Value) -> Option<Value> {
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     let id = id?; // notifications (initialized, cancelled…) get no answer
     let ok = |result: Value| json!({"jsonrpc": "2.0", "id": id, "result": result});
-    let err = |code: i64, message: &str| {
-        json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
-    };
+    let err = |code: i64, message: &str| json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}});
     let params = msg.get("params").cloned().unwrap_or(json!({}));
     Some(match method {
         "initialize" => {
@@ -63,7 +61,10 @@ pub fn answer(brain: &Brain, msg: &Value) -> Option<Value> {
                 .map(|t| {
                     let mut v = json!({"name": t.name, "description": t.description,
                         "inputSchema": t.parameters});
-                    if matches!(t.name, "home_entities" | "recall" | "list_read" | "list_jobs" | "read_briefing") {
+                    if matches!(
+                        t.name,
+                        "home_entities" | "recall" | "list_read" | "list_jobs" | "read_briefing"
+                    ) {
                         v["annotations"] = json!({"readOnlyHint": true});
                     }
                     v
@@ -217,7 +218,8 @@ mod tests {
 
     #[test]
     fn handshake_and_tools() {
-        let dir = std::env::temp_dir().join(format!("home-companion-brain-mcp-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("home-companion-brain-mcp-{}", std::process::id()));
         let mut cfg = crate::config::Config::default();
         cfg.memory.dir = dir.display().to_string();
         let brain = Brain::new(cfg).unwrap();
@@ -229,8 +231,18 @@ mod tests {
         .unwrap();
         assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
         assert!(init["result"]["capabilities"]["tools"].is_object());
-        assert!(answer(&brain, &json!({"jsonrpc": "2.0", "method": "notifications/initialized"})).is_none());
-        let list = answer(&brain, &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).unwrap();
+        assert!(
+            answer(
+                &brain,
+                &json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
+            )
+            .is_none()
+        );
+        let list = answer(
+            &brain,
+            &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        )
+        .unwrap();
         let names: Vec<&str> = list["result"]["tools"]
             .as_array()
             .unwrap()
@@ -252,15 +264,25 @@ mod tests {
                 "params": {"name": "recall", "arguments": {"query": "dentista"}}}),
         )
         .unwrap();
-        assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("dentista"));
+        assert!(
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("dentista")
+        );
         // Gemini refuses empty enum values and nested objects without properties.
         fn check(v: &Value, path: &str, top: bool) {
             if let Some(e) = v.get("enum").and_then(Value::as_array) {
-                assert!(e.iter().all(|x| x.as_str() != Some("")), "{path}: empty enum value");
+                assert!(
+                    e.iter().all(|x| x.as_str() != Some("")),
+                    "{path}: empty enum value"
+                );
             }
             if v.get("type").and_then(Value::as_str) == Some("object") && !top {
                 assert!(
-                    v.get("properties").and_then(Value::as_object).is_some_and(|p| !p.is_empty()),
+                    v.get("properties")
+                        .and_then(Value::as_object)
+                        .is_some_and(|p| !p.is_empty()),
                     "{path}: object without properties"
                 );
             }
@@ -281,7 +303,11 @@ mod tests {
         for t in all.mcp_tools() {
             check(&t.parameters, t.name, true);
         }
-        let r = answer(&brain, &json!({"jsonrpc": "2.0", "id": 5, "method": "nope"})).unwrap();
+        let r = answer(
+            &brain,
+            &json!({"jsonrpc": "2.0", "id": 5, "method": "nope"}),
+        )
+        .unwrap();
         assert_eq!(r["error"]["code"], -32601);
         let _ = std::fs::remove_dir_all(dir);
     }

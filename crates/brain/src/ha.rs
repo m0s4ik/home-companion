@@ -88,7 +88,11 @@ impl Ha {
 
     /// The body's token while it is valid for another 30 s, else the token file's.
     fn token(&self) -> Result<String, String> {
-        let pushed = self.pushed.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let pushed = self
+            .pushed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         match pushed {
             Some((t, exp)) if exp > now_secs() + 30 => Ok(t),
             _ => read_secret(&self.cfg.token_file).ok_or_else(|| {
@@ -162,8 +166,8 @@ impl Ha {
                     else {
                         continue;
                     };
-                    out[i as usize - 1] = Some(
-                        if v.get("success").and_then(Value::as_bool) == Some(true) {
+                    out[i as usize - 1] =
+                        Some(if v.get("success").and_then(Value::as_bool) == Some(true) {
                             Ok(v.get("result").cloned().unwrap_or(Value::Null))
                         } else {
                             let why = v
@@ -171,8 +175,7 @@ impl Ha {
                                 .and_then(Value::as_str)
                                 .unwrap_or("failed");
                             Err(format!("Home Assistant: {why}"))
-                        },
-                    );
+                        });
                 }
                 _ => {}
             }
@@ -182,7 +185,12 @@ impl Ha {
     /// Text from Home Assistant's AI task (`ai_task.generate_data`): `entity` or, when empty,
     /// the AI task entity chosen in Home Assistant's settings. The language model is Home
     /// Assistant's, with its key: the brain has none.
-    pub fn generate(&self, instructions: &str, entity: &str, timeout: Duration) -> Result<String, String> {
+    pub fn generate(
+        &self,
+        instructions: &str,
+        entity: &str,
+        timeout: Duration,
+    ) -> Result<String, String> {
         let entity = if entity.is_empty() {
             self.ai_task_entity(timeout)?
         } else {
@@ -207,7 +215,10 @@ impl Ha {
     pub fn ai_task_entity(&self, timeout: Duration) -> Result<String, String> {
         let mut r = self
             .call_many(
-                vec![json!({"type": "ai_task/preferences/get"}), json!({"type": "get_states"})],
+                vec![
+                    json!({"type": "ai_task/preferences/get"}),
+                    json!({"type": "get_states"}),
+                ],
                 timeout,
             )?
             .into_iter();
@@ -223,34 +234,45 @@ impl Ha {
             .filter_map(|s| s.get("entity_id").and_then(Value::as_str))
             .find(|id| id.starts_with("ai_task."))
             .map(str::to_string)
-            .ok_or_else(|| "Home Assistant has no AI task (add an AI integration such as Google Gemini)".into())
+            .ok_or_else(|| {
+                "Home Assistant has no AI task (add an AI integration such as Google Gemini)".into()
+            })
     }
 
     /// The entities exposed to Assist (Home Assistant's own choice, Settings → Voice
     /// assistants → Expose), with name, area, state and the attributes a command needs.
     pub fn exposed(&self, timeout: Duration) -> Result<Vec<Entity>, String> {
-        let mut r = self.call_many(
-            vec![
-                json!({"type": "homeassistant/expose_entity/list"}),
-                json!({"type": "get_states"}),
-                json!({"type": "config/entity_registry/list_for_display"}),
-                json!({"type": "config/device_registry/list"}),
-                json!({"type": "config/area_registry/list"}),
-            ],
-            timeout,
-        )?
-        .into_iter();
+        let mut r = self
+            .call_many(
+                vec![
+                    json!({"type": "homeassistant/expose_entity/list"}),
+                    json!({"type": "get_states"}),
+                    json!({"type": "config/entity_registry/list_for_display"}),
+                    json!({"type": "config/device_registry/list"}),
+                    json!({"type": "config/area_registry/list"}),
+                ],
+                timeout,
+            )?
+            .into_iter();
         let mut next = || r.next().unwrap_or_else(|| Err("no answer".into()));
         let exposed = next()?;
         let states = next()?;
         let registry = next().unwrap_or(Value::Null);
         let devices = next().unwrap_or(Value::Null);
         let areas = next().unwrap_or(Value::Null);
-        Ok(entities_from(&exposed, &states, &registry, &devices, &areas))
+        Ok(entities_from(
+            &exposed, &states, &registry, &devices, &areas,
+        ))
     }
 
     /// A service of the entity's own domain on one entity (`light.turn_on`, `cover.open_cover`…).
-    pub fn control(&self, entity_id: &str, service: &str, data: &Value, timeout: Duration) -> Result<(), String> {
+    pub fn control(
+        &self,
+        entity_id: &str,
+        service: &str,
+        data: &Value,
+        timeout: Duration,
+    ) -> Result<(), String> {
         let domain = entity_id.split('.').next().unwrap_or("");
         let mut sd = match data {
             Value::Object(_) => data.clone(),
@@ -285,7 +307,11 @@ pub struct Entity {
 impl Entity {
     /// Name and device together, for matching words like "garage" or "cancello" in either.
     pub fn full_name(&self) -> String {
-        if self.device.is_empty() { self.name.clone() } else { format!("{} {}", self.device, self.name) }
+        if self.device.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{} {}", self.device, self.name)
+        }
     }
 
     pub fn domain(&self) -> &str {
@@ -311,13 +337,31 @@ impl Entity {
 }
 
 const KEPT_ATTRIBUTES: &[&str] = &[
-    "unit_of_measurement", "brightness", "color_temp_kelvin", "current_position",
-    "current_temperature", "temperature", "target_temp_low", "target_temp_high", "hvac_modes",
-    "preset_mode", "percentage", "volume_level", "media_title", "media_artist", "source",
+    "unit_of_measurement",
+    "brightness",
+    "color_temp_kelvin",
+    "current_position",
+    "current_temperature",
+    "temperature",
+    "target_temp_low",
+    "target_temp_high",
+    "hvac_modes",
+    "preset_mode",
+    "percentage",
+    "volume_level",
+    "media_title",
+    "media_artist",
+    "source",
 ];
 
 /// Exposed entities from the five registry answers (pure, for tests).
-pub fn entities_from(exposed: &Value, states: &Value, registry: &Value, devices: &Value, areas: &Value) -> Vec<Entity> {
+pub fn entities_from(
+    exposed: &Value,
+    states: &Value,
+    registry: &Value,
+    devices: &Value,
+    areas: &Value,
+) -> Vec<Entity> {
     let is_exposed = |id: &str| {
         exposed
             .pointer("/exposed_entities")
@@ -337,16 +381,26 @@ pub fn entities_from(exposed: &Value, states: &Value, registry: &Value, devices:
             .to_string()
     };
     let device = |id: &str| -> Option<&Value> {
-        devices.as_array().into_iter().flatten().find(|d| d.get("id").and_then(Value::as_str) == Some(id))
+        devices
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|d| d.get("id").and_then(Value::as_str) == Some(id))
     };
     let device_area = |id: &str| -> Option<String> {
-        device(id).and_then(|d| d.get("area_id").and_then(Value::as_str)).map(str::to_string)
+        device(id)
+            .and_then(|d| d.get("area_id").and_then(Value::as_str))
+            .map(str::to_string)
     };
     let device_name = |id: &str| -> Option<String> {
         let d = device(id)?;
         ["name_by_user", "name"]
             .iter()
-            .find_map(|k| d.get(*k).and_then(Value::as_str).filter(|n| !n.trim().is_empty()))
+            .find_map(|k| {
+                d.get(*k)
+                    .and_then(Value::as_str)
+                    .filter(|n| !n.trim().is_empty())
+            })
             .map(|n| n.trim().to_string())
     };
     // list_for_display: {"entities": [{"ei": id, "ai": area, "di": device, …}]}
@@ -369,9 +423,16 @@ pub fn entities_from(exposed: &Value, states: &Value, registry: &Value, devices:
             }
             let attrs = s.get("attributes").cloned().unwrap_or(Value::Null);
             // list_for_display: "en" = the entity's own name, "di" = its device.
-            let own = reg(id).and_then(|r| r.get("en").and_then(Value::as_str)).filter(|n| !n.trim().is_empty());
-            let dev = reg(id).and_then(|r| r.get("di").and_then(Value::as_str)).and_then(device_name);
-            let friendly = attrs.get("friendly_name").and_then(Value::as_str).filter(|n| !n.trim().is_empty());
+            let own = reg(id)
+                .and_then(|r| r.get("en").and_then(Value::as_str))
+                .filter(|n| !n.trim().is_empty());
+            let dev = reg(id)
+                .and_then(|r| r.get("di").and_then(Value::as_str))
+                .and_then(device_name);
+            let friendly = attrs
+                .get("friendly_name")
+                .and_then(Value::as_str)
+                .filter(|n| !n.trim().is_empty());
             let (name, device) = match (own, dev) {
                 (Some(n), Some(d)) if n.trim() != d => (n.trim().to_string(), d),
                 (Some(n), _) => (n.trim().to_string(), String::new()),
@@ -395,8 +456,16 @@ pub fn entities_from(exposed: &Value, states: &Value, registry: &Value, devices:
                 name,
                 device,
                 area: area_id.as_deref().map(area_name).unwrap_or_default(),
-                state: s.get("state").and_then(Value::as_str).unwrap_or("").to_string(),
-                device_class: attrs.get("device_class").and_then(Value::as_str).unwrap_or("").to_string(),
+                state: s
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                device_class: attrs
+                    .get("device_class")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
                 attributes: Value::Object(kept),
             })
         })
@@ -446,14 +515,23 @@ mod tests {
         assert_eq!(e[0].area, "Cucina");
         assert_eq!(e[0].attributes["brightness"], 200);
         // No registry name, no device: the old friendly_name.
-        assert_eq!((e[0].name.as_str(), e[0].device.as_str()), ("Luce cucina", ""));
+        assert_eq!(
+            (e[0].name.as_str(), e[0].device.as_str()),
+            ("Luce cucina", "")
+        );
         // The entity's own name, with its device beside it.
         assert_eq!(e[1].entity_id, "sensor.rm4_temperature");
-        assert_eq!((e[1].name.as_str(), e[1].device.as_str()), ("Temperatura", "RM4 Cucina"));
+        assert_eq!(
+            (e[1].name.as_str(), e[1].device.as_str()),
+            ("Temperatura", "RM4 Cucina")
+        );
         assert_eq!(e[1].full_name(), "RM4 Cucina Temperatura");
         // No own name: the device's, the user's name for it first.
         assert_eq!(e[2].area, "Soggiorno");
-        assert_eq!((e[2].name.as_str(), e[2].device.as_str()), ("Tapparella sala", ""));
+        assert_eq!(
+            (e[2].name.as_str(), e[2].device.as_str()),
+            ("Tapparella sala", "")
+        );
         assert_eq!(e[2].device_class, "shutter");
         assert_eq!(e[2].domain(), "cover");
     }

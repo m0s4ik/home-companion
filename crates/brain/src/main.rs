@@ -86,7 +86,10 @@ fn main() -> std::process::ExitCode {
     };
     if tidy {
         // One tidy-up now (tests: the memory jobs through the configured provider).
-        println!("{}", serde_json::to_string(&brain.consolidate()).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string(&brain.consolidate()).unwrap_or_default()
+        );
         return 0.into();
     }
     let allow: Vec<IpAddr> = cfg
@@ -161,7 +164,10 @@ fn main() -> std::process::ExitCode {
         }
     });
     // Home Assistant's own AI thinks; the brain serves it tools (MCP).
-    log::info!("MCP tools for Home Assistant's conversation agent on http://{}/mcp", cfg.listen);
+    log::info!(
+        "MCP tools for Home Assistant's conversation agent on http://{}/mcp",
+        cfg.listen
+    );
     brain::mcp::run(brain, listener, allow);
     0.into()
 }

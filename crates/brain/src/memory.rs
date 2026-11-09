@@ -615,7 +615,11 @@ mod tests {
 
     fn tmp() -> PathBuf {
         let d = std::env::temp_dir()
-            .join(format!("home-companion-brain-mem-{}-{}", std::process::id(), now()))
+            .join(format!(
+                "home-companion-brain-mem-{}-{}",
+                std::process::id(),
+                now()
+            ))
             .join(format!("{:?}", std::thread::current().id()).replace(['(', ')'], ""));
         let _ = std::fs::remove_dir_all(&d);
         d

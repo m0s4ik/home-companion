@@ -368,6 +368,8 @@ house_state_closed = "closed"
 house_state_opening = "opening"
 house_state_closing = "closing"
 house_done = "done"
+house_and_more = "{name} and {n} more"
+house_others = "and {n} more"
 # The Yes/No card of a command that waits for an answer.
 yes = "Yes"
 no = "No"
@@ -426,4 +428,5 @@ calendar_names = "Family|Work"
 
 # v0.2 ui
 house_light = "Kitchen light"
+house_lights = "Study left, Study centre, Study right, Bookcase"
 house_question = "Living room blind: close it?"

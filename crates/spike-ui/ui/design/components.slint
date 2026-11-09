@@ -1064,9 +1064,11 @@ export component UndoPopup inherits Rectangle {
         x: root.centre-x - self.width / 2;
         y: (parent.height - self.height) / 2;
         width: 520px;
-        height: 420px;
+        // Grows with the names (a group lists up to three lines).
+        height: name-text.y + name-text.height + 4px + 36px + 32px + 88px + 24px + 4px + 36px;
         border-radius: 32px;
-        background: Theme.surface;
+        // 90 % opaque: what is behind shows faintly (no blur on this device).
+        background: Theme.surface.with-alpha(0.9);
         border-width: 2px;
         border-color: Theme.accent.with-alpha(0.5);
         drop-shadow-blur: 24px;
@@ -1107,23 +1109,22 @@ export component UndoPopup inherits Rectangle {
             source: Icons.check-circle-48;
             color: Theme.accent;
         }
-        // The name on up to two lines, the state under it in gold.
-        Text {
+        // The name (a group: one per line, smaller), the state under it in gold.
+        name-text := Text {
             x: 40px;
-            y: 104px;
+            y: 112px;
             width: parent.width - 80px;
-            height: 88px;
+            height: max(48px, self.preferred-height);
             text: root.name;
             font-size: 34px;
             color: Theme.text;
             horizontal-alignment: center;
             vertical-alignment: center;
             wrap: word-wrap;
-            overflow: elide;
         }
-        Text {
+        state-text := Text {
             x: 40px;
-            y: 196px;
+            y: name-text.y + name-text.height + 4px;
             width: parent.width - 80px;
             height: 36px;
             text: root.state;
@@ -1135,7 +1136,7 @@ export component UndoPopup inherits Rectangle {
         }
         Rectangle {
             x: 48px;
-            y: 264px;
+            y: state-text.y + 36px + 32px;
             width: parent.width - 96px;
             height: 88px;
             border-radius: self.height / 2;
@@ -1173,7 +1174,7 @@ export component UndoPopup inherits Rectangle {
         // The time left: a thin line that shrinks.
         Rectangle {
             x: 48px;
-            y: 376px;
+            y: state-text.y + 36px + 32px + 88px + 24px;
             width: parent.width - 96px;
             height: 4px;
             border-radius: 2px;

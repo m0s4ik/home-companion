@@ -9,7 +9,14 @@
 use std::time::{Duration, Instant};
 
 /// The "done" card goes away by itself after this.
-pub const DONE_CARD: Duration = Duration::from_secs(10);
+pub const DONE_CARD: Duration = Duration::from_secs(20);
+/// Commands this close to the previous one join its card ("spegni le luci dello studio" runs
+/// one command per light): one pop-up, one Undo for all of them.
+pub const GROUP: Duration = Duration::from_secs(4);
+/// A group's pop-up lists at most this many lines of names.
+pub const POPUP_NAMES: usize = 3;
+/// At most this many commands in one card (the brain keeps as many Undos).
+pub const GROUP_MAX: usize = 16;
 /// With an Undo, a big pop-up in the middle comes first for this long (a wrong command is put
 /// right at once, with a big target), then the card stays for the rest of [`DONE_CARD`].
 pub const UNDO_POPUP: Duration = Duration::from_secs(5);
@@ -17,10 +24,13 @@ pub const UNDO_POPUP: Duration = Duration::from_secs(5);
 /// A house command went through (BrainMsg::Changed).
 #[derive(Debug, Clone, PartialEq)]
 pub struct DoneCard {
-    pub id: i64,
-    /// "Kitchen light: off".
-    pub line: String,
+    /// The commands in the card, oldest first (one, or a group).
+    pub ids: Vec<i64>,
+    /// Their lines, "Kitchen light: off" ([`done_line`]).
+    pub lines: Vec<String>,
     pub undo: bool,
+    /// When the last one came (a group grows while they keep coming).
+    last: Instant,
     until: Instant,
     since: Instant,
     /// Until when the Undo pop-up is up (None: not, or closed).
@@ -46,16 +56,36 @@ pub struct HouseCards {
 }
 
 impl HouseCards {
-    /// A command went through: its card for [`DONE_CARD`].
-    pub fn changed(&mut self, id: i64, line: String, undo: bool, now: Instant) {
+    /// A command went through: its card for [`DONE_CARD`], or into the card of the one just
+    /// before (within [`GROUP`], both with or both without Undo): then its time starts again.
+    /// True when it joined a group.
+    pub fn changed(&mut self, id: i64, line: String, undo: bool, now: Instant) -> bool {
+        if let Some(d) = self.done.as_mut() {
+            if d.undo == undo
+                && d.ids.len() < GROUP_MAX
+                && now.saturating_duration_since(d.last) <= GROUP
+            {
+                d.ids.push(id);
+                d.lines.push(line);
+                d.last = now;
+                d.until = now + DONE_CARD;
+                if undo {
+                    d.since = now;
+                    d.popup_until = Some(now + UNDO_POPUP);
+                }
+                return true;
+            }
+        }
         self.done = Some(DoneCard {
-            id,
-            line,
+            ids: vec![id],
+            lines: vec![line],
             undo,
+            last: now,
             until: now + DONE_CARD,
             since: now,
             popup_until: undo.then_some(now + UNDO_POPUP),
         });
+        false
     }
 
     /// Whether the Undo pop-up is up.
@@ -118,10 +148,10 @@ impl HouseCards {
         self.ask.take().map(|a| a.id)
     }
 
-    /// "Undo" touched: the command's id, the card closed.
-    pub fn undo(&mut self) -> Option<i64> {
+    /// "Undo" touched: the commands' ids, the card closed.
+    pub fn undo(&mut self) -> Option<Vec<i64>> {
         match self.done.take() {
-            Some(d) if d.undo => Some(d.id),
+            Some(d) if d.undo => Some(d.ids),
             other => {
                 self.done = other;
                 None
@@ -158,6 +188,41 @@ impl HouseCards {
         let Some(a) = &self.ask else { return 0.0 };
         let total = (a.expires_at as f64 - a.since).max(1.0);
         ((a.expires_at as f64 - now_unix) / total).clamp(0.0, 1.0) as f32
+    }
+}
+
+impl DoneCard {
+    /// What the card and the pop-up say: (card line, pop-up name, pop-up state). One command:
+    /// its line, its name and state. A group: "<first> and N more: <state>" on the card
+    /// (`more` is the locale's "{name} e altri {n}"), on the pop-up the names one per line, at
+    /// most [`POPUP_NAMES`] then "and N more" (`others`, "e altri {n}"), the state when they all
+    /// agree.
+    pub fn texts(&self, more: &str, others: &str) -> (String, String, String) {
+        let parts: Vec<(&str, &str)> = self.lines.iter().map(|l| split_line(l)).collect();
+        if parts.len() == 1 {
+            let (n, s) = parts[0];
+            return (self.lines[0].clone(), n.to_string(), s.to_string());
+        }
+        let state = if parts.iter().all(|p| p.1 == parts[0].1) {
+            parts[0].1
+        } else {
+            ""
+        };
+        let first = more
+            .replace("{name}", parts[0].0)
+            .replace("{n}", &(parts.len() - 1).to_string());
+        let card = if state.is_empty() {
+            first
+        } else {
+            format!("{first}: {state}")
+        };
+        let mut names: Vec<String> = parts.iter().map(|p| p.0.to_string()).collect();
+        if names.len() > POPUP_NAMES {
+            let rest = names.len() - (POPUP_NAMES - 1);
+            names.truncate(POPUP_NAMES - 1);
+            names.push(others.replace("{n}", &rest.to_string()));
+        }
+        (card, names.join("\n"), state.to_string())
     }
 }
 
@@ -297,19 +362,55 @@ mod tests {
         assert!(c.popup());
         assert_eq!(c.popup_left(t0), 1.0);
         assert!((c.popup_left(t0 + UNDO_POPUP / 2) - 0.5).abs() < 0.01);
-        // After 5 s the pop-up goes, the card stays until 10 s.
+        // After 5 s the pop-up goes, the card stays until 20 s.
         assert!(c.tick(t0 + UNDO_POPUP, 0.0));
         assert!(!c.popup() && c.done.is_some());
         assert!(!c.tick(t0 + UNDO_POPUP + Duration::from_secs(1), 0.0));
         assert!(c.tick(t0 + DONE_CARD, 0.0));
         assert!(c.done.is_none());
         // OK closes the pop-up only; without an Undo there is no pop-up.
+        let t0 = t0 + DONE_CARD;
         c.changed(8, "x".into(), true, t0);
         assert!(c.close_popup() && !c.popup() && c.done.is_some());
         assert!(!c.close_popup());
-        c.changed(9, "y".into(), false, t0);
+        c.changed(9, "y".into(), false, t0 + GROUP * 2);
         assert!(!c.popup());
         assert_eq!(c.popup_left(t0), 0.0);
+    }
+
+    #[test]
+    fn commands_close_together_are_one_card_with_one_undo() {
+        let t0 = Instant::now();
+        let s = Duration::from_millis(70);
+        let mut c = HouseCards::default();
+        assert!(!c.changed(1, "Studio SX: spento".into(), true, t0));
+        assert!(c.changed(2, "Studio centro: spento".into(), true, t0 + s));
+        assert!(c.changed(3, "Libreria: spento".into(), true, t0 + s * 2));
+        let d = c.done.clone().unwrap();
+        let more = "{name} e altri {n}";
+        assert_eq!(
+            d.texts(more, "e altri {n}"),
+            (
+                "Studio SX e altri 2: spento".to_string(),
+                "Studio SX\nStudio centro\nLibreria".to_string(),
+                "spento".to_string()
+            )
+        );
+        // States that differ: no state; four names: two, then "and 2 more".
+        c.changed(4, "Tenda: aperto".into(), true, t0 + s * 3);
+        let t = c.done.as_ref().unwrap().texts(more, "e altri {n}");
+        assert_eq!(t.2, "");
+        assert_eq!(t.1, "Studio SX\nStudio centro\ne altri 2");
+        assert_eq!(c.undo(), Some(vec![1, 2, 3, 4]));
+        // Far apart, or one with Undo and one without: two cards (the newer replaces).
+        c.changed(5, "a: spento".into(), true, t0);
+        assert!(!c.changed(6, "b: spento".into(), true, t0 + GROUP * 2));
+        assert!(!c.changed(7, "c: acceso".into(), false, t0 + GROUP * 2));
+        assert_eq!(c.done.as_ref().unwrap().ids, vec![7]);
+        assert_eq!(
+            c.done.as_ref().unwrap().texts("x", "y"),
+            ("c: acceso".into(), "c".into(), "acceso".into())
+        );
     }
 
     fn it(k: &str) -> Option<String> {
@@ -328,15 +429,15 @@ mod tests {
         let mut c = HouseCards::default();
         // (No Undo here: no pop-up going away at 5 s.)
         c.changed(41, "Kitchen light: off".into(), false, t0);
-        assert!(!c.tick(t0 + Duration::from_secs(9), 0.0));
+        assert!(!c.tick(t0 + Duration::from_secs(19), 0.0));
         assert!(c.done.is_some());
         assert!(c.tick(t0 + DONE_CARD, 0.0));
         assert!(c.done.is_none());
         // A newer one replaces it, and starts its own time.
         c.changed(41, "a".into(), true, t0);
         c.changed(42, "b".into(), false, t0 + Duration::from_secs(5));
-        assert!(!c.tick(t0 + Duration::from_secs(14), 0.0));
-        assert_eq!(c.done.as_ref().map(|d| d.id), Some(42));
+        assert!(!c.tick(t0 + Duration::from_secs(24), 0.0));
+        assert_eq!(c.done.as_ref().map(|d| d.ids.clone()), Some(vec![42]));
     }
 
     #[test]
@@ -347,7 +448,7 @@ mod tests {
         assert_eq!(c.undo(), None);
         assert!(c.done.is_some(), "a card without Undo stays");
         c.changed(8, "y".into(), true, t0);
-        assert_eq!(c.undo(), Some(8));
+        assert_eq!(c.undo(), Some(vec![8]));
         assert!(c.done.is_none());
         assert_eq!(c.undo(), None);
     }

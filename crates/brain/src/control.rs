@@ -94,8 +94,10 @@ pub fn answer(brain: &Brain, req: &Value) -> (Value, bool) {
         ) {
             (Some(t), Some(exp)) if !t.is_empty() => {
                 if let Some(a) = req.get("allow").and_then(Value::as_array) {
-                    let a: Vec<String> =
-                        a.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+                    let a: Vec<String> = a
+                        .iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect();
                     brain.set_learned_allow(&a);
                 }
                 if let Some(l) = req.get("language").and_then(Value::as_str) {
@@ -103,18 +105,20 @@ pub fn answer(brain: &Brain, req: &Value) -> (Value, bool) {
                 }
                 let entities = |k: &str| {
                     req.get(k).and_then(Value::as_array).map(|a| {
-                        a.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>()
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect::<Vec<_>>()
                     })
                 };
                 brain.set_chosen(entities("lists"), entities("calendars"));
                 brain
-                .set_ha_token(
-                    t.to_string(),
-                    exp,
-                    req.get("url").and_then(Value::as_str),
-                    req.get("satellite_entity").and_then(Value::as_str),
-                )
-                .map_or_else(err, |_| json!({"ok": true}))
+                    .set_ha_token(
+                        t.to_string(),
+                        exp,
+                        req.get("url").and_then(Value::as_str),
+                        req.get("satellite_entity").and_then(Value::as_str),
+                    )
+                    .map_or_else(err, |_| json!({"ok": true}))
             }
             _ => err("token and expires_at are required".into()),
         },
@@ -127,10 +131,14 @@ pub fn answer(brain: &Brain, req: &Value) -> (Value, bool) {
             json!({"ok": true})
         }
         "confirm.answer" => match req.get("yes").and_then(Value::as_bool) {
-            Some(yes) => brain.answer_confirm(id, yes).map_or_else(err, |_| json!({"ok": true})),
+            Some(yes) => brain
+                .answer_confirm(id, yes)
+                .map_or_else(err, |_| json!({"ok": true})),
             None => err("yes: true or false is required".into()),
         },
-        "control.undo" => brain.undo_control(id).map_or_else(err, |_| json!({"ok": true})),
+        "control.undo" => brain
+            .undo_control(id)
+            .map_or_else(err, |_| json!({"ok": true})),
         "subscribe" => return (json!({"ok": true}), true),
         other => err(format!("unknown command {other:?}")),
     };

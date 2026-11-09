@@ -131,7 +131,12 @@ pub fn pick(
             .ok_or_else(|| "no list is available: Home Assistant has no todo list".to_string());
     }
     let w = normalize(wanted);
-    let names = || pool.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join(", ");
+    let names = || {
+        pool.iter()
+            .map(|(_, n)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     if let Some(p) = pool.iter().find(|(id, n)| {
         id.eq_ignore_ascii_case(wanted) || *id == format!("todo.{wanted}") || normalize(n) == w
     }) {
@@ -140,8 +145,14 @@ pub fn pick(
     let partial: Vec<&(String, String)> = pool.iter().filter(|(_, n)| matches(wanted, n)).collect();
     match partial.as_slice() {
         [one] => Ok((*one).clone()),
-        [] => Err(format!("no list called '{wanted}'; the lists are: {}", names())),
-        _ => Err(format!("'{wanted}' fits several lists, which one? {}", names())),
+        [] => Err(format!(
+            "no list called '{wanted}'; the lists are: {}",
+            names()
+        )),
+        _ => Err(format!(
+            "'{wanted}' fits several lists, which one? {}",
+            names()
+        )),
     }
 }
 
@@ -303,7 +314,9 @@ mod tests {
     #[test]
     fn pick_a_list_by_name_or_default() {
         let k = |v: &[(&str, &str)]| -> Vec<(String, String)> {
-            v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+            v.iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect()
         };
         let known = k(&[
             ("todo.casa", "Home to-do"),
@@ -313,17 +326,35 @@ mod tests {
         let chosen = vec!["todo.casa".to_string(), "todo.bring".to_string()];
         let id = |r: Result<(String, String), String>| r.map(|p| p.0);
         // Default: the configured list, else the one named like shopping, else the first chosen.
-        assert_eq!(id(pick(&known, &chosen, "todo.casa", "")).unwrap(), "todo.casa");
+        assert_eq!(
+            id(pick(&known, &chosen, "todo.casa", "")).unwrap(),
+            "todo.casa"
+        );
         assert_eq!(id(pick(&known, &chosen, "", "")).unwrap(), "todo.bring");
-        assert_eq!(id(pick(&known, &["todo.casa".into()], "", "")).unwrap(), "todo.casa");
+        assert_eq!(
+            id(pick(&known, &["todo.casa".into()], "", "")).unwrap(),
+            "todo.casa"
+        );
         // By friendly name (forgiving), by entity id, by part of the name.
-        assert_eq!(id(pick(&known, &chosen, "", "home to do")).unwrap(), "todo.casa");
-        assert_eq!(id(pick(&known, &chosen, "", "todo.bring")).unwrap(), "todo.bring");
-        assert_eq!(id(pick(&known, &chosen, "todo.bring", "home")).unwrap(), "todo.casa");
+        assert_eq!(
+            id(pick(&known, &chosen, "", "home to do")).unwrap(),
+            "todo.casa"
+        );
+        assert_eq!(
+            id(pick(&known, &chosen, "", "todo.bring")).unwrap(),
+            "todo.bring"
+        );
+        assert_eq!(
+            id(pick(&known, &chosen, "todo.bring", "home")).unwrap(),
+            "todo.casa"
+        );
         // Not among the chosen ones: refused with the names; empty chosen = all of them.
         let e = pick(&known, &chosen, "", "garden jobs").unwrap_err();
         assert!(e.contains("Spesa"), "{e}");
-        assert_eq!(id(pick(&known, &[], "", "garden jobs")).unwrap(), "todo.garden");
+        assert_eq!(
+            id(pick(&known, &[], "", "garden jobs")).unwrap(),
+            "todo.garden"
+        );
         assert!(pick(&[], &[], "", "").is_err());
     }
 }

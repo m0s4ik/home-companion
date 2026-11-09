@@ -98,14 +98,25 @@ fn ws_send(s: &mut TcpStream, v: &Value) {
 fn answer(f: &Fake, cmd: &Value) -> Value {
     f.calls.lock().unwrap().push(cmd.clone());
     let mut t = f.todo.lock().unwrap();
-    match (cmd["type"].as_str(), cmd["domain"].as_str(), cmd["service"].as_str()) {
+    match (
+        cmd["type"].as_str(),
+        cmd["domain"].as_str(),
+        cmd["service"].as_str(),
+    ) {
         (Some("ai_task/preferences/get"), _, _) => json!({"gen_data_entity_id": "ai_task.test"}),
         (Some("call_service"), Some("ai_task"), Some("generate_data")) => {
             f.asked.lock().unwrap().push(
-                cmd["service_data"]["instructions"].as_str().unwrap_or("").to_string(),
+                cmd["service_data"]["instructions"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
             );
             let mut q = f.ai.lock().unwrap();
-            let data = if q.is_empty() { String::new() } else { q.remove(0) };
+            let data = if q.is_empty() {
+                String::new()
+            } else {
+                q.remove(0)
+            };
             json!({"response": {"data": data, "conversation_id": "c"}})
         }
         (Some("homeassistant/expose_entity/list"), _, _) => {
@@ -121,8 +132,12 @@ fn answer(f: &Fake, cmd: &Value) -> Value {
                 .iter()
                 .map(|(id, name, class)| json!({"entity_id": id, "state": "open",
                     "attributes": {"friendly_name": name, "device_class": class}}))
-                .chain(f.states.iter().map(|(id, name)| json!({"entity_id": id, "state": "idle",
-                    "attributes": {"friendly_name": name}})))
+                .chain(
+                    f.states
+                        .iter()
+                        .map(|(id, name)| json!({"entity_id": id, "state": "idle",
+                    "attributes": {"friendly_name": name}}))
+                )
                 .collect::<Vec<_>>()
         ),
         (Some("call_service"), Some("calendar"), Some("get_events")) => {
@@ -202,7 +217,10 @@ fn fake_ha(f: Fake) -> String {
 }
 
 fn setup(name: &str, ha_url: &str) -> (Config, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("home-companion-brain-test-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "home-companion-brain-test-{name}-{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let tok = dir.join("tok");
@@ -225,7 +243,11 @@ fn tool(b: &Brain, name: &str, args: Value) -> (Value, bool) {
 fn remember_and_recall_through_the_tools() {
     let (cfg, dir) = setup("remember", "");
     let b = Brain::new(cfg).unwrap();
-    let (r, err) = tool(&b, "remember", json!({"text": "Andrea ha il dentista il 12 novembre"}));
+    let (r, err) = tool(
+        &b,
+        "remember",
+        json!({"text": "Andrea ha il dentista il 12 novembre"}),
+    );
     assert!(!err, "{r}");
     assert_eq!(b.facts("dentista").len(), 1);
     let (r, _) = tool(&b, "recall", json!({"query": "dentista"}));
@@ -252,9 +274,15 @@ fn end_of_conversation_extraction_through_ai_task() {
     b.heard("la caldaia è in cantina, ricordatelo");
     b.said("Va bene, me lo ricordo.");
     b.close_sessions();
-    assert_eq!(b.facts("caldaia")[0].text, "La caldaia di casa è in cantina");
+    assert_eq!(
+        b.facts("caldaia")[0].text,
+        "La caldaia di casa è in cantina"
+    );
     let asked = f.asked.lock().unwrap();
-    assert!(asked[0].contains("la caldaia è in cantina, ricordatelo"), "{asked:?}");
+    assert!(
+        asked[0].contains("la caldaia è in cantina, ricordatelo"),
+        "{asked:?}"
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -276,15 +304,29 @@ fn house_gates_need_a_spoken_yes_and_never_open_doors() {
             .unwrap()
             .iter()
             .filter(|c| c["type"] == "call_service")
-            .map(|c| format!("{}.{} {}", c["domain"].as_str().unwrap(), c["service"].as_str().unwrap(),
-                c["service_data"]["entity_id"].as_str().unwrap_or("")))
+            .map(|c| {
+                format!(
+                    "{}.{} {}",
+                    c["domain"].as_str().unwrap(),
+                    c["service"].as_str().unwrap(),
+                    c["service_data"]["entity_id"].as_str().unwrap_or("")
+                )
+            })
             .collect()
     };
     // A light: at once.
-    let (r, err) = tool(&b, "home_control", json!({"entity_id": "light.cucina", "service": "turn_on"}));
+    let (r, err) = tool(
+        &b,
+        "home_control",
+        json!({"entity_id": "light.cucina", "service": "turn_on"}),
+    );
     assert!(!err, "{r}");
     // A garage door: never.
-    let (r, err) = tool(&b, "home_control", json!({"entity_id": "cover.garage", "service": "open_cover"}));
+    let (r, err) = tool(
+        &b,
+        "home_control",
+        json!({"entity_id": "cover.garage", "service": "open_cover"}),
+    );
     assert!(err && r.to_string().contains("never"), "{r}");
     // A shutter: asks, and runs only after the user's own "sì".
     let args = json!({"entity_id": "cover.soggiorno", "service": "close_cover"});
@@ -307,7 +349,11 @@ fn house_gates_need_a_spoken_yes_and_never_open_doors() {
     assert_eq!(
         services(&f),
         // The light: a snapshot for its Undo first; the shutter after a yes has no Undo.
-        ["scene.create ", "light.turn_on light.cucina", "cover.close_cover cover.soggiorno"]
+        [
+            "scene.create ",
+            "light.turn_on light.cucina",
+            "cover.close_cover cover.soggiorno"
+        ]
     );
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -347,9 +393,18 @@ fn nightly_tidy_up_merges_updates_and_retires() {
     assert!(!texts.iter().any(|t| t.contains("dentista")));
     assert_eq!(list["profile"], "- Si chiama Andrea\n");
     let asked = f.asked.lock().unwrap();
-    assert!(asked[0].contains("[4] (") && asked[0].contains("dentista"), "{asked:?}");
+    assert!(
+        asked[0].contains("[4] (") && asked[0].contains("dentista"),
+        "{asked:?}"
+    );
     // The AI task chosen in Home Assistant was used.
-    assert!(f.calls.lock().unwrap().iter().any(|c| c["service_data"]["entity_id"] == "ai_task.test"));
+    assert!(
+        f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c["service_data"]["entity_id"] == "ai_task.test")
+    );
     assert_eq!(b.status()["tidy"]["merged"], 2);
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -392,9 +447,15 @@ fn control_socket_commands() {
     assert!(sub);
     // The language chosen on the body's screen comes with the token and wins over brain.toml's.
     assert_eq!(b.language(), "it");
-    let _ = answer(&b, &json!({"cmd": "ha.token", "token": "t", "expires_at": 1, "language": "en"}));
+    let _ = answer(
+        &b,
+        &json!({"cmd": "ha.token", "token": "t", "expires_at": 1, "language": "en"}),
+    );
     assert_eq!(b.language(), "en");
-    let _ = answer(&b, &json!({"cmd": "ha.token", "token": "t", "expires_at": 1, "language": "../x"}));
+    let _ = answer(
+        &b,
+        &json!({"cmd": "ha.token", "token": "t", "expires_at": 1, "language": "../x"}),
+    );
     assert_eq!(b.language(), "en");
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -412,7 +473,11 @@ fn a_reminder_by_voice_is_delivered_as_a_card() {
     );
     assert!(!err, "{r}");
     // A time in the past is refused.
-    let (_, err) = tool(&b, "schedule", json!({"when": rfc3339(now - 7200), "text": "ieri"}));
+    let (_, err) = tool(
+        &b,
+        "schedule",
+        json!({"when": rfc3339(now - 7200), "text": "ieri"}),
+    );
     assert!(err);
     let jobs = b.jobs_list();
     assert_eq!(jobs.as_array().unwrap().len(), 1, "{jobs}");
@@ -441,8 +506,13 @@ fn shopping_list_add_read_done_remove() {
         ("u2".into(), "Latte".into(), "completed".into()),
     ]));
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let url = fake_ha(Fake { todo: todo.clone(), calls: calls.clone(), ..Fake::default() });
-    let dir = std::env::temp_dir().join(format!("home-companion-brain-lists-{}", std::process::id()));
+    let url = fake_ha(Fake {
+        todo: todo.clone(),
+        calls: calls.clone(),
+        ..Fake::default()
+    });
+    let dir =
+        std::env::temp_dir().join(format!("home-companion-brain-lists-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     std::fs::write(dir.join("tok"), "t\n").unwrap();
     let ha = brain::ha::Ha::new(brain::config::HaCfg {
@@ -503,7 +573,8 @@ impl Screen {
         brain::control::start(b.clone(), hub.clone(), &path).unwrap();
         let mut s = UnixStream::connect(&path).unwrap();
         s.write_all(b"{\"cmd\":\"subscribe\"}\n").unwrap();
-        s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
         let mut r = std::io::BufReader::new(s);
         let mut line = String::new();
         r.read_line(&mut line).unwrap();
@@ -523,7 +594,10 @@ impl Screen {
     fn event(&mut self, name: &str) -> Value {
         loop {
             let mut line = String::new();
-            assert!(self.r.read_line(&mut line).unwrap() > 0, "closed while waiting for {name}");
+            assert!(
+                self.r.read_line(&mut line).unwrap() > 0,
+                "closed while waiting for {name}"
+            );
             let v: Value = serde_json::from_str(line.trim()).unwrap();
             if v["event"] == name {
                 return v;
@@ -538,15 +612,25 @@ fn services(f: &Fake) -> Vec<String> {
         .unwrap()
         .iter()
         .filter(|c| c["type"] == "call_service")
-        .map(|c| format!("{}.{} {}", c["domain"].as_str().unwrap(), c["service"].as_str().unwrap(),
-            c["service_data"]["entity_id"].as_str().unwrap_or("")))
+        .map(|c| {
+            format!(
+                "{}.{} {}",
+                c["domain"].as_str().unwrap(),
+                c["service"].as_str().unwrap(),
+                c["service_data"]["entity_id"].as_str().unwrap_or("")
+            )
+        })
         .collect()
 }
 
 #[test]
 fn list_tools_work_on_several_lists_by_name() {
     let f = Fake {
-        states: vec![("todo.casa", "Home to-do"), ("todo.bring", "Spesa"), ("todo.garden", "Garden")],
+        states: vec![
+            ("todo.casa", "Home to-do"),
+            ("todo.bring", "Spesa"),
+            ("todo.garden", "Garden"),
+        ],
         ..Fake::default()
     };
     let (mut cfg, dir) = setup("lists2", &fake_ha(f.clone()));
@@ -554,7 +638,11 @@ fn list_tools_work_on_several_lists_by_name() {
     let b = Brain::new(cfg).unwrap();
     b.set_chosen(Some(vec!["todo.casa".into(), "todo.bring".into()]), None);
     let target = |f: &Fake, service: &str| -> String {
-        f.calls.lock().unwrap().iter().rev()
+        f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
             .find(|c| c["service"] == service)
             .map(|c| c["target"]["entity_id"].as_str().unwrap().to_string())
             .unwrap()
@@ -562,7 +650,11 @@ fn list_tools_work_on_several_lists_by_name() {
     let (r, err) = tool(&b, "list_add", json!({"items": ["pane"]}));
     assert!(!err, "{r}");
     assert_eq!(target(&f, "add_item"), "todo.bring");
-    let (r, err) = tool(&b, "list_add", json!({"items": ["tidy shed"], "list": "home to do"}));
+    let (r, err) = tool(
+        &b,
+        "list_add",
+        json!({"items": ["tidy shed"], "list": "home to do"}),
+    );
     assert!(!err && r.to_string().contains("Home to-do"), "{r}");
     assert_eq!(target(&f, "add_item"), "todo.casa");
     // Not among the chosen lists: refused, with the names that are.
@@ -602,23 +694,49 @@ fn upcoming_events_on_subscribe_and_with_the_chosen_calendars() {
     // Nothing chosen = every calendar of Home Assistant; soonest first.
     let mut screen = Screen::connect(&b, &dir);
     let u = screen.event("upcoming");
-    let titles: Vec<&str> = u["items"].as_array().unwrap().iter().map(|i| i["title"].as_str().unwrap()).collect();
+    let titles: Vec<&str> = u["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["title"].as_str().unwrap())
+        .collect();
     assert_eq!(titles, ["Stand-up", "Dentist"], "{u}");
     assert_eq!(u["items"][0]["calendar"], "calendar.work");
     assert_eq!(u["items"][0]["all_day"], false);
-    let ask = f.calls.lock().unwrap().iter().rev().find(|c| c["service"] == "get_events").cloned().unwrap();
-    assert_eq!(ask["target"]["entity_id"], json!(["calendar.family", "calendar.work"]));
+    let ask = f
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|c| c["service"] == "get_events")
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        ask["target"]["entity_id"],
+        json!(["calendar.family", "calendar.work"])
+    );
     // Nothing changed: no new event; a new choice reads again and sends the new list.
     assert!(b.refresh_upcoming(now + 30).is_none());
     b.set_chosen(None, Some(vec!["calendar.family".into()]));
     // The fake answers both calendars anyway: same events, nothing to send, but it did read again.
     assert!(b.refresh_upcoming(now + 60).is_none());
-    let ask = f.calls.lock().unwrap().iter().rev().find(|c| c["service"] == "get_events").cloned().unwrap();
+    let ask = f
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|c| c["service"] == "get_events")
+        .cloned()
+        .unwrap();
     assert_eq!(ask["target"]["entity_id"], json!(["calendar.family"]));
     // Ten minutes later the calendars are read again; same events: nothing to send.
     assert!(b.refresh_upcoming(now + 60 + 599).is_none());
     *f.calendar.lock().unwrap() = json!({"calendar.family": {"events": []}});
-    let ev = b.refresh_upcoming(now + 60 + 601).expect("the events changed");
+    let ev = b
+        .refresh_upcoming(now + 60 + 601)
+        .expect("the events changed");
     assert_eq!(ev["items"], json!([]));
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -626,45 +744,102 @@ fn upcoming_events_on_subscribe_and_with_the_chosen_calendars() {
 #[test]
 fn a_house_command_is_reported_and_can_be_undone() {
     let f = Fake {
-        exposed: vec![("light.cucina", "Luce cucina", ""), ("cover.soggiorno", "Tapparella soggiorno", "shutter")],
+        exposed: vec![
+            ("light.cucina", "Luce cucina", ""),
+            ("cover.soggiorno", "Tapparella soggiorno", "shutter"),
+        ],
         ..Fake::default()
     };
     let (cfg, dir) = setup("undo", &fake_ha(f.clone()));
     let b = Arc::new(Brain::new(cfg).unwrap());
     let mut screen = Screen::connect(&b, &dir);
-    let (r, err) = tool(&b, "home_control", json!({"entity_id": "light.cucina", "service": "turn_off"}));
+    let (r, err) = tool(
+        &b,
+        "home_control",
+        json!({"entity_id": "light.cucina", "service": "turn_off"}),
+    );
     assert!(!err, "{r}");
     let c = screen.event("changed");
-    assert_eq!((c["entity_id"].as_str(), c["service"].as_str(), c["state"].as_str(), c["undo"].as_bool()),
-        (Some("light.cucina"), Some("turn_off"), Some("off"), Some(true)), "{c}");
+    assert_eq!(
+        (
+            c["entity_id"].as_str(),
+            c["service"].as_str(),
+            c["state"].as_str(),
+            c["undo"].as_bool()
+        ),
+        (
+            Some("light.cucina"),
+            Some("turn_off"),
+            Some("off"),
+            Some(true)
+        ),
+        "{c}"
+    );
     b.undo_control(c["id"].as_i64().unwrap()).unwrap();
     let c2 = screen.event("changed");
-    assert_eq!((c2["service"].as_str(), c2["state"].as_str(), c2["undo"].as_bool()),
-        (Some("turn_on"), Some("on"), Some(false)), "{c2}");
+    assert_eq!(
+        (
+            c2["service"].as_str(),
+            c2["state"].as_str(),
+            c2["undo"].as_bool()
+        ),
+        (Some("turn_on"), Some("on"), Some(false)),
+        "{c2}"
+    );
     // A snapshot before the command, the snapshot's scene for the undo (brightness, colour…).
-    let snap = f.calls.lock().unwrap().iter().find(|c| c["service"] == "create").cloned().unwrap();
-    assert_eq!((snap["domain"].as_str(), snap["service_data"]["snapshot_entities"].clone()),
-        (Some("scene"), json!(["light.cucina"])), "{snap}");
+    let snap = f
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|c| c["service"] == "create")
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        (
+            snap["domain"].as_str(),
+            snap["service_data"]["snapshot_entities"].clone()
+        ),
+        (Some("scene"), json!(["light.cucina"])),
+        "{snap}"
+    );
     assert!(snap["service_data"].get("entity_id").is_none(), "{snap}");
-    let scene = format!("scene.{}", snap["service_data"]["scene_id"].as_str().unwrap());
-    assert_eq!(services(&f), [
-        format!("scene.create "),
-        "light.turn_off light.cucina".to_string(),
-        format!("scene.turn_on {scene}"),
-    ]);
+    let scene = format!(
+        "scene.{}",
+        snap["service_data"]["scene_id"].as_str().unwrap()
+    );
+    assert_eq!(
+        services(&f),
+        [
+            "scene.create ".to_string(),
+            "light.turn_off light.cucina".to_string(),
+            format!("scene.turn_on {scene}"),
+        ]
+    );
     // Once only; an unknown id is an error.
     assert!(b.undo_control(c["id"].as_i64().unwrap()).is_err());
     assert!(b.undo_control(12345).is_err());
     // Toggle undoes itself; a command with no clear inverse has no Undo.
-    let (_, err) = tool(&b, "home_control", json!({"entity_id": "light.cucina", "service": "toggle"}));
+    let (_, err) = tool(
+        &b,
+        "home_control",
+        json!({"entity_id": "light.cucina", "service": "toggle"}),
+    );
     assert!(!err);
     assert_eq!(screen.event("changed")["undo"], true);
-    let (_, err) = tool(&b, "home_control",
-        json!({"entity_id": "light.cucina", "service": "turn_on", "data": {"brightness_pct": 30}}));
+    let (_, err) = tool(
+        &b,
+        "home_control",
+        json!({"entity_id": "light.cucina", "service": "turn_on", "data": {"brightness_pct": 30}}),
+    );
     assert!(!err);
     let c = screen.event("changed");
     assert_eq!(c["undo"], true);
-    let (_, err) = tool(&b, "home_control", json!({"entity_id": "light.cucina", "service": "set_foo"}));
+    let (_, err) = tool(
+        &b,
+        "home_control",
+        json!({"entity_id": "light.cucina", "service": "set_foo"}),
+    );
     assert!(!err);
     assert_eq!(screen.event("changed")["undo"], false);
     let _ = std::fs::remove_dir_all(dir);
@@ -691,9 +866,16 @@ fn a_blind_asks_on_the_screen_and_a_yes_there_does_it_without_undo() {
     assert!(services(&f).is_empty());
     b.answer_confirm(id, true).unwrap();
     let d = screen.event("confirm_done");
-    assert_eq!((d["id"].as_i64(), d["yes"].as_bool()), (Some(id), Some(true)));
+    assert_eq!(
+        (d["id"].as_i64(), d["yes"].as_bool()),
+        (Some(id), Some(true))
+    );
     let ch = screen.event("changed");
-    assert_eq!((ch["service"].as_str(), ch["undo"].as_bool()), (Some("close_cover"), Some(false)), "{ch}");
+    assert_eq!(
+        (ch["service"].as_str(), ch["undo"].as_bool()),
+        (Some("close_cover"), Some(false)),
+        "{ch}"
+    );
     assert_eq!(services(&f), ["cover.close_cover cover.soggiorno"]);
     // A second tap is refused; the model's late call with the id does not run it again.
     assert!(b.answer_confirm(id, true).is_err());
@@ -742,13 +924,20 @@ fn an_unanswered_question_expires_after_a_minute() {
     let (cfg, dir) = setup("expire", &fake_ha(f.clone()));
     let b = Arc::new(Brain::new(cfg).unwrap());
     let mut screen = Screen::connect(&b, &dir);
-    let (r, _) = tool(&b, "home_control", json!({"entity_id": "cover.soggiorno", "service": "close_cover"}));
+    let (r, _) = tool(
+        &b,
+        "home_control",
+        json!({"entity_id": "cover.soggiorno", "service": "close_cover"}),
+    );
     let id = r["confirm_id"].as_i64().unwrap();
     screen.event("confirm");
     b.expire_confirms(brain::agent::now_ms() + 30_000);
     b.expire_confirms(brain::agent::now_ms() + 61_000);
     let d = screen.event("confirm_done");
-    assert_eq!((d["id"].as_i64(), d["yes"].clone()), (Some(id), Value::Null));
+    assert_eq!(
+        (d["id"].as_i64(), d["yes"].clone()),
+        (Some(id), Value::Null)
+    );
     assert!(b.answer_confirm(id, true).is_err());
     assert!(services(&f).is_empty());
     let _ = std::fs::remove_dir_all(dir);
@@ -757,7 +946,10 @@ fn an_unanswered_question_expires_after_a_minute() {
 #[test]
 fn show_view_opens_paths_and_exposed_cameras_only() {
     let f = Fake {
-        exposed: vec![("camera.front", "Front door", ""), ("light.cucina", "Luce cucina", "")],
+        exposed: vec![
+            ("camera.front", "Front door", ""),
+            ("light.cucina", "Luce cucina", ""),
+        ],
         states: vec![("camera.secret", "Bedroom camera")],
         ..Fake::default()
     };
@@ -793,28 +985,62 @@ fn show_view_opens_paths_and_exposed_cameras_only() {
 #[test]
 fn announce_goes_to_every_satellite_or_the_named_ones() {
     let f = Fake {
-        states: vec![("assist_satellite.kitchen", "Kitchen"), ("assist_satellite.hall", "Hall"), ("todo.x", "X")],
+        states: vec![
+            ("assist_satellite.kitchen", "Kitchen"),
+            ("assist_satellite.hall", "Hall"),
+            ("todo.x", "X"),
+        ],
         ..Fake::default()
     };
     let (cfg, dir) = setup("announce", &fake_ha(f.clone()));
     let b = Brain::new(cfg).unwrap();
-    let last = |f: &Fake| f.calls.lock().unwrap().iter().rev().find(|c| c["service"] == "announce").cloned().unwrap();
+    let last = |f: &Fake| {
+        f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|c| c["service"] == "announce")
+            .cloned()
+            .unwrap()
+    };
     let (r, err) = tool(&b, "announce", json!({"message": "La cena è pronta"}));
     assert!(!err, "{r}");
     let c = last(&f);
     assert_eq!(c["domain"], "assist_satellite");
     assert_eq!(c["service_data"]["message"], "La cena è pronta");
-    assert_eq!(c["target"]["entity_id"], json!(["assist_satellite.kitchen", "assist_satellite.hall"]));
-    let (_, err) = tool(&b, "announce", json!({"message": "Ciao", "satellites": ["assist_satellite.hall"]}));
+    assert_eq!(
+        c["target"]["entity_id"],
+        json!(["assist_satellite.kitchen", "assist_satellite.hall"])
+    );
+    let (_, err) = tool(
+        &b,
+        "announce",
+        json!({"message": "Ciao", "satellites": ["assist_satellite.hall"]}),
+    );
     assert!(!err);
-    assert_eq!(last(&f)["target"]["entity_id"], json!(["assist_satellite.hall"]));
+    assert_eq!(
+        last(&f)["target"]["entity_id"],
+        json!(["assist_satellite.hall"])
+    );
     // Unknown satellite, empty message: refused; long text is cut.
-    let (_, err) = tool(&b, "announce", json!({"message": "x", "satellites": ["light.cucina"]}));
+    let (_, err) = tool(
+        &b,
+        "announce",
+        json!({"message": "x", "satellites": ["light.cucina"]}),
+    );
     assert!(err);
     let (_, err) = tool(&b, "announce", json!({"message": "  "}));
     assert!(err);
     let (_, err) = tool(&b, "announce", json!({"message": "x".repeat(500)}));
     assert!(!err);
-    assert!(last(&f)["service_data"]["message"].as_str().unwrap().chars().count() <= 201);
+    assert!(
+        last(&f)["service_data"]["message"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .count()
+            <= 201
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
