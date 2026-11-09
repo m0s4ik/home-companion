@@ -859,6 +859,7 @@ pub struct Ui<S: Screen> {
     frame_timer: Timer,
     /// Hides the volume HUD.
     volume_timer: Timer,
+    wifi_timer: Timer,
     mic_timer: Timer,
     /// Hides the controls over a mirrored screen that fills the panel.
     mirror_timer: Timer,
@@ -1147,6 +1148,7 @@ impl<S: Screen> Ui<S> {
             motion: RefCell::new(motion),
             frame_timer: Timer::default(),
             volume_timer: Timer::default(),
+            wifi_timer: Timer::default(),
             mic_timer: Timer::default(),
             mirror_timer: Timer::default(),
             undo_timer: Timer::default(),
@@ -1185,6 +1187,7 @@ impl<S: Screen> Ui<S> {
         *ui.this.borrow_mut() = Rc::downgrade(&ui);
         ui.set_welcome();
         ui.wire();
+        ui.start_wifi();
         ui.screen.set_error_pose(ui.pose(State::Error));
         ui.screen.set_dnd_prop(load_prop(
             &ui.character.dir.join("poses/dnd.png"),
@@ -2709,6 +2712,23 @@ impl<S: Screen> Ui<S> {
                     ui.screen.set_volume(ui.volume.get(), false);
                 }
             });
+    }
+
+    /// The Wi-Fi bars now and every 15 s (page headers, control center); a fixed 3 in demo mode.
+    pub fn start_wifi(&self) {
+        if self.opts.demo.is_some() {
+            self.screen.set_wifi_level(3);
+            return;
+        }
+        let ui = self.this.borrow().clone();
+        let read = move || {
+            if let Some(ui) = ui.upgrade() {
+                ui.screen.set_wifi_level(wifi_level("wlan0").unwrap_or(-1));
+            }
+        };
+        read();
+        self.wifi_timer
+            .start(TimerMode::Repeated, Duration::from_secs(15), read);
     }
 
     /// The card of the microphone's switch for [`MIC_CARD`], the screen woken.
@@ -4768,6 +4788,34 @@ fn manual_levels(full: Levels, percent: u8) -> Levels {
     Levels { idle, active }
 }
 
+/// The Wi-Fi signal as bars (`iw dev <if> link`, no privilege needed): 0 not connected, else
+/// 1..4 from the signal in dBm; None without `iw`.
+fn wifi_level(interface: &str) -> Option<i32> {
+    let out = std::process::Command::new("/usr/sbin/iw")
+        .args(["dev", interface, "link"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    Some(parse_wifi_level(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Bars from `iw dev <if> link`: "Not connected." → 0; "signal: -61 dBm" → 3.
+pub fn parse_wifi_level(text: &str) -> i32 {
+    let dbm = text.lines().find_map(|l| {
+        l.trim()
+            .strip_prefix("signal:")
+            .and_then(|v| v.split_whitespace().next())
+            .and_then(|v| v.parse::<i32>().ok())
+    });
+    match dbm {
+        None => 0,
+        Some(d) if d >= -55 => 4,
+        Some(d) if d >= -65 => 3,
+        Some(d) if d >= -75 => 2,
+        Some(_) => 1,
+    }
+}
+
 /// The network a Wi-Fi interface is on (`iw dev <if> info`: nl80211 GET_INTERFACE, no privilege
 /// needed); None without `iw` or a network.
 fn wifi_ssid(interface: &str) -> Option<String> {
@@ -4988,5 +5036,21 @@ mod tests {
             (st, rows.len(), line.as_str()),
             ("none", 0, "find_failed x")
         );
+    }
+
+    #[cfg(test)]
+    mod wifi_tests {
+        #[test]
+        fn wifi_bars_from_iw_link() {
+            use super::parse_wifi_level as p;
+            assert_eq!(p("Not connected."), 0);
+            assert_eq!(
+                p("Connected to x (on wlan0)\n\tSSID: Casa\n\tsignal: -26 dBm\n"),
+                4
+            );
+            assert_eq!(p("\tsignal: -61 dBm"), 3);
+            assert_eq!(p("\tsignal: -70 dBm"), 2);
+            assert_eq!(p("\tsignal: -82 dBm"), 1);
+        }
     }
 }

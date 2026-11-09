@@ -491,6 +491,25 @@ export component NowPlayingCard inherits Card {
 
 // The top of every desk page: back (the chevron and the title are one 64 px tall target), the
 // time small at the right.
+// What the device knows of its own state, for every page (set from Rust).
+export global Status {
+    // Wi-Fi signal: 0 not connected, 1..4 bars (-1: not known, nothing shown).
+    in-out property <int> wifi-level: -1;
+    // The Wi-Fi icon for that level at 28 or 32 px (pages and the control center agree).
+    pure public function wifi-icon(level: int, big: bool) -> image {
+        if (big) {
+            return level <= 0 ? Icons.wifi-strength-off-outline-32
+                : level == 1 ? Icons.wifi-strength-1-32
+                : level == 2 ? Icons.wifi-strength-2-32
+                : level == 3 ? Icons.wifi-strength-3-32 : Icons.wifi-strength-4-32;
+        }
+        return level <= 0 ? Icons.wifi-strength-off-outline-28
+            : level == 1 ? Icons.wifi-strength-1-28
+            : level == 2 ? Icons.wifi-strength-2-28
+            : level == 3 ? Icons.wifi-strength-3-28 : Icons.wifi-strength-4-28;
+    }
+}
+
 export component PageHeader inherits Rectangle {
     in property <string> title;
     in property <string> clock;
@@ -531,7 +550,16 @@ export component PageHeader inherits Rectangle {
             root.back();
         }
     }
-    Text {
+    // The Wi-Fi signal, left of the clock.
+    if Status.wifi-level >= 0 && root.clock != "": Icon {
+        x: clock-text.x - 12px - self.width;
+        y: 18px;
+        width: 28px;
+        height: 28px;
+        source: Status.wifi-icon(Status.wifi-level, false);
+        color: Status.wifi-level == 0 ? Theme.danger : Theme.text-2;
+    }
+    clock-text := Text {
         x: parent.width - self.width;
         width: self.preferred-width;
         height: 64px;

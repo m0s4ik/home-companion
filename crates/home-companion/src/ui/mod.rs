@@ -314,6 +314,9 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_ask_left(&self, left: f32);
     /// Do not disturb: on, its line.
     fn set_dnd(&self, on: bool, line: &str);
+    /// The Wi-Fi signal on every page header and in the control center: 0 not connected,
+    /// 1..4 bars, -1 not known.
+    fn set_wifi_level(&self, level: i32);
     /// Settings: the cloud services' cost row ("" hides it).
     fn set_usage(&self, label: &str, line: &str);
     /// The microphone off: on, its line over the clock.
@@ -1161,6 +1164,9 @@ macro_rules! impl_screen {
             fn set_dnd(&self, on: bool, line: &str) {
                 $m::CompanionWindow::set_dnd_line(self, line.into());
                 $m::CompanionWindow::set_dnd(self, on);
+            }
+            fn set_wifi_level(&self, level: i32) {
+                self.global::<$m::Status>().set_wifi_level(level)
             }
             fn set_usage(&self, label: &str, line: &str) {
                 $m::CompanionWindow::set_usage_label(self, label.into());

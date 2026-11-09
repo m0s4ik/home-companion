@@ -24,13 +24,13 @@ import {
     Icon, BareButton, PrimaryButton, PillButton, InfoCard, TimerCard, NowPlayingCard, PageHeader,
     Tile, SectionTitle, Row, Group, TimerLine, AlarmLine, ChatUser, ChatCharacter, ChatSeparator,
     Step, Stepper, Chip, Dialog, Separator, VolumeHud, GlyphButton, ControlTile, LevelBar, Feedback,
-    DoneCard
+    DoneCard, Status
 } from "design/components.slint";
 import { CasaScreen, CasaBridge } from "casa.slint";
 import { WeatherPage, ListsPage, PickPage, EventRow, ForecastRow, ChoiceRow, PickRow } from "ha-pages.slint";
 export { ForecastRow, ChoiceRow } from "ha-pages.slint";
 export { CasaBridge, CasaMenuRow } from "casa.slint";
-export { Feedback } from "design/components.slint";
+export { Feedback, Status } from "design/components.slint";
 
 // A card of the home's middle band, in priority order (Rust picks at most three):
 // "status" (the body's own problem), "setup" (Home Assistant needs the user), "message", "reminder" (due, OK), "timer", "more" (more
@@ -3917,7 +3917,8 @@ export component CompanionWindow inherits Window {
             width: (Grid.col-width - 2 * 24px) / 3;
             x: 24px + mod(i, 3) * (self.width + 24px);
             y: 24px + floor(i / 3) * (self.height + 12px);
-            icon: t.key == "wifi" ? (t.on ? Icons.wifi-32 : Icons.wifi-off-32)
+            icon: t.key == "wifi" ? (Status.wifi-level >= 0 ? Status.wifi-icon(t.on ? Status.wifi-level : 0, true)
+                    : t.on ? Icons.wifi-32 : Icons.wifi-off-32)
                 : t.key == "bluetooth" ? (t.on ? Icons.bluetooth-32 : Icons.bluetooth-off-32)
                 : t.key == "airplay" ? Icons.cast-audio-32
                 : t.key == "mic" ? (t.on ? Icons.microphone-32 : Icons.microphone-off-32)
