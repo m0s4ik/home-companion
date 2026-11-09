@@ -23,6 +23,7 @@ pub mod subcommands;
 pub mod suspend;
 pub mod timers;
 pub mod ui;
+pub mod usage;
 pub mod volume;
 pub mod wake_thread;
 

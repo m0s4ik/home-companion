@@ -2815,6 +2815,19 @@ impl<S: Screen> Ui<S> {
                 self.refresh_control();
             }
             UiCommand::MicSwitch(on) => self.show_mic_switch(on),
+            UiCommand::Usage {
+                questions,
+                today,
+                month,
+            } => {
+                let l = self.locale.borrow();
+                let line = l
+                    .text("usage_line")
+                    .replace("{q}", &questions.to_string())
+                    .replace("{today}", &crate::usage::dollars(today))
+                    .replace("{month}", &crate::usage::dollars(month));
+                self.screen.set_usage(l.text("usage_label"), &line);
+            }
             UiCommand::Screenshot(path) => {
                 if let Err(e) = save_png(&self.screen, &path) {
                     log::warn!("screenshot: {e}");

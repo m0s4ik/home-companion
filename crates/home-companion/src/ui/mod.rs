@@ -307,6 +307,8 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_ask_left(&self, left: f32);
     /// Do not disturb: on, its line.
     fn set_dnd(&self, on: bool, line: &str);
+    /// Settings: the cloud services' cost row ("" hides it).
+    fn set_usage(&self, label: &str, line: &str);
     /// The microphone off: on, its line over the clock.
     fn set_mic_off(&self, on: bool, line: &str);
     /// The card of the microphone's switch: shown, on or off, its text.
@@ -1123,6 +1125,10 @@ macro_rules! impl_screen {
             fn set_dnd(&self, on: bool, line: &str) {
                 $m::CompanionWindow::set_dnd_line(self, line.into());
                 $m::CompanionWindow::set_dnd(self, on);
+            }
+            fn set_usage(&self, label: &str, line: &str) {
+                $m::CompanionWindow::set_usage_label(self, label.into());
+                $m::CompanionWindow::set_usage_line(self, line.into());
             }
             fn set_mic_off(&self, on: bool, line: &str) {
                 $m::CompanionWindow::set_mic_off_line(self, line.into());

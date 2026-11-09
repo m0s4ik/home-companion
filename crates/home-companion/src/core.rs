@@ -196,6 +196,12 @@ pub enum UiCommand {
     },
     /// The microphone's switch was moved (or Talk pressed with it on mute): its card, on or off.
     MicSwitch(bool),
+    /// The cloud services' use: questions today, rough cost today and this month (US $).
+    Usage {
+        questions: u32,
+        today: f64,
+        month: f64,
+    },
     /// A phone or a tablet mirrors its screen here (AirPlay): who and the frame's size; the
     /// page opens when a session starts, a new size (the sender rotated) only re-lays it out.
     /// None: the session is over, the page closes back to where it was. The frames themselves
@@ -284,6 +290,8 @@ pub struct CoreConfig {
     pub screenshot_dir: PathBuf,
     /// The character's `sounds/` (missing files: plain tones).
     pub sounds_dir: Option<PathBuf>,
+    /// Prices for the cloud services' rough cost (usage.rs).
+    pub usage_prices: crate::usage::Prices,
 }
 
 impl Default for CoreConfig {
@@ -300,6 +308,7 @@ impl Default for CoreConfig {
             stats_every: Duration::from_secs(60),
             screenshot_dir: PathBuf::from("."),
             sounds_dir: None,
+            usage_prices: Default::default(),
         }
     }
 }
@@ -401,6 +410,8 @@ pub struct Core {
     mic_muted: bool,
     /// The device's switch is on mute (the microphones give zeros): it wins over the tile.
     mic_switch_off: bool,
+    /// What the cloud services did, by day (`<state_dir>/usage.json`).
+    usage: Option<crate::usage::Usage>,
     airplay_on: bool,
     now_playing: Option<crate::airplay::NowPlaying>,
     /// The last spoken answer, for "ripeti".
@@ -468,6 +479,7 @@ impl Core {
             summary: Summary::default(),
             mic_muted: false,
             mic_switch_off: false,
+            usage: None,
             airplay_on: true,
             now_playing: None,
             tape: crate::repeat::Tape::default(),
@@ -483,7 +495,11 @@ impl Core {
         if let Some(s) = &self.d.settings {
             self.mic_muted = s.mic_muted();
             self.airplay_on = s.airplay_on();
+            if let Some(dir) = s.path.parent() {
+                self.usage = Some(crate::usage::Usage::in_dir(dir));
+            }
         }
+        self.send_usage();
         if let Some(m) = &self.d.music {
             m.set_enabled(self.airplay_on);
         }
@@ -658,10 +674,30 @@ impl Core {
                 s.abort();
             }
             let r = c.log(outcome);
+            // Home Assistant's services worked on it (speech sent or an answer back).
+            if r.audio_seconds_sent > 0.0 || !r.answer.is_empty() {
+                if let Some(u) = &mut self.usage {
+                    let day = crate::usage::local_day(crate::timers::now_unix() as i64);
+                    u.add(&day, r.audio_seconds_sent, r.answer_seconds, &r.answer);
+                }
+                self.send_usage();
+            }
             self.summary.conversations.push(r);
         }
         self.think_deadline = None;
         self.speak_deadline = None;
+    }
+
+    /// Today's questions and the rough cost today and this month, for Settings.
+    fn send_usage(&self) {
+        let Some(u) = &self.usage else { return };
+        let day = crate::usage::local_day(crate::timers::now_unix() as i64);
+        let (q, today, month) = u.summary(&day, &self.cfg.usage_prices);
+        self.ui(UiCommand::Usage {
+            questions: q,
+            today,
+            month,
+        });
     }
 
     fn send(&self, m: &Message) -> bool {

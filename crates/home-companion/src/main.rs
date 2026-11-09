@@ -528,6 +528,7 @@ fn go<S: Screen>(
         fps: cfg.ui.fps,
         screenshot_dir: cfg.ui.screenshot_dir.clone().into(),
         sounds_dir: Some(std::path::Path::new(&cfg.character.dir).join("sounds")),
+        usage_prices: cfg.usage,
         ..Default::default()
     };
     // Local reflexes: the helper starts now (its model loads in a few seconds) and the core holds

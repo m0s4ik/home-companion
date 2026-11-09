@@ -314,7 +314,10 @@ mod tests {
         let c = pick(&a, &w);
         let kinds: Vec<&str> = c.iter().map(|c| c.kind).collect();
         assert_eq!(kinds, ["done-undo", "status", "reminder"]);
-        assert_eq!((c[0].title.as_str(), c[0].text.as_str()), ("Studio", "spento"));
+        assert_eq!(
+            (c[0].title.as_str(), c[0].text.as_str()),
+            ("Studio", "spento")
+        );
     }
 
     fn timer(name: &str, left: &str) -> TimerView {

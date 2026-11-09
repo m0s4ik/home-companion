@@ -37,6 +37,8 @@ pub struct Config {
     pub reflexes: ReflexesCfg,
     /// AirPlay receiver (crates/home-companion/src/airplay.rs).
     pub airplay: crate::airplay::AirplayCfg,
+    /// Prices for the rough cost of the cloud services shown in Settings (usage.rs).
+    pub usage: crate::usage::Prices,
     pub paths: Paths,
     pub log: LogCfg,
 }
@@ -286,6 +288,7 @@ impl Default for Config {
             web: Default::default(),
             reflexes: ReflexesCfg::default(),
             airplay: Default::default(),
+            usage: Default::default(),
             paths: Paths::default(),
             log: LogCfg::default(),
         }
