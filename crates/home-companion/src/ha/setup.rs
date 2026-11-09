@@ -3408,7 +3408,7 @@ mod tests {
             (&json!(true), &json!("Sei Alfred."))
         );
         assert!(st.web_search_done);
-        assert_eq!(State::load(&file).web_search_done, true);
+        assert!(State::load(&file).web_search_done);
         // Switched off by the user: it stays off.
         ha.subs.get_mut(&ai).unwrap()[0]["data"]["web_search"] = json!(false);
         run(&mut ha, &mut st, &file, Scope::Missing);
