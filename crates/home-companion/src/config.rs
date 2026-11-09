@@ -815,6 +815,7 @@ impl Config {
             mcp_port: self.home_assistant.mcp_port,
             prompt: crate::ha::setup::agent_prompt(character, &self.character.language),
             voices: character::preferred_voices(character),
+            language: self.character.language.clone(),
             brain: crate::brain_link::brain_info,
             learned: None,
             settings: crate::settings::Settings::in_dir(&self.state_dir()),

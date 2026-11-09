@@ -174,6 +174,10 @@ pub struct State {
     /// The AI task entity the body made Home Assistant's preferred one (none was): it follows
     /// the chosen AI while it is still the preferred one, and goes with "Unlink".
     pub ai_task_set: String,
+    /// What the body last wrote into the pipeline's OpenAI voice instructions and transcription
+    /// prompt ([`speech_hints`]): while they are still there, a newer text may replace them.
+    pub tts_hint_written: String,
+    pub stt_hint_written: String,
 }
 
 /// What the user chose on the screen (`[assistant]` in the body's settings): an AI integration's
@@ -345,6 +349,8 @@ pub struct Body {
     /// The character's voices (`[voice] prefer` in its character.toml): when the body puts a
     /// voice engine into the pipeline and no timbre was chosen, the first one the engine offers.
     pub voices: Vec<String>,
+    /// The character's language ("it"): what the voice and the transcription are told to use.
+    pub language: String,
 }
 
 impl Body {
@@ -784,11 +790,17 @@ fn pending<'a>(seen: &Seen, chosen: &'a str, applied: &str) -> Option<&'a str> {
 /// The agent's current settings, read from its reconfigure form (Home Assistant has no other
 /// way to read a subentry's data); the flow is closed again.
 fn agent_settings(api: &mut dyn Api, ai: &str, sub: &str) -> Result<Value, String> {
+    sub_settings(api, ai, "conversation", sub)
+}
+
+/// A subentry's current settings (`kind`: its type, "conversation", "tts", "stt"), read from its
+/// reconfigure form; the flow is closed again.
+fn sub_settings(api: &mut dyn Api, ai: &str, kind: &str, sub: &str) -> Result<Value, String> {
     let (_, f) = api.rest(
         "POST",
         "/api/config/config_entries/subentries/flow",
         Some(
-            json!({"handler": [ai, "conversation"], "show_advanced_options": false,
+            json!({"handler": [ai, kind], "show_advanced_options": false,
                     "subentry_id": sub, "source": "reconfigure"}),
         ),
     )?;
@@ -1597,6 +1609,11 @@ pub fn repair(
             }
         }
     }
+    match refresh_speech(api, &seen, st, body) {
+        Ok(true) => save(st),
+        Ok(false) => {}
+        Err(e) => log::warn!(event = "ha_setup"; "language of the voice: {e}"),
+    }
     st.configured = true;
     save(st);
     seen = read(api)?;
@@ -1971,6 +1988,97 @@ fn refresh_prompt(api: &mut dyn Api, st: &mut State, body: &Body) -> Result<bool
     Ok(true)
 }
 
+/// What the body writes into OpenAI's options for its language: the voice's instructions and the
+/// transcription's prompt (fields of the official integration, and of openai_usage). OpenAI's
+/// models only guess the language: short sentences come out with an English accent, or are
+/// transcribed in another language. None: nothing to add (English, the models' own default).
+pub fn speech_hints(language: &str) -> Option<(&'static str, &'static str)> {
+    match language.split(['-', '_']).next()? {
+        "it" => Some((
+            "Parla in italiano, con un accento italiano naturale.",
+            "Comandi vocali in italiano rivolti all'assistente di casa.",
+        )),
+        _ => None,
+    }
+}
+
+/// The integrations whose voice and transcription have those fields.
+const OPENAI_DOMAINS: [&str; 2] = ["openai_conversation", "openai_usage"];
+/// The transcription prompt OpenAI's integration starts with (English, about Home Assistant).
+const OPENAI_STT_DEFAULT: &str =
+    "The following conversation is a smart home user talking to Home Assistant.";
+
+/// The language hints into the pipeline's OpenAI voice and transcription, unless the user wrote
+/// their own there (an empty field, the integration's default or what the body last wrote is
+/// replaced): true when the state changed (the caller saves it).
+fn refresh_speech(
+    api: &mut dyn Api,
+    seen: &Seen,
+    st: &mut State,
+    body: &Body,
+) -> Result<bool, String> {
+    let Some((tts_hint, stt_hint)) = speech_hints(&body.language) else {
+        return Ok(false);
+    };
+    let Some(p) = seen.pipeline(&st.pipeline) else {
+        return Ok(false);
+    };
+    let mut changed = false;
+    for (kind, engine, hint) in [
+        ("tts", s(p, "tts_engine").to_string(), tts_hint),
+        ("stt", s(p, "stt_engine").to_string(), stt_hint),
+    ] {
+        let Some(e) = seen.registry.iter().find(|e| s(e, "entity_id") == engine) else {
+            continue;
+        };
+        let (entry, sub) = (s(e, "config_entry_id"), s(e, "config_subentry_id"));
+        let openai = seen
+            .entry(entry)
+            .is_some_and(|x| OPENAI_DOMAINS.contains(&s(x, "domain")));
+        if !openai || sub.is_empty() {
+            continue;
+        }
+        // A write reloads the integration: the next form may be refused for a moment.
+        let current = match sub_settings(api, entry, kind, sub) {
+            Ok(v) => v,
+            Err(_) if changed => {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                sub_settings(api, entry, kind, sub)?
+            }
+            Err(e) => return Err(e),
+        };
+        let current = current.get("prompt").and_then(Value::as_str).unwrap_or("");
+        let written = if kind == "tts" {
+            &mut st.tts_hint_written
+        } else {
+            &mut st.stt_hint_written
+        };
+        if current != hint {
+            let ours = current.trim().is_empty()
+                || current == written.as_str()
+                || (kind == "stt" && current == OPENAI_STT_DEFAULT);
+            if !ours {
+                continue;
+            }
+            let write = |api: &mut dyn Api| {
+                reconfigure_sub(api, entry, kind, sub, |d| {
+                    d.insert("prompt".into(), json!(hint));
+                })
+            };
+            if write(api).is_err() {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                write(api)?;
+            }
+            log::info!(event = "ha_setup"; "{engine}: told to use {}", body.language);
+        }
+        if written.as_str() != hint {
+            *written = hint.to_string();
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
 /// The agent's reconfigure form, filled with its current settings, changed by `change` and sent.
 fn reconfigure_agent(
     api: &mut dyn Api,
@@ -1978,11 +2086,23 @@ fn reconfigure_agent(
     sub: &str,
     change: impl FnOnce(&mut serde_json::Map<String, Value>),
 ) -> Result<(), String> {
+    reconfigure_sub(api, ai, "conversation", sub, change)
+}
+
+/// A subentry's reconfigure form (`kind`: its type), filled with its current settings, changed
+/// by `change` and sent.
+fn reconfigure_sub(
+    api: &mut dyn Api,
+    ai: &str,
+    kind: &str,
+    sub: &str,
+    change: impl FnOnce(&mut serde_json::Map<String, Value>),
+) -> Result<(), String> {
     let (_, f) = api.rest(
         "POST",
         "/api/config/config_entries/subentries/flow",
         Some(
-            json!({"handler": [ai, "conversation"], "show_advanced_options": false,
+            json!({"handler": [ai, kind], "show_advanced_options": false,
                     "subentry_id": sub, "source": "reconfigure"}),
         ),
     )?;
@@ -2016,7 +2136,7 @@ fn reconfigure_agent(
                 None,
             );
             Err(format!(
-                "agent tools: {t} {}",
+                "{kind} settings: {t} {}",
                 r.get("errors").unwrap_or(&Value::Null)
             ))
         }
@@ -2246,6 +2366,8 @@ pub struct SetupConfig {
     pub prompt: String,
     /// The character's preferred voices ([`Body::voices`]).
     pub voices: Vec<String>,
+    /// The character's language ([`Body::language`]).
+    pub language: String,
     /// The brain's status (None: it does not answer).
     pub brain: BrainFn,
     /// Home Assistant's addresses as the satellite's server lets them in.
@@ -2284,6 +2406,7 @@ fn body_of(cfg: &SetupConfig) -> Result<Body, String> {
         prompt: cfg.prompt.clone(),
         choice: cfg.settings.assistant(),
         voices: cfg.voices.clone(),
+        language: cfg.language.clone(),
     })
 }
 
@@ -2488,6 +2611,17 @@ fn background(cfg: &SetupConfig, st: &mut State, at_start: bool, ev: &Sender<Set
         if at_start && let Err(e) = refresh_prompt(&mut api, st, &body) {
             log::warn!(event = "ha_setup"; "agent instructions: {e}");
         }
+        if at_start && !st.pipeline.is_empty() {
+            match read(&mut api).and_then(|seen| refresh_speech(&mut api, &seen, st, &body)) {
+                Ok(true) => {
+                    if let Err(e) = st.save(&cfg.state_file) {
+                        log::warn!(event = "ha_setup"; "{}: {e}", cfg.state_file.display());
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => log::warn!(event = "ha_setup"; "language of the voice: {e}"),
+            }
+        }
         let (rows, choices) = check_all(&mut api, st, &body, cfg.brain);
         let _ = ev.send(SetupEvent::Attention(attention(&rows)));
         let _ = ev.send(SetupEvent::Rows(rows));
@@ -2566,6 +2700,10 @@ mod tests {
         search: HashMap<String, &'static str>,
         /// A flow on its second form: the first form's data.
         steps: HashMap<String, Value>,
+        /// The data of voice and transcription subentries ("tts"/"stt"), by subentry, and
+        /// their open reconfigure flows.
+        speech: HashMap<String, Value>,
+        speech_flows: HashMap<String, String>,
     }
 
     impl FakeHa {
@@ -2952,6 +3090,7 @@ mod tests {
                     }
                     ("DELETE", ["flow", id] | ["subentries", "flow", id]) => {
                         self.flows.remove(*id);
+                        self.speech_flows.remove(*id);
                         self.steps.remove(*id);
                         json!(null)
                     }
@@ -2962,6 +3101,31 @@ mod tests {
                     ("DELETE", ["entry", id]) => {
                         self.remove_entry(id);
                         json!(null)
+                    }
+                    ("POST", ["subentries", "flow"])
+                        if matches!(body["handler"][1].as_str(), Some("tts" | "stt")) =>
+                    {
+                        let sub = body["subentry_id"].as_str().unwrap().to_string();
+                        let data = self.speech.get(&sub).cloned().unwrap_or_else(|| {
+                            if body["handler"][1] == "stt" {
+                                json!({"prompt": OPENAI_STT_DEFAULT})
+                            } else {
+                                json!({})
+                            }
+                        });
+                        let mut field = json!({"name": "prompt"});
+                        if let Some(p) = data.get("prompt") {
+                            field["description"] = json!({"suggested_value": p});
+                        }
+                        let id = self.id();
+                        self.speech_flows.insert(id.clone(), sub);
+                        json!({"type": "form", "flow_id": id, "data_schema": [field]})
+                    }
+                    ("POST", ["subentries", "flow", id]) if self.speech_flows.contains_key(*id) => {
+                        let sub = self.speech_flows.remove(*id).unwrap();
+                        self.speech.insert(sub, body);
+                        self.writes += 1;
+                        json!({"type": "abort", "reason": "reconfigure_successful"})
                     }
                     ("POST", ["subentries", "flow"]) => {
                         let ai = body["handler"][0].as_str().unwrap().to_string();
@@ -3064,6 +3228,7 @@ mod tests {
             prompt: "Sei Alfred.".into(),
             choice: Choice::default(),
             voices: Vec::new(),
+            language: "it".into(),
         }
     }
 
@@ -3849,5 +4014,66 @@ mod tests {
                 assert_ne!(l.text(&key), key, "{lang}: {key}");
             }
         }
+    }
+    #[test]
+    fn the_openai_voice_and_transcription_are_told_the_language() {
+        let mut ha = FakeHa::new();
+        let openai = ha.add_provider("openai_conversation", "OpenAI", "openai", true);
+        let sub_of = |ha: &FakeHa, e: &str| {
+            ha.registry.iter().find(|x| x["entity_id"] == e).unwrap()["config_subentry_id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let (tts, stt) = (sub_of(&ha, "tts.openai"), sub_of(&ha, "stt.openai"));
+        let file = tmp("speech-hints");
+        let mut st = State::default();
+        let b = Body {
+            choice: Choice {
+                ai: openai.clone(),
+                stt: "stt.openai".into(),
+                tts: "tts.openai".into(),
+                voice: String::new(),
+            },
+            ..body()
+        };
+        let run = |ha: &mut FakeHa, st: &mut State, b: &Body| {
+            repair(ha, st, &file, b, brain, Scope::Missing, &mut |_| {}).unwrap();
+        };
+        run(&mut ha, &mut st, &b);
+        assert_eq!(ha.alfred()["tts_engine"], "tts.openai");
+        let (tts_hint, stt_hint) = speech_hints("it").unwrap();
+        assert_eq!(ha.speech[&tts]["prompt"], tts_hint);
+        assert_eq!(
+            ha.speech[&stt]["prompt"], stt_hint,
+            "the English default replaced"
+        );
+        assert_eq!(st.tts_hint_written, tts_hint);
+        // Nothing to write a second time.
+        let writes = ha.writes;
+        run(&mut ha, &mut st, &b);
+        assert_eq!(ha.writes, writes);
+        // The user's own instructions stay.
+        ha.speech.get_mut(&tts).unwrap()["prompt"] = json!("Voce calma, lenta.");
+        run(&mut ha, &mut st, &b);
+        assert_eq!(ha.speech[&tts]["prompt"], "Voce calma, lenta.");
+        // English: nothing written.
+        let mut ha = FakeHa::new();
+        let openai = ha.add_provider("openai_conversation", "OpenAI", "openai", true);
+        let mut st = State::default();
+        let en = Body {
+            language: "en".into(),
+            choice: Choice {
+                ai: openai,
+                stt: "stt.openai".into(),
+                tts: "tts.openai".into(),
+                voice: String::new(),
+            },
+            ..body()
+        };
+        run(&mut ha, &mut st, &en);
+        assert!(ha.speech.is_empty());
+        assert_eq!(speech_hints("it-IT"), speech_hints("it"));
+        assert_eq!(speech_hints("en"), None);
     }
 }
