@@ -429,6 +429,11 @@ what_music_say = "Pause the music | Next track | Turn the volume up"
 what_screen = "The screen"
 what_screen_say = "Turn off the screen | Do not disturb for an hour | Stop"
 
+# A timer or alarm that rings, said before the bell.
+ring_timer_named = "The \"{name}\" timer is done."
+ring_timer = "The {duration} timer is done."
+ring_alarm = "Alarm, {time}."
+
 [sample]
 # The first start's Home Assistant page (--state first-ha-found): a second instance's name.
 find_second = "Holiday home"

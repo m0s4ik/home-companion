@@ -25,7 +25,8 @@ pub enum BrainMsg {
     /// A `notify` event (a reminder, the morning summary, missed reminders).
     Notify(Value),
     /// A `timer` event: start a local timer of this many seconds (asked by voice through the brain).
-    Timer(u64),
+    /// Seconds and what it is for ("Pasta"), when said.
+    Timer(u64, Option<String>),
     /// A `timer_cancel` event: stop the timer set last (false) or every timer (true).
     TimerCancel(bool),
     /// An `alarm` event: a local alarm (hour, minute, days as in alarms.rs; 0 = once).
@@ -97,7 +98,9 @@ pub fn parse_event(v: Value) -> Option<BrainMsg> {
     Some(match v.get("event").and_then(Value::as_str)? {
         "notify" => BrainMsg::Notify(v),
         "timer" => match v.get("seconds").and_then(Value::as_u64) {
-            Some(s) if s > 0 => BrainMsg::Timer(s),
+            Some(s) if s > 0 => {
+                BrainMsg::Timer(s, timer_name(v.get("name").and_then(Value::as_str)))
+            }
             _ => return None,
         },
         "timer_cancel" => {
@@ -395,8 +398,40 @@ fn subscribe_loop(path: &std::path::Path, tx: &Sender<BrainMsg>) {
     }
 }
 
+/// A timer's name as the screen shows the reflexes' ones: trimmed, first letter capital
+/// ("pasta" → "Pasta"); None when empty.
+pub fn timer_name(n: Option<&str>) -> Option<String> {
+    let n = n?.trim();
+    let mut c = n.chars();
+    let first = c.next()?;
+    Some(first.to_uppercase().chain(c).collect())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_timer_from_the_brain_keeps_its_name() {
+        use super::{BrainMsg, parse_event};
+        use serde_json::json;
+        let t = |v| match parse_event(v) {
+            Some(BrainMsg::Timer(s, n)) => (s, n),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            t(json!({"event": "timer", "seconds": 60, "name": "pasta"})),
+            (60, Some("Pasta".into()))
+        );
+        assert_eq!(
+            t(json!({"event": "timer", "seconds": 60, "name": " tè "})),
+            (60, Some("Tè".into()))
+        );
+        assert_eq!(t(json!({"event": "timer", "seconds": 30})), (30, None));
+        assert_eq!(
+            t(json!({"event": "timer", "seconds": 30, "name": ""})),
+            (30, None)
+        );
+    }
+
     #[test]
     fn ha_token_request_carries_the_choices() {
         let r = super::ha_token_request(

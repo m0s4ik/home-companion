@@ -1621,7 +1621,7 @@ impl<S: Screen> Ui<S> {
         let ui = Rc::downgrade(self);
         self.screen.on_timer_start(move |minutes| {
             if let Some(ui) = ui.upgrade() {
-                ui.send(UiEvent::TimerStart(minutes as u64 * 60));
+                ui.send(UiEvent::TimerStart(minutes as u64 * 60, None));
             }
         });
         let ui = Rc::downgrade(self);
@@ -4547,7 +4547,7 @@ impl<S: Screen> Ui<S> {
         let mut home = false;
         let mut events_seen = false;
         let mut upcoming_seen: Option<Vec<(i64, String)>> = None;
-        let mut timers: Vec<u64> = Vec::new();
+        let mut timers: Vec<(u64, Option<String>)> = Vec::new();
         let mut cancels: Vec<String> = Vec::new();
         let mut alarms: Vec<(u8, u8, u8)> = Vec::new();
         let mut house_cards: Vec<HouseEvent> = Vec::new();
@@ -4647,9 +4647,9 @@ impl<S: Screen> Ui<S> {
                         _ => {}
                     }
                 }
-                BrainMsg::Timer(secs) => {
-                    log::info!(event = "brain_timer", seconds = secs; "timer from the brain: {secs} s");
-                    timers.push(secs);
+                BrainMsg::Timer(secs, name) => {
+                    log::info!(event = "brain_timer", seconds = secs, name = name.as_deref().unwrap_or(""); "timer from the brain: {secs} s");
+                    timers.push((secs, name));
                 }
                 BrainMsg::TimerCancel(all) => {
                     // The one set last: local timers count up ("local-3" after "local-2").
@@ -4738,8 +4738,8 @@ impl<S: Screen> Ui<S> {
             let mv = self.desk.borrow().memories.clone();
             self.screen.set_memories(&mv);
         }
-        for secs in timers {
-            self.send(UiEvent::TimerStart(secs));
+        for (secs, name) in timers {
+            self.send(UiEvent::TimerStart(secs, name));
         }
         for id in cancels {
             self.send(UiEvent::TimerCancel(id));

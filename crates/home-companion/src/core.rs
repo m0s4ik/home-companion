@@ -50,7 +50,8 @@ pub enum UiEvent {
     /// Settings → Suspend, confirmed: the whole device to sleep (suspend.rs).
     Suspend,
     /// Timer e sveglie: a new timer of this many seconds (a local one).
-    TimerStart(u64),
+    /// Seconds and what it is for, when said.
+    TimerStart(u64, Option<String>),
     /// Pause a running timer or resume a paused one.
     TimerPause(String),
     /// Cancel a timer (after the 5 s the screen gives to change one's mind).
@@ -443,6 +444,61 @@ pub struct Core {
     next_voice_id: u64,
     /// A UiEvent::Say waiting for its voice: its id and until when it is still worth saying.
     say_wait: Option<(u64, Instant)>,
+    /// What the body is saying in its own voice (a reflex's answer, a timer's announcement):
+    /// a stop word that sounds like one of its words is the body's own voice ([`echoes`]).
+    speaking_text: String,
+    /// A timer or alarm rang: its words wait for their voice (id, until when); the bell after.
+    ring_wait: Option<(u64, Instant)>,
+    /// The ringing's words playing.
+    ring_speech: Option<audio::Stream>,
+    /// The bell starts then (after the ringing's words).
+    bell_at: Option<Instant>,
+}
+
+/// How long a timer's words may keep its bell waiting (a phrase not in the cache comes from
+/// Home Assistant in 1-2 s).
+const RING_VOICE_WAIT: Duration = Duration::from_millis(3000);
+
+/// A stop word (its name, "stop_alfred" → "stop") that sounds like a word of `text`: the same
+/// word or one letter away ("pasta" for "basta"). Then the detector heard the body's own voice.
+fn echoes(stop_word: &str, text: &str) -> bool {
+    let name = stop_word
+        .split('_')
+        .next()
+        .unwrap_or(stop_word)
+        .to_lowercase();
+    if name.chars().count() < 4 {
+        return false;
+    }
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .any(|w| one_letter_away(&w.to_lowercase(), &name))
+}
+
+/// Equal, or one letter changed, added or removed.
+fn one_letter_away(a: &str, b: &str) -> bool {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let (short, long) = if a.len() <= b.len() {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+    if long.len() - short.len() > 1 {
+        return false;
+    }
+    let pre = short
+        .iter()
+        .zip(long.iter())
+        .take_while(|(x, y)| x == y)
+        .count();
+    if pre == short.len() {
+        return true;
+    }
+    if short.len() == long.len() {
+        short[pre + 1..] == long[pre + 1..]
+    } else {
+        short[pre..] == long[pre + 1..]
+    }
 }
 
 /// A sentence ending on a word that cannot end it (a preposition, an article, "e"): the speaker
@@ -510,6 +566,10 @@ impl Core {
             voice_wait: None,
             next_voice_id: 1,
             say_wait: None,
+            speaking_text: String::new(),
+            ring_wait: None,
+            ring_speech: None,
+            bell_at: None,
         }
     }
 
@@ -564,6 +624,15 @@ impl Core {
             let now = Instant::now();
             if self.voice_wait.as_ref().is_some_and(|w| now >= w.deadline) {
                 self.voice_late();
+            }
+            if self.ring_wait.is_some_and(|(_, until)| now >= until) {
+                log::info!(event = "ring_voice", voiced = false; "no voice in time for the ringing: the bell");
+                self.ring_wait = None;
+                self.bell_at = Some(now);
+            }
+            if self.bell_at.is_some_and(|t| now >= t) {
+                self.bell_at = None;
+                self.start_bell();
             }
             if now >= next_tick {
                 self.tick();
@@ -749,6 +818,7 @@ impl Core {
     fn start_conversation(&mut self, trigger: Trigger) {
         // With the reflex helper up, the utterance is held back and decoded locally first; Home
         // Assistant is not needed for a reflex (Wi-Fi off, Home Assistant down).
+        self.speaking_text.clear();
         let id = self.next_id;
         let gated = self
             .d
@@ -857,6 +927,13 @@ impl Core {
 
     fn on_stop_word(&mut self, d: wakeword::Detection) {
         log::info!(event = "stop_word", name = d.name.as_str(), probability = d.probability as f64, phase = self.phase.name(); "stop word {} ({:.3}) in {}", d.name, d.probability, self.phase.name());
+        if matches!(self.phase, Phase::Speaking | Phase::Ringing) {
+            let answer = self.conv.as_ref().map_or("", |c| c.answer.as_str());
+            if echoes(&d.name, &self.speaking_text) || echoes(&d.name, answer) {
+                log::info!(event = "stop_word_echo", name = d.name.as_str(); "stop word {} ignored: the body says a word like it", d.name);
+                return;
+            }
+        }
         match self.phase {
             // Thinking: a wrong transcript on the screen; the answer is dropped (the pipeline
             // itself cannot be cancelled).
@@ -1385,6 +1462,7 @@ impl Core {
         });
         let id = self.next_voice_id;
         let online = self.ha.is_connected();
+        self.speaking_text = say.clone();
         if let (Some(c), Some(v)) = (voiced, &self.d.voice) {
             v.say(id, &say, online);
             self.next_voice_id += 1;
@@ -1430,6 +1508,30 @@ impl Core {
 
     /// The voice of a reflex's answer: played if still awaited, else (late) dropped.
     fn on_voice(&mut self, r: crate::voice::VoiceReply) {
+        // The words of a timer that rang: said, then the bell.
+        if let Some((id, until)) = self.ring_wait
+            && id == r.id
+        {
+            self.ring_wait = None;
+            let mut after = Duration::ZERO;
+            if let Some(sp) = r.speech
+                && Instant::now() < until
+                && self.phase == Phase::Ringing
+            {
+                let s = self.d.player.open_stream(sp.format);
+                if let Err(e) = s.push(&sp.pcm) {
+                    log::warn!("ring voice: {e}");
+                }
+                s.finish();
+                after = sp.duration() + Duration::from_millis(400);
+                log::info!(event = "ring_voice", seconds = sp.duration().as_secs_f64(); "the ringing said aloud: {:?}", self.speaking_text);
+                self.ring_speech = Some(s);
+            }
+            if self.phase == Phase::Ringing {
+                self.bell_at = Some(Instant::now() + after);
+            }
+            return;
+        }
         // Words of a UiEvent::Say: played if they came in time and nothing else speaks.
         if let Some((id, until)) = self.say_wait
             && id == r.id
@@ -1876,6 +1978,8 @@ impl Core {
                 } else if self.bell == Some(id) {
                     self.bell = None;
                     self.clear_ringing();
+                } else if self.ring_speech.as_ref().is_some_and(|s| s.id() == id) {
+                    self.ring_speech = None;
                 } else if self.replay.as_ref().is_some_and(|s| s.id() == id) {
                     self.replay = None;
                     if self.phase == Phase::Speaking && self.local_until.take().is_some() {
@@ -1934,16 +2038,64 @@ impl Core {
                 self.ringing.push(id);
             }
         }
-        if self.bell.is_none() {
+        let waiting =
+            self.ring_wait.is_some() || self.bell_at.is_some() || self.ring_speech.is_some();
+        if self.bell.is_none() && !waiting {
+            // First the words ("Il timer «Pasta» è finito"), then the bell; without a voice in
+            // time, the bell at once.
+            let text = self.ring_words();
+            match &self.d.voice {
+                Some(v) if !text.is_empty() => {
+                    let id = self.next_voice_id;
+                    self.next_voice_id += 1;
+                    v.say(id, &text, self.ha.is_connected());
+                    self.speaking_text = text;
+                    self.ring_wait = Some((id, Instant::now() + RING_VOICE_WAIT));
+                }
+                _ => self.start_bell(),
+            }
+        }
+        self.show_ringing();
+        self.refresh_rows(true);
+        self.set_phase(Phase::Ringing);
+    }
+
+    fn start_bell(&mut self) {
+        // The words are over: "basta" is the user's again.
+        self.speaking_text.clear();
+        if self.bell.is_none() && self.phase == Phase::Ringing {
             self.bell = Some(self.d.player.play_repeated(
                 &self.cues.bell,
                 self.cfg.bell_repeats.max(1),
                 self.cfg.bell_gap,
             ));
         }
-        self.show_ringing();
-        self.refresh_rows(true);
-        self.set_phase(Phase::Ringing);
+    }
+
+    /// What the ringing says: each timer by its name (or its length), each alarm by its time.
+    fn ring_words(&self) -> String {
+        let words: Vec<String> = self
+            .ringing
+            .iter()
+            .filter_map(|id| {
+                let t = self.d.timers.get(id)?;
+                Some(if self.alarm_ids.contains(id) {
+                    // "7:30", not "07:30" (said "zero sette").
+                    let l = t.label();
+                    let time = l
+                        .strip_prefix('0')
+                        .filter(|r| r.starts_with(|c: char| c.is_ascii_digit()))
+                        .unwrap_or(&l);
+                    self.reflex_text("ring_alarm", &[("time", time)])
+                } else if t.name.as_ref().is_some_and(|n| !n.trim().is_empty()) {
+                    self.reflex_text("ring_timer_named", &[("name", &t.label())])
+                } else {
+                    let d = self.said_duration(t.total_seconds as f64);
+                    self.reflex_text("ring_timer", &[("duration", &d)])
+                })
+            })
+            .collect();
+        words.join(" ")
     }
 
     fn show_ringing(&self) {
@@ -1979,6 +2131,11 @@ impl Core {
     fn clear_ringing(&mut self) {
         if let Some(b) = self.bell.take() {
             self.d.player.stop(b);
+        }
+        self.ring_wait = None;
+        self.bell_at = None;
+        if let Some(s) = self.ring_speech.take() {
+            s.abort();
         }
         for id in std::mem::take(&mut self.ringing) {
             self.alarm_ids.retain(|a| *a != id);
@@ -2065,8 +2222,8 @@ impl Core {
                 self.set_dnd(until);
                 self.ui(UiCommand::DoNotDisturb(until));
             }
-            UiEvent::TimerStart(secs) => {
-                let id = self.d.timers.start_local(None, secs, now_unix());
+            UiEvent::TimerStart(secs, name) => {
+                let id = self.d.timers.start_local(name, secs, now_unix());
                 log::info!(event = "timer_started", id = id.as_str(), seconds = secs, by = "touch"; "timer {id}: {secs} s (touch)");
                 self.refresh_rows(true);
             }
@@ -2456,6 +2613,7 @@ impl Core {
         self.phase.in_conversation()
             || self.bell.is_some()
             || self.replay.is_some()
+            || self.ring_speech.is_some()
             || self.conv.as_ref().is_some_and(|c| c.stream.is_some())
     }
 
@@ -2774,6 +2932,25 @@ fn quiet_after_command(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stop_word_like_a_word_being_said_is_the_bodys_voice() {
+        assert!(echoes(
+            "basta",
+            "Tè un minuto; Pasta 4 minuti e 32 secondi."
+        ));
+        assert!(echoes("basta", "Il timer «Pasta» è finito."));
+        assert!(echoes("basta", "Basta così."));
+        assert!(!echoes("basta", "Il timer «Tè» è finito."));
+        assert!(!echoes("basta", "Sono le 7:30."));
+        assert!(echoes("stop_alfred", "Stop."));
+        assert!(!echoes("stop", "Pasta pronta."));
+        assert!(one_letter_away("basta", "basti"));
+        assert!(one_letter_away("basta", "bast"));
+        assert!(one_letter_away("basta", "bastaa"));
+        assert!(!one_letter_away("basta", "bestia"));
+        assert!(!one_letter_away("basta", "pasti"));
+    }
 
     #[test]
     fn durations_to_say() {

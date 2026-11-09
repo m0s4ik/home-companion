@@ -9,7 +9,7 @@
 //! | event | fields | what the body does |
 //! |---|---|---|
 //! | `notify` | `id`, `kind`, `how`, `late`, `text`, `due_at` | a reminder card (jobs.rs builds it) |
-//! | `timer` | `seconds` | a local timer |
+//! | `timer` | `seconds`, `name` (optional) | a local timer |
 //! | `timer_cancel` | `all` | stops the last timer, or all |
 //! | `alarm` | `hour`, `minute`, `days` | a local alarm (days: bit 0 = Monday; 0 = once) |
 //! | `changed` | `id`, `entity_id`, `name`, `service`, `state` (or null), `undo` | a card "done" for a house command, with "Undo" when `undo` |
@@ -20,8 +20,12 @@
 
 use serde_json::{Value, json};
 
-pub fn timer(seconds: i64) -> Value {
-    json!({"event": "timer", "seconds": seconds})
+/// A timer of `seconds`, with what it is for ("pasta") when the user said it.
+pub fn timer(seconds: i64, name: Option<&str>) -> Value {
+    match name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => json!({"event": "timer", "seconds": seconds, "name": n}),
+        None => json!({"event": "timer", "seconds": seconds}),
+    }
 }
 
 pub fn timer_cancel(all: bool) -> Value {

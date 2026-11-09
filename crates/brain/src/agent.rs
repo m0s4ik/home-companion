@@ -997,10 +997,11 @@ impl Brain {
                     .get("seconds")
                     .and_then(Value::as_i64)
                     .unwrap_or(0);
+                let name = call.args.get("name").and_then(Value::as_str);
                 match self.hub.get() {
                     _ if !(1..=86_400).contains(&secs) => Err("seconds: 1 to 86400".into()),
                     Some(h) if h.subscribers() > 0 => {
-                        h.broadcast(&[crate::events::timer(secs)]);
+                        h.broadcast(&[crate::events::timer(secs, name)]);
                         log::info!(event = "brain_timer", seconds = secs; "timer of {secs} s to the device");
                         Ok(json!({"started": true, "seconds": secs}))
                     }
@@ -1130,9 +1131,11 @@ impl Brain {
             name: "timer",
             description: "Start a countdown timer on the device for a duration from now: 'metti un timer \
                           di 10 minuti', 'tra 5 minuti', 'per un quarto d'ora'. It rings on the device \
-                          and shows with the other timers. For a clock time or a date use schedule.",
+                          and shows with the other timers, by its name when it has one ('timer di 5 \
+                          minuti per la pasta' → name 'pasta'). For a clock time or a date use schedule.",
             parameters: obj(
-                json!({"seconds": {"type": "integer", "description": "the duration in seconds, 1 to 86400"}}),
+                json!({"seconds": {"type": "integer", "description": "the duration in seconds, 1 to 86400"},
+                       "name": {"type": "string", "description": "what the timer is for, a word or two as the user said it ('pasta', 'uova'); omit when not said"}}),
                 &["seconds"],
             ),
         });
@@ -2473,12 +2476,26 @@ mod tests {
     #[test]
     fn confirm_questions_in_the_user_words() {
         use super::confirm_question as q;
-        assert_eq!(q("Tapparella salone", "close_cover", &json!({}), true), "Chiudo Tapparella salone?");
-        assert_eq!(q("Living blind", "open_cover", &json!({}), false), "Open Living blind?");
         assert_eq!(
-            q("Tapparella salone", "set_cover_position", &json!({"position": 30}), true),
+            q("Tapparella salone", "close_cover", &json!({}), true),
+            "Chiudo Tapparella salone?"
+        );
+        assert_eq!(
+            q("Living blind", "open_cover", &json!({}), false),
+            "Open Living blind?"
+        );
+        assert_eq!(
+            q(
+                "Tapparella salone",
+                "set_cover_position",
+                &json!({"position": 30}),
+                true
+            ),
             "Sposto Tapparella salone al 30%?"
         );
-        assert_eq!(q("X", "set_foo", &json!({}), true), "X (set foo): confermi?");
+        assert_eq!(
+            q("X", "set_foo", &json!({}), true),
+            "X (set foo): confermi?"
+        );
     }
 }

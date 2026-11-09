@@ -925,7 +925,8 @@ fn do_not_disturb_for_two_hours_and_timers_still_ring() {
     let (ui, _, summary) = reflex_run_then("non disturbare per due ore", 1.0, |tx| {
         // The answer off the screen first (a timer does not ring over a conversation).
         tx.send(CoreEvent::Ui(UiEvent::Stop)).unwrap();
-        tx.send(CoreEvent::Ui(UiEvent::TimerStart(1))).unwrap();
+        tx.send(CoreEvent::Ui(UiEvent::TimerStart(1, None)))
+            .unwrap();
         std::thread::sleep(Duration::from_millis(2500));
     });
     let until = ui
