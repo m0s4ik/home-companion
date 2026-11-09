@@ -92,6 +92,8 @@ pub enum CoreEvent {
     Reflex(ReflexEvent),
     /// AirPlay: what plays (crates/home-companion/src/airplay.rs).
     Music(crate::airplay::MusicEvent),
+    /// A reflex's answer in Home Assistant's voice (crates/home-companion/src/voice.rs).
+    Voice(crate::voice::VoiceReply),
     /// The microphone's switch on the device (the keys thread): on or muted; `initial` = how
     /// it is at start (no card on screen). On the ThinkSmart View it cuts the microphones in
     /// hardware: muted, they give only zeros.
@@ -271,6 +273,12 @@ enum HaLink {
     Connected { paused: bool, ready: bool },
 }
 
+impl HaLink {
+    fn is_connected(&self) -> bool {
+        matches!(self, HaLink::Connected { .. })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CoreConfig {
     /// The wake model's id (`detection.name`, must match `Info`).
@@ -343,6 +351,16 @@ pub struct Deps {
     pub reflexes: Option<Reflexes>,
     /// AirPlay (None: off).
     pub music: Option<crate::airplay::Music>,
+    /// The reflexes' answers said aloud in Home Assistant's voice (None: their sounds only).
+    pub voice: Option<Box<dyn crate::voice::VoiceLink>>,
+}
+
+/// A reflex's answer waiting for its voice; the sound plays instead at `deadline`.
+struct VoiceWait {
+    id: u64,
+    cue: Arc<audio::Clip>,
+    text: String,
+    deadline: Instant,
 }
 
 /// An utterance held back for the reflexes: buffered and fed to the helper while the user speaks;
@@ -417,6 +435,9 @@ pub struct Core {
     /// "Non disturbare" until then (seconds since the epoch): no card, reminder or announcement
     /// sounds, no final ticks; timers and alarms still ring.
     dnd_until: Option<u64>,
+    /// A reflex's answer waiting for its voice.
+    voice_wait: Option<VoiceWait>,
+    next_voice_id: u64,
 }
 
 /// A sentence ending on a word that cannot end it (a preposition, an article, "e"): the speaker
@@ -481,6 +502,8 @@ impl Core {
             tape: crate::repeat::Tape::default(),
             replay: None,
             dnd_until: None,
+            voice_wait: None,
+            next_voice_id: 1,
         }
     }
 
@@ -516,6 +539,9 @@ impl Core {
             if self.phase.in_conversation() {
                 until = until.min(next_wave);
             }
+            if let Some(w) = &self.voice_wait {
+                until = until.min(w.deadline);
+            }
             match rx.recv_timeout(
                 until
                     .saturating_duration_since(now)
@@ -530,6 +556,9 @@ impl Core {
                 self.quit = true;
             }
             let now = Instant::now();
+            if self.voice_wait.as_ref().is_some_and(|w| now >= w.deadline) {
+                self.voice_late();
+            }
             if now >= next_tick {
                 self.tick();
                 next_tick += second;
@@ -557,6 +586,7 @@ impl Core {
             CoreEvent::Volume(r) => self.on_volume(r),
             CoreEvent::Reflex(e) => self.on_reflex(e),
             CoreEvent::Music(e) => self.on_music(e),
+            CoreEvent::Voice(r) => self.on_voice(r),
             CoreEvent::MicSwitch { on, initial } => self.on_mic_switch(on, initial),
             CoreEvent::Quit => self.quit = true,
         }
@@ -1113,6 +1143,8 @@ impl Core {
         let mut after: Vec<UiCommand> = Vec::new();
         // "Ripeti": how long the replay plays (the answer stays on screen as long).
         let mut replay_for: Option<Duration> = None;
+        // The words said aloud when they differ from the screen's ("5 minuti" for "05:00").
+        let mut spoken: Option<String> = None;
         let answer = match &cmd {
             Reflex::Time => {
                 let n = crate::alarms::Now::local();
@@ -1125,12 +1157,16 @@ impl Core {
                 log::info!(event = "timer_started", id = id.as_str(), seconds = seconds, name = name.as_deref().unwrap_or(""), by = "reflex"; "timer {id}: {seconds} s (reflex)");
                 self.refresh_rows(true);
                 let d = crate::timers::format_left(seconds as f64);
-                match name {
-                    Some(n) => {
-                        self.reflex_text("reflex_timer_set_named", &[("duration", &d), ("name", n)])
-                    }
-                    None => self.reflex_text("reflex_timer_set", &[("duration", &d)]),
-                }
+                let said = self.said_duration(seconds as f64);
+                let (key, mut args) = match name {
+                    Some(n) => ("reflex_timer_set_named", vec![("name", n.as_str())]),
+                    None => ("reflex_timer_set", vec![]),
+                };
+                args.push(("duration", &said));
+                spoken = Some(self.reflex_text(key, &args));
+                args.pop();
+                args.push(("duration", &d));
+                self.reflex_text(key, &args)
             }
             Reflex::TimerCancel { name } => {
                 let ids: Vec<String> = match name {
@@ -1155,6 +1191,8 @@ impl Core {
             Reflex::TimerLeft { name: None } => match self.d.timers.next_due() {
                 Some(due) => {
                     let left = crate::timers::format_left(due - now);
+                    let said = self.said_duration(due - now);
+                    spoken = Some(self.reflex_text("reflex_timer_left", &[("left", &said)]));
                     self.reflex_text("reflex_timer_left", &[("left", &left)])
                 }
                 None => self.reflex_text("reflex_no_timer", &[]),
@@ -1171,6 +1209,11 @@ impl Core {
                 match left {
                     Some(l) => {
                         let left = crate::timers::format_left(l);
+                        let said = self.said_duration(l);
+                        spoken = Some(self.reflex_text(
+                            "reflex_timer_left_named",
+                            &[("name", n), ("left", &said)],
+                        ));
                         self.reflex_text("reflex_timer_left_named", &[("name", n), ("left", &left)])
                     }
                     None => self.reflex_text("reflex_no_timer_named", &[("name", n)]),
@@ -1181,17 +1224,23 @@ impl Core {
                 if rows.is_empty() {
                     self.reflex_text("reflex_no_timer", &[])
                 } else {
-                    let items: Vec<String> = rows
+                    let item = |r: &TimerView, left: &str| {
+                        let key = if r.paused {
+                            "reflex_timer_item_paused"
+                        } else {
+                            "reflex_timer_item"
+                        };
+                        self.reflex_text(key, &[("name", &r.name), ("left", left)])
+                    };
+                    let items: Vec<String> = rows.iter().map(|r| item(r, &r.left)).collect();
+                    let said: Vec<String> = rows
                         .iter()
                         .map(|r| {
-                            let key = if r.paused {
-                                "reflex_timer_item_paused"
-                            } else {
-                                "reflex_timer_item"
-                            };
-                            self.reflex_text(key, &[("name", &r.name), ("left", &r.left)])
+                            let left = self.d.timers.get(&r.id).map(|t| t.remaining(now));
+                            item(r, &left.map_or(r.left.clone(), |l| self.said_duration(l)))
                         })
                         .collect();
+                    spoken = Some(format!("{}.", said.join("; ")));
                     format!("{}.", items.join("; "))
                 }
             }
@@ -1321,7 +1370,25 @@ impl Core {
             // The volume keys' own tick already plays at the new level.
             Reflex::VolumeUp | Reflex::VolumeDown | Reflex::VolumeSet { .. } => None,
         };
-        if let Some(c) = cue {
+        let cue = cue.cloned();
+        // Said aloud in Home Assistant's voice when it comes in time; else the sound, as
+        // offline (never both).
+        let say = spoken.unwrap_or_else(|| answer.clone());
+        let voiced = cue.as_ref().filter(|_| {
+            crate::voice::speak_reflex(true, &answer, self.d.voice.is_some(), self.dnd(now_unix()))
+        });
+        let id = self.next_voice_id;
+        let online = self.ha.is_connected();
+        if let (Some(c), Some(v)) = (voiced, &self.d.voice) {
+            v.say(id, &say, online);
+            self.next_voice_id += 1;
+            self.voice_wait = Some(VoiceWait {
+                id,
+                cue: c.clone(),
+                text: say,
+                deadline: Instant::now() + crate::voice::VOICE_WAIT,
+            });
+        } else if let Some(c) = &cue {
             self.d.player.play(c);
         }
         if let Some(c) = &mut self.conv {
@@ -1350,6 +1417,53 @@ impl Core {
         }
     }
 
+    /// The reflex's answer still on screen (not stopped, not replaced by a new conversation).
+    fn reflex_showing(&self) -> bool {
+        self.phase == Phase::Speaking && self.local_until.is_some()
+    }
+
+    /// The voice of a reflex's answer: played if still awaited, else (late) dropped.
+    fn on_voice(&mut self, r: crate::voice::VoiceReply) {
+        let Some(w) = self.voice_wait.take_if(|w| w.id == r.id) else {
+            log::debug!("voice {}: too late, not played", r.id);
+            return;
+        };
+        if !self.reflex_showing() {
+            return;
+        }
+        let Some(sp) = r.speech else {
+            log::info!(event = "reflex_voice", voiced = false; "no voice for {:?}: the sound", w.text);
+            self.d.player.play(&w.cue);
+            return;
+        };
+        let dur = sp.duration();
+        let s = self.d.player.open_stream(sp.format);
+        if let Err(e) = s.push(&sp.pcm) {
+            log::warn!("reflex voice: {e}");
+        }
+        s.finish();
+        // "Ripeti" repeats it as it repeats Home Assistant's answers.
+        self.tape.start(sp.format);
+        self.tape.push(&sp.pcm);
+        self.tape.commit(&w.text, Instant::now());
+        log::info!(event = "reflex_voice", voiced = true, seconds = dur.as_secs_f64(); "reflex answer said aloud ({:.1} s)", dur.as_secs_f64());
+        if let Some(old) = self.replay.replace(s) {
+            old.abort();
+        }
+        // The view ends when it has played (AudioEvent::Finished, as a replay); the fallback.
+        self.local_until = Some(Instant::now() + dur + Duration::from_secs(2));
+    }
+
+    /// The voice did not come in time: the reflex's sound, as offline.
+    fn voice_late(&mut self) {
+        if let Some(w) = self.voice_wait.take() {
+            log::info!(event = "reflex_voice", voiced = false, late = true; "the voice is late for {:?}: the sound", w.text);
+            if self.reflex_showing() {
+                self.d.player.play(&w.cue);
+            }
+        }
+    }
+
     /// "Non disturbare" on until then, or off.
     fn set_dnd(&mut self, until: Option<u64>) {
         self.dnd_until = until;
@@ -1366,6 +1480,25 @@ impl Core {
             let (on, start, end) = s.night();
             crate::ui::screen::is_night(crate::alarms::Now::local().hour, on, start, end)
         })
+    }
+
+    /// A duration as words to say ("5 minuti e 30 secondi"), not as the screen's "05:30".
+    fn said_duration(&self, secs: f64) -> String {
+        let parts: Vec<String> = duration_parts(secs)
+            .into_iter()
+            .map(|(unit, n)| {
+                let key = format!("say_{unit}{}", if n == 1 { "" } else { "s" });
+                self.reflex_text(&key, &[("n", &n.to_string())])
+            })
+            .collect();
+        match parts.split_last() {
+            Some((last, rest)) if !rest.is_empty() => {
+                let and = self.reflex_text("say_and", &[]);
+                format!("{} {and} {last}", rest.join(", "))
+            }
+            Some((last, _)) => last.clone(),
+            None => self.reflex_text("say_seconds", &[("n", "0")]),
+        }
     }
 
     fn reflex_text(&self, key: &str, args: &[(&str, &str)]) -> String {
@@ -2067,6 +2200,7 @@ impl Core {
             if let Some(s) = self.replay.take() {
                 s.abort();
             }
+            self.voice_wait = None;
             self.close("stopped");
             self.go_idle();
             return;
@@ -2519,6 +2653,20 @@ fn next_morning(now: i64, local: i64) -> u64 {
     (if at <= now { at + 86_400 } else { at }) as u64
 }
 
+/// A duration in whole hours, minutes and seconds (rounded up, as the screen shows it), the
+/// units that are not zero: [("hour", 1), ("second", 5)].
+fn duration_parts(secs: f64) -> Vec<(&'static str, u64)> {
+    let s = secs.max(0.0).ceil() as u64;
+    [
+        ("hour", s / 3600),
+        ("minute", s / 60 % 60),
+        ("second", s % 60),
+    ]
+    .into_iter()
+    .filter(|(_, n)| *n > 0)
+    .collect()
+}
+
 /// "Non disturbare" without a duration: in the evening and at night (21:00-07:00) until the
 /// morning, as one says it before going to bed; by day for an hour, so it is not forgotten on.
 fn dnd_default_until(now: i64, local: i64) -> u64 {
@@ -2588,6 +2736,18 @@ fn quiet_after_command(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durations_to_say() {
+        assert_eq!(duration_parts(300.0), vec![("minute", 5)]);
+        assert_eq!(duration_parts(59.2), vec![("minute", 1)]);
+        assert_eq!(duration_parts(3605.0), vec![("hour", 1), ("second", 5)]);
+        assert_eq!(
+            duration_parts(5430.0),
+            vec![("hour", 1), ("minute", 30), ("second", 30)]
+        );
+        assert_eq!(duration_parts(0.0), vec![]);
+    }
 
     #[test]
     fn short_answers_after_a_command_are_not_spoken() {

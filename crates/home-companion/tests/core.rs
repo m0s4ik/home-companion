@@ -121,6 +121,7 @@ fn run_with(scenario: Scenario, presses: &[Press], reflex: Option<&'static str>)
         stop_flag: None,
         reflexes,
         music: None,
+        voice: None,
     };
     let core_cfg = CoreConfig {
         bell_repeats: 2,
@@ -417,6 +418,7 @@ fn volume_keys_step_show_the_bar_and_save_at_exit() {
         stop_flag: None,
         reflexes: None,
         music: None,
+        voice: None,
     };
     let core = std::thread::spawn(move || Core::new(CoreConfig::default(), deps).run(core_rx));
     let step = |dir, repeat| CoreEvent::Volume(VolumeRequest::Step { dir, repeat });
@@ -490,6 +492,7 @@ fn the_microphone_switch_wins_over_the_tile_and_talk() {
         stop_flag: None,
         reflexes: None,
         music: None,
+        voice: None,
     };
     let core = std::thread::spawn(move || Core::new(CoreConfig::default(), deps).run(core_rx));
     let settle = || std::thread::sleep(Duration::from_millis(100));
@@ -603,6 +606,16 @@ fn reflex_run_then(
     conf: f32,
     then: impl FnOnce(&Sender<CoreEvent>),
 ) -> (Vec<UiCommand>, Vec<reflex::proto::Request>, Summary) {
+    reflex_run_voice(text, conf, None, then)
+}
+
+/// [`reflex_run_then`] with a voice for the reflexes' answers.
+fn reflex_run_voice(
+    text: &str,
+    conf: f32,
+    voice: Option<Box<dyn home_companion::voice::VoiceLink>>,
+    then: impl FnOnce(&Sender<CoreEvent>),
+) -> (Vec<UiCommand>, Vec<reflex::proto::Request>, Summary) {
     let (core_tx, core_rx) = mpsc::channel::<CoreEvent>();
     let (ui_tx, ui_rx) = mpsc::channel();
     let tx = core_tx.clone();
@@ -651,6 +664,7 @@ fn reflex_run_then(
         stop_flag: None,
         reflexes: Some(reflexes),
         music: None,
+        voice,
     };
     let core = std::thread::spawn(move || Core::new(CoreConfig::default(), deps).run(core_rx));
     core_tx.send(CoreEvent::Ui(UiEvent::Talk)).unwrap();
@@ -729,6 +743,58 @@ fn a_reflex_sets_a_timer_without_home_assistant() {
     assert!(ui.contains(&UiCommand::View(Phase::Speaking)));
     // Nothing went to Home Assistant.
     assert_eq!(summary.detections_sent, 0);
+}
+
+/// A voice that records what it is asked.
+struct FakeVoice(Arc<Mutex<Vec<(u64, String, bool)>>>);
+
+impl home_companion::voice::VoiceLink for FakeVoice {
+    fn say(&self, id: u64, text: &str, online: bool) {
+        self.0.lock().unwrap().push((id, text.to_string(), online));
+    }
+}
+
+#[test]
+fn a_reflex_answer_is_said_aloud() {
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let a2 = asked.clone();
+    let (ui, _, summary) = reflex_run_voice(
+        "metti un timer di un minuto",
+        1.0,
+        Some(Box::new(FakeVoice(asked.clone()))),
+        move |tx| {
+            let (id, _, _) = a2.lock().unwrap()[0].clone();
+            let speech = home_companion::voice::Speech {
+                format: audio::StreamFormat {
+                    rate: 22050,
+                    width: 2,
+                    channels: 1,
+                },
+                pcm: vec![0; 2205 * 2],
+            };
+            tx.send(CoreEvent::Voice(home_companion::voice::VoiceReply {
+                id,
+                speech: Some(speech),
+            }))
+            .unwrap();
+            // The 0.1 s of voice plays, then the answer's view ends.
+            std::thread::sleep(Duration::from_millis(600));
+        },
+    );
+    let asked = asked.lock().unwrap().clone();
+    // The words said, not the screen's "01:00"; no Home Assistant: from the cache only.
+    assert_eq!(
+        asked,
+        vec![(1, "Timer di un minuto avviato.".to_string(), false)]
+    );
+    assert!(
+        ui.contains(&UiCommand::Answer("Timer di 01:00 avviato.".into())),
+        "{ui:?}"
+    );
+    assert_eq!(
+        summary.conversations.last().map(|r| r.outcome.as_str()),
+        Some("reflex")
+    );
 }
 
 #[test]

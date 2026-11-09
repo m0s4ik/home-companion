@@ -374,6 +374,14 @@ reflex_timer_item_paused = "{name} {left}, paused"
 reflex_nothing_to_repeat = "I have nothing to repeat."
 reflex_dnd_on = "Do not disturb until {time}."
 reflex_dnd_off = "Do not disturb is off."
+# A reflex's answer said aloud: durations as words, not as the screen's "05:30".
+say_hour = "one hour"
+say_hours = "{n} hours"
+say_minute = "one minute"
+say_minutes = "{n} minutes"
+say_second = "one second"
+say_seconds = "{n} seconds"
+say_and = "and"
 
 # v0.2 ui
 # The brain's house commands: the "done" card ("Kitchen light: off"), its state words (Home

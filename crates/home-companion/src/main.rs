@@ -576,6 +576,25 @@ fn go<S: Screen>(
     } else {
         None
     };
+    // The reflexes' answers in the pipeline's voice (Home Assistant's TTS, cached on disk).
+    let voice = (a.state.is_none() && opts.demo.is_none() && !cfg.home_assistant.url.is_empty())
+        .then(|| {
+            let tx = core_tx.clone();
+            home_companion::voice::Voice::start(
+                home_companion::voice::VoiceConfig {
+                    url: cfg.home_assistant.url.clone(),
+                    auth: std::sync::Arc::new(cfg.ha_auth()),
+                    state_dir: cfg.state_dir(),
+                },
+                move |r| {
+                    let _ = tx.send(CoreEvent::Voice(r));
+                },
+            )
+            .map_err(|e| log::warn!("voice thread: {e}"))
+            .ok()
+        })
+        .flatten()
+        .map(|v| Box::new(v) as Box<dyn home_companion::voice::VoiceLink>);
     let deps = Deps {
         sender,
         player,
@@ -592,6 +611,7 @@ fn go<S: Screen>(
         stop_flag: Some(&signals::STOP),
         reflexes,
         music,
+        voice,
     };
     let core = Core::new(core_cfg, deps);
     let core_thread = match std::thread::Builder::new()

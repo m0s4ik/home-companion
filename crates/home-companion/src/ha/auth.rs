@@ -191,6 +191,23 @@ pub fn http(
     max: usize,
     timeout: Duration,
 ) -> io::Result<Response> {
+    let (status, body) = http_bytes(url, method, path, bearer, body, max, timeout)?;
+    Ok(Response {
+        status,
+        body: String::from_utf8_lossy(&body).into_owned(),
+    })
+}
+
+/// [`http`] with the answer's body as bytes (audio): (status, body).
+pub fn http_bytes(
+    url: &str,
+    method: &str,
+    path: &str,
+    bearer: Option<&str>,
+    body: Option<(&str, &[u8])>,
+    max: usize,
+    timeout: Duration,
+) -> io::Result<(u16, Vec<u8>)> {
     let ep = super::endpoint(url).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     let base = ep.path.trim_end_matches("/api/websocket");
     let host = if ep.host.contains(':') {
@@ -235,7 +252,7 @@ pub fn http(
     parse_response(&raw)
 }
 
-fn parse_response(raw: &[u8]) -> io::Result<Response> {
+fn parse_response(raw: &[u8]) -> io::Result<(u16, Vec<u8>)> {
     let bad = |m: &str| io::Error::new(io::ErrorKind::InvalidData, m.to_string());
     let end = raw
         .windows(4)
@@ -258,10 +275,7 @@ fn parse_response(raw: &[u8]) -> io::Result<Response> {
     if chunked {
         body = dechunk(&body).ok_or_else(|| bad("bad chunked body"))?;
     }
-    Ok(Response {
-        status,
-        body: String::from_utf8_lossy(&body).into_owned(),
-    })
+    Ok((status, body))
 }
 
 fn dechunk(mut b: &[u8]) -> Option<Vec<u8>> {
@@ -526,7 +540,7 @@ pub(crate) mod tests {
     #[test]
     fn chunked_response() {
         let r = parse_response(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n").unwrap();
-        assert_eq!((r.status, r.body.as_str()), (200, "abcde"));
+        assert_eq!((r.0, r.1.as_slice()), (200, &b"abcde"[..]));
     }
 
     #[test]

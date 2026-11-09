@@ -205,6 +205,8 @@ pub struct Choices {
     pub voice: Vec<Pick>,
     /// In use: `voice` empty = the engine's default timbre.
     pub current: Choice,
+    /// The pipeline's voice as the reflexes ask for it (None: no pipeline or no voice engine).
+    pub speech: Option<Box<super::tts::TtsTarget>>,
 }
 
 impl Choices {
@@ -622,6 +624,9 @@ fn choices_of(api: &mut dyn Api, seen: &Seen, st: &State, body: &Body) -> Choice
             tts: engine("tts_engine"),
             voice: engine("tts_voice"),
         },
+        speech: pipeline
+            .and_then(super::tts::TtsTarget::of_pipeline)
+            .map(Box::new),
     }
 }
 
@@ -2277,6 +2282,17 @@ fn connect(cfg: &SetupConfig) -> Result<HaApi, String> {
     HaApi::connect(&cfg.url, &token)
 }
 
+/// The choices to the screen; the pipeline's voice to the reflexes (`tts-target.json` next to
+/// the state file), so they need no round trip to Home Assistant to know it.
+fn send_choices(cfg: &SetupConfig, ev: &Sender<SetupEvent>, c: Choices) {
+    if let Some(dir) = cfg.state_file.parent()
+        && let Err(e) = super::tts::TtsTarget::publish(dir, c.speech.as_deref())
+    {
+        log::warn!(event = "ha_setup"; "{}: {e}", super::tts::TARGET_FILE);
+    }
+    let _ = ev.send(SetupEvent::Choices(c));
+}
+
 fn attention(rows: &[Row]) -> bool {
     rows.iter().any(|r| matches!(r.level, Level::Bad) && r.id != "ai")
         // An AI appeared and the agent is not made yet: "Complete".
@@ -2330,7 +2346,7 @@ fn run(cfg: SetupConfig, cmds: Receiver<SetupCmd>, ev: Sender<SetupEvent>, stop:
                     let _ = ev.send(SetupEvent::Attention(st.configured && attention(&rows)));
                     let _ = ev.send(SetupEvent::Rows(rows));
                     if let Some(c) = choices {
-                        let _ = ev.send(SetupEvent::Choices(c));
+                        send_choices(&cfg, &ev, c);
                     }
                 }
                 SetupCmd::Repair | SetupCmd::RepairRow(_) | SetupCmd::Choose(..) => {
@@ -2370,7 +2386,7 @@ fn run(cfg: SetupConfig, cmds: Receiver<SetupCmd>, ev: Sender<SetupEvent>, stop:
                     );
                     let _ = ev.send(SetupEvent::Attention(attention(&rows)));
                     if let Ok(c) = choices(&mut api, &st, &body) {
-                        let _ = ev.send(SetupEvent::Choices(c));
+                        send_choices(&cfg, &ev, c);
                     }
                 }
                 SetupCmd::Unlink => {
@@ -2379,6 +2395,9 @@ fn run(cfg: SetupConfig, cmds: Receiver<SetupCmd>, ev: Sender<SetupEvent>, stop:
                         let _ = std::fs::remove_file(&cfg.state_file);
                     }
                     drop(api);
+                    if let Some(dir) = cfg.state_file.parent() {
+                        let _ = super::tts::TtsTarget::publish(dir, None);
+                    }
                     cfg.auth.unlink();
                     let _ = ev.send(SetupEvent::Unlinked);
                 }
@@ -2434,7 +2453,7 @@ fn background(cfg: &SetupConfig, st: &mut State, at_start: bool, ev: &Sender<Set
         let _ = ev.send(SetupEvent::Attention(attention(&rows)));
         let _ = ev.send(SetupEvent::Rows(rows));
         if let Some(c) = choices {
-            let _ = ev.send(SetupEvent::Choices(c));
+            send_choices(cfg, ev, c);
         }
         Ok(())
     })();
@@ -3227,6 +3246,12 @@ mod tests {
         assert_eq!(
             choices(&mut ha, &st, &b).unwrap().current_name("voice"),
             "Onyx"
+        );
+        // The reflexes speak with the pipeline's voice.
+        let speech = choices(&mut ha, &st, &b).unwrap().speech.unwrap();
+        assert_eq!(
+            (speech.engine.as_str(), speech.voice.as_str()),
+            ("tts.openai", "onyx")
         );
         let mut changed = ha.alfred();
         changed["tts_voice"] = json!("marin");

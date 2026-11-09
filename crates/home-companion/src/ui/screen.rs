@@ -2635,6 +2635,7 @@ impl<S: Screen> Ui<S> {
                     tts: "tts.openai_tts".into(),
                     voice: "cedar".into(),
                 },
+                ..Default::default()
             };
             if d.page == "ha-pick" {
                 p.picking = d.pick.into();
@@ -5010,6 +5011,7 @@ mod tests {
                 tts: String::new(),
                 voice: String::new(),
             },
+            ..Default::default()
         };
         let rows = ha_picks(&c, |k| format!("[{k}]"));
         assert_eq!(
