@@ -60,6 +60,7 @@ All optional; without one the still pose is shown.
 | `wake` | once when the home screen wakes up (touch, volume key, movement, end of a conversation) | `idle` |
 | `idle` | after `wake`, again and again while the screen is awake, still on its last frame for `pause` seconds in between | `idle` |
 | `listening`, `thinking`, `speaking`, `error` | in a loop while the state lasts (`speaking` also while a timer rings, unless the character has `timer_finished`) | that state's pose |
+| `done` | once on the home after a house command went through (if it came during the conversation, when the home comes back, within 15 s); its last frame is the `idle` pose | `idle` |
 | `fall_asleep` | once when the night layout comes (night hours, the home at rest), after the home clip under way | `idle` |
 | `sleeping` | once every `pause` seconds while asleep, the still `sleeping` pose in between (nothing redraws) | `sleeping` |
 | `wake_from_sleep` | once when the screen wakes up at night, or the night ends; then the home as by day, without `wake` | `sleeping` |

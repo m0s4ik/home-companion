@@ -146,10 +146,12 @@ pub struct Character {
 }
 
 /// The animations a character may have (characters/README.md, "Animations").
-pub const ANIMATIONS: [&str; 10] = [
+pub const ANIMATIONS: [&str; 11] = [
     "loading",
     "wake",
     "idle",
+    // Once, back on the home after a house command went through (a bow).
+    "done",
     "listening",
     "thinking",
     "speaking",

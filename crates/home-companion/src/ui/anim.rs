@@ -17,6 +17,9 @@
 //!   plays once, then the still pose again (no frame drawn in between). When the screen wakes up
 //!   or the night ends: `wake_from_sleep` once, then the home as by day, skipping `wake`. A
 //!   conversation cuts any of these at once (they are decoration).
+//! - **a house command went through**: `done` once (a bow) on the home, then as after `wake`;
+//!   when it comes during the conversation, it plays when the home comes back (within
+//!   [`DONE_WAIT`]).
 //!
 //! Without an animation the still pose is shown, so a character without animations still works.
 
@@ -27,6 +30,10 @@ use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
 use character::{Animation, Sheet};
+
+/// How long a `done` waits for the home to come back (the conversation closes a few seconds
+/// after the command went through).
+pub const DONE_WAIT: Duration = Duration::from_secs(15);
 
 /// What the sequencer needs to know of an available animation.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -101,6 +108,8 @@ pub struct Sequencer {
     since: Instant,
     home: Home,
     night: Night,
+    /// `done` waiting for the home, until then.
+    done_until: Option<Instant>,
 }
 
 impl Sequencer {
@@ -111,6 +120,26 @@ impl Sequencer {
             since: now,
             home: Home::Still,
             night: Night::Still { until: None },
+            done_until: None,
+        }
+    }
+
+    /// A house command went through: `done` now on the home, or when the home comes back
+    /// within [`DONE_WAIT`]. Nothing without the animation, or at night.
+    pub fn done(&mut self, now: Instant) {
+        if !self.clips.contains_key("done") {
+            return;
+        }
+        match self.mode {
+            Mode::Home => {
+                self.home = Home::Clip {
+                    clip: "done",
+                    start: now,
+                };
+                self.done_until = None;
+            }
+            Mode::Night => self.done_until = None,
+            _ => self.done_until = Some(now + DONE_WAIT),
         }
     }
 
@@ -152,6 +181,12 @@ impl Sequencer {
                 if let Night::Finish { clip, start } = night {
                     self.home = Home::Clip { clip, start };
                 }
+            }
+            (_, Mode::Home) if self.done_until.take().is_some_and(|t| now < t) => {
+                self.home = Home::Clip {
+                    clip: "done",
+                    start: now,
+                };
             }
             (Mode::Night, Mode::Home) if self.clips.contains_key("wake_from_sleep") => {
                 self.home = Home::Clip {
@@ -699,5 +734,36 @@ mod tests {
         // Past the end: the last frame.
         p.seek(10_000);
         assert_eq!(p.index, a.frames() - 1);
+    }
+
+    #[test]
+    fn done_plays_on_the_home_now_or_when_it_comes_back() {
+        let t0 = Instant::now();
+        let mut s = Sequencer::new(t0);
+        let t = Timing {
+            frames: 48,
+            fps: 16.0,
+            pause: 5.0,
+        };
+        s.add("done", t);
+        s.add("idle", t);
+        s.add("thinking", t);
+        // During the conversation: waits, then plays when the home comes back.
+        s.set_mode(Mode::Loop("thinking"), t0);
+        s.done(t0);
+        s.set_mode(Mode::Home, t0 + ms(2000));
+        assert_eq!(s.show(t0 + ms(2000), true), frame("done", 0));
+        assert_eq!(s.show(t0 + ms(2500), true), frame("done", 8));
+        // Too late: the home as usual.
+        s.set_mode(Mode::Loop("thinking"), t0 + ms(10_000));
+        s.done(t0 + ms(10_000));
+        s.set_mode(Mode::Home, t0 + ms(10_000) + DONE_WAIT + ms(1));
+        assert_ne!(
+            s.show(t0 + ms(10_000) + DONE_WAIT + ms(1), true),
+            frame("done", 0)
+        );
+        // Already home: at once.
+        s.done(t0 + ms(40_000));
+        assert_eq!(s.show(t0 + ms(40_000), true), frame("done", 0));
     }
 }

@@ -17,6 +17,9 @@ of home-companion.
   0-63) and the wake-up, where he fixes his bow tie and glove (96-175), so the three share `animations/loading.png`.
 - **Do not disturb**: `poses/dnd.png`, a hand bell asleep on a velvet cushion (gpt-image-2.5-flare from `idle.png`,
   background made transparent).
+- **Done**: `animations/done.png` (48 frames, 3 s), a courteous bow with the right hand on the chest after a house
+  command: from `idle.png` to the bow (0-19), held (20-28), back to `idle.png` (29-47). The bow's pose was drawn with
+  gpt-image-2.5-flare from `idle.png`, the two clips (idle to bow, bow to idle) with Wan 2.2 like the others.
 - **Night**: `poses/sleeping.png` (drawn with gpt-image-2 from `idle.png`: eyes closed, a nightcap) at 60 % on the
   background, as the night clips are. `animations/night.png` (224 frames, made from 440x760 16 fps clips
   generated from the poses) holds `fall_asleep` (0-79, idle to sleeping, he puts on the cap while dimming to 60 %),

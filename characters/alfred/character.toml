@@ -94,6 +94,15 @@ frames = [0, 64]
 fps = 16
 rect = [203.9, 40.3, 827.1, 986.0]
 
+# A house command went through: a bow, right hand on the chest (0-19 down, 20-28 held, 29-47 back
+# to the idle pose). Pose drawn with gpt-image-2.5-flare from poses/idle.png, frames by Wan 2.2.
+[animations.done]
+file = "animations/done.png"
+size = [245, 607]
+frames = [0, 48]
+fps = 16
+rect = [297.1, 35.5, 680.2, 985.1]
+
 # The night (../README.md, "Animations"): one sheet, fall asleep (0-79), sleep (80-143, once a
 # minute), wake up (144-223); 60 % bright like poses/sleeping.png.
 [animations.fall_asleep]

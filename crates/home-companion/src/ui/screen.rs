@@ -4387,9 +4387,10 @@ impl<S: Screen> Ui<S> {
         let now = Instant::now();
         match e {
             HouseEvent::Done(id, line, undo) => {
-                // One sound for a group (one command per light).
+                // One sound and one bow for a group (one command per light).
                 if !self.house.borrow_mut().changed(id, line, undo, now) {
                     self.send(UiEvent::HouseDone);
+                    self.motion.borrow_mut().seq.done(now);
                 }
                 // The card is seen: a soft wake (not the screen asleep by "spegni lo schermo"
                 // just before, nor the night's, that the touch is for).
