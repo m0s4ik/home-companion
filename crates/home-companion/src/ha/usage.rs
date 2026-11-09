@@ -13,7 +13,7 @@
 //! at most every [`LOOKUP_EVERY`] seconds when there is none), the history every
 //! [`HISTORY_EVERY`] seconds; in between four small states.
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::setup::Api;
 use crate::usage::{Precise, daily_max, local_day, local_midnight, parse_time};
@@ -135,8 +135,8 @@ impl Tracker {
                 return Ok(None);
             }
             self.looked_at = Some(now);
-            let reg = api.ws(json!({"type": "config/entity_registry/list"}))?;
-            self.sensors = find_sensors(reg.as_array().map_or(&[], Vec::as_slice), entry);
+            let reg = super::setup::entity_registry(api)?;
+            self.sensors = find_sensors(&reg, entry);
             let Some(s) = &self.sensors else {
                 return Ok(None);
             };
@@ -201,6 +201,7 @@ impl Tracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::collections::HashMap;
 
     const ENTRY: &str = "01OPENAI";

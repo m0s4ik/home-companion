@@ -15,8 +15,10 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-/// Larger messages are refused (a filtered `subscribe_entities` or a forecast is a few KiB).
-pub const MAX_MESSAGE: usize = 4 << 20;
+/// Larger messages are refused. Most are a few KiB (a filtered `subscribe_entities`, a
+/// forecast), but the entity registry and the states of a large installation are megabytes: 8,000
+/// entities make a registry of about 6 MiB.
+pub const MAX_MESSAGE: usize = 32 << 20;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message {
@@ -345,6 +347,18 @@ mod tests {
         f.extend_from_slice(&(u64::MAX).to_be_bytes());
         assert!(decode_frame(&f).is_err());
         assert!(decode_frame(&[0xC1, 0]).is_err());
+    }
+
+    #[test]
+    fn a_large_installations_registry_fits() {
+        // The registry of a Home Assistant with ~8,000 entities (issue #1): about 5.8 MB.
+        let payload = vec![b' '; 5_764_325];
+        let f = encode_frame(0x1, &payload, [1, 2, 3, 4]);
+        let frame = decode_frame(&f).unwrap().unwrap();
+        assert_eq!(frame.payload.len(), payload.len());
+        let mut f = vec![0x81, 127];
+        f.extend_from_slice(&((MAX_MESSAGE as u64) + 1).to_be_bytes());
+        assert!(decode_frame(&f).is_err());
     }
 
     /// An in-memory stream: what the "server" sent, what the client wrote.

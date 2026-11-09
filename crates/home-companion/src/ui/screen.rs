@@ -3479,12 +3479,22 @@ impl<S: Screen> Ui<S> {
     /// The Home Assistant button while Home Assistant is not linked (no token of either kind):
     /// the link page with its QR code instead of a view that cannot log in. True = handled.
     pub fn link_instead_of_home_assistant(&self) -> bool {
-        if self.ha_linked.get() || self.opts.demo.is_some() {
+        if self.opts.demo.is_some() {
             return false;
         }
-        log::info!("Home Assistant button while not linked: the link page");
-        self.screen.set_page("setup");
-        true
+        if !self.ha_linked.get() {
+            log::info!("Home Assistant button while not linked: the link page");
+            self.screen.set_page("setup");
+            return true;
+        }
+        // No view on this device (an image without WPE WebKit, `[web] enabled = false`): the
+        // body's own Home Assistant page instead of a button that does nothing.
+        if !super::webview::present() {
+            log::info!("Home Assistant button without the view: the Home Assistant page");
+            self.screen.set_page("ha");
+            return true;
+        }
+        false
     }
 
     fn start_link(&self) {

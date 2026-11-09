@@ -512,11 +512,7 @@ fn read(api: &mut dyn Api) -> Result<Seen, String> {
     let pl = api.ws(json!({"type": "assist_pipeline/pipeline/list"}))?;
     Ok(Seen {
         entries: entries.as_array().cloned().unwrap_or_default(),
-        registry: api
-            .ws(json!({"type": "config/entity_registry/list"}))?
-            .as_array()
-            .cloned()
-            .unwrap_or_default(),
+        registry: entity_registry(api)?,
         states: api
             .ws(json!({"type": "get_states"}))?
             .as_array()
@@ -1200,10 +1196,41 @@ fn wait_for<T>(
 }
 
 fn registry(api: &mut dyn Api) -> Vec<Value> {
-    api.ws(json!({"type": "config/entity_registry/list"}))
-        .ok()
-        .and_then(|v| v.as_array().cloned())
-        .unwrap_or_default()
+    entity_registry(api).unwrap_or_default()
+}
+
+/// The fields of the entity registry the body reads.
+const REGISTRY_FIELDS: [&str; 6] = [
+    "entity_id",
+    "config_entry_id",
+    "config_subentry_id",
+    "unique_id",
+    "platform",
+    "disabled_by",
+];
+
+/// The entity registry, only its enabled entities and the fields the body reads: on a large
+/// installation the whole list is megabytes, mostly entities integrations made and the user
+/// disabled.
+pub fn entity_registry(api: &mut dyn Api) -> Result<Vec<Value>, String> {
+    let v = api.ws(json!({"type": "config/entity_registry/list"}))?;
+    Ok(slim_registry(v))
+}
+
+/// [`entity_registry`]'s filter on an answer of `config/entity_registry/list`.
+pub fn slim_registry(v: Value) -> Vec<Value> {
+    let Value::Array(all) = v else {
+        return Vec::new();
+    };
+    all.into_iter()
+        .filter(|e| e.get("disabled_by").is_none_or(Value::is_null))
+        .map(|mut e| {
+            if let Value::Object(o) = &mut e {
+                o.retain(|k, _| REGISTRY_FIELDS.contains(&k.as_str()));
+            }
+            e
+        })
+        .collect()
 }
 
 /// Does what is missing (and, with [`Scope::Row`], puts that row back), saving what it made in
@@ -4075,5 +4102,26 @@ mod tests {
         assert!(ha.speech.is_empty());
         assert_eq!(speech_hints("it-IT"), speech_hints("it"));
         assert_eq!(speech_hints("en"), None);
+    }
+
+    #[test]
+    fn the_registry_keeps_enabled_entities_and_the_fields_read() {
+        let v = json!([
+            {"entity_id": "stt.openai", "config_entry_id": "E", "config_subentry_id": "S",
+             "unique_id": "u", "platform": "openai_conversation", "disabled_by": null,
+             "name": null, "original_name": "OpenAI STT", "options": {"a": 1}, "labels": []},
+            {"entity_id": "sensor.unifi_port_7", "config_entry_id": "U", "platform": "unifi",
+             "disabled_by": "integration"},
+            {"entity_id": "light.studio", "config_entry_id": "H", "platform": "hue"}
+        ]);
+        let r = slim_registry(v);
+        assert_eq!(r.len(), 2, "the disabled one left out");
+        assert_eq!(
+            r[0],
+            json!({"entity_id": "stt.openai", "config_entry_id": "E", "config_subentry_id": "S",
+                   "unique_id": "u", "platform": "openai_conversation", "disabled_by": null})
+        );
+        assert_eq!(r[1]["entity_id"], "light.studio");
+        assert!(slim_registry(json!({"x": 1})).is_empty());
     }
 }
