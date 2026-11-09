@@ -308,6 +308,8 @@ pub struct Demo {
     pub house: u8,
     /// `--state dnd`: do not disturb on.
     pub dnd: bool,
+    /// `--state house-done-card`: the small "done" card, after the Undo pop-up.
+    pub house_card_only: bool,
     /// `--state mic-*`: the microphone off by the switch (line and tile); `mic_hud` = the
     /// switch's card, Some(on).
     pub mic_switch_off: bool,
@@ -317,7 +319,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 53] = [
+pub const DEMO_STATES: [&str; 54] = [
     "home",
     "cards",
     "cards-setup",
@@ -361,6 +363,7 @@ pub const DEMO_STATES: [&str; 53] = [
     "first-ha-found",
     "first-ha-none",
     "house-done",
+    "house-done-card",
     "house-done-speaking",
     "house-ask",
     "dnd",
@@ -472,6 +475,12 @@ impl Demo {
             "house-done" => Demo {
                 house: 1,
                 cards: true,
+                ..home.clone()
+            },
+            "house-done-card" => Demo {
+                house: 1,
+                cards: true,
+                house_card_only: true,
                 ..home.clone()
             },
             "house-done-speaking" => Demo {
@@ -1326,6 +1335,14 @@ impl<S: Screen> Ui<S> {
                     ui.brain_do(brain_link::undo(id));
                 }
                 ui.render_house();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_done_ok(move || {
+            if let Some(ui) = ui.upgrade() {
+                if ui.house.borrow_mut().close_popup() {
+                    ui.render_house();
+                }
             }
         });
         let ui = Rc::downgrade(self);
@@ -2531,6 +2548,9 @@ impl<S: Screen> Ui<S> {
                 let line =
                     house::done_line(l.sample("house_light"), Some("off"), "turn_off", &word);
                 self.screen.set_done(true, &line, true);
+                let (name, state) = house::split_line(&line);
+                self.screen.set_done_parts(name, state);
+                self.screen.set_done_popup(!d.house_card_only, 0.62);
             }
             2 => self.screen.set_ask(true, l.sample("house_question"), 0.62),
             _ => {}
@@ -4392,6 +4412,10 @@ impl<S: Screen> Ui<S> {
         if self.house.borrow_mut().tick(Instant::now(), now_unix) {
             self.render_house();
         }
+        if self.house.borrow().popup() {
+            let left = self.house.borrow().popup_left(Instant::now());
+            self.screen.set_done_popup(true, left);
+        }
         let left = self.house.borrow().ask_left(now_unix);
         if (left - self.ask_left.get()).abs() >= 0.004 {
             self.ask_left.set(left);
@@ -4409,9 +4433,15 @@ impl<S: Screen> Ui<S> {
     fn render_house(&self) {
         let h = self.house.borrow().clone();
         match &h.done {
-            Some(d) => self.screen.set_done(true, &d.line, d.undo),
+            Some(d) => {
+                self.screen.set_done(true, &d.line, d.undo);
+                let (name, state) = house::split_line(&d.line);
+                self.screen.set_done_parts(name, state);
+            }
             None => self.screen.set_done(false, "", false),
         }
+        self.screen
+            .set_done_popup(h.popup(), h.popup_left(Instant::now()));
         let left = h.ask_left(self.now());
         self.ask_left.set(left);
         match &h.ask {

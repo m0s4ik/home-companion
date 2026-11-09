@@ -9,7 +9,10 @@
 use std::time::{Duration, Instant};
 
 /// The "done" card goes away by itself after this.
-pub const DONE_CARD: Duration = Duration::from_secs(8);
+pub const DONE_CARD: Duration = Duration::from_secs(10);
+/// With an Undo, a big pop-up in the middle comes first for this long (a wrong command is put
+/// right at once, with a big target), then the card stays for the rest of [`DONE_CARD`].
+pub const UNDO_POPUP: Duration = Duration::from_secs(5);
 
 /// A house command went through (BrainMsg::Changed).
 #[derive(Debug, Clone, PartialEq)]
@@ -19,6 +22,9 @@ pub struct DoneCard {
     pub line: String,
     pub undo: bool,
     until: Instant,
+    since: Instant,
+    /// Until when the Undo pop-up is up (None: not, or closed).
+    popup_until: Option<Instant>,
 }
 
 /// A house command waits for a yes (BrainMsg::Confirm).
@@ -47,7 +53,38 @@ impl HouseCards {
             line,
             undo,
             until: now + DONE_CARD,
+            since: now,
+            popup_until: undo.then_some(now + UNDO_POPUP),
         });
+    }
+
+    /// Whether the Undo pop-up is up.
+    pub fn popup(&self) -> bool {
+        self.done.as_ref().is_some_and(|d| d.popup_until.is_some())
+    }
+
+    /// The pop-up's time left, 1 (just done) to 0: its countdown's length.
+    pub fn popup_left(&self, now: Instant) -> f32 {
+        let Some(until) = self
+            .done
+            .as_ref()
+            .and_then(|d| d.popup_until.map(|u| (d.since, u)))
+        else {
+            return 0.0;
+        };
+        let total = (until.1 - until.0).as_secs_f32().max(0.001);
+        (until.1.saturating_duration_since(now).as_secs_f32() / total).clamp(0.0, 1.0)
+    }
+
+    /// The pop-up's OK (or a tap around it): the pop-up closes, the card stays.
+    pub fn close_popup(&mut self) -> bool {
+        match self.done.as_mut() {
+            Some(d) if d.popup_until.is_some() => {
+                d.popup_until = None;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// A question: shown until `expires_at` or its `confirm_done`. False (nothing shown) when
@@ -99,6 +136,12 @@ impl HouseCards {
             self.done = None;
             gone = true;
         }
+        if let Some(d) = self.done.as_mut() {
+            if d.popup_until.is_some_and(|u| now >= u) {
+                d.popup_until = None;
+                gone = true;
+            }
+        }
         if self
             .ask
             .as_ref()
@@ -116,6 +159,12 @@ impl HouseCards {
         let total = (a.expires_at as f64 - a.since).max(1.0);
         ((a.expires_at as f64 - now_unix) / total).clamp(0.0, 1.0) as f32
     }
+}
+
+/// The pop-up's two lines from the card's line ([`done_line`]): "Luce cucina: spento" →
+/// ("Luce cucina", "spento"); a line without a state is all name.
+pub fn split_line(line: &str) -> (&str, &str) {
+    line.rsplit_once(": ").unwrap_or((line, ""))
 }
 
 /// The card's line: the entity's name and its state now, in the user's words ("Luce cucina:
@@ -234,6 +283,35 @@ pub fn what_rows(word: &dyn Fn(&str) -> String, name: &str) -> Vec<(String, Stri
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_pop_up_splits_name_and_state() {
+        assert_eq!(split_line("Luce cucina: spento"), ("Luce cucina", "spento"));
+        assert_eq!(split_line("Fatto"), ("Fatto", ""));
+    }
+
+    #[test]
+    fn an_undo_pops_up_first_then_the_card_stays() {
+        let t0 = Instant::now();
+        let mut c = HouseCards::default();
+        c.changed(7, "Luce studio: spenta".into(), true, t0);
+        assert!(c.popup());
+        assert_eq!(c.popup_left(t0), 1.0);
+        assert!((c.popup_left(t0 + UNDO_POPUP / 2) - 0.5).abs() < 0.01);
+        // After 5 s the pop-up goes, the card stays until 10 s.
+        assert!(c.tick(t0 + UNDO_POPUP, 0.0));
+        assert!(!c.popup() && c.done.is_some());
+        assert!(!c.tick(t0 + UNDO_POPUP + Duration::from_secs(1), 0.0));
+        assert!(c.tick(t0 + DONE_CARD, 0.0));
+        assert!(c.done.is_none());
+        // OK closes the pop-up only; without an Undo there is no pop-up.
+        c.changed(8, "x".into(), true, t0);
+        assert!(c.close_popup() && !c.popup() && c.done.is_some());
+        assert!(!c.close_popup());
+        c.changed(9, "y".into(), false, t0);
+        assert!(!c.popup());
+        assert_eq!(c.popup_left(t0), 0.0);
+    }
+
     fn it(k: &str) -> Option<String> {
         match k {
             "house_state_off" => Some("spenta".into()),
@@ -248,15 +326,16 @@ mod tests {
     fn done_card_goes_after_its_time() {
         let t0 = Instant::now();
         let mut c = HouseCards::default();
-        c.changed(41, "Kitchen light: off".into(), true, t0);
-        assert!(!c.tick(t0 + Duration::from_secs(7), 0.0));
+        // (No Undo here: no pop-up going away at 5 s.)
+        c.changed(41, "Kitchen light: off".into(), false, t0);
+        assert!(!c.tick(t0 + Duration::from_secs(9), 0.0));
         assert!(c.done.is_some());
         assert!(c.tick(t0 + DONE_CARD, 0.0));
         assert!(c.done.is_none());
         // A newer one replaces it, and starts its own time.
         c.changed(41, "a".into(), true, t0);
         c.changed(42, "b".into(), false, t0 + Duration::from_secs(5));
-        assert!(!c.tick(t0 + Duration::from_secs(9), 0.0));
+        assert!(!c.tick(t0 + Duration::from_secs(14), 0.0));
         assert_eq!(c.done.as_ref().map(|d| d.id), Some(42));
     }
 

@@ -43,7 +43,7 @@ USED = {
     "bluetooth": [32], "bluetooth-off": [32], "microphone": [44, 32],
     # cards, status, dialogs
     "bell": [32], "bell-off": [32, 28], "help-circle": [48], "cloud-off": [32], "microphone-off": [32], "alert-circle": [64, 32],
-    "check-circle": [32], "cart": [48, 32], "calendar-clock": [48, 32], "alarm": [40, 32, 28, 24], "cellphone": [28], "timer-sand-full": [48],
+    "check-circle": [48, 32], "undo": [36], "cart": [48, 32], "calendar-clock": [48, 32], "alarm": [40, 32, 28, 24], "cellphone": [28], "timer-sand-full": [48],
     # weather (the date line)
     "weather-sunny": [32], "weather-night-partly-cloudy": [32], "weather-partly-cloudy": [32],
     "weather-cloudy": [32], "weather-rainy": [32], "weather-pouring": [32],

@@ -298,6 +298,10 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn on_ha_ok(&self, f: impl Fn() + 'static);
     /// v0.2: a house command went through (the "done" card: shown, its line, with Undo).
     fn set_done(&self, shown: bool, line: &str, undo: bool);
+    /// The big Undo pop-up (before the card): up, its time left (1..0).
+    fn set_done_popup(&self, popup: bool, left: f32);
+    /// The pop-up's two lines: the thing and its state.
+    fn set_done_parts(&self, name: &str, state: &str);
     /// A house command waits for a yes: shown, the question, the time left (1..0).
     fn set_ask(&self, shown: bool, text: &str, left: f32);
     fn set_ask_left(&self, left: f32);
@@ -310,6 +314,8 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// "What to say": (icon, title, examples) per group.
     fn set_what(&self, rows: &[(String, String, String)]);
     fn on_done_undo(&self, f: impl Fn() + 'static);
+    /// The pop-up's OK (or a tap around it).
+    fn on_done_ok(&self, f: impl Fn() + 'static);
     fn on_ask_answered(&self, f: impl Fn(bool) + 'static);
 }
 
@@ -1098,6 +1104,14 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_done_undo(self, undo);
                 $m::CompanionWindow::set_done_shown(self, shown);
             }
+            fn set_done_popup(&self, popup: bool, left: f32) {
+                $m::CompanionWindow::set_done_left(self, left);
+                $m::CompanionWindow::set_done_popup(self, popup);
+            }
+            fn set_done_parts(&self, name: &str, state: &str) {
+                $m::CompanionWindow::set_done_name(self, name.into());
+                $m::CompanionWindow::set_done_state(self, state.into());
+            }
             fn set_ask(&self, shown: bool, text: &str, left: f32) {
                 $m::CompanionWindow::set_ask_text(self, text.into());
                 $m::CompanionWindow::set_ask_left(self, left);
@@ -1132,6 +1146,9 @@ macro_rules! impl_screen {
             }
             fn on_done_undo(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_done_undo_clicked(self, f)
+            }
+            fn on_done_ok(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_done_ok_clicked(self, f)
             }
             fn on_ask_answered(&self, f: impl Fn(bool) + 'static) {
                 $m::CompanionWindow::on_ask_answered(self, f)

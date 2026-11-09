@@ -1043,6 +1043,152 @@ export component DoneCard inherits Rectangle {
     }
 }
 
+// A house command just went through and can be undone: a pop-up in the middle (no scrim, as
+// light as the microphone's card), Undo as the large gold-ringed target (a wrong command is put right at once), an X to close it, the time left
+// as a thin line under it; after it the small DoneCard stays. A tap around it closes it.
+export component UndoPopup inherits Rectangle {
+    // The thing ("Luce cucina") and what it is now ("spento").
+    in property <string> name;
+    in property <string> state;
+    in property <string> undo-label;
+    in property <float> left: 1;
+    in property <length> centre-x: root.width / 2;
+    callback undo();
+    callback ok();
+    TouchArea {
+        clicked => {
+            root.ok();
+        }
+    }
+    box := Rectangle {
+        x: root.centre-x - self.width / 2;
+        y: (parent.height - self.height) / 2;
+        width: 520px;
+        height: 420px;
+        border-radius: 32px;
+        background: Theme.surface;
+        border-width: 2px;
+        border-color: Theme.accent.with-alpha(0.5);
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #000000a0;
+        TouchArea { }
+        // Close, top right (a 72 px target).
+        close-touch := TouchArea {
+            x: parent.width - 12px - 72px;
+            y: 12px;
+            width: 72px;
+            height: 72px;
+            clicked => {
+                Feedback.tap();
+                root.ok();
+            }
+        }
+        Rectangle {
+            x: close-touch.x + 12px;
+            y: close-touch.y + 12px;
+            width: 48px;
+            height: 48px;
+            border-radius: 24px;
+            background: close-touch.pressed ? Theme.surface-2 : transparent;
+            Icon {
+                x: 6px;
+                y: 6px;
+                width: 36px;
+                height: 36px;
+                source: Icons.close-36;
+                color: Theme.text-3;
+            }
+        }
+        Icon {
+            x: (parent.width - self.width) / 2;
+            y: 40px;
+            width: 48px;
+            height: 48px;
+            source: Icons.check-circle-48;
+            color: Theme.accent;
+        }
+        // The name on up to two lines, the state under it in gold.
+        Text {
+            x: 40px;
+            y: 104px;
+            width: parent.width - 80px;
+            height: 88px;
+            text: root.name;
+            font-size: 34px;
+            color: Theme.text;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+        Text {
+            x: 40px;
+            y: 196px;
+            width: parent.width - 80px;
+            height: 36px;
+            text: root.state;
+            font-size: 26px;
+            color: Theme.accent;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Rectangle {
+            x: 48px;
+            y: 264px;
+            width: parent.width - 96px;
+            height: 88px;
+            border-radius: self.height / 2;
+            background: undo-touch.pressed ? Theme.accent.with-alpha(0.18) : transparent;
+            border-width: 2px;
+            border-color: Theme.accent;
+            HorizontalLayout {
+                alignment: center;
+                spacing: 16px;
+                Rectangle {
+                    width: 36px;
+                    Icon {
+                        y: (parent.height - self.height) / 2;
+                        width: 36px;
+                        height: 36px;
+                        source: Icons.undo-36;
+                        color: Theme.accent;
+                    }
+                }
+                Text {
+                    text: root.undo-label;
+                    font-size: 32px;
+                    font-weight: 500;
+                    color: Theme.accent;
+                    vertical-alignment: center;
+                }
+            }
+            undo-touch := TouchArea {
+                clicked => {
+                    Feedback.tap();
+                    root.undo();
+                }
+            }
+        }
+        // The time left: a thin line that shrinks.
+        Rectangle {
+            x: 48px;
+            y: 376px;
+            width: parent.width - 96px;
+            height: 4px;
+            border-radius: 2px;
+            background: Theme.line;
+            Rectangle {
+                x: 0;
+                width: parent.width * root.left;
+                height: parent.height;
+                border-radius: 2px;
+                background: Theme.accent.with-alpha(0.8);
+            }
+        }
+    }
+}
+
 // --- Overlays --------------------------------------------------------------------------------
 
 // A dialog on the desk (never over the stage): a static scrim over the whole screen, a surface

@@ -24,7 +24,7 @@ import {
     Icon, BareButton, PrimaryButton, PillButton, InfoCard, TimerCard, NowPlayingCard, PageHeader,
     Tile, SectionTitle, Row, Group, TimerLine, AlarmLine, ChatUser, ChatCharacter, ChatSeparator,
     Step, Stepper, Chip, Dialog, Separator, VolumeHud, MicHud, GlyphButton, ControlTile, LevelBar, Feedback,
-    DoneCard
+    DoneCard, UndoPopup
 } from "design/components.slint";
 import { CasaScreen, CasaBridge } from "casa.slint";
 import { WeatherPage, ListsPage, EventRow, ForecastRow, ChoiceRow } from "ha-pages.slint";
@@ -674,7 +674,13 @@ export component CompanionWindow inherits Window {
     in property <bool> done-shown: false;
     in property <string> done-line: "";
     in property <bool> done-undo: false;
+    // The big Undo pop-up first (5 s), its time left (1..0); OK closes it, the card stays.
+    in property <bool> done-popup: false;
+    in property <float> done-left: 1;
+    in property <string> done-name: "";
+    in property <string> done-state: "";
     callback done-undo-clicked();
+    callback done-ok-clicked();
     // A command waits for a yes: the question, the time left (1 = just asked, 0 = over).
     in property <bool> ask-shown: false;
     in property <string> ask-text: "";
@@ -3741,7 +3747,7 @@ export component CompanionWindow inherits Window {
     // view or a mirrored screen: the same card, centred at the top). In the home's
     // third card slot, above the action band; during a conversation at the top of the desk,
     // over nothing it says.
-    if root.done-shown && !root.night-home && !root.starting && !root.ringing: DoneCard {
+    if root.done-shown && !root.done-popup && !root.night-home && !root.starting && !root.ringing: DoneCard {
         property <bool> full: CasaBridge.visible || (root.mirror-t > 0.999 && !root.mirror-sides);
         x: self.full ? (root.width - self.width) / 2 : Grid.col-x;
         // Over a full view: top centre (bottom centre while the conversation bar is at the top).
@@ -3751,6 +3757,21 @@ export component CompanionWindow inherits Window {
         undo-label: root.done-undo ? root.t.undo : "";
         undo => {
             root.done-undo-clicked();
+        }
+    }
+
+    // ---- The same command, undoable: the big pop-up first, over everything (Home Assistant's
+    // view and a mirrored screen included), centred on the screen as the microphone's card.
+    if root.done-shown && root.done-popup && !root.starting: UndoPopup {
+        name: root.done-name;
+        state: root.done-state;
+        undo-label: root.t.undo;
+        left: root.done-left;
+        undo => {
+            root.done-undo-clicked();
+        }
+        ok => {
+            root.done-ok-clicked();
         }
     }
 
