@@ -622,6 +622,9 @@ export component CompanionWindow inherits Window {
     in property <[UsageBar]> usage-bars: [];
     // Music (AirPlay later): nothing plays yet, so its tile, card and page stay hidden.
     in property <bool> music-playing: false;
+    // The music page's spectrum: band levels and their falling peaks, 0..1, low bands first.
+    in property <[float]> music-bands: [];
+    in property <[float]> music-peaks: [];
     in property <string> music-title: "";
     in property <string> music-artist: "";
     in property <string> music-album: "";
@@ -2842,11 +2845,17 @@ export component CompanionWindow inherits Window {
                 root.page = "home";
             }
         }
+        // The cover on top, centred in the column; the title and the artist under it; at the
+        // bottom the spectrum, segmented like an old LCD player's.
+        // The frame takes the picture's shape (a video's 16:9 thumbnail too), 224 px tall and
+        // at most 400 wide, so nothing is cut; square without a picture.
         Rectangle {
-            x: Grid.col-x;
-            y: 120px;
-            width: 304px;
-            height: 304px;
+            x: Grid.col-cx - self.width / 2;
+            y: 104px;
+            height: 224px;
+            width: root.music-cover.height > 0
+                ? min(400px, self.height * root.music-cover.width / root.music-cover.height)
+                : self.height;
             border-radius: 20px;
             background: Theme.surface;
             clip: true;
@@ -2854,7 +2863,7 @@ export component CompanionWindow inherits Window {
                 width: parent.width;
                 height: parent.height;
                 source: root.music-cover;
-                image-fit: ImageFit.cover;
+                image-fit: ImageFit.contain;
             }
             // No cover art for this track: a note, never the previous track's picture.
             Icon {
@@ -2867,52 +2876,51 @@ export component CompanionWindow inherits Window {
                 visible: root.music-cover.width == 0;
             }
         }
-        Icon {
-            x: Grid.col-x + 336px;
-            y: 132px;
-            width: 24px;
-            height: 24px;
-            source: Icons.cast-audio-24;
-            color: Theme.text-2;
+        Text {
+            x: Grid.col-x;
+            y: 340px;
+            width: Grid.col-width;
+            text: root.music-title;
+            font-size: 34px;
+            color: Theme.text;
+            horizontal-alignment: center;
+            overflow: elide;
         }
         Text {
-            x: Grid.col-x + 370px;
-            y: 128px;
-            height: 32px;
-            text: root.music-source;
+            x: Grid.col-x;
+            y: 386px;
+            width: Grid.col-width;
+            text: root.music-artist != "" ? root.music-artist + " · " + root.music-source : root.music-source;
             font-size: 24px;
             color: Theme.text-2;
-            vertical-alignment: center;
+            horizontal-alignment: center;
+            overflow: elide;
         }
-        // Title, artist and album stacked: a long title (videos) takes up to three lines and
-        // pushes the rest down instead of running under it.
-        VerticalLayout {
-            x: Grid.col-x + 336px;
-            y: 176px;
-            width: Grid.col-x + Grid.col-width - self.x;
-            height: 400px;
-            spacing: 8px;
-            alignment: start;
-            Text {
-                text: root.music-title;
-                // Song titles are short; video titles are not: smaller type, three lines at most.
-                font-size: root.music-title.character-count > 32 ? 32px : 40px;
-                height: min(self.preferred-height, 3 * self.font-size * 1.25);
-                color: Theme.text;
-                wrap: word-wrap;
-                overflow: elide;
-            }
-            if root.music-artist != "": Text {
-                text: root.music-artist;
-                font-size: 28px;
-                color: Theme.text-2;
-                overflow: elide;
-            }
-            if root.music-album != "": Text {
-                text: root.music-album;
-                font-size: 24px;
-                color: Theme.text-3;
-                overflow: elide;
+        // The spectrum, as a quiet moving background: one bar per band (low on the left), lit
+        // segments from the bottom and a peak segment that falls back slowly. Values 0..1
+        // (music-bands, music-peaks).
+        // Low and short (seven rows), on the action band: there under the rest, not a block.
+        spectrum := Rectangle {
+            // Narrow, centred under the title: thin bars with air between them.
+            x: Grid.col-cx - self.width / 2;
+            y: Grid.band-y - 20px - self.height;
+            width: 480px;
+            height: 7 * 13px;
+            property <int> rows: floor(self.height / 13px);
+            property <length> bar-step: self.width / max(1, root.music-bands.length);
+            for v[i] in root.music-bands: Rectangle {
+                x: i * spectrum.bar-step + (spectrum.bar-step - self.width) / 2;
+                width: min(20px, spectrum.bar-step - 8px);
+                property <int> lit: round(v * spectrum.rows);
+                property <int> peak: round((root.music-peaks.length > i ? root.music-peaks[i] : 0) * spectrum.rows);
+                for j in spectrum.rows: Rectangle {
+                    y: spectrum.height - (j + 1) * 13px;
+                    height: 8px;
+                    // A background that moves, not a meter to read: faint, the peak a little more.
+                    background: j < parent.lit ? Theme.text.with-alpha(0.14)
+                        : j == parent.peak - 1 && parent.peak > parent.lit ? Theme.text.with-alpha(0.22)
+                        : transparent;
+                }
             }
         }
         BareButton {

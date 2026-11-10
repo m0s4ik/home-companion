@@ -389,6 +389,8 @@ pub struct Demo {
     pub cards_n: Option<usize>,
     /// The compact home (Settings → Screen).
     pub compact: bool,
+    /// `--state music-video`: the music page with a 16:9 picture (a video's thumbnail).
+    pub music_wide: bool,
     pub night: bool,
     pub starting: bool,
     /// The Home Assistant page: 1 = a run in progress, 2 = "All set".
@@ -429,7 +431,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 65] = [
+pub const DEMO_STATES: [&str; 66] = [
     "home",
     "cards",
     "cards-setup",
@@ -489,6 +491,7 @@ pub const DEMO_STATES: [&str; 65] = [
     "control-mic-switch",
     "mic-off-dnd",
     "cards-quiet",
+    "music-video",
     "cards-0",
     "cards-1",
     "cards-2",
@@ -663,6 +666,10 @@ impl Demo {
                 compact: true,
                 cards_n: s[6..].parse().ok(),
                 ..home.clone()
+            },
+            "music-video" => Demo {
+                music_wide: true,
+                ..page("music")
             },
             "cards-quiet" => Demo {
                 cards: true,
@@ -2496,6 +2503,21 @@ impl<S: Screen> Ui<S> {
                 });
             }
             if d.page == "music" {
+                // A still of the spectrum: a song's bass, a voice, the cymbals.
+                const BANDS: [f32; 16] = [
+                    0.62, 0.70, 0.86, 0.95, 0.74, 0.58, 0.66, 0.80, 0.52, 0.47, 0.55, 0.40, 0.33,
+                    0.26, 0.20, 0.12,
+                ];
+                const PEAKS: [f32; 16] = [
+                    0.72, 0.80, 0.93, 1.0, 0.84, 0.66, 0.74, 0.93, 0.60, 0.57, 0.62, 0.50, 0.40,
+                    0.33, 0.27, 0.20,
+                ];
+                self.screen.set_music_spectrum(&BANDS, &PEAKS);
+                if d.music_wide {
+                    let wide = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../spike-ui/ui/design/cover-sample-wide.png");
+                    self.screen.set_music_cover(load_cover(&wide), false);
+                }
                 desk.music = Some(MusicView {
                     title: "Clair de lune".into(),
                     artist: "Claude Debussy".into(),

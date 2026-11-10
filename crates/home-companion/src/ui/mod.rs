@@ -345,6 +345,8 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// The Wi-Fi signal on every page header and in the control center: 0 not connected,
     /// 1..4 bars, -1 not known.
     fn set_wifi_level(&self, level: i32);
+    /// The music page's spectrum: band levels and their peaks, 0..1, low bands first.
+    fn set_music_spectrum(&self, bands: &[f32], peaks: &[f32]);
     /// The compact home (the clock higher, four cards) or the normal one.
     fn set_home_compact(&self, on: bool);
     fn on_home_compact_changed(&self, f: impl Fn(bool) + 'static);
@@ -1204,6 +1206,10 @@ macro_rules! impl_screen {
             }
             fn set_wifi_level(&self, level: i32) {
                 self.global::<$m::Status>().set_wifi_level(level)
+            }
+            fn set_music_spectrum(&self, bands: &[f32], peaks: &[f32]) {
+                $m::CompanionWindow::set_music_bands(self, model!(bands.to_vec()));
+                $m::CompanionWindow::set_music_peaks(self, model!(peaks.to_vec()));
             }
             fn set_home_compact(&self, on: bool) {
                 self.global::<$m::Grid>().set_compact(on);
