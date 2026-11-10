@@ -41,6 +41,8 @@ USED = {
     "power-sleep": [48, 28], "weather-night": [28], "wifi": [32, 28], "wifi-off": [32, 28],
     # the control center's tiles
     "bluetooth": [32], "bluetooth-off": [32], "microphone": [44, 32],
+    # unlinking Home Assistant (its own sign, not the X that closes)
+    "link-variant-off": [48],
     # cards, status, dialogs
     "bell": [32], "bell-off": [32, 28], "help-circle": [48], "cloud-off": [32], "microphone-off": [32], "alert-circle": [64, 32],
     "wifi-strength-1": [32, 28], "wifi-strength-2": [32, 28], "wifi-strength-3": [32, 28], "wifi-strength-4": [32, 28], "wifi-strength-off-outline": [32, 28], "check-circle": [48, 32], "undo": [36], "cart": [48, 32], "calendar-clock": [48, 32], "alarm": [40, 32, 28, 24], "cellphone": [28], "timer-sand-full": [48],

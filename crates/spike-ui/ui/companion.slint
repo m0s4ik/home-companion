@@ -20,7 +20,7 @@ import "../fixtures/fonts/Inter-Light-tnum-subset.ttf";
 import "../fixtures/fonts/Inter-Regular-tnum-subset.ttf";
 import { Theme, Grid } from "design/tokens.slint";
 import { Icons } from "design/icons.slint";
-import {
+import { ScrollFade,
     Icon, BareButton, PrimaryButton, PillButton, InfoCard, TimerCard, NowPlayingCard, PageHeader,
     Tile, SectionTitle, Row, Group, TimerLine, AlarmLine, ChatUser, ChatCharacter, ChatSeparator,
     Step, Stepper, Chip, Dialog, Separator, VolumeHud, GlyphButton, ControlTile, LevelBar, Feedback,
@@ -873,6 +873,9 @@ export component CompanionWindow inherits Window {
 
     // The stage's geometry (Rust reads it to place the mouth).
     out property <length> character-cx: Grid.stage-width / 2;
+    // Where the pop-ups over everything are centred: on the desk column while the character is on
+    // the stage (they never cover it), on the screen over a full view (Home Assistant, mirroring).
+    property <length> dialog-cx: CasaBridge.visible || root.mirror-t > 0.001 ? root.width / 2 : Grid.col-cx;
     out property <length> character-top: 30px;
     out property <length> character-height: 740px;
     // The action band's slots (x of each 160 px wide slot).
@@ -942,10 +945,13 @@ export component CompanionWindow inherits Window {
     // On the floor at the character's right foot, at the night's light by night; it fades in
     // and out with do not disturb.
     Image {
-        property <bool> shown: root.dnd && root.desk && root.desk-page == "home" && root.dnd-prop.width > 0;
-        width: 150px;
+        // Not under the control center, which starts a little left of the desk column.
+        property <bool> shown: root.dnd && root.desk && root.desk-page == "home" && root.dnd-prop.width > 0
+            && !root.control-open;
+        width: 130px;
         height: root.dnd-prop.width > 0 ? self.width * root.dnd-prop.height / root.dnd-prop.width : 0px;
-        x: root.character-cx + 165px - self.width / 2;
+        // Inside the stage (it ends at Grid.stage-width), next to the right shoe.
+        x: min(root.character-cx + 140px - self.width / 2, Grid.stage-width - self.width - 8px);
         // The night's figure stands a little higher (its feet at ~715 px, the day's at ~735).
         y: root.character-top + root.character-height - (root.night-home ? 38px : 18px) - self.height;
         source: root.dnd-prop;
@@ -1387,7 +1393,7 @@ export component CompanionWindow inherits Window {
         }
         HorizontalLayout {
             x: Grid.col-cx - self.width / 2;
-            y: 128px;
+            y: 120px;
             width: self.preferred-width;
             height: 40px;
             spacing: 12px;
@@ -1410,7 +1416,7 @@ export component CompanionWindow inherits Window {
         }
         Text {
             x: Grid.col-x;
-            y: 180px;
+            y: 176px;
             width: Grid.col-width;
             text: root.ringing-name;
             font-size: 96px;
@@ -1495,7 +1501,7 @@ export component CompanionWindow inherits Window {
         }
         HorizontalLayout {
             x: Grid.col-cx - self.width / 2;
-            y: 112px;
+            y: 120px;
             width: self.preferred-width;
             height: 40px;
             spacing: 12px;
@@ -1518,12 +1524,12 @@ export component CompanionWindow inherits Window {
         }
         Text {
             x: Grid.col-x;
-            y: 172px;
+            y: 176px;
             width: Grid.col-width;
             height: 264px;
             text: root.notice-text;
-            font-size: root.notice-text.character-count > 60 ? 48px : 64px;
-            font-weight: 400;
+            font-size: root.notice-text.character-count > 12 ? 48px : 96px;
+            font-weight: root.notice-text.character-count > 12 ? 400 : 300;
             color: Theme.text;
             horizontal-alignment: center;
             vertical-alignment: center;
@@ -1536,7 +1542,7 @@ export component CompanionWindow inherits Window {
             width: Grid.col-width;
             text: root.notice-when;
             font-family: "Inter Tnum";
-            font-size: 30px;
+            font-size: 34px;
             color: Theme.text-2;
             horizontal-alignment: center;
         }
@@ -1769,11 +1775,12 @@ export component CompanionWindow inherits Window {
             color: Theme.text-2;
             overflow: elide;
         }
-        Flickable {
+        what-flick := Flickable {
             x: Grid.col-x;
             y: Grid.page-y + 44px;
             width: Grid.col-width;
-            height: Grid.band-y - 8px - self.y;
+            // To the page band's end (608), clear of the action band.
+            height: Grid.page-y + Grid.page-height - self.y;
             content-height: what-list.preferred-height;
             what-list := VerticalLayout {
                 spacing: 18px;
@@ -1811,6 +1818,13 @@ export component CompanionWindow inherits Window {
                     }
                 }
             }
+        }
+        ScrollFade {
+            x: Grid.col-x;
+            y: what-flick.y + what-flick.height - self.height;
+            width: Grid.col-width;
+            more: what-flick.content-height > what-flick.height + 1px
+                && what-flick.content-y > what-flick.height - what-flick.content-height + 1px;
         }
         PrimaryButton {
             x: root.slot-mid;
@@ -2149,7 +2163,7 @@ export component CompanionWindow inherits Window {
                 root.page = root.page-back;
             }
         }
-        Flickable {
+        ha-flick := Flickable {
             x: Grid.col-x;
             y: Grid.page-y;
             width: Grid.col-width;
@@ -2218,10 +2232,18 @@ export component CompanionWindow inherits Window {
                 }
             }
         }
+        ScrollFade {
+            x: Grid.col-x;
+            y: ha-flick.y + ha-flick.height - self.height;
+            width: Grid.col-width;
+            more: ha-flick.content-height > ha-flick.height + 1px
+                && ha-flick.content-y > ha-flick.height - ha-flick.content-height + 1px;
+        }
+        // The heaviest action on the screen: on the right, with its own sign (not the X).
         BareButton {
-            x: root.slot-left;
+            x: root.slot-right;
             y: Grid.band-y;
-            icon: Icons.close-48;
+            icon: Icons.link-variant-off-48;
             label: root.t.ha-unlink;
             enabled: !root.ha-busy;
             clicked => {
@@ -2316,7 +2338,7 @@ export component CompanionWindow inherits Window {
                 y: chart.top - 26px;
                 text: root.usage-max;
                 font-family: "Inter Tnum";
-                font-size: 18px;
+                font-size: 20px;
                 color: Theme.text-3;
             }
             Rectangle {
@@ -2343,7 +2365,7 @@ export component CompanionWindow inherits Window {
                     y: chart.plot-h + 10px;
                     text: b.label;
                     font-family: "Inter Tnum";
-                    font-size: 18px;
+                    font-size: 20px;
                     color: parent.today ? Theme.accent : Theme.text-3;
                 }
             }
@@ -2446,7 +2468,7 @@ export component CompanionWindow inherits Window {
                 root.page = root.page-back;
             }
         }
-        Flickable {
+        mem-flick := Flickable {
             x: Grid.col-x;
             y: Grid.page-y;
             width: Grid.col-width;
@@ -2516,6 +2538,13 @@ export component CompanionWindow inherits Window {
                     wrap: word-wrap;
                 }
             }
+        }
+        ScrollFade {
+            x: Grid.col-x;
+            y: mem-flick.y + mem-flick.height - self.height;
+            width: Grid.col-width;
+            more: mem-flick.content-height > mem-flick.height + 1px
+                && mem-flick.content-y > mem-flick.height - mem-flick.content-height + 1px;
         }
         PrimaryButton {
             x: root.slot-mid;
@@ -2792,7 +2821,7 @@ export component CompanionWindow inherits Window {
             }
         }
         Icon {
-            x: 896px;
+            x: Grid.col-x + 336px;
             y: 132px;
             width: 24px;
             height: 24px;
@@ -2800,7 +2829,7 @@ export component CompanionWindow inherits Window {
             color: Theme.text-2;
         }
         Text {
-            x: 930px;
+            x: Grid.col-x + 370px;
             y: 128px;
             height: 32px;
             text: root.music-source;
@@ -2811,9 +2840,9 @@ export component CompanionWindow inherits Window {
         // Title, artist and album stacked: a long title (videos) takes up to three lines and
         // pushes the rest down instead of running under it.
         VerticalLayout {
-            x: 896px;
+            x: Grid.col-x + 336px;
             y: 176px;
-            width: 336px;
+            width: Grid.col-x + Grid.col-width - self.x;
             height: 400px;
             spacing: 8px;
             alignment: start;
@@ -3121,25 +3150,25 @@ export component CompanionWindow inherits Window {
             }
         }
         Step {
-            x: 888px;
+            x: Grid.col-x + 336px;
             y: 148px;
-            width: 344px;
+            width: Grid.col-x + Grid.col-width - self.x;
             number: "1";
             text: root.t.setup-step1;
             done: root.setup-linked;
         }
         Step {
-            x: 888px;
+            x: Grid.col-x + 336px;
             y: 260px;
-            width: 344px;
+            width: Grid.col-x + Grid.col-width - self.x;
             number: "2";
             text: root.t.setup-step2;
             done: root.setup-linked;
         }
         Step {
-            x: 888px;
+            x: Grid.col-x + 336px;
             y: 372px;
-            width: 344px;
+            width: Grid.col-x + Grid.col-width - self.x;
             number: "3";
             text: root.t.setup-step3;
             done: root.setup-linked;
@@ -3244,10 +3273,11 @@ export component CompanionWindow inherits Window {
                 color: root.night-home ? Theme.night : Theme.text-3;
             }
         }
+        // 24 px: a state to see from across the room.
         if root.dnd: Text {
             text: root.dnd-line;
-            font-size: 20px;
-            color: root.night-home ? Theme.night : Theme.text-3;
+            font-size: 24px;
+            color: root.night-home ? Theme.night : Theme.text-2;
             vertical-alignment: center;
             overflow: elide;
         }
@@ -3266,7 +3296,7 @@ export component CompanionWindow inherits Window {
         }
         if root.mic-off: Text {
             text: root.mic-off-line;
-            font-size: 20px;
+            font-size: 24px;
             color: root.night-home ? Theme.night : Theme.danger;
             vertical-alignment: center;
             overflow: elide;
@@ -3958,7 +3988,7 @@ export component CompanionWindow inherits Window {
         scrim: false;
         closable: true;
         box-width: 520px;
-        centre-x: root.width / 2;
+        centre-x: root.dialog-cx;
         icon: Icons.check-circle-48;
         title: root.done-name;
         text: root.done-state;
@@ -3977,19 +4007,18 @@ export component CompanionWindow inherits Window {
     // ---- Home Assistant's setup at work (after a choice, Configure, Check and repair): the
     // pop-up with a turning icon over the page, nothing to touch until it is done.
     // ---- Home Assistant's setup ended badly: its reason, until OK.
+    // Its end: "All set" (done) with the gold check, or what went wrong in red.
     if !root.ha-busy && root.ha-line != "" && root.desk && (root.desk-page == "ha" || root.desk-page == "ha-pick"): Dialog {
-        icon: Icons.alert-circle-64;
-        icon-color: Theme.danger;
+        icon: root.ha-done ? Icons.check-circle-48 : Icons.alert-circle-64;
+        icon-color: root.ha-done ? Theme.accent : Theme.danger;
         title: root.ha-line;
         confirm: root.t.ok;
-        centre-x: root.width / 2;
         answered(yes) => {
             root.ha-dismiss();
         }
     }
 
     if root.ha-popup && root.desk && (root.desk-page == "ha" || root.desk-page == "ha-pick"): Dialog {
-        centre-x: root.width / 2;
         icon: Icons.refresh-44;
         spinning: true;
         busy-bar: true;
@@ -4006,7 +4035,7 @@ export component CompanionWindow inherits Window {
         cancel: root.t.no;
         confirm: root.t.yes;
         left: root.ask-left;
-        centre-x: root.width / 2;
+        centre-x: root.dialog-cx;
         answered(yes) => {
             root.ask-answered(yes);
         }
@@ -4197,7 +4226,7 @@ export component CompanionWindow inherits Window {
     if root.mic-hud-shown: Dialog {
         scrim: false;
         box-width: 420px;
-        centre-x: root.width / 2;
+        centre-x: root.dialog-cx;
         icon: root.mic-hud-on ? Icons.microphone-32 : Icons.microphone-off-32;
         icon-color: root.mic-hud-on ? Theme.text : Theme.danger;
         border: root.mic-hud-on ? Theme.line : Theme.danger;

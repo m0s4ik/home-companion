@@ -4070,12 +4070,8 @@ impl<S: Screen> Ui<S> {
         {
             parts.push(l.text("tile_alarm").replace("{t}", &a.time()));
         }
-        let lang = self
-            .character
-            .languages()
-            .find(|c| *c == l.code)
-            .map_or(l.name.clone(), |_| l.name.clone());
-        let settings = lang.to_string();
+        // What is inside, not the language alone.
+        let settings = l.text("tile_settings").to_string();
         self.screen.set_tiles(&chat, &parts.join(" · "), &settings);
     }
 

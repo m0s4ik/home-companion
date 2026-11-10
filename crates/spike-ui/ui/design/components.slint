@@ -359,6 +359,15 @@ export component InfoCard inherits Card {
     in property <bool> closable: false;
     callback action-clicked();
     callback close-clicked();
+    // The pill as wide as its word plus 24 px each side ("Annulla" no tighter than "OK"), 112 at
+    // least; measured by a hidden twin of its label.
+    action-measure := Text {
+        visible: false;
+        text: root.action;
+        font-size: 24px;
+        font-weight: 500;
+    }
+    property <length> action-w: max(112px, action-measure.preferred-width + 48px);
     Icon {
         x: 28px;
         y: 28px;
@@ -369,7 +378,7 @@ export component InfoCard inherits Card {
     }
     CardText {
         x: 92px;
-        width: parent.width - 92px - (root.action != "" ? 144px : root.closable ? 84px : 28px);
+        width: parent.width - 92px - (root.action != "" ? root.action-w + 32px : root.closable ? 84px : 28px);
         height: parent.height;
         title: root.title;
         detail: root.text;
@@ -377,7 +386,7 @@ export component InfoCard inherits Card {
     if root.action != "": PillButton {
         x: parent.width - 12px - self.width;
         y: 12px;
-        width: 112px;
+        width: root.action-w;
         label: root.action;
         clicked => {
             Feedback.tap();
@@ -622,6 +631,15 @@ export component Tile inherits Rectangle {
 }
 
 // A section title above a group of rows.
+// The bottom of a list that scrolls on: its last 48 px fade into the page while there is more
+// below, so the cut line reads as "more" and not as a broken row. Put it over the Flickable's end.
+export component ScrollFade inherits Rectangle {
+    in property <bool> more;
+    height: 48px;
+    background: @linear-gradient(180deg, Theme.bg.with-alpha(0) 0%, Theme.bg 100%);
+    visible: root.more;
+}
+
 export component SectionTitle inherits Text {
     height: 40px;
     font-size: 20px;
@@ -1127,8 +1145,10 @@ export component Dialog inherits Rectangle {
             + (root.left >= 0 || root.busy-bar ? 4px + 24px : 0px)
             + (root.buttons || root.left >= 0 || root.busy-bar ? 12px : 8px);
         border-radius: 32px;
-        // 90 % opaque: what is behind shows faintly (no blur on this device).
-        background: Theme.surface.with-alpha(0.9);
+        // 90 % opaque over its scrim: what is behind shows faintly (no blur on this device).
+        // Without a scrim (the done pop-up, the microphone switch) 96 %: the text under it would
+        // read through, line by line, next to the pop-up's own.
+        background: Theme.surface.with-alpha(root.scrim ? 0.9 : 0.96);
         border-width: 2px;
         border-color: root.border;
         drop-shadow-blur: 24px;
