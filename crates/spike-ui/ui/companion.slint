@@ -970,7 +970,9 @@ export component CompanionWindow inherits Window {
     // and out with do not disturb.
     Image {
         // Not under the control center, which starts a little left of the desk column.
-        property <bool> shown: root.dnd && root.desk && root.desk-page == "home" && root.dnd-prop.width > 0
+        // While the character is on the stage, whatever it does (a conversation, an animation,
+        // a page): the prop is the state's sign, not a decoration of the home.
+        property <bool> shown: root.dnd && root.dnd-prop.width > 0 && !root.starting
             && !root.control-open;
         width: 130px;
         height: root.dnd-prop.width > 0 ? self.width * root.dnd-prop.height / root.dnd-prop.width : 0px;
@@ -987,8 +989,8 @@ export component CompanionWindow inherits Window {
     // The gramophone at the character's left, standing on the stage's floor; notes rise from its
     // horn while the music plays (none in a pause or by night).
     music-prop-img := Image {
-        property <bool> shown: root.music-playing && root.desk && !root.night-home && root.music-prop.width > 0
-            && (root.desk-page == "home" || root.desk-page == "music");
+        property <bool> shown: root.music-playing && !root.night-home && root.music-prop.width > 0
+            && !root.starting && !root.control-open;
         // About knee high next to the character, on the floor by its left shoe.
         height: 170px;
         width: root.music-prop.height > 0 ? self.height * root.music-prop.width / root.music-prop.height : 0px;

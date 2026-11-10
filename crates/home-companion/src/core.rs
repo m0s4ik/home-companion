@@ -1465,9 +1465,16 @@ impl Core {
         // Said aloud in Home Assistant's voice when it comes in time; else the sound, as
         // offline (never both).
         let say = spoken.unwrap_or_else(|| answer.clone());
-        let voiced = cue.as_ref().filter(|_| {
-            crate::voice::speak_reflex(true, &answer, self.d.voice.is_some(), self.dnd(now_unix()))
-        });
+        // Do not disturb is quiet, but the answer to the command that just switched it on is
+        // said: the user asked and waits for it.
+        let just_asked_quiet = matches!(
+            cmd,
+            Reflex::DoNotDisturb { .. } | Reflex::DoNotDisturbMorning | Reflex::GoodNight
+        );
+        let quiet = self.dnd(now_unix()) && !just_asked_quiet;
+        let voiced = cue
+            .as_ref()
+            .filter(|_| crate::voice::speak_reflex(true, &answer, self.d.voice.is_some(), quiet));
         let id = self.next_voice_id;
         let online = self.ha.is_connected();
         self.speaking_text = say.clone();
