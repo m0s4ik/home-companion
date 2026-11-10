@@ -383,7 +383,14 @@ struct Gate {
     end_sent: Option<Instant>,
     /// The helper's result, kept until the end of speech.
     result: Option<(String, Vec<reflex::Word>, bool, f64)>,
+    /// Listened again once after sound without words (a breath, a pause after the wake word).
+    retried: bool,
 }
+
+/// Sound without words this soon after the wake word (a breath, the tail of the wake word, a
+/// pause before speaking): the reflexes listen again once, on all the audio, before Home
+/// Assistant gets it.
+const NO_WORDS_WAIT: Duration = Duration::from_secs(3);
 
 /// After the end of speech, how long the helper may take before the utterance goes to Home
 /// Assistant anyway.
@@ -866,6 +873,7 @@ impl Core {
                 started: Instant::now(),
                 end_sent: None,
                 result: None,
+                retried: false,
             });
             true
         } else {
@@ -1144,6 +1152,15 @@ impl Core {
                 self.listen_deadline = None;
                 self.go_idle();
             }
+            // Sound but no words yet, early: listen again, the sentence may come.
+            Decision::Empty
+                if self
+                    .gate
+                    .as_ref()
+                    .is_some_and(|g| !g.retried && g.started.elapsed() < NO_WORDS_WAIT) =>
+            {
+                self.listen_again();
+            }
             // Sound but no words yet (the tail of the wake word, a breath, a pause before
             // speaking): the sentence has not started, so it is not over. Home Assistant
             // listens on, live, and decides when it ends.
@@ -1151,6 +1168,24 @@ impl Core {
             // "metti una sveglia alle" and a pause: the sentence is not over.
             _ if unfinished(&text) => self.release(false, "sentence not finished"),
             _ => self.release(true, "not a reflex"),
+        }
+    }
+
+    /// Sound without words: the helper starts over on everything heard so far and keeps
+    /// listening; its next end of speech decides (a second time without words: Home Assistant).
+    fn listen_again(&mut self) {
+        let Some(g) = &mut self.gate else { return };
+        g.retried = true;
+        g.vad = Vad::new();
+        g.end_sent = None;
+        g.result = None;
+        let (id, buf) = (g.id, g.buf.clone());
+        log::info!(event = "reflex_again", audio_s = buf.len() as f64 / 16_000.0; "reflex: no words yet, listening again");
+        let sent = self.d.reflexes.as_ref().is_some_and(|r| {
+            r.link.send(ReflexRequest::Start(id)) && r.link.send(ReflexRequest::Audio(buf))
+        });
+        if !sent {
+            self.release(false, "the helper is not taking audio");
         }
     }
 
