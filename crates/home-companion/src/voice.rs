@@ -19,8 +19,10 @@ use audio::StreamFormat;
 use crate::ha::auth::Auth;
 use crate::ha::tts::{self, TtsTarget};
 
-/// How long the reflex's answer waits for its voice before the sound plays instead.
-pub const VOICE_WAIT: Duration = Duration::from_millis(2500);
+/// How long the reflex's answer waits for its voice before the sound plays instead (its text is
+/// on the screen at once). OpenAI's voice takes 1.7 s in the median, up to 3 s seen: a phrase that
+/// changes every minute ("Sono le 22:24") is never in the cache.
+pub const VOICE_WAIT: Duration = Duration::from_millis(4000);
 /// The cache's bounds: the least recently used phrases go first.
 pub const CACHE_FILES: usize = 300;
 pub const CACHE_BYTES: u64 = 20 << 20;
