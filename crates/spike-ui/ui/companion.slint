@@ -188,7 +188,8 @@ export struct Words {
     night_to: string,
     night_hint: string,
     home_compact: string,
-    home_compact_value: string,
+    home_compact_off: string,
+    home_compact_on: string,
     setup_title: string,
     setup_subtitle: string,
     setup_step1: string,
@@ -2824,7 +2825,8 @@ export component CompanionWindow inherits Window {
                 kind: "toggle";
                 icon: Icons.view-dashboard-28;
                 label: root.t.home-compact;
-                value: root.t.home-compact-value;
+                // How many cards the home shows now.
+                value: root.home-compact ? root.t.home-compact-on : root.t.home-compact-off;
                 on: root.home-compact;
                 toggled(v) => {
                     root.home-compact-changed(v);
