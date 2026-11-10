@@ -580,6 +580,33 @@ export component PageHeader inherits Rectangle {
     }
 }
 
+// The time now, small at the top right with the Wi-Fi signal, as on the pages' header: for the
+// screens without a clock of their own (the conversation, a ringing timer, a due reminder, the
+// link and first-start pages). Right-aligned in its own width.
+export component CornerClock inherits Rectangle {
+    in property <string> clock;
+    width: 240px;
+    height: 64px;
+    if Status.wifi-level >= 0 && root.clock != "": Icon {
+        x: corner-text.x - 12px - self.width;
+        y: 18px;
+        width: 28px;
+        height: 28px;
+        source: Status.wifi-icon(Status.wifi-level, false);
+        color: Status.wifi-level == 0 ? Theme.danger : Theme.text-2;
+    }
+    corner-text := Text {
+        x: parent.width - self.width;
+        width: self.preferred-width;
+        height: 64px;
+        text: root.clock;
+        font-family: "Inter Tnum";
+        font-size: 28px;
+        color: Theme.text-2;
+        vertical-alignment: center;
+    }
+}
+
 // A destination of "Altro": icon, name and what is going on there right now.
 export component Tile inherits Rectangle {
     in property <image> icon;
@@ -1146,9 +1173,9 @@ export component Dialog inherits Rectangle {
             + (root.buttons || root.left >= 0 || root.busy-bar ? 12px : 8px);
         border-radius: 32px;
         // 90 % opaque over its scrim: what is behind shows faintly (no blur on this device).
-        // Without a scrim (the done pop-up, the microphone switch) 96 %: the text under it would
+        // Without a scrim (the done pop-up, the microphone switch) 98 %: the text under it would
         // read through, line by line, next to the pop-up's own.
-        background: Theme.surface.with-alpha(root.scrim ? 0.9 : 0.96);
+        background: Theme.surface.with-alpha(root.scrim ? 0.9 : 0.98);
         border-width: 2px;
         border-color: root.border;
         drop-shadow-blur: 24px;

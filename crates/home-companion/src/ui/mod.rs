@@ -345,6 +345,9 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// The Wi-Fi signal on every page header and in the control center: 0 not connected,
     /// 1..4 bars, -1 not known.
     fn set_wifi_level(&self, level: i32);
+    /// The compact home (the clock higher, four cards) or the normal one.
+    fn set_home_compact(&self, on: bool);
+    fn on_home_compact_changed(&self, f: impl Fn(bool) + 'static);
     /// The cloud services' use: the Home Assistant page's row ("" hides it) and its page.
     fn set_usage(&self, v: &UsageView);
     /// The microphone off: on, its line over the clock.
@@ -521,6 +524,8 @@ macro_rules! impl_screen {
                     night_from,
                     night_to,
                     night_hint,
+                    home_compact,
+                    home_compact_value,
                     setup_title,
                     setup_subtitle,
                     setup_step1,
@@ -1199,6 +1204,13 @@ macro_rules! impl_screen {
             }
             fn set_wifi_level(&self, level: i32) {
                 self.global::<$m::Status>().set_wifi_level(level)
+            }
+            fn set_home_compact(&self, on: bool) {
+                self.global::<$m::Grid>().set_compact(on);
+                $m::CompanionWindow::set_home_compact(self, on);
+            }
+            fn on_home_compact_changed(&self, f: impl Fn(bool) + 'static) {
+                $m::CompanionWindow::on_home_compact_changed(self, f)
             }
             fn set_usage(&self, v: &UsageView) {
                 $m::CompanionWindow::set_usage_label(self, v.label.as_str().into());

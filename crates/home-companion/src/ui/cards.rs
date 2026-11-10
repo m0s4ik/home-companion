@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Andrea Mattera
 
-//! The home's middle band: at most three cards, the most urgent first:
+//! The home's middle band: at most three cards (four on the compact home), the most urgent first:
 //! (0) a house command that just went through ("Studio: spento", with Undo while it can be
 //! undone; after its big pop-up, for its 20 s), (1) the body's own status (Home Assistant not answering), (1b) the setup in Home Assistant
 //! asking for the user ("Complete" when an AI appeared, or something to fix: it opens the
@@ -20,6 +20,8 @@ use crate::ha::events::{CardEvent, HaCard};
 use crate::timers::TimerView;
 
 pub const MAX_CARDS: usize = 3;
+/// The compact home (Settings → Screen): the clock higher, one card more.
+pub const MAX_CARDS_COMPACT: usize = 4;
 pub const MAX_TIMER_CARDS: usize = 2;
 /// An answer longer than this does not fit Alfred's five lines: it gets a card.
 pub const LONG_ANSWER: usize = 160;
@@ -64,6 +66,11 @@ pub struct CardWords<'a> {
 }
 
 pub fn pick(a: &Alive, w: &CardWords) -> Vec<CardView> {
+    pick_n(a, w, MAX_CARDS)
+}
+
+/// [`pick`], at most `max` cards.
+pub fn pick_n(a: &Alive, w: &CardWords, max: usize) -> Vec<CardView> {
     let mut out = Vec::new();
     let card = |kind, title: &str, text: &str| CardView {
         kind,
@@ -146,7 +153,7 @@ pub fn pick(a: &Alive, w: &CardWords) -> Vec<CardView> {
     if let Some((t, x)) = &a.answer {
         out.push(card("answer", t, x));
     }
-    out.truncate(MAX_CARDS);
+    out.truncate(max);
     out
 }
 
@@ -380,6 +387,9 @@ mod tests {
         };
         let c = pick(&a, &w);
         assert_eq!(kinds(&c), ["status", "reminder", "timer"]);
+        // The compact home: one more.
+        let c = pick_n(&a, &w, MAX_CARDS_COMPACT);
+        assert_eq!(kinds(&c), ["status", "reminder", "timer", "music"]);
         let a = Alive {
             setup: Some(("Completa".into(), "Tocca".into())),
             messages: &msgs,

@@ -156,7 +156,7 @@ error = "I didn't understand"
 offline = "I'm on a break: I can't reach home"
 
 [phrases.it]
-idle = "Di' «Okay Alfred»"
+idle = "Dica «Okay Alfred»"
 # …
 
 [voice]                          # optional (see "Voice")

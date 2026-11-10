@@ -42,7 +42,7 @@ export global Theme {
 export global Type {
     out property <length> display: 160px;   // the clock (Inter Tnum Light, -2 px tracking)
     out property <length> hero: 96px;       // a finished timer's name (Light)
-    out property <length> title: 48px;      // state phrases ("Ti ascolto…"), dialogs' digits
+    out property <length> title: 48px;      // state phrases ("La ascolto…"), dialogs' digits
     out property <length> headline: 40px;   // notice and music titles; countdowns, alarm times (Tnum)
     out property <length> page: 34px;       // page titles, the answer, the date line
     out property <length> body: 28px;       // card titles, rows, tiles
@@ -58,13 +58,17 @@ export global Grid {
     out property <length> col-x: 424px;
     out property <length> col-width: 808px;
     out property <length> col-cx: 828px;
-    // Bands of the desk column (y): page header 32..96, time band 48..290, middle band 312..600
-    // (pages: 112..608, scrolling inside), action band 640..776.
+    // Bands of the desk column (y): page header 32..96, time band 48..290, middle band 312..600 (compact: 0..218 and 228..616)
+    // (pages: 112..608, scrolling inside), action band 640..776 (compact: 656..792).
     out property <length> header-y: 32px;
-    out property <length> cards-y: 312px;
+    // The compact home (Settings → Screen): the clock higher, the band from 228 with four cards
+    // (4 x 88 + 3 x 12), the action band 16 px lower everywhere; else the normal one, three cards.
+    in-out property <bool> compact: false;
+    out property <length> cards-y: self.compact ? 228px : 312px;
+    out property <length> cards-height: self.compact ? 388px : 288px;
     out property <length> page-y: 112px;
     out property <length> page-height: 496px;
-    out property <length> band-y: 640px;
+    out property <length> band-y: self.compact ? 656px : 640px;
     // The action band's three slots (160 x 136 each), centred at col-cx - 200, col-cx, col-cx + 200.
     out property <length> slot-dx: 200px;
     out property <length> slot-width: 160px;

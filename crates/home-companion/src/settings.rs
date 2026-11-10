@@ -121,6 +121,15 @@ impl Settings {
         self.save_logged("keep_conversations", keep.into());
     }
 
+    /// Settings → Screen → "Home compatta": the clock higher and four cards; off by default.
+    pub fn home_compact(&self) -> bool {
+        self.flag("home_compact").unwrap_or(false)
+    }
+
+    pub fn save_home_compact(&self, on: bool) {
+        self.save_logged("home_compact", on.into());
+    }
+
     /// The control center's microphone switch: muted, the wake word is not listened for.
     pub fn mic_muted(&self) -> bool {
         self.flag("mic_muted").unwrap_or(false)
@@ -338,6 +347,9 @@ mod tests {
         assert_eq!(s.language().as_deref(), Some("en"));
         s.save_volume(40);
         assert_eq!(s.casa_home_button(), Some(("left".into(), 300.0)));
+        assert!(!s.home_compact(), "normal by default");
+        s.save_home_compact(true);
+        assert!(s.home_compact());
         assert_eq!(s.night(), (true, 23, 7));
         s.save_night(false, 22, 6);
         assert_eq!(s.night(), (false, 22, 6));

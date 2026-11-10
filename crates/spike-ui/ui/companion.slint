@@ -20,7 +20,7 @@ import "../fixtures/fonts/Inter-Light-tnum-subset.ttf";
 import "../fixtures/fonts/Inter-Regular-tnum-subset.ttf";
 import { Theme, Grid } from "design/tokens.slint";
 import { Icons } from "design/icons.slint";
-import { ScrollFade,
+import { ScrollFade, CornerClock,
     Icon, BareButton, PrimaryButton, PillButton, InfoCard, TimerCard, NowPlayingCard, PageHeader,
     Tile, SectionTitle, Row, Group, TimerLine, AlarmLine, ChatUser, ChatCharacter, ChatSeparator,
     Step, Stepper, Chip, Dialog, Separator, VolumeHud, GlyphButton, ControlTile, LevelBar, Feedback,
@@ -31,6 +31,7 @@ import { WeatherPage, ListsPage, PickPage, EventRow, ForecastRow, ChoiceRow, Pic
 export { ForecastRow, ChoiceRow } from "ha-pages.slint";
 export { CasaBridge, CasaMenuRow } from "casa.slint";
 export { Feedback, Status } from "design/components.slint";
+export { Grid } from "design/tokens.slint";
 
 // A card of the home's middle band, in priority order (Rust picks at most three):
 // "status" (the body's own problem), "setup" (Home Assistant needs the user), "message", "reminder" (due, OK), "timer", "more" (more
@@ -186,6 +187,8 @@ export struct Words {
     night_from: string,
     night_to: string,
     night_hint: string,
+    home_compact: string,
+    home_compact_value: string,
     setup_title: string,
     setup_subtitle: string,
     setup_step1: string,
@@ -689,6 +692,8 @@ export component CompanionWindow inherits Window {
     in property <string> screen-status: "";
     in property <bool> save-chat: true;
     in property <bool> night-on: true;
+    // Settings → Screen → "Home compatta" (the clock higher, four cards; Grid.compact).
+    in property <bool> home-compact: false;
     in property <int> night-start: 23;
     in property <int> night-end: 7;
     // Setup: what the body sees (Wi-Fi, where Home Assistant is).
@@ -785,6 +790,7 @@ export component CompanionWindow inherits Window {
     callback chat-clear();
     callback save-chat-toggled(bool);
     callback night-changed(bool, int, int);
+    callback home-compact-changed(bool);
     callback setup-later();
     // The first start: search Home Assistant again; one picked (its address).
     callback find-search();
@@ -1064,9 +1070,10 @@ export component CompanionWindow inherits Window {
 
     // ---- Home: the time, the context cards, the actions.
     if root.desk && root.desk-page == "home" && !root.night: Rectangle {
+        // On the compact home high on the screen, so the band below holds four cards.
         Text {
             x: Grid.col-x;
-            y: 48px;
+            y: Grid.compact ? -14px : 48px;
             width: Grid.col-width;
             text: root.clock;
             font-family: "Inter Tnum";
@@ -1079,7 +1086,7 @@ export component CompanionWindow inherits Window {
         // One line: the date, then (only with real data) a gold dot, the sky and the temperature.
         HorizontalLayout {
             x: Grid.col-cx - self.width / 2;
-            y: 240px;
+            y: Grid.compact ? 172px : 240px;
             width: min(self.preferred-width, Grid.col-width);
             height: 44px;
             spacing: 14px;
@@ -1131,12 +1138,43 @@ export component CompanionWindow inherits Window {
                 color: Theme.text;
                 vertical-alignment: center;
             }
+            // On the compact home, do not disturb and the microphone off: their signs at the end
+            // of the line (there is no room for their lines over the clock).
+            if Grid.compact && (root.dnd || root.mic-off): Rectangle {
+                width: 6px;
+                Rectangle {
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 3px;
+                    background: Theme.accent;
+                }
+            }
+            if Grid.compact && root.dnd: Rectangle {
+                width: 32px;
+                Icon {
+                    y: 6px;
+                    width: 32px;
+                    height: 32px;
+                    source: Icons.bell-off-32;
+                    color: Theme.text-2;
+                }
+            }
+            if Grid.compact && root.mic-off: Rectangle {
+                width: 32px;
+                Icon {
+                    y: 6px;
+                    width: 32px;
+                    height: 32px;
+                    source: Icons.microphone-off-32;
+                    color: Theme.danger;
+                }
+            }
         }
 
         // A tap on the weather opens its page.
         if root.weather-shown: TouchArea {
             x: Grid.col-x;
-            y: 232px;
+            y: Grid.compact ? 164px : 232px;
             width: Grid.col-width;
             height: 60px;
             clicked => {
@@ -1150,7 +1188,7 @@ export component CompanionWindow inherits Window {
             x: Grid.col-x;
             y: Grid.cards-y;
             width: Grid.col-width;
-            height: 288px;
+            height: Grid.cards-height;
             text: root.phrase-idle;
             font-size: 24px;
             color: Theme.text-3;
@@ -1158,12 +1196,12 @@ export component CompanionWindow inherits Window {
             vertical-alignment: center;
         }
 
-        // The context band: at most three cards, the most urgent first.
+        // The context band: at most three cards (four on the compact home), the most urgent first.
         if !root.notifications-hidden: VerticalLayout {
             x: Grid.col-x;
             y: Grid.cards-y;
             width: Grid.col-width;
-            height: 288px;
+            height: Grid.cards-height;
             spacing: Grid.card-gap;
             alignment: start;
             for c[i] in root.cards: Rectangle {
@@ -1487,18 +1525,7 @@ export component CompanionWindow inherits Window {
     // words large, when it was for, "OK" (done) and "in ten minutes"; no touch elsewhere stops
     // it, so a passing hand does not lose it.
     if root.noticing: Rectangle {
-        // The time now, small at the top right as on the pages: "Ore 16:00" reads against it.
-        Text {
-            x: Grid.col-x + Grid.col-width - self.width;
-            y: Grid.header-y;
-            width: self.preferred-width;
-            height: 64px;
-            text: root.clock;
-            font-family: "Inter Tnum";
-            font-size: 28px;
-            color: Theme.text-2;
-            vertical-alignment: center;
-        }
+        // The time now: the shared corner clock (below), "Ore 16:00" reads against it.
         HorizontalLayout {
             x: Grid.col-cx - self.width / 2;
             y: 120px;
@@ -2772,7 +2799,7 @@ export component CompanionWindow inherits Window {
                 }
             }
         }
-        Text {
+        night-hint := Text {
             x: Grid.col-x + 8px;
             y: Grid.page-y + 16px + (root.night-on ? 3 * 76px + 2 * 12px : 76px) + 16px;
             width: Grid.col-width - 16px;
@@ -2780,6 +2807,26 @@ export component CompanionWindow inherits Window {
             font-size: 24px;
             color: Theme.text-3;
             wrap: word-wrap;
+        }
+        // The home's layout: normal (three cards) or compact (the clock higher, four cards).
+        Group {
+            x: Grid.col-x;
+            y: night-hint.y + night-hint.preferred-height + 24px;
+            width: Grid.col-width;
+            height: 76px;
+            Row {
+                y: 0;
+                width: parent.width;
+                first: true;
+                kind: "toggle";
+                icon: Icons.view-dashboard-28;
+                label: root.t.home-compact;
+                value: root.t.home-compact-value;
+                on: root.home-compact;
+                toggled(v) => {
+                    root.home-compact-changed(v);
+                }
+            }
         }
     }
 
@@ -3257,7 +3304,7 @@ export component CompanionWindow inherits Window {
 
     // ---- Do not disturb and the microphone off: quiet lines over the clock (and over the
     // night's clock), side by side when both are on.
-    if (root.dnd || root.mic-off) && (root.night-home || (root.desk && root.desk-page == "home")): HorizontalLayout {
+    if (root.dnd || root.mic-off) && (root.night-home || (root.desk && root.desk-page == "home" && !Grid.compact)): HorizontalLayout {
         x: Grid.col-cx - self.width / 2;
         y: 12px;
         width: min(self.preferred-width, Grid.col-width);
@@ -3301,6 +3348,18 @@ export component CompanionWindow inherits Window {
             vertical-alignment: center;
             overflow: elide;
         }
+    }
+
+    // ---- The time, small at the top right, where a screen has no clock of its own: the
+    // conversation, a ringing timer, a due reminder, the link and first-start pages (the home and
+    // the night have the big one, the pages their header; not over a full view or the control
+    // center, whose tiles fill the top).
+    if !CasaBridge.visible && root.mirror-t < 0.001 && !root.control-open && !root.starting
+        && (root.conversation || root.ringing || root.noticing
+            || (root.desk && (root.desk-page == "setup" || root.desk-page == "welcome" || root.desk-page == "find-ha"))): CornerClock {
+        x: Grid.col-x + Grid.col-width - self.width;
+        y: Grid.header-y;
+        clock: root.clock;
     }
 
     // ---- Dialogs on the desk.

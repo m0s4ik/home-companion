@@ -35,8 +35,8 @@ error = "I didn't understand"
 offline = "I'm on a break: I can't reach home"
 
 [phrases.it]
-idle = "Di' «Okay Alfred»"
-listening = "Ti ascolto…"
+idle = "Dica «Okay Alfred»"
+listening = "La ascolto…"
 thinking = "Ci penso…"
 error = "Non ho capito"
 offline = "Sono in pausa: non riesco a parlare con casa"

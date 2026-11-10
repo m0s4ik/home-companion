@@ -385,6 +385,10 @@ pub struct Demo {
     /// A dialog over it ("suspend", "new-timer", "new-alarm").
     pub dialog: &'static str,
     pub cards: bool,
+    /// `--state cards-N`: the home with exactly N cards (message, timer, alarm, music).
+    pub cards_n: Option<usize>,
+    /// The compact home (Settings → Screen).
+    pub compact: bool,
     pub night: bool,
     pub starting: bool,
     /// The Home Assistant page: 1 = a run in progress, 2 = "All set".
@@ -425,7 +429,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 59] = [
+pub const DEMO_STATES: [&str; 65] = [
     "home",
     "cards",
     "cards-setup",
@@ -484,6 +488,12 @@ pub const DEMO_STATES: [&str; 59] = [
     "mic-off",
     "control-mic-switch",
     "mic-off-dnd",
+    "cards-quiet",
+    "cards-0",
+    "cards-1",
+    "cards-2",
+    "cards-3",
+    "cards-4",
     "what",
 ];
 
@@ -644,6 +654,19 @@ impl Demo {
                 ..home.clone()
             },
             "mic-off-dnd" => Demo {
+                mic_switch_off: true,
+                dnd: true,
+                ..home.clone()
+            },
+            "cards-0" | "cards-1" | "cards-2" | "cards-3" | "cards-4" => Demo {
+                cards: true,
+                compact: true,
+                cards_n: s[6..].parse().ok(),
+                ..home.clone()
+            },
+            "cards-quiet" => Demo {
+                cards: true,
+                compact: true,
                 mic_switch_off: true,
                 dnd: true,
                 ..home.clone()
@@ -1006,6 +1029,8 @@ pub struct Ui<S: Screen> {
     usage_asked: Cell<Option<Instant>>,
     /// The last "keep bright" while the QR code page listens.
     ha_keep: Cell<Option<Instant>>,
+    /// Settings → Screen → "Home compatta" (the clock higher, four cards).
+    home_compact: Cell<bool>,
     /// The first start's welcome page is still to be answered.
     language_pending: Cell<bool>,
     /// The first start's search for Home Assistant on the network, while it runs.
@@ -1236,6 +1261,10 @@ impl<S: Screen> Ui<S> {
             _ => History::in_memory(),
         };
         let night = settings.as_ref().map_or((true, 23, 7), Settings::night);
+        let compact = match &opts.demo {
+            Some(d) => d.compact,
+            None => settings.as_ref().is_some_and(Settings::home_compact),
+        };
         let opts_auto = opts.screen.auto.filter(|_| !demo).map(Auto::new);
         let opts_linked = opts.ha_linked;
         let opts_first = opts.first_start;
@@ -1286,6 +1315,7 @@ impl<S: Screen> Ui<S> {
             usage_precise: RefCell::new(None),
             usage_asked: Cell::new(None),
             ha_keep: Cell::new(None),
+            home_compact: Cell::new(compact),
             language_pending: Cell::new(opts_first.language),
             find: RefCell::new(None),
             restart_timer: Timer::default(),
@@ -1357,7 +1387,17 @@ impl<S: Screen> Ui<S> {
         self.dnd.get().active(now_unix() as u64)
     }
 
+    /// The home's cards: three, four on the compact home.
+    fn max_cards(&self) -> usize {
+        if self.home_compact.get() {
+            cards::MAX_CARDS_COMPACT
+        } else {
+            cards::MAX_CARDS
+        }
+    }
+
     fn wire(self: &Rc<Self>) {
+        self.screen.set_home_compact(self.home_compact.get());
         let ui = Rc::downgrade(self);
         self.screen.on_state_changed(move |app, s| {
             let Some(ui) = ui.upgrade() else { return };
@@ -1780,6 +1820,18 @@ impl<S: Screen> Ui<S> {
                 if let Some(s) = &ui.settings {
                     s.save_keep_conversations(keep);
                 }
+                ui.refresh_desk();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_home_compact_changed(move |on| {
+            if let Some(ui) = ui.upgrade() {
+                ui.home_compact.set(on);
+                ui.screen.set_home_compact(on);
+                if let Some(s) = &ui.settings {
+                    s.save_home_compact(on);
+                }
+                log::info!(event = "home_compact", on = on; "home: {}", if on { "compact" } else { "normal" });
                 ui.refresh_desk();
             }
         });
@@ -2564,9 +2616,20 @@ impl<S: Screen> Ui<S> {
                     format!("{} · {}", m.artist, m.source),
                     true,
                 )),
+                // The band full (four cards): the next alarm too.
+                alarm: ((d.dnd && d.mic_switch_off) || d.cards_n.is_some()).then(|| {
+                    (
+                        l.text("next_alarm").replace("{when}", "07:00"),
+                        l.text("weekdays").to_string(),
+                    )
+                }),
                 ..Default::default()
             };
-            self.screen.set_cards(&cards::pick(&alive, &cw));
+            let mut shown = cards::pick_n(&alive, &cw, self.max_cards());
+            if let Some(n) = d.cards_n {
+                shown.truncate(n);
+            }
+            self.screen.set_cards(&shown);
         }
         if d.notice {
             {
@@ -3951,7 +4014,7 @@ impl<S: Screen> Ui<S> {
                 .as_ref()
                 .map(|(a, _)| (w("last_answer"), a.clone())),
         };
-        let picked = cards::pick(&alive, &cw);
+        let picked = cards::pick_n(&alive, &cw, self.max_cards());
         *self.card_kinds.borrow_mut() = picked.iter().map(|c| c.kind).collect();
         self.screen.set_cards(&picked);
     }
