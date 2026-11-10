@@ -580,6 +580,86 @@ export component PageHeader inherits Rectangle {
     }
 }
 
+// The music bar: where the sound comes from, and back / play-pause / next, on one pill (the
+// mirrored screen's bottom bar and the music page's, so they look the same).
+export component MusicBar inherits Rectangle {
+    in property <string> source;
+    in property <bool> paused;
+    callback poked();
+    callback previous();
+    callback toggle();
+    callback next();
+    width: 760px;
+    height: 88px;
+    border-radius: 44px;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.line;
+    TouchArea {
+        clicked => {
+            root.poked();
+        }
+    }
+    Icon {
+        x: 24px;
+        y: 30px;
+        width: 28px;
+        height: 28px;
+        source: Icons.cast-connected-28;
+        color: Theme.accent;
+    }
+    Text {
+        x: 64px;
+        width: parent.width - 64px - 248px;
+        height: parent.height;
+        text: root.source;
+        font-size: 24px;
+        color: Theme.text-2;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    GlyphButton {
+        x: parent.width - 236px;
+        y: 12px;
+        icon: Icons.skip-previous-36;
+        clicked => {
+            root.previous();
+        }
+    }
+    Rectangle {
+        x: parent.width - 164px;
+        y: 8px;
+        width: 72px;
+        height: 72px;
+        border-radius: 36px;
+        background: play-touch.pressed ? Theme.accent-deep.brighter(0.5) : Theme.accent-deep;
+        border-width: 2px;
+        border-color: Theme.accent.with-alpha(0.9);
+        Icon {
+            x: 22px;
+            y: 22px;
+            width: 28px;
+            height: 28px;
+            source: root.paused ? Icons.play-28 : Icons.pause-28;
+            color: Theme.text;
+        }
+        play-touch := TouchArea {
+            clicked => {
+                Feedback.tap();
+                root.toggle();
+            }
+        }
+    }
+    GlyphButton {
+        x: parent.width - 80px;
+        y: 12px;
+        icon: Icons.skip-next-36;
+        clicked => {
+            root.next();
+        }
+    }
+}
+
 // The time now, small at the top right with the Wi-Fi signal, as on the pages' header: for the
 // screens without a clock of their own (the conversation, a ringing timer, a due reminder, the
 // link and first-start pages). Right-aligned in its own width.

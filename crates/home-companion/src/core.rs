@@ -188,6 +188,8 @@ pub enum UiCommand {
     NoticeStop,
     /// What AirPlay plays (None: nothing); `playing` false while paused or muted here.
     Music(Option<crate::airplay::NowPlaying>),
+    /// The music page's spectrum: band levels and peaks, 0..1.
+    MusicSpectrum(Vec<f32>, Vec<f32>),
     /// AirPlay screen mirroring: the sender's name and the frames' socket (None = over).
     MirrorVideo(Option<(String, std::path::PathBuf)>),
     /// The mirrored picture's aspect ratio (the frames' padding is cropped).
@@ -2570,6 +2572,9 @@ impl Core {
                 self.now_playing = Some(n.clone());
                 self.ui(UiCommand::Music(Some(n.clone())));
                 log::info!(event = "airplay_now", playing = n.playing, title = n.title.as_str(), artist = n.artist.as_str(), source = n.source.as_str(); "AirPlay: {} \"{}\" {} ({})", if n.playing { "playing" } else { "paused" }, n.title, n.artist, n.source)
+            }
+            crate::airplay::MusicEvent::Spectrum(b, p) => {
+                self.ui(UiCommand::MusicSpectrum(b.to_vec(), p.to_vec()));
             }
             crate::airplay::MusicEvent::Volume(p) => {
                 // The sender's slider is the volume: same steps, bar and saving as the keys.

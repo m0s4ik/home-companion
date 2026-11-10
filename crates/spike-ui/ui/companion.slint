@@ -20,7 +20,7 @@ import "../fixtures/fonts/Inter-Light-tnum-subset.ttf";
 import "../fixtures/fonts/Inter-Regular-tnum-subset.ttf";
 import { Theme, Grid } from "design/tokens.slint";
 import { Icons } from "design/icons.slint";
-import { ScrollFade, CornerClock,
+import { ScrollFade, MusicBar, CornerClock,
     Icon, BareButton, PrimaryButton, PillButton, InfoCard, TimerCard, NowPlayingCard, PageHeader,
     Tile, SectionTitle, Row, Group, TimerLine, AlarmLine, ChatUser, ChatCharacter, ChatSeparator,
     Step, Stepper, Chip, Dialog, Separator, VolumeHud, GlyphButton, ControlTile, LevelBar, Feedback,
@@ -2849,14 +2849,14 @@ export component CompanionWindow inherits Window {
         }
         // The cover on top, centred in the column; the title and the artist under it; at the
         // bottom the spectrum, segmented like an old LCD player's.
-        // The frame takes the picture's shape (a video's 16:9 thumbnail too), 224 px tall and
-        // at most 400 wide, so nothing is cut; square without a picture.
+        // The frame takes the picture's shape (a video's 16:9 thumbnail too), 320 px tall and
+        // at most the column wide, so nothing is cut; square without a picture.
         Rectangle {
             x: Grid.col-cx - self.width / 2;
             y: 104px;
-            height: 224px;
+            height: 320px;
             width: root.music-cover.height > 0
-                ? min(400px, self.height * root.music-cover.width / root.music-cover.height)
+                ? min(Grid.col-width, self.height * root.music-cover.width / root.music-cover.height)
                 : self.height;
             border-radius: 20px;
             background: Theme.surface;
@@ -2880,7 +2880,7 @@ export component CompanionWindow inherits Window {
         }
         Text {
             x: Grid.col-x;
-            y: 340px;
+            y: 436px;
             width: Grid.col-width;
             text: root.music-title;
             font-size: 34px;
@@ -2890,9 +2890,10 @@ export component CompanionWindow inherits Window {
         }
         Text {
             x: Grid.col-x;
-            y: 386px;
+            y: 482px;
             width: Grid.col-width;
-            text: root.music-artist != "" ? root.music-artist + " · " + root.music-source : root.music-source;
+            text: root.music-album != "" && root.music-artist != "" ? root.music-artist + " · " + root.music-album
+                : root.music-artist;
             font-size: 24px;
             color: Theme.text-2;
             horizontal-alignment: center;
@@ -2905,7 +2906,7 @@ export component CompanionWindow inherits Window {
         spectrum := Rectangle {
             // Narrow, centred under the title: thin bars with air between them.
             x: Grid.col-cx - self.width / 2;
-            y: Grid.band-y - 20px - self.height;
+            y: music-bar.y - 16px - self.height;
             width: 480px;
             height: 7 * 13px;
             property <int> rows: floor(self.height / 13px);
@@ -2925,30 +2926,19 @@ export component CompanionWindow inherits Window {
                 }
             }
         }
-        BareButton {
-            x: root.slot-left;
-            y: Grid.band-y;
-            icon: Icons.skip-previous-48;
-            label: "";
-            clicked => {
+        // Where the sound comes from and its controls: the mirrored screen's bar, the same pill.
+        music-bar := MusicBar {
+            x: Grid.col-cx - self.width / 2;
+            y: root.height - 8px - self.height;
+            source: root.music-source;
+            paused: root.music-paused;
+            previous => {
                 root.music-previous();
             }
-        }
-        PrimaryButton {
-            x: root.slot-mid;
-            y: Grid.band-y;
-            icon: root.music-paused ? Icons.play-44 : Icons.pause-44;
-            label: "";
-            clicked => {
+            toggle => {
                 root.music-toggle();
             }
-        }
-        BareButton {
-            x: root.slot-right;
-            y: Grid.band-y;
-            icon: Icons.skip-next-48;
-            label: "";
-            clicked => {
+            next => {
                 root.music-next();
             }
         }
@@ -3821,7 +3811,7 @@ export component CompanionWindow inherits Window {
 
         // -- Over a video that fills the screen: the bar of controls, up from the bottom edge
         // on a tap (in the bottom band of a sideways phone), away 4 s after the last touch.
-        if !root.mirror-sides: Rectangle {
+        if !root.mirror-sides: MusicBar {
             x: (parent.width - self.width) / 2;
             // Centred in the band below the video when it has room (a sideways phone), else
             // 16 px off the bottom edge, over the picture.
@@ -3833,78 +3823,22 @@ export component CompanionWindow inherits Window {
                 duration: 180ms;
                 easing: ease-out;
             }
-            width: 760px;
-            height: 88px;
-            border-radius: 44px;
-            background: Theme.surface;
-            border-width: 1px;
-            border-color: Theme.line;
-            TouchArea {
-                clicked => {
-                    root.mirror-poked();
-                }
+            source: root.mirror-source;
+            paused: root.music-paused;
+            poked => {
+                root.mirror-poked();
             }
-            // (Home is above, with the time.)
-            Icon {
-                x: 24px;
-                y: 30px;
-                width: 28px;
-                height: 28px;
-                source: Icons.cast-connected-28;
-                color: Theme.accent;
+            previous => {
+                root.mirror-poked();
+                root.music-previous();
             }
-            Text {
-                x: 64px;
-                width: parent.width - 64px - 248px;
-                height: parent.height;
-                text: root.mirror-source;
-                font-size: 24px;
-                color: Theme.text-2;
-                vertical-alignment: center;
-                overflow: elide;
+            toggle => {
+                root.mirror-poked();
+                root.music-toggle();
             }
-            GlyphButton {
-                x: parent.width - 236px;
-                y: 12px;
-                icon: Icons.skip-previous-36;
-                clicked => {
-                    root.mirror-poked();
-                    root.music-previous();
-                }
-            }
-            Rectangle {
-                x: parent.width - 164px;
-                y: 8px;
-                width: 72px;
-                height: 72px;
-                border-radius: 36px;
-                background: play-touch.pressed ? Theme.accent-deep.brighter(0.5) : Theme.accent-deep;
-                border-width: 2px;
-                border-color: Theme.accent.with-alpha(0.9);
-                Icon {
-                    x: 22px;
-                    y: 22px;
-                    width: 28px;
-                    height: 28px;
-                    source: root.music-paused ? Icons.play-28 : Icons.pause-28;
-                    color: Theme.text;
-                }
-                play-touch := TouchArea {
-                    clicked => {
-                        Feedback.tap();
-                        root.mirror-poked();
-                        root.music-toggle();
-                    }
-                }
-            }
-            GlyphButton {
-                x: parent.width - 80px;
-                y: 12px;
-                icon: Icons.skip-next-36;
-                clicked => {
-                    root.mirror-poked();
-                    root.music-next();
-                }
+            next => {
+                root.mirror-poked();
+                root.music-next();
             }
         }
     }

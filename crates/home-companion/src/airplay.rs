@@ -108,6 +108,8 @@ pub enum MusicEvent {
     /// The sender moved its volume slider: the companion's volume, in percent (0 = the bottom
     /// or muted; the volume's own lowest step applies).
     Volume(u8),
+    /// The music page's spectrum (crate::spectrum): band levels and peaks, 0..1.
+    Spectrum([f32; crate::spectrum::BANDS], [f32; crate::spectrum::BANDS]),
 }
 
 /// What the screen's buttons and the Vol± keys ask the sender.
@@ -160,6 +162,8 @@ struct State {
     /// The sender mirrors its screen.
     mirroring: bool,
     dacp: Option<Dacp>,
+    /// The levels of the audio on its way to the mixer, for the music page.
+    spectrum: crate::spectrum::Spectrum,
 }
 
 struct Inner {
@@ -212,6 +216,7 @@ impl Music {
                 session: false,
                 mirroring: false,
                 dacp: None,
+                spectrum: crate::spectrum::Spectrum::new(PCM.rate),
             }),
             child: Mutex::new(None),
             stop: AtomicBool::new(false),
@@ -565,6 +570,9 @@ impl Music {
         if let Some(s) = &st.stream {
             let _ = s.push(data);
         }
+        if let Some((b, p)) = st.spectrum.feed(data, now) {
+            (self.0.events)(MusicEvent::Spectrum(b, p));
+        }
     }
 
     /// No more audio: the stream goes, the screen shows the track paused.
@@ -572,6 +580,8 @@ impl Music {
         let mut st = lock(&self.0.state);
         if let Some(s) = st.stream.take() {
             s.finish();
+            let (b, p) = st.spectrum.silence();
+            (self.0.events)(MusicEvent::Spectrum(b, p));
             log::info!(event = "airplay_audio", state = "stop"; "AirPlay: no audio");
             if st.session && st.now.playing {
                 st.now.playing = false;

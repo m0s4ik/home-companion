@@ -3185,6 +3185,7 @@ impl<S: Screen> Ui<S> {
                 self.screen.set_music_cover(cover, paused);
                 self.refresh_home();
             }
+            UiCommand::MusicSpectrum(b, p) => self.screen.set_music_spectrum(&b, &p),
             UiCommand::Mirror(m) => self.set_mirror(m),
             UiCommand::Control {
                 airplay,
