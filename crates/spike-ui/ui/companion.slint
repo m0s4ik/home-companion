@@ -465,7 +465,7 @@ export component CompanionWindow inherits Window {
     // `poses/dnd.png`, if it has one; Alfred's is a hand bell asleep on a velvet cushion).
     in property <image> dnd-prop;
     // Music playing (AirPlay): a prop of the character beside it (the character's
-    // `poses/music.png`; Alfred's is a brass gramophone on a little table), notes rising from it
+    // `poses/music.png`; Alfred's is a brass gramophone on the floor), notes rising from it
     // while the sound plays. A prop, not a pose: every pose and animation stays as it is.
     in property <image> music-prop;
     // An animation frame of the character, drawn instead of the pose while it is set (Rust
@@ -985,10 +985,11 @@ export component CompanionWindow inherits Window {
     music-prop-img := Image {
         property <bool> shown: root.music-playing && root.desk && !root.night-home && root.music-prop.width > 0
             && (root.desk-page == "home" || root.desk-page == "music");
-        height: 260px;
+        // About knee high next to the character, on the floor by its left shoe.
+        height: 170px;
         width: root.music-prop.height > 0 ? self.height * root.music-prop.width / root.music-prop.height : 0px;
-        x: max(8px, root.character-cx - 150px - self.width);
-        y: root.character-top + root.character-height - 22px - self.height;
+        x: max(8px, root.character-cx - 74px - self.width);
+        y: root.character-top + root.character-height - 18px - self.height;
         source: root.music-prop;
         image-fit: fill;
         visible: self.opacity > 0.01;
@@ -999,8 +1000,9 @@ export component CompanionWindow inherits Window {
         property <bool> on: music-prop-img.shown && !root.music-paused;
         // Each note on its own 3.6 s rise, a third apart; they drift right and fade.
         property <float> t: mod(animation-tick() / 1ms + n * 1200, 3600) / 3600;
-        x: music-prop-img.x + 10px + self.t * 46px + (n == 1 ? 14px : 0px);
-        y: music-prop-img.y + 24px - self.t * 120px;
+        // From the horn's mouth (its top left), up and a little out.
+        x: music-prop-img.x + 6px - self.t * 18px + (n == 1 ? 16px : 0px);
+        y: music-prop-img.y - 6px - self.t * 110px;
         width: 26px;
         height: 26px;
         source: Icons.music-note-32;
