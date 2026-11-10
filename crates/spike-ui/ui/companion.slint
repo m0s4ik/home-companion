@@ -625,6 +625,8 @@ export component CompanionWindow inherits Window {
     in property <bool> music-playing: false;
     // The music page's spectrum: band levels and their falling peaks, 0..1, low bands first.
     in property <[float]> music-bands: [];
+    // The spectrum on the music page (off: the picture larger instead).
+    in property <bool> music-spectrum-shown: false;
     in property <[float]> music-peaks: [];
     in property <string> music-title: "";
     in property <string> music-artist: "";
@@ -2851,10 +2853,10 @@ export component CompanionWindow inherits Window {
         // bottom the spectrum, segmented like an old LCD player's.
         // The frame takes the picture's shape (a video's 16:9 thumbnail too), 320 px tall and
         // at most the column wide, so nothing is cut; square without a picture.
-        Rectangle {
+        music-cover-frame := Rectangle {
             x: Grid.col-cx - self.width / 2;
-            y: 104px;
-            height: 320px;
+            y: root.music-spectrum-shown ? 104px : 112px;
+            height: root.music-spectrum-shown ? 288px : 352px;
             width: root.music-cover.height > 0
                 ? min(Grid.col-width, self.height * root.music-cover.width / root.music-cover.height)
                 : self.height;
@@ -2880,7 +2882,7 @@ export component CompanionWindow inherits Window {
         }
         Text {
             x: Grid.col-x;
-            y: 436px;
+            y: music-cover-frame.y + music-cover-frame.height + 24px;
             width: Grid.col-width;
             text: root.music-title;
             font-size: 34px;
@@ -2890,7 +2892,7 @@ export component CompanionWindow inherits Window {
         }
         Text {
             x: Grid.col-x;
-            y: 482px;
+            y: music-cover-frame.y + music-cover-frame.height + 70px;
             width: Grid.col-width;
             text: root.music-album != "" && root.music-artist != "" ? root.music-artist + " · " + root.music-album
                 : root.music-artist;
@@ -2903,10 +2905,11 @@ export component CompanionWindow inherits Window {
         // segments from the bottom and a peak segment that falls back slowly. Values 0..1
         // (music-bands, music-peaks).
         // Low and short (seven rows), on the action band: there under the rest, not a block.
-        spectrum := Rectangle {
+        if root.music-spectrum-shown: spectrum := Rectangle {
             // Narrow, centred under the title: thin bars with air between them.
             x: Grid.col-cx - self.width / 2;
-            y: music-bar.y - 16px - self.height;
+            // Between the artist's line (it ends near 482) and the bar, the same air above and below.
+            y: (482px + music-bar.y - self.height) / 2;
             width: 480px;
             height: 7 * 13px;
             property <int> rows: floor(self.height / 13px);
@@ -2926,10 +2929,11 @@ export component CompanionWindow inherits Window {
                 }
             }
         }
-        // Where the sound comes from and its controls: the mirrored screen's bar, the same pill.
+        // Where the sound comes from and its controls: the mirrored screen's bar, the same pill,
+        // in the action band as the other pages' buttons.
         music-bar := MusicBar {
             x: Grid.col-cx - self.width / 2;
-            y: root.height - 8px - self.height;
+            y: Grid.band-y + (Grid.slot-height - self.height) / 2;
             source: root.music-source;
             paused: root.music-paused;
             previous => {

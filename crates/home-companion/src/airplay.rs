@@ -39,6 +39,9 @@ const PCM: StreamFormat = StreamFormat {
     width: 2,
     channels: 2,
 };
+/// The music page's spectrum (crate::spectrum), measured from the audio: off, the page shows a
+/// larger picture instead (its `music-spectrum-shown`). Both switch on together.
+const SPECTRUM: bool = false;
 /// No audio for this long: the stream is finished (a pause or the end of the session).
 const IDLE_CLOSE: Duration = Duration::from_millis(1500);
 /// Audio after a gap this long is "playing again": a Stop is forgotten.
@@ -570,7 +573,8 @@ impl Music {
         if let Some(s) = &st.stream {
             let _ = s.push(data);
         }
-        if let Some((b, p)) = st.spectrum.feed(data, now) {
+        // The spectrum is off on the music page: not measured.
+        if SPECTRUM && let Some((b, p)) = st.spectrum.feed(data, now) {
             (self.0.events)(MusicEvent::Spectrum(b, p));
         }
     }
@@ -580,8 +584,10 @@ impl Music {
         let mut st = lock(&self.0.state);
         if let Some(s) = st.stream.take() {
             s.finish();
-            let (b, p) = st.spectrum.silence();
-            (self.0.events)(MusicEvent::Spectrum(b, p));
+            if SPECTRUM {
+                let (b, p) = st.spectrum.silence();
+                (self.0.events)(MusicEvent::Spectrum(b, p));
+            }
             log::info!(event = "airplay_audio", state = "stop"; "AirPlay: no audio");
             if st.session && st.now.playing {
                 st.now.playing = false;
