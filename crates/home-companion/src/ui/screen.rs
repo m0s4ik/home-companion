@@ -1355,6 +1355,10 @@ impl<S: Screen> Ui<S> {
             &ui.character.dir.join("poses/dnd.png"),
             ui.character.background,
         ));
+        ui.screen.set_music_prop(load_prop(
+            &ui.character.dir.join("poses/music.png"),
+            ui.character.background,
+        ));
         match ui.opts.demo.clone() {
             Some(d) => ui.show_demo(d),
             None => {

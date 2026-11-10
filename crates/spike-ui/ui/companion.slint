@@ -464,6 +464,10 @@ export component CompanionWindow inherits Window {
     // Do not disturb, on the home: a prop of the character at its feet (the character's
     // `poses/dnd.png`, if it has one; Alfred's is a hand bell asleep on a velvet cushion).
     in property <image> dnd-prop;
+    // Music playing (AirPlay): a prop of the character beside it (the character's
+    // `poses/music.png`; Alfred's is a brass gramophone on a little table), notes rising from it
+    // while the sound plays. A prop, not a pose: every pose and animation stays as it is.
+    in property <image> music-prop;
     // An animation frame of the character, drawn instead of the pose while it is set (Rust
     // places it where the animation's rect falls on the pose; only this box redraws).
     in property <image> frame;
@@ -975,6 +979,34 @@ export component CompanionWindow inherits Window {
         visible: self.opacity > 0.01;
         opacity: self.shown ? (root.night-home ? 0.55 : 1.0) : 0.0;
         animate opacity { duration: 400ms; easing: ease-in-out; }
+    }
+    // The gramophone at the character's left, standing on the stage's floor; notes rise from its
+    // horn while the music plays (none in a pause or by night).
+    music-prop-img := Image {
+        property <bool> shown: root.music-playing && root.desk && !root.night-home && root.music-prop.width > 0
+            && (root.desk-page == "home" || root.desk-page == "music");
+        height: 260px;
+        width: root.music-prop.height > 0 ? self.height * root.music-prop.width / root.music-prop.height : 0px;
+        x: max(8px, root.character-cx - 150px - self.width);
+        y: root.character-top + root.character-height - 22px - self.height;
+        source: root.music-prop;
+        image-fit: fill;
+        visible: self.opacity > 0.01;
+        opacity: self.shown ? 1.0 : 0.0;
+        animate opacity { duration: 400ms; easing: ease-in-out; }
+    }
+    for n in 3: Image {
+        property <bool> on: music-prop-img.shown && !root.music-paused;
+        // Each note on its own 3.6 s rise, a third apart; they drift right and fade.
+        property <float> t: mod(animation-tick() / 1ms + n * 1200, 3600) / 3600;
+        x: music-prop-img.x + 10px + self.t * 46px + (n == 1 ? 14px : 0px);
+        y: music-prop-img.y + 24px - self.t * 120px;
+        width: 26px;
+        height: 26px;
+        source: Icons.music-note-32;
+        colorize: Theme.accent;
+        visible: self.on;
+        opacity: self.on ? (self.t < 0.2 ? self.t / 0.2 : 1 - (self.t - 0.2) / 0.8) * 0.8 : 0;
     }
     TouchArea {
         width: Grid.stage-width;

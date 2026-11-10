@@ -17,6 +17,9 @@ of home-companion.
   0-63) and the wake-up, where he fixes his bow tie and glove (96-175), so the three share `animations/loading.png`.
 - **Do not disturb**: `poses/dnd.png`, a hand bell asleep on a velvet cushion (gpt-image-2.5-flare from `idle.png`,
   background made transparent).
+- **Music**: `poses/music.png`, a brass gramophone on a little round table, drawn beside the character while AirPlay
+  plays, notes rising from its horn (gpt-image-2.5-flare from `idle.png`, then isolated on a transparent background).
+  A prop, not a pose: every pose and animation stays as it is.
 - **Done**: `animations/done.png` (48 frames, 3 s), a courteous bow with the right hand on the chest after a house
   command: from `idle.png` to the bow (0-19), held (20-28), back to `idle.png` (29-47). The bow's pose was drawn with
   gpt-image-2.5-flare from `idle.png`, the two clips (idle to bow, bow to idle) with Wan 2.2 like the others.
