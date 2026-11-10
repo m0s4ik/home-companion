@@ -284,6 +284,8 @@ export component PickPage inherits Rectangle {
     in property <[ChoiceRow]> rows;
     callback back();
     callback picked(string);
+    // Where its content ends (y): the action band shows under it only when there is room.
+    out property <length> content-bottom: Grid.page-y + pick-col.preferred-height;
     PageHeader {
         x: Grid.col-x;
         y: Grid.header-y;
