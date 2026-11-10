@@ -2149,11 +2149,43 @@ fn reconfigure_sub(
         }
     }
     change(&mut data);
-    let (_, r) = api.rest(
+    let (_, mut r) = api.rest(
         "POST",
         &format!("/api/config/config_entries/subentries/flow/{flow_id}"),
         Some(Value::Object(data)),
     )?;
+    // A next page without errors (OpenAI's agent: the model settings when not the recommended
+    // ones): sent back as it is, its current values filled in.
+    for _ in 0..3 {
+        let next_page = s(&r, "type") == "form"
+            && r.get("errors")
+                .and_then(Value::as_object)
+                .is_none_or(|e| e.is_empty());
+        if !next_page {
+            break;
+        }
+        let mut more = serde_json::Map::new();
+        for x in r
+            .get("data_schema")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(v) = x
+                .pointer("/description/suggested_value")
+                .or(x.get("default"))
+            {
+                more.insert(s(x, "name").into(), v.clone());
+            }
+        }
+        r = api
+            .rest(
+                "POST",
+                &format!("/api/config/config_entries/subentries/flow/{flow_id}"),
+                Some(Value::Object(more)),
+            )?
+            .1;
+    }
     match s(&r, "type") {
         "abort" | "create_entry" => Ok(()),
         t => {
@@ -3592,6 +3624,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ha.alfred()["tts_voice"], "cedar");
+    }
+
+    #[test]
+    fn newer_instructions_reach_an_agent_with_model_settings() {
+        // OpenAI's agent not on the recommended settings: its form has a second page (the
+        // model); the newer instructions go through it, the model settings kept.
+        let file = tmp("prompt-model");
+        let mut ha = FakeHa::new();
+        let ai = ha.add_ai();
+        ha.search.insert(ai.clone(), "model");
+        let mut st = State::default();
+        run(&mut ha, &mut st, &file, Scope::Missing);
+        assert_eq!(ha.subs[&ai][0]["data"]["recommended"], false);
+        let newer = Body {
+            prompt: "Sei Alfred, dai del Lei.".into(),
+            ..body()
+        };
+        assert!(refresh_prompt(&mut ha, &mut st, &newer).unwrap());
+        let d = &ha.subs[&ai][0]["data"];
+        assert_eq!(d["prompt"], "Sei Alfred, dai del Lei.");
+        assert_eq!(d["reasoning_effort"], "low", "the model page as it was");
+        assert_eq!(d["web_search"], true);
+        assert!(
+            ha.flows.is_empty() && ha.steps.is_empty(),
+            "no flow left open"
+        );
     }
 
     #[test]
