@@ -2411,7 +2411,7 @@ export component CompanionWindow inherits Window {
 
     // ---- Home Assistant → one choice (the AI, speech-to-text, voice): a tap picks, back to the page.
     if root.desk && root.desk-page == "ha-pick": Rectangle {
-        pick-page := PickPage {
+        PickPage {
             title: root.ha-pick-title;
             clock: root.clock;
             hint: root.ha-pick-hint;
@@ -2422,16 +2422,6 @@ export component CompanionWindow inherits Window {
             picked(id) => {
                 root.page = "ha";
                 root.ha-picked(id);
-            }
-        }
-        // The action band only where the page leaves room for it (settings pages use the space).
-        if pick-page.content-bottom < Grid.band-y - 24px: PrimaryButton {
-            x: root.slot-mid;
-            y: Grid.band-y;
-            icon: Icons.microphone-44;
-            label: root.t.talk;
-            clicked => {
-                root.talk-clicked();
             }
         }
     }
@@ -2746,16 +2736,6 @@ export component CompanionWindow inherits Window {
                 }
             }
         }
-        // The action band only where the page leaves room for it (settings pages use the space).
-        if Grid.page-y + 16px + root.languages.length * 76px < Grid.band-y - 24px: PrimaryButton {
-            x: root.slot-mid;
-            y: Grid.band-y;
-            icon: Icons.microphone-44;
-            label: root.t.talk;
-            clicked => {
-                root.talk-clicked();
-            }
-        }
     }
 
     // ---- Settings → Screen: the night hours.
@@ -2829,7 +2809,7 @@ export component CompanionWindow inherits Window {
             wrap: word-wrap;
         }
         // The home's layout: normal (three cards) or compact (the clock higher, four cards).
-        compact-group := Group {
+        Group {
             x: Grid.col-x;
             y: night-hint.y + night-hint.preferred-height + 24px;
             width: Grid.col-width;
@@ -2846,16 +2826,6 @@ export component CompanionWindow inherits Window {
                 toggled(v) => {
                     root.home-compact-changed(v);
                 }
-            }
-        }
-        // The action band only where the page leaves room for it (settings pages use the space).
-        if compact-group.y + compact-group.height < Grid.band-y - 24px: PrimaryButton {
-            x: root.slot-mid;
-            y: Grid.band-y;
-            icon: Icons.microphone-44;
-            label: root.t.talk;
-            clicked => {
-                root.talk-clicked();
             }
         }
     }
