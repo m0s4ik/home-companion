@@ -584,6 +584,9 @@ export component PageHeader inherits Rectangle {
 // mirrored screen's bottom bar and the music page's, so they look the same).
 export component MusicBar inherits Rectangle {
     in property <string> source;
+    // A title and a second line in place of the source (the music page may show them here).
+    in property <string> title;
+    in property <string> detail;
     in property <bool> paused;
     callback poked();
     callback previous();
@@ -608,7 +611,7 @@ export component MusicBar inherits Rectangle {
         source: Icons.cast-connected-28;
         color: Theme.accent;
     }
-    Text {
+    if root.title == "": Text {
         x: 64px;
         width: parent.width - 64px - 248px;
         height: parent.height;
@@ -616,6 +619,24 @@ export component MusicBar inherits Rectangle {
         font-size: 24px;
         color: Theme.text-2;
         vertical-alignment: center;
+        overflow: elide;
+    }
+    if root.title != "": Text {
+        x: 64px;
+        y: 14px;
+        width: parent.width - 64px - 248px;
+        text: root.title;
+        font-size: 26px;
+        color: Theme.text;
+        overflow: elide;
+    }
+    if root.title != "": Text {
+        x: 64px;
+        y: 48px;
+        width: parent.width - 64px - 248px;
+        text: root.detail;
+        font-size: 20px;
+        color: Theme.text-2;
         overflow: elide;
     }
     GlyphButton {

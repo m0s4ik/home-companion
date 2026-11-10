@@ -391,6 +391,8 @@ pub struct Demo {
     pub compact: bool,
     /// `--state music-video`: the music page with a 16:9 picture (a video's thumbnail).
     pub music_wide: bool,
+    /// `--state music-big|music-ambient|music-inbar`: a layout of the music page to try.
+    pub music_layout: i32,
     pub night: bool,
     pub starting: bool,
     /// The Home Assistant page: 1 = a run in progress, 2 = "All set".
@@ -431,7 +433,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 66] = [
+pub const DEMO_STATES: [&str; 70] = [
     "home",
     "cards",
     "cards-setup",
@@ -492,6 +494,10 @@ pub const DEMO_STATES: [&str; 66] = [
     "mic-off-dnd",
     "cards-quiet",
     "music-video",
+    "music-big",
+    "music-ambient",
+    "music-inbar",
+    "music-inbar-video",
     "cards-0",
     "cards-1",
     "cards-2",
@@ -669,6 +675,15 @@ impl Demo {
             },
             "music-video" => Demo {
                 music_wide: true,
+                ..page("music")
+            },
+            "music-big" | "music-ambient" | "music-inbar" | "music-inbar-video" => Demo {
+                music_layout: match s {
+                    "music-big" => 1,
+                    "music-ambient" => 2,
+                    _ => 3,
+                },
+                music_wide: s.ends_with("-video"),
                 ..page("music")
             },
             "cards-quiet" => Demo {
@@ -2513,11 +2528,26 @@ impl<S: Screen> Ui<S> {
                     0.33, 0.27, 0.20,
                 ];
                 self.screen.set_music_spectrum(&BANDS, &PEAKS);
+                let design =
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../spike-ui/ui/design");
                 if d.music_wide {
-                    let wide = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                        .join("../spike-ui/ui/design/cover-sample-wide.png");
-                    self.screen.set_music_cover(load_cover(&wide), false);
+                    self.screen
+                        .set_music_cover(load_cover(&design.join("cover-sample-wide.png")), false);
                 }
+                let layout = if d.music_layout > 0 {
+                    d.music_layout
+                } else {
+                    2
+                };
+                let sample = if d.music_wide {
+                    "cover-sample-wide.png"
+                } else {
+                    "cover-sample.png"
+                };
+                let blur = (layout == 2)
+                    .then(|| blurred_cover(&design.join(sample)))
+                    .flatten();
+                self.screen.set_music_layout(layout, blur);
                 desk.music = Some(MusicView {
                     title: "Clair de lune".into(),
                     artist: "Claude Debussy".into(),
@@ -3156,10 +3186,11 @@ impl<S: Screen> Ui<S> {
                 }
             },
             UiCommand::Music(n) => {
-                let cover = n
-                    .as_ref()
-                    .and_then(|n| n.cover.as_deref())
-                    .and_then(load_cover);
+                let path = n.as_ref().and_then(|n| n.cover.as_deref());
+                let cover = path.and_then(load_cover);
+                // The page's background: the same picture, small, blurred and dark.
+                self.screen
+                    .set_music_layout(2, path.and_then(blurred_cover));
                 // A sender with no track information (a Mac's system sound): a title anyway.
                 let untitled = self.locale.borrow().text("music_untitled").to_string();
                 {
@@ -3329,10 +3360,13 @@ impl<S: Screen> Ui<S> {
             self.refresh_night_line();
             self.refresh_tiles();
         }
-        // A page left alone goes home (not the setup page, not with a question open).
+        // A page left alone goes home (not the setup page, not with a question open, not the
+        // music page while there is music: it is what the screen is for then).
         let page = self.screen.get_page();
         let touched = self.desk.borrow().touched;
+        let music_on = self.desk.borrow().music.is_some();
         if page != "home"
+            && !(page == "music" && music_on)
             && page != "setup"
             && page != "welcome"
             && page != "find-ha"
@@ -5200,6 +5234,20 @@ fn parse_ssid(info: &str) -> Option<String> {
 
 /// AirPlay's cover art, decoded here and not with `Image::load_from_path`: Slint caches images
 /// by path, and every cover is written to the same file. At most 320 px (the page shows 304).
+/// A picture small, blurred and dark: the music page's background (layout 2).
+fn blurred_cover(path: &std::path::Path) -> Option<Image> {
+    let img = image::open(path).ok()?.thumbnail(96, 96).to_rgba8();
+    let mut img = image::imageops::blur(&img, 6.0);
+    for p in img.pixels_mut() {
+        for c in 0..3 {
+            p[c] = (p[c] as f32 * 0.6) as u8;
+        }
+    }
+    let (w, h) = img.dimensions();
+    let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(img.as_raw(), w, h);
+    Some(Image::from_rgba8(buf))
+}
+
 fn load_cover(path: &std::path::Path) -> Option<Image> {
     let bytes = std::fs::read(path).ok()?;
     let img = image::load_from_memory(&bytes)
