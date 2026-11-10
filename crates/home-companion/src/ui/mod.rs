@@ -162,6 +162,8 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_pose(&self, i: Image);
     fn set_error_pose(&self, i: Image);
     fn set_dnd_prop(&self, i: Image);
+    /// An announcement plays (a due reminder stays on the screen under its voice).
+    fn set_announcing(&self, on: bool);
     fn set_music_prop(&self, i: Image);
     /// An animation frame drawn instead of the pose (`Image::default()` = the pose).
     fn set_frame(&self, i: Image);
@@ -434,6 +436,9 @@ macro_rules! impl_screen {
             }
             fn set_dnd_prop(&self, i: Image) {
                 $m::CompanionWindow::set_dnd_prop(self, i)
+            }
+            fn set_announcing(&self, on: bool) {
+                $m::CompanionWindow::set_announcing(self, on)
             }
             fn set_music_prop(&self, i: Image) {
                 $m::CompanionWindow::set_music_prop(self, i)

@@ -596,6 +596,9 @@ export component CompanionWindow inherits Window {
     in property <bool> ringing-alarm: false;
     // A reminder that is due, full screen (the card stays on the home until its OK).
     in property <bool> notice-shown: false;
+    // An announcement plays (a reminder said by Home Assistant): over a due reminder, the
+    // reminder's screen stays and the voice plays over it.
+    in property <bool> announcing: false;
     in property <string> notice-title: "Promemoria";
     in property <string> notice-text: "";
     in property <string> notice-when: "";
@@ -836,8 +839,9 @@ export component CompanionWindow inherits Window {
         // Only an error is red: back at rest (the bar still sliding away) it keeps the answer's colour.
         : root.state == "error" ? root.color-error : root.color-speaking;
     // A conversation owns the desk, over any page.
-    property <bool> conversation: root.state == "listening" || root.state == "thinking"
-        || root.state == "speaking" || root.state == "error";
+    property <bool> conversation: (root.state == "listening" || root.state == "thinking"
+        || root.state == "speaking" || root.state == "error")
+        && !(root.announcing && root.notice-shown && root.state == "speaking");
     property <bool> ringing: root.state == "ringing";
     // What the desk shows when nothing takes it over.
     property <bool> noticing: root.notice-shown && !root.conversation && !root.ringing && !root.starting;

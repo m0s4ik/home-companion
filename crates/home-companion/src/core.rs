@@ -184,6 +184,9 @@ pub enum UiCommand {
     DoNotDisturb(Option<u64>),
     /// Back from a suspend: wake and redraw the screen.
     Resumed,
+    /// An announcement (a reminder said by Home Assistant) plays: a due reminder on the screen
+    /// stays, the voice over it, no conversation screen.
+    Announcing(bool),
     /// "Stop" or "basta" over a due reminder: its OK.
     NoticeStop,
     /// What AirPlay plays (None: nothing); `playing` false while paused or muted here.
@@ -768,6 +771,9 @@ impl Core {
     /// Ends the current conversation with its `conversation` line.
     fn close(&mut self, outcome: &str) {
         if let Some(mut c) = self.conv.take() {
+            if c.trigger == Trigger::Announcement {
+                self.ui(UiCommand::Announcing(false));
+            }
             let outcome = if c.quiet_answer && outcome == "stopped" {
                 "house_quiet"
             } else {
@@ -1869,6 +1875,7 @@ impl Core {
                 self.tape.start(sf);
                 log::info!(event = "announcement", id = id; "announcement {id}");
                 self.conv = Some(c);
+                self.ui(UiCommand::Announcing(true));
                 self.ui(UiCommand::Heard(String::new()));
                 self.ui(UiCommand::Answer(String::new()));
                 if self.phase != Phase::Ringing {

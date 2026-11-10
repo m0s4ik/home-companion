@@ -904,6 +904,11 @@ impl Brain {
                     Err("ask the user to confirm first".into())
                 }
             }
+            // Writing tools only when the user asked for them (a model without web search once
+            // put "ask the temperature in Rome" on the shopping list and in a reminder).
+            "list_add" if !self.asked(ASK_ADD) => Err(NOT_ASKED.into()),
+            "list_done" | "list_remove" if !self.asked(ASK_REMOVE) => Err(NOT_ASKED.into()),
+            "schedule" if !self.asked(ASK_REMIND) => Err(NOT_ASKED.into()),
             "list_add" | "list_read" | "list_done" | "list_remove" => match self.ha() {
                 Some(ha) => self.pick_list(&s("list")).and_then(|(entity, name)| {
                     let l = crate::lists::Lists {
@@ -1273,6 +1278,17 @@ impl Brain {
         let err = v.get("error").is_some();
         log::info!(event = "brain_mcp", tool = name, error = err; "tool {name}");
         (v, err)
+    }
+
+    /// Whether the sentence the user just said (the satellite's last transcript, within two
+    /// minutes) has one of `words`: the writing tools run only then. Nothing heard (Home
+    /// Assistant's text chat, a script): allowed, there is nothing to judge by.
+    fn asked(&self, words: &[&str]) -> bool {
+        let h = self.heard.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        match h {
+            Some((text, at)) if now_ms() - at < 120_000 => asked_in(&text, words),
+            _ => true,
+        }
     }
 
     /// The body heard the user (Home Assistant's transcript on the satellite).
@@ -2392,8 +2408,57 @@ fn or_none(s: &str) -> &str {
     }
 }
 
+/// What a writing tool says when the user did not ask for it.
+const NOT_ASKED: &str = "the user did not ask for this: nothing was written. Answer the question itself \
+     (say plainly when you cannot know, e.g. no web search)";
+/// Words of a request to put something on a list (Italian and English, lower case; a word's start
+/// is enough: "aggiung" for aggiungi, aggiungere).
+const ASK_ADD: &[&str] = &[
+    "aggiung", "compra", "spesa", "lista", "metti", "mettere", "segna", "prend", "manca", "finit",
+    "buy", "add", "list", "shopping", "put ", "need",
+];
+/// … to take something off a list or tick it.
+const ASK_REMOVE: &[&str] = &[
+    "togli", "rimuov", "cancell", "spunt", "comprat", "pres", "elimin", "lev", "remove", "delete",
+    "tick", "bought", "got ", "off",
+];
+/// … to be reminded of something.
+const ASK_REMIND: &[&str] = &[
+    "ricord",
+    "promemoria",
+    "avvis",
+    "rammenta",
+    "dimentic",
+    "remind",
+    "alert",
+    "notify",
+    "tell me",
+];
+
+/// Whether `text` has one of `words` (lower case, ignoring accents' absence).
+fn asked_in(text: &str, words: &[&str]) -> bool {
+    let t = text.to_lowercase();
+    words.iter().any(|w| t.contains(w))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn writing_tools_only_when_asked() {
+        assert!(!asked_in("Quanti gradi ci sono a Roma adesso?", ASK_ADD));
+        assert!(!asked_in("Quanti gradi ci sono a Roma adesso?", ASK_REMIND));
+        assert!(asked_in("Aggiungi il latte alla spesa", ASK_ADD));
+        assert!(asked_in("metti le uova nella lista", ASK_ADD));
+        assert!(asked_in(
+            "Ricordami domani alle 9 di chiamare Luca",
+            ASK_REMIND
+        ));
+        assert!(asked_in("Togli il pane dalla lista", ASK_REMOVE));
+        assert!(asked_in("Add milk to the shopping list", ASK_ADD));
+        assert!(asked_in("Remind me at 5 to call mum", ASK_REMIND));
+        assert!(!asked_in("What's the weather in Rome?", ASK_ADD));
+    }
+
     use super::*;
 
     #[test]
