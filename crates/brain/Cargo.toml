@@ -22,3 +22,6 @@ log = { version = "0.4", features = ["kv_std"] }
 # SQLite with FTS5, compiled in (the device has no libsqlite3)
 rusqlite = { version = "0.37", features = ["bundled"] }
 libc = "0.2"
+# The yes/no words of the reflex grammar (pure Rust: libc, serde, serde_json, toml, which the
+# brain has already; libvosk only behind the reflex crate's own `vosk` feature).
+reflex = { path = "../reflex" }

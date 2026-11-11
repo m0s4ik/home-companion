@@ -151,13 +151,29 @@ fn main() -> std::process::ExitCode {
             h.broadcast(&events);
         }
     });
-    // Every 5 s: unanswered Yes/No questions close after a minute; the calendars are read every
-    // 10 minutes (or when the choice changes) and the "next" card gets the new events if they differ.
+    // The Yes/No questions: woken by a new question or an answer, else at the next deadline
+    // (an answer's second, a question's 30 s), at most 5 s asleep; carries out the yeses.
+    let b = brain.clone();
+    let _ = std::thread::Builder::new()
+        .name("questions".into())
+        .spawn(move || {
+            loop {
+                let now = brain::agent::now_ms();
+                let wait = b
+                    .next_question_deadline_ms()
+                    .map_or(5_000, |d| (d - now).clamp(0, 5_000));
+                if wait > 0 {
+                    b.wait_questions(Duration::from_millis(wait as u64));
+                }
+                b.poll_questions();
+            }
+        });
+    // Every 5 s: the calendars are read every 10 minutes (or when the choice changes) and the
+    // "next" card gets the new events if they differ.
     let (b, h) = (brain.clone(), hub.clone());
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(Duration::from_secs(5));
-            b.expire_confirms(brain::agent::now_ms());
             if let Some(ev) = b.refresh_upcoming(brain::memory::now()) {
                 h.broadcast(&[ev]);
             }

@@ -60,78 +60,6 @@ fn end_of_conversation_extraction_through_ai_task() {
 }
 
 #[test]
-fn house_gates_need_a_spoken_yes_and_never_open_doors() {
-    let f = Fake {
-        exposed: exposed(&[
-            ("cover.soggiorno", "Tapparella soggiorno", "shutter"),
-            ("cover.garage", "Garage", "garage"),
-            ("light.cucina", "Luce cucina", ""),
-        ]),
-        ..Fake::default()
-    };
-    let (cfg, dir) = setup("gate", &fake_ha(f.clone()));
-    let b = Brain::new(cfg).unwrap();
-    let services = |f: &Fake| -> Vec<String> {
-        f.calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|c| c["type"] == "call_service")
-            .map(|c| {
-                format!(
-                    "{}.{} {}",
-                    c["domain"].as_str().unwrap(),
-                    c["service"].as_str().unwrap(),
-                    c["service_data"]["entity_id"].as_str().unwrap_or("")
-                )
-            })
-            .collect()
-    };
-    // A light: at once.
-    let (r, err) = tool(
-        &b,
-        "home_control",
-        json!({"entity_id": "light.cucina", "service": "turn_on"}),
-    );
-    assert!(!err, "{r}");
-    // A garage door: never.
-    let (r, err) = tool(
-        &b,
-        "home_control",
-        json!({"entity_id": "cover.garage", "service": "open_cover"}),
-    );
-    assert!(err && r.to_string().contains("never"), "{r}");
-    // A shutter: asks, and runs only after the user's own "sì".
-    let args = json!({"entity_id": "cover.soggiorno", "service": "close_cover"});
-    let (r, err) = tool(&b, "home_control", args.clone());
-    assert!(!err && r["needs_confirmation"] == true, "{r}");
-    let id = r["confirm_id"].clone();
-    let mut confirmed = args.clone();
-    confirmed["confirm_id"] = id;
-    std::thread::sleep(std::time::Duration::from_millis(5));
-    b.heard("no, lascia stare");
-    let (r, err) = tool(&b, "home_control", confirmed.clone());
-    assert!(err && r.to_string().contains("did not confirm"), "{r}");
-    let (r, _) = tool(&b, "home_control", args);
-    let mut again = json!({"entity_id": "cover.soggiorno", "service": "close_cover"});
-    again["confirm_id"] = r["confirm_id"].clone();
-    std::thread::sleep(std::time::Duration::from_millis(5));
-    b.heard("sì");
-    let (r, err) = tool(&b, "home_control", again);
-    assert!(!err && r["done"] == true, "{r}");
-    assert_eq!(
-        services(&f),
-        // The light: a snapshot for its Undo first; the shutter after a yes has no Undo.
-        [
-            "scene.create ",
-            "light.turn_on light.cucina",
-            "cover.close_cover cover.soggiorno"
-        ]
-    );
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[test]
 fn nightly_tidy_up_merges_updates_and_retires() {
     let f = Fake::default();
     f.ai.lock().unwrap().push(
@@ -499,7 +427,7 @@ fn a_whole_room_in_one_call() {
         "home_control",
         json!({"area": "Studio", "domain": "cover", "service": "close_cover"}),
     );
-    assert!(!err && r["needs_confirmation"] == true, "{r}");
+    assert!(!err && r["asked"].is_object(), "{r}");
     assert!(services(&f).iter().all(|s| !s.starts_with("cover.")));
     // A list; an unknown area says which areas there are.
     let (r, err) = tool(
@@ -523,6 +451,7 @@ fn a_house_command_is_reported_and_can_be_undone() {
         exposed: exposed(&[
             ("light.cucina", "Luce cucina", ""),
             ("cover.soggiorno", "Tapparella soggiorno", "shutter"),
+            ("climate.casa", "Termostato", ""),
         ]),
         ..Fake::default()
     };
@@ -611,83 +540,20 @@ fn a_house_command_is_reported_and_can_be_undone() {
     assert!(!err);
     let c = screen.event("changed");
     assert_eq!(c["undo"], true);
+    // A service outside the table is refused; one with no clear inverse has no Undo.
     let (_, err) = tool(
         &b,
         "home_control",
         json!({"entity_id": "light.cucina", "service": "set_foo"}),
     );
-    assert!(!err);
+    assert!(err);
+    let (r, err) = tool(
+        &b,
+        "home_control",
+        json!({"entity_id": "climate.casa", "service": "set_temperature", "data": {"temperature": 20}}),
+    );
+    assert!(!err, "{r}");
     assert_eq!(screen.event("changed")["undo"], false);
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[test]
-fn a_blind_asks_on_the_screen_and_a_yes_there_does_it_without_undo() {
-    let f = Fake {
-        exposed: exposed(&[("cover.soggiorno", "Tapparella soggiorno", "shutter")]),
-        ..Fake::default()
-    };
-    let (cfg, dir) = setup("screen-yes", &fake_ha(f.clone()));
-    let b = Arc::new(Brain::new(cfg).unwrap());
-    let mut screen = Screen::connect(&b, &dir);
-    let args = json!({"entity_id": "cover.soggiorno", "service": "close_cover"});
-    let (r, _) = tool(&b, "home_control", args.clone());
-    assert_eq!(r["needs_confirmation"], true, "{r}");
-    let c = screen.event("confirm");
-    let id = c["id"].as_i64().unwrap();
-    assert_eq!(r["confirm_id"], id);
-    assert!(c["text"].as_str().unwrap().contains("Tapparella soggiorno"));
-    assert!(c["expires_at"].as_i64().unwrap() - brain::memory::now() > 25);
-    // Nothing happened yet; the model has moved on and the user taps Yes.
-    assert!(services(&f).is_empty());
-    b.answer_confirm(id, true).unwrap();
-    let d = screen.event("confirm_done");
-    assert_eq!(
-        (d["id"].as_i64(), d["yes"].as_bool()),
-        (Some(id), Some(true))
-    );
-    let ch = screen.event("changed");
-    assert_eq!(
-        (ch["service"].as_str(), ch["undo"].as_bool()),
-        (Some("close_cover"), Some(false)),
-        "{ch}"
-    );
-    assert_eq!(services(&f), ["cover.close_cover cover.soggiorno"]);
-    // A second tap is refused; the model's late call with the id does not run it again.
-    assert!(b.answer_confirm(id, true).is_err());
-    let mut again = args;
-    again["confirm_id"] = json!(id);
-    let (r, err) = tool(&b, "home_control", again);
-    assert!(!err && r["done"] == true, "{r}");
-    assert_eq!(services(&f).len(), 1);
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[test]
-fn a_screen_no_or_a_yes_during_the_wait_counts_like_a_spoken_answer() {
-    let f = Fake {
-        exposed: exposed(&[("cover.soggiorno", "Tapparella soggiorno", "shutter")]),
-        ..Fake::default()
-    };
-    let (cfg, dir) = setup("screen-wait", &fake_ha(f.clone()));
-    let b = Arc::new(Brain::new(cfg).unwrap());
-    let mut screen = Screen::connect(&b, &dir);
-    let args = json!({"entity_id": "cover.soggiorno", "service": "close_cover"});
-    for (yes, n_calls) in [(false, 0), (true, 1)] {
-        let (r, _) = tool(&b, "home_control", args.clone());
-        let id = r["confirm_id"].as_i64().unwrap();
-        let mut again = args.clone();
-        again["confirm_id"] = json!(id);
-        // The model's second call waits for the answer; the screen answers meanwhile.
-        let b2 = b.clone();
-        let waiter = std::thread::spawn(move || tool(&b2, "home_control", again));
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        b.answer_confirm(id, yes).unwrap();
-        let (r, err) = waiter.join().unwrap();
-        assert_eq!(err, !yes, "{r}");
-        assert_eq!(screen.event("confirm_done")["yes"], yes);
-        assert_eq!(services(&f).len(), n_calls);
-    }
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -705,35 +571,7 @@ fn a_list_of_one_blind_asks_its_yes() {
         "home_control",
         json!({"entity_ids": ["cover.soggiorno"], "service": "set_cover_position", "data": {"position": 0}}),
     );
-    assert!(!err && r["needs_confirmation"] == true, "{r}");
-    assert!(services(&f).is_empty());
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[test]
-fn an_unanswered_question_expires_after_a_minute() {
-    let f = Fake {
-        exposed: exposed(&[("cover.soggiorno", "Tapparella soggiorno", "shutter")]),
-        ..Fake::default()
-    };
-    let (cfg, dir) = setup("expire", &fake_ha(f.clone()));
-    let b = Arc::new(Brain::new(cfg).unwrap());
-    let mut screen = Screen::connect(&b, &dir);
-    let (r, _) = tool(
-        &b,
-        "home_control",
-        json!({"entity_id": "cover.soggiorno", "service": "close_cover"}),
-    );
-    let id = r["confirm_id"].as_i64().unwrap();
-    screen.event("confirm");
-    b.expire_confirms(brain::agent::now_ms() + 30_000);
-    b.expire_confirms(brain::agent::now_ms() + 61_000);
-    let d = screen.event("confirm_done");
-    assert_eq!(
-        (d["id"].as_i64(), d["yes"].clone()),
-        (Some(id), Value::Null)
-    );
-    assert!(b.answer_confirm(id, true).is_err());
+    assert!(!err && r["asked"].is_object(), "{r}");
     assert!(services(&f).is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }

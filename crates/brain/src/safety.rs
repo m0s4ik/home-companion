@@ -151,32 +151,6 @@ impl SafetyCfg {
     }
 }
 
-/// An explicit yes / no to "Confermi?".
-pub fn answer_to_confirm(text: &str) -> Option<bool> {
-    let t = text
-        .trim()
-        .trim_end_matches(['.', '!', '?'])
-        .to_lowercase()
-        .replace('ì', "i");
-    let first = t
-        .split(|c: char| !c.is_alphanumeric())
-        .find(|w| !w.is_empty())
-        .unwrap_or("");
-    const YES: &[&str] = &[
-        "si", "confermo", "conferma", "certo", "ok", "okay", "yes", "confirm", "vai", "procedi",
-    ];
-    const NO: &[&str] = &[
-        "no", "annulla", "lascia", "niente", "stop", "basta", "cancel",
-    ];
-    if YES.contains(&first) || t == "va bene" {
-        Some(true)
-    } else if NO.contains(&first) {
-        Some(false)
-    } else {
-        None
-    }
-}
-
 fn invisible(c: char) -> bool {
     matches!(c,
         '\u{E0000}'..='\u{E007F}'
@@ -218,16 +192,6 @@ mod tests {
         assert_eq!(s.classify("disattiva l'allarme"), Gate::Never);
         assert_eq!(s.classify("unlock the front door"), Gate::Never);
         assert_eq!(s.classify("apri la serratura"), Gate::Never);
-    }
-
-    #[test]
-    fn confirmations() {
-        assert_eq!(answer_to_confirm("Sì."), Some(true));
-        assert_eq!(answer_to_confirm("si confermo"), Some(true));
-        assert_eq!(answer_to_confirm("va bene"), Some(true));
-        assert_eq!(answer_to_confirm("no, lascia stare"), Some(false));
-        assert_eq!(answer_to_confirm("che ore sono"), None);
-        assert_eq!(answer_to_confirm("sicuro che piove?"), None);
     }
 
     #[test]

@@ -535,6 +535,7 @@ version = "0.2.0-rc1"
 dependencies = [
  "libc",
  "log",
+ "reflex",
  "rusqlite",
  "serde",
  "serde_json",

@@ -45,7 +45,10 @@ pub fn key_of(actions: &[Action]) -> Vec<(String, String, String)> {
 const PCT: &[&str] = &["position", "brightness_pct", "percentage", "humidity"];
 
 /// Per domain: (canonical service, the data fields it takes).
-pub const SERVICES: &[(&str, &[(&str, &[&str])])] = &[
+/// A service and the data fields it takes.
+pub type Service = (&'static str, &'static [&'static str]);
+
+pub const SERVICES: &[(&str, &[Service])] = &[
     (
         "light",
         &[
@@ -168,7 +171,7 @@ pub const SERVICES: &[(&str, &[(&str, &[&str])])] = &[
     ("select", &[("select_option", &["option"])]),
 ];
 
-fn row(domain: &str) -> Option<&'static [(&'static str, &'static [&'static str])]> {
+fn row(domain: &str) -> Option<&'static [Service]> {
     SERVICES.iter().find(|(d, _)| *d == domain).map(|(_, r)| *r)
 }
 
@@ -261,8 +264,13 @@ fn strings(v: Option<&Value>) -> Vec<String> {
 /// `home_control`'s arguments → the actions to gate: `entity_id` and/or `entity_ids` (names
 /// instead of ids are resolved), else `area` (+ `domain`, default light). A group whose members
 /// are all in the list goes (its lights are done one by one); duplicates go. Every target must
-/// take the service, or nothing is done.
-pub fn plan(exposed: &[Entity], args: &Value) -> Result<Vec<Action>, String> {
+/// take the service, or nothing is done; except the ones `never` says are never controlled by
+/// voice (a lock has no services here): they come back as they are, to be named as refused.
+pub fn plan(
+    exposed: &[Entity],
+    args: &Value,
+    never: &dyn Fn(&Entity) -> bool,
+) -> Result<Vec<Action>, String> {
     let get = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("").trim();
     let service = get("service");
     if service.is_empty() || !service.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
@@ -321,6 +329,13 @@ pub fn plan(exposed: &[Entity], args: &Value) -> Result<Vec<Action>, String> {
     targets
         .into_iter()
         .map(|e| {
+            if never(&e) {
+                return Ok(Action {
+                    entity: e,
+                    service: service.to_string(),
+                    data: json!({}),
+                });
+            }
             let (service, fields) = canonical(e.domain(), service)?;
             let data = check_data(e.domain(), service, fields, &data)?;
             Ok(Action {
@@ -410,6 +425,10 @@ pub fn question_text(actions: &[Action], it: bool) -> String {
 mod tests {
     use super::*;
 
+    fn plan2(h: &[Entity], args: &Value) -> Result<Vec<Action>, String> {
+        plan(h, args, &|_| false)
+    }
+
     fn ent(id: &str, name: &str, area: &str) -> Entity {
         Entity {
             entity_id: id.into(),
@@ -447,19 +466,19 @@ mod tests {
     #[test]
     fn targets_by_id_list_or_area() {
         let h = house();
-        let p = plan(
+        let p = plan2(
             &h,
             &json!({"entity_id": "cover.living_left", "service": "close"}),
         )
         .unwrap();
         assert_eq!(ids(&p), [("cover.living_left", "close_cover")]);
-        let p = plan(
+        let p = plan2(
             &h,
             &json!({"area": "living room", "domain": "cover", "service": "chiudi"}),
         )
         .unwrap();
         assert_eq!(p.len(), 2);
-        let p = plan(&h, &json!({"area": "Study", "service": "spegni"})).unwrap();
+        let p = plan2(&h, &json!({"area": "Study", "service": "spegni"})).unwrap();
         assert_eq!(
             ids(&p),
             [
@@ -468,30 +487,30 @@ mod tests {
             ]
         );
         // A group alone stays a group; duplicates go.
-        let p = plan(
+        let p = plan2(
             &h,
             &json!({"entity_ids": ["light.study", "light.study"], "service": "on"}),
         )
         .unwrap();
         assert_eq!(ids(&p), [("light.study", "turn_on")]);
         // Names instead of ids.
-        let p = plan(
+        let p = plan2(
             &h,
             &json!({"entity_id": "light.kitchen_light", "service": "off"}),
         )
         .unwrap();
         assert_eq!(ids(&p), [("light.kitchen", "turn_off")]);
-        let e = plan(&h, &json!({"area": "Attic", "service": "off"})).unwrap_err();
+        let e = plan2(&h, &json!({"area": "Attic", "service": "off"})).unwrap_err();
         assert!(e.contains("Kitchen") && e.contains("Study"), "{e}");
-        let e = plan(&h, &json!({"service": "off"})).unwrap_err();
+        let e = plan2(&h, &json!({"service": "off"})).unwrap_err();
         assert!(e.contains("which devices"), "{e}");
-        assert!(plan(&h, &json!({"entity_id": "light.nope", "service": "off"})).is_err());
+        assert!(plan2(&h, &json!({"entity_id": "light.nope", "service": "off"})).is_err());
     }
 
     #[test]
     fn the_service_table() {
         let h = house();
-        let e = plan(
+        let e = plan2(
             &h,
             &json!({"entity_id": "cover.living_left", "service": "toggle"}),
         )
@@ -501,47 +520,66 @@ mod tests {
             "{e}"
         );
         assert!(
-            plan(
+            plan2(
                 &h,
                 &json!({"entity_id": "cover.living_left", "service": "set_cover_tilt_position"})
             )
             .is_err()
         );
-        let p = plan(
-            &h,
+        let p = plan2(&h,
             &json!({"entity_id": "valve.garden", "service": "set_position", "data": {"position": 0}}),
         )
         .unwrap();
         assert_eq!(ids(&p), [("valve.garden", "set_valve_position")]);
         assert_eq!(p[0].data, json!({"position": 0}));
-        let p = plan(
+        let p = plan2(
             &h,
             &json!({"entity_id": "media_player.tv", "service": "stop"}),
         )
         .unwrap();
         assert_eq!(ids(&p), [("media_player.tv", "media_stop")]);
-        let e = plan(
-            &h,
+        let e = plan2(&h,
             &json!({"entity_id": "cover.living_left", "service": "close_cover", "data": {"brightness_pct": 10}}),
         )
         .unwrap_err();
         assert!(e.contains("takes no data"), "{e}");
-        let e = plan(
+        let e = plan2(
             &h,
             &json!({"entity_id": "light.kitchen", "service": "turn_on", "data": {"position": 10}}),
         )
         .unwrap_err();
         assert!(e.contains("brightness_pct"), "{e}");
-        assert!(plan(&h, &json!({"entity_id": "light.kitchen", "service": "turn_on", "data": {"brightness_pct": 101}})).is_err());
-        let p = plan(
-            &h,
+        assert!(plan2(&h, &json!({"entity_id": "light.kitchen", "service": "turn_on", "data": {"brightness_pct": 101}})).is_err());
+        let p = plan2(&h,
             &json!({"entity_id": "light.kitchen", "service": "turn_on", "data": {"brightness_pct": 30, "entity_id": "light.x"}}),
         )
         .unwrap();
         assert_eq!(p[0].data, json!({"brightness_pct": 30}));
         // Every target must take the service.
-        assert!(plan(&h, &json!({"entity_ids": ["light.kitchen", "cover.living_left"], "service": "turn_off"})).is_err());
+        assert!(plan2(&h, &json!({"entity_ids": ["light.kitchen", "cover.living_left"], "service": "turn_off"})).is_err());
         assert!(canonical("lock", "unlock").is_err());
+        // A device never controlled by voice comes back as asked, to be refused.
+        let mut h = h;
+        h.push(ent("lock.front", "Front door", ""));
+        let never = |e: &Entity| e.domain() == "lock";
+        let p = plan(
+            &h,
+            &json!({"entity_ids": ["light.kitchen", "lock.front"], "service": "turn_off"}),
+            &never,
+        )
+        .unwrap();
+        assert_eq!(
+            ids(&p),
+            [("light.kitchen", "turn_off"), ("lock.front", "turn_off")]
+        );
+        assert!(
+            plan(
+                &h,
+                &json!({"entity_id": "lock.front", "service": "unlock"}),
+                &|_: &Entity| false
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -577,7 +615,7 @@ mod tests {
             "X (set foo): confermi?"
         );
         let h = house();
-        let two = plan(
+        let two = plan2(
             &h,
             &json!({"area": "Living room", "domain": "cover", "service": "close"}),
         )
@@ -607,14 +645,14 @@ mod tests {
     #[test]
     fn keys_ignore_the_order() {
         let h = house();
-        let a = plan(
+        let a = plan2(
             &h,
             &json!({"entity_ids": ["cover.living_left", "cover.living_right"], "service": "close"}),
         )
         .unwrap();
-        let b = plan(&h, &json!({"entity_ids": ["cover.living_right", "cover.living_left"], "service": "close_cover"})).unwrap();
+        let b = plan2(&h, &json!({"entity_ids": ["cover.living_right", "cover.living_left"], "service": "close_cover"})).unwrap();
         assert_eq!(key_of(&a), key_of(&b));
-        let c = plan(
+        let c = plan2(
             &h,
             &json!({"entity_ids": ["cover.living_right"], "service": "close_cover"}),
         )

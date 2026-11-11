@@ -196,7 +196,6 @@ const SAY_NOTHING: &str =
     "nothing: the question is on the screen and the device listens for the answer";
 
 #[test]
-#[ignore = "red: no asked/names in the result or the confirm event"]
 fn b01_close_one_cover_asks() {
     let mut s = S::new("b01");
     let r = s.call(
@@ -213,7 +212,6 @@ fn b01_close_one_cover_asks() {
 }
 
 #[test]
-#[ignore = "red: set_cover_position is asked with the old shape; no via on confirm.answer"]
 fn b02_position_zero_keeps_its_service() {
     let mut s = S::new("b02");
     let r = s.call(
@@ -235,7 +233,6 @@ fn b02_position_zero_keeps_its_service() {
 }
 
 #[test]
-#[ignore = "red: old result shape"]
 fn b03_a_room_with_one_cover_asks() {
     let mut s = S::new("b03");
     let r = s.call(
@@ -249,7 +246,6 @@ fn b03_a_room_with_one_cover_asks() {
 }
 
 #[test]
-#[ignore = "red: a room of covers is skipped, not asked"]
 fn b04_a_room_with_two_covers_one_question() {
     let mut s = S::new("b04");
     let r = s.call(
@@ -276,7 +272,6 @@ fn b04_a_room_with_two_covers_one_question() {
 }
 
 #[test]
-#[ignore = "red: no turns; a screen No is reused only by confirm_id within 10 s"]
 fn b05_a_no_then_the_same_call_in_the_same_turn() {
     let mut s = S::new("b05");
     s.turn(7, "chiudi la tapparella", None);
@@ -315,19 +310,16 @@ fn after_a_no_a_new_turn_asks_again(name: &str, later_ms: i64) {
 }
 
 #[test]
-#[ignore = "red: no turns"]
 fn b06_after_a_no_a_new_turn_asks_again() {
     after_a_no_a_new_turn_asks_again("b06", 10_000);
 }
 
 #[test]
-#[ignore = "red: no turns"]
 fn b07_after_a_no_minutes_later_asks_again() {
     after_a_no_a_new_turn_asks_again("b07", 300_000);
 }
 
 #[test]
-#[ignore = "red: answer without via; confirm_done without via"]
 fn b08_a_screen_yes_executes_without_pending() {
     let mut s = S::new("b08");
     let q = S::asked(&s.call("home_control", close("cover.study")));
@@ -342,7 +334,6 @@ fn b08_a_screen_yes_executes_without_pending() {
 }
 
 #[test]
-#[ignore = "red: no confirm_pending: a voice yes executes at once"]
 fn b09_a_voice_yes_waits_a_second() {
     let mut s = S::new("b09");
     let q = S::asked(&s.call("home_control", close("cover.study")));
@@ -375,7 +366,6 @@ fn voice_yes_then(name: &str, yes: bool, via: &str) -> S {
 }
 
 #[test]
-#[ignore = "red: no confirm_pending"]
 fn b10_a_screen_no_inside_the_second_wins() {
     let mut s = voice_yes_then("b10", false, "screen");
     let ev = s.expect(&[], &["confirm_done"]);
@@ -388,7 +378,6 @@ fn b10_a_screen_no_inside_the_second_wins() {
 }
 
 #[test]
-#[ignore = "red: no via stop"]
 fn b11_the_stop_word_inside_the_second_is_a_no() {
     let mut s = voice_yes_then("b11", false, "stop");
     let ev = s.expect(&[], &["confirm_done"]);
@@ -401,7 +390,6 @@ fn b11_the_stop_word_inside_the_second_is_a_no() {
 }
 
 #[test]
-#[ignore = "red: no confirm_pending"]
 fn b12_a_screen_yes_inside_the_second_executes_once() {
     let mut s = voice_yes_then("b12", true, "screen");
     let ev = s.expect(
@@ -414,7 +402,6 @@ fn b12_a_screen_yes_inside_the_second_executes_once() {
 }
 
 #[test]
-#[ignore = "red: no turn with answers"]
 fn b13_a_yes_heard_by_home_assistant() {
     let mut s = S::new("b13");
     s.turn(7, "chiudi la tapparella dello studio", None);
@@ -431,7 +418,6 @@ fn b13_a_yes_heard_by_home_assistant() {
 }
 
 #[test]
-#[ignore = "red: no turn with answers"]
 fn b14_a_no_heard_by_home_assistant() {
     let mut s = S::new("b14");
     s.turn(7, "chiudi la tapparella dello studio", None);
@@ -446,7 +432,6 @@ fn b14_a_no_heard_by_home_assistant() {
 }
 
 #[test]
-#[ignore = "red: no turn request"]
 fn b15_a_yes_in_a_turn_that_answers_nothing() {
     let mut s = S::new("b15");
     let q = S::asked(&s.call("home_control", close("cover.study")));
@@ -464,7 +449,6 @@ fn b15_a_yes_in_a_turn_that_answers_nothing() {
 }
 
 #[test]
-#[ignore = "red: no turn request"]
 fn b16_sentences_that_are_not_an_answer() {
     let mut s = S::new("b16");
     let q = S::asked(&s.call("home_control", close("cover.study")));
@@ -487,7 +471,6 @@ fn b16_sentences_that_are_not_an_answer() {
 }
 
 #[test]
-#[ignore = "red: the model carries confirm_id"]
 fn b17_the_model_calls_again_after_the_yes() {
     let mut s = S::new("b17");
     s.turn(7, "chiudi la tapparella dello studio", None);
@@ -514,7 +497,6 @@ fn b17_the_model_calls_again_after_the_yes() {
 }
 
 #[test]
-#[ignore = "red: a second answer is an error"]
 fn b18_double_answers() {
     let mut s = S::new("b18");
     let q = S::asked(&s.call("home_control", close("cover.study")));
@@ -542,7 +524,6 @@ fn b18_double_answers() {
 }
 
 #[test]
-#[ignore = "red: skipped instead of refused; no note"]
 fn b19a_lights_at_once_the_lock_never() {
     let mut s = S::new("b19a");
     let r = s.call(
@@ -567,7 +548,6 @@ fn b19a_lights_at_once_the_lock_never() {
 }
 
 #[test]
-#[ignore = "red: a cover in a list is skipped, not asked"]
 fn b19b_a_blind_asks_the_garage_never() {
     let mut s = S::new("b19b");
     let r = s.call(
@@ -582,7 +562,6 @@ fn b19b_a_blind_asks_the_garage_never() {
 }
 
 #[test]
-#[ignore = "red: done is not a list of names"]
 fn b20_groups_made_up_ids_and_areas() {
     let mut s = S::new("b20");
     let r = s.call(
@@ -617,7 +596,6 @@ fn b20_groups_made_up_ids_and_areas() {
 }
 
 #[test]
-#[ignore = "red: no service table"]
 fn b21_services_and_data_outside_the_table() {
     let mut s = S::new("b21");
     for service in ["toggle", "set_cover_tilt_position"] {
@@ -665,7 +643,6 @@ fn changed_between_question_and_yes(name: &str, change: impl FnOnce(&S)) {
 }
 
 #[test]
-#[ignore = "red: answer_confirm returns an error, no failed list"]
 fn b22a_the_gate_becomes_never() {
     changed_between_question_and_yes("b22a", |s| {
         s.b.set_gate("cover.study", Some("never")).unwrap()
@@ -673,19 +650,16 @@ fn b22a_the_gate_becomes_never() {
 }
 
 #[test]
-#[ignore = "red: answer_confirm returns an error, no failed list"]
 fn b22b_no_longer_exposed() {
     changed_between_question_and_yes("b22b", |s| s.f.unexpose("cover.study"));
 }
 
 #[test]
-#[ignore = "red: answer_confirm returns an error, no failed list"]
 fn b22c_home_assistant_down() {
     changed_between_question_and_yes("b22c", |s| s.f.set_down(true));
 }
 
 #[test]
-#[ignore = "red: covers in a room are skipped"]
 fn b23_one_of_two_fails() {
     let mut s = S::new("b23");
     s.f.fail("cover.living_right");
@@ -706,7 +680,6 @@ fn b23_one_of_two_fails() {
 }
 
 #[test]
-#[ignore = "red: a repeated call replaces the question"]
 fn b24_a_second_question_while_one_is_open() {
     let mut s = S::new("b24");
     s.turn(7, "chiudi la tapparella", None);
@@ -734,7 +707,6 @@ fn b24_a_second_question_while_one_is_open() {
 }
 
 #[test]
-#[ignore = "red: answer after the expiry is an error"]
 fn b25_too_late() {
     let mut s = S::new("b25");
     let q = S::asked(&s.call("home_control", close("cover.study")));
@@ -756,7 +728,6 @@ fn b25_too_late() {
 }
 
 #[test]
-#[ignore = "red: replay has no question"]
 fn b26_a_body_that_reconnects_sees_the_question() {
     let mut s = S::new("b26");
     let q = S::asked(&s.call("home_control", close("cover.study")));
@@ -782,7 +753,6 @@ fn b26_a_body_that_reconnects_sees_the_question() {
 }
 
 #[test]
-#[ignore = "red: old result shape"]
 fn b27_no_undo_after_a_yes() {
     let mut s = S::new("b27");
     let q = S::asked(&s.call("home_control", close("cover.study")));
@@ -798,7 +768,6 @@ fn b27_no_undo_after_a_yes() {
 }
 
 #[test]
-#[ignore = "red: no turn with answers"]
 fn b28_the_answering_turn_after_a_no() {
     let mut s = S::new("b28");
     s.turn(7, "chiudi la tapparella", None);
@@ -811,7 +780,6 @@ fn b28_the_answering_turn_after_a_no() {
 }
 
 #[test]
-#[ignore = "red: no turn request"]
 fn b29_legacy_heard_and_said() {
     let mut s = S::with("b29", |c| c.memory.session_gap_minutes = 0);
     let q = S::asked(&s.call("home_control", close("cover.study")));
@@ -843,7 +811,6 @@ fn b29_legacy_heard_and_said() {
 }
 
 #[test]
-#[ignore = "red: error text differs; old result shape"]
 fn b30_a_restarted_brain_knows_no_old_question() {
     let mut s = S::new("b30");
     let q = S::asked(&s.call("home_control", close("cover.study")));
@@ -858,7 +825,6 @@ fn b30_a_restarted_brain_knows_no_old_question() {
 }
 
 #[test]
-#[ignore = "red: no turns"]
 fn b31_a_new_call_after_the_turn_ended() {
     let mut s = S::new("b31");
     s.turn(7, "chiudi la tapparella", None);
@@ -875,7 +841,6 @@ fn b31_a_new_call_after_the_turn_ended() {
 }
 
 #[test]
-#[ignore = "red: done is true, not a list of names"]
 fn b32_a_light_at_once_with_undo() {
     let mut s = S::new("b32");
     let r = s.call(

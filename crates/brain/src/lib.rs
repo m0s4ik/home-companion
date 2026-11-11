@@ -15,5 +15,6 @@ pub mod jobs;
 pub mod lists;
 pub mod llm;
 pub mod mcp;
+pub mod question;
 pub mod memory;
 pub mod safety;
