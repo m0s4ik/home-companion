@@ -270,7 +270,14 @@ fn step(st: &mut GateState, ctx: &Ctx, ev: Event) -> Verdict {
             if decide_now {
                 return decide(st, ctx, text, words);
             }
-            st.result = Some((text.to_string(), words.to_vec(), endpoint));
+            if text.trim().is_empty() && words.is_empty() {
+                // Empty, not over: the helper goes on decoding, never keep it for the end of
+                // speech (the words said since would never be asked for with `E`).
+                st.end_sent_s = None;
+                st.no_words.get_or_insert(ctx.vad.speech_ms());
+            } else {
+                st.result = Some((text.to_string(), words.to_vec(), endpoint));
+            }
         }
         Event::SpeechEnd | Event::Tick => {}
     }
@@ -731,6 +738,32 @@ mod tests {
         let (at, v) = s.run_to(8.0).unwrap();
         assert_eq!(v, Verdict::Quiet);
         assert!(at >= 5.7, "{at}");
+    }
+
+    /// R7b: an empty endpoint result while sound goes on (rule A): not kept; the detector's end
+    /// still asks the helper (`E`) for what it decoded since.
+    #[test]
+    fn r7b_empty_endpoint_while_speaking() {
+        let words = spread("che ore sono", 1.0, 0.3, 6.2);
+        let mut s = Sim::new(Rule::Covered, &[(0.3, 6.2)]);
+        s.limits.stability_s = None;
+        assert_eq!(s.run_to(5.3), None);
+        assert_eq!(s.fin("", &[], true), Verdict::Hold);
+        let (at, v) = s.run_to(7.9).unwrap();
+        assert_eq!(v, Verdict::Flush, "{at}");
+        assert!(s.st.end_sent());
+        assert_eq!(
+            s.fin("che ore sono", &words, false),
+            Verdict::Act(Command::Time)
+        );
+
+        // The same, ending in an empty final: Home Assistant, live, as for sound without words.
+        let mut s = Sim::new(Rule::Covered, &[(0.3, 6.2)]);
+        s.limits.stability_s = None;
+        assert_eq!(s.run_to(5.3), None);
+        assert_eq!(s.fin("", &[], true), Verdict::Hold);
+        assert_eq!(s.run_to(7.9).unwrap().1, Verdict::Flush);
+        assert_eq!(s.fin("", &[], false), Verdict::Release { live: true });
     }
 
     /// R8: a first partial that is only `[unk]`: after the wake tail it releases; inside it,
