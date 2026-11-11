@@ -184,6 +184,9 @@ pub enum UiCommand {
     Suspending,
     /// "Spegni lo schermo" (a reflex): the backlight off until a touch, a key or a wake word.
     ScreenOff,
+    /// "No" (or "basta", "lascia stare"…) said to the reflexes: a house question still open on
+    /// the screen is answered No, as if touched.
+    DeclineQuestion,
     /// "Non disturbare" (a reflex): no sounds nor cards' sounds, the screen dim, until this
     /// unix time (Some) or off again (None).
     DoNotDisturb(Option<u64>),
@@ -1615,7 +1618,10 @@ impl Core {
                 let p = self.d.volume.as_ref().map_or(percent, |v| v.percent());
                 self.reflex_text("reflex_volume", &[("percent", &p.to_string())])
             }
-            Reflex::Silence => String::new(),
+            Reflex::Silence => {
+                after.push(UiCommand::DeclineQuestion);
+                String::new()
+            }
             Reflex::MusicPause | Reflex::MusicPlay | Reflex::MusicNext | Reflex::MusicPrevious => {
                 use crate::airplay::Remote;
                 let (remote, key) = match cmd {

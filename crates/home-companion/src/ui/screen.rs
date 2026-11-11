@@ -3153,6 +3153,14 @@ impl<S: Screen> Ui<S> {
                 self.screen.set_volume(p, false);
             }
             UiCommand::ScreenOff => self.screen_off(),
+            UiCommand::DeclineQuestion => {
+                let id = self.house.borrow_mut().answer();
+                if let Some(id) = id {
+                    log::info!(event = "house_answer", id = id, yes = false, by = "voice"; "house: no to {id} (said)");
+                    self.brain_do(brain_link::confirm_answer(id, false));
+                    self.render_house();
+                }
+            }
             UiCommand::DoNotDisturb(until) => self.set_dnd(until),
             UiCommand::Announcing(on) => self.screen.set_announcing(on),
             UiCommand::Suspending => {

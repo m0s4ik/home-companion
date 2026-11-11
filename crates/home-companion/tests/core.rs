@@ -914,6 +914,12 @@ fn good_night_turns_the_screen_off_and_does_not_disturb_until_the_morning() {
 }
 
 #[test]
+fn a_spoken_no_declines_the_open_question() {
+    let (ui, _, _) = reflex_run("no", 1.0);
+    assert!(ui.contains(&UiCommand::DeclineQuestion), "{ui:?}");
+}
+
+#[test]
 fn screen_off_by_voice() {
     let (ui, _, _) = reflex_run("spegni lo schermo", 1.0);
     assert!(ui.contains(&UiCommand::ScreenOff), "{ui:?}");
