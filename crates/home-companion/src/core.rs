@@ -1636,7 +1636,7 @@ impl Core {
                 let p = self.d.volume.as_ref().map_or(percent, |v| v.percent());
                 self.reflex_text("reflex_volume", &[("percent", &p.to_string())])
             }
-            Reflex::Silence => {
+            Reflex::Silence | Reflex::No => {
                 after.push(UiCommand::DeclineQuestion);
                 String::new()
             }
@@ -1716,7 +1716,9 @@ impl Core {
             Reflex::AlarmSet { .. } => Some(&self.cues.alarm_set),
             Reflex::TimerCancel { .. } | Reflex::AlarmCancel => Some(&self.cues.cancelled),
             // Soft and low: the screen goes dark, the evening goes quiet.
-            Reflex::Silence | Reflex::ScreenOff | Reflex::GoodNight => Some(&self.cues.silence),
+            Reflex::Silence | Reflex::No | Reflex::ScreenOff | Reflex::GoodNight => {
+                Some(&self.cues.silence)
+            }
             // The house card shows what follows (done, with Undo).
             Reflex::Yes => None,
             Reflex::TimerLeft { .. } | Reflex::TimerList => Some(&self.cues.done),

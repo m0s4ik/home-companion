@@ -53,6 +53,9 @@ pub enum Command {
     Silence,
     /// "Sì": the answer to an open Yes/No question (only then: else it is Home Assistant's).
     Yes,
+    /// "No": the answer to an open Yes/No question; outside one it ends the conversation
+    /// quietly like Silence.
+    No,
     /// The music playing through AirPlay: the sender pauses, plays, changes track.
     MusicPause,
     MusicPlay,
@@ -236,6 +239,7 @@ fn command(name: &str, b: Bound) -> Result<Command, String> {
         "volume_min" => plain(&b, Command::VolumeSet { percent: 5 })?,
         "silence" => plain(&b, Command::Silence)?,
         "yes" => plain(&b, Command::Yes)?,
+        "no" => plain(&b, Command::No)?,
         "music_pause" => plain(&b, Command::MusicPause)?,
         "music_play" => plain(&b, Command::MusicPlay)?,
         "music_next" => plain(&b, Command::MusicNext)?,
@@ -440,6 +444,102 @@ pub const COVER_SLACK_S: f32 = 0.35;
 /// The lowest word confidence (1.0 with no words).
 pub fn min_conf(words: &[Word]) -> f32 {
     words.iter().map(|w| w.conf).fold(1.0, f32::min)
+}
+
+/// The phrases of a grammar's `yes` and `no` keys, to tell whether a whole sentence (Home
+/// Assistant's transcript, not Vosk's) is an answer to a Yes/No question.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnswerWords {
+    pub yes: Vec<String>,
+    pub no: Vec<String>,
+}
+
+/// The `yes` and `no` lists of a grammar file, normalised (no slot expansion).
+pub fn answer_words(grammar_toml: &str) -> Result<AnswerWords, String> {
+    let f: File = toml::from_str(grammar_toml).map_err(|e| e.to_string())?;
+    let list = |k: &str| -> Vec<String> {
+        f.commands
+            .get(k)
+            .into_iter()
+            .flatten()
+            .map(|p| fold(p))
+            .filter(|p| !p.is_empty())
+            .collect()
+    };
+    let w = AnswerWords {
+        yes: list("yes"),
+        no: list("no"),
+    };
+    if w.yes.is_empty() || w.no.is_empty() {
+        return Err("the grammar has no yes or no phrases".into());
+    }
+    Ok(w)
+}
+
+impl AnswerWords {
+    /// What a grammar without the lists still understands.
+    pub fn minimum() -> AnswerWords {
+        AnswerWords {
+            yes: vec!["si".into(), "yes".into()],
+            no: vec!["no".into()],
+        }
+    }
+
+    /// Some(true) only when the whole sentence is one or more phrases of the yes list ("Sì.",
+    /// "sì sì", "Sì, confermo"), Some(false) likewise for the no list ("no, lascia stare");
+    /// anything else, mixed or with other words, None.
+    pub fn classify(&self, sentence: &str) -> Option<bool> {
+        let s = fold(sentence);
+        if s.is_empty() {
+            return None;
+        }
+        let words: Vec<&str> = s.split(' ').collect();
+        if covers(&words, &self.yes) {
+            Some(true)
+        } else if covers(&words, &self.no) {
+            Some(false)
+        } else {
+            None
+        }
+    }
+}
+
+/// Whether `words` is a sequence of whole phrases of `phrases`.
+fn covers(words: &[&str], phrases: &[String]) -> bool {
+    let split: Vec<Vec<&str>> = phrases.iter().map(|p| p.split(' ').collect()).collect();
+    // ok[i]: the first i words are phrases.
+    let mut ok = vec![false; words.len() + 1];
+    ok[0] = true;
+    for i in 0..words.len() {
+        if !ok[i] {
+            continue;
+        }
+        for p in &split {
+            if words[i..].starts_with(p) {
+                ok[i + p.len()] = true;
+            }
+        }
+    }
+    ok[words.len()]
+}
+
+/// Lower case, punctuation to spaces, accents folded ("Sì," = "si"), spaces collapsed.
+fn fold(s: &str) -> String {
+    let mapped: String = s
+        .to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'à' | 'á' | 'â' | 'ä' => 'a',
+            'è' | 'é' | 'ê' | 'ë' => 'e',
+            'ì' | 'í' | 'î' | 'ï' => 'i',
+            'ò' | 'ó' | 'ô' | 'ö' => 'o',
+            'ù' | 'ú' | 'û' | 'ü' => 'u',
+            '\'' | '’' => '\'',
+            c if c.is_alphanumeric() => c,
+            _ => ' ',
+        })
+        .collect();
+    mapped.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn normalize(s: &str) -> String {
@@ -790,6 +890,56 @@ Uova = { bare = "uova" }
         assert!(bad(r#"dnd_on = ["zitto {name:bare}"]"#).contains("whole_duration"));
         assert!(bad(r#"timer_start = ["timer {minutes}"]"#).contains("unknown slot"));
         assert!(bad(r#"timer_start = ["timer {duration} {whole_duration}"]"#).contains("two"));
+    }
+
+    #[test]
+    fn whole_sentences_as_answers() {
+        let w = answer_words(include_str!("../../../characters/alfred/grammar/it.toml")).unwrap();
+        for y in [
+            "Sì.",
+            "sì sì",
+            "Sì, confermo",
+            "si",
+            "Va bene!",
+            "sì va bene",
+        ] {
+            assert_eq!(w.classify(y), Some(true), "{y}");
+        }
+        for n in ["No.", "no, lascia stare", "No, grazie.", "annulla"] {
+            assert_eq!(w.classify(n), Some(false), "{n}");
+        }
+        for x in [
+            "Si può sapere che ore sono?",
+            "sì però aspetta",
+            "no anzi sì",
+            "sicuro che piove?",
+            "che ore sono",
+            "",
+            "  ?! ",
+        ] {
+            assert_eq!(w.classify(x), None, "{x}");
+        }
+        let en = answer_words(include_str!("../../../characters/alfred/grammar/en.toml")).unwrap();
+        assert_eq!(en.classify("Yes, go ahead."), Some(true));
+        assert_eq!(en.classify("No thanks."), Some(false));
+        assert_eq!(en.classify("yes but wait"), None);
+        assert_eq!(AnswerWords::minimum().classify("Sì!"), Some(true));
+        assert!(
+            answer_words("format = 1\nlanguage = \"it\"\n[commands]\ntime = [\"ora\"]").is_err()
+        );
+    }
+
+    #[test]
+    fn alfred_yes_and_no_reflexes() {
+        let it = alfred("it");
+        assert_eq!(it.command("no"), Some(Command::No));
+        assert_eq!(it.command("lascia stare"), Some(Command::No));
+        assert_eq!(it.command("va bene"), Some(Command::Yes));
+        assert_eq!(it.command("basta"), Some(Command::Silence));
+        let en = alfred("en");
+        assert_eq!(en.command("no thanks"), Some(Command::No));
+        assert_eq!(en.command("never mind"), Some(Command::No));
+        assert_eq!(en.command("thank you"), Some(Command::Silence));
     }
 
     #[test]
