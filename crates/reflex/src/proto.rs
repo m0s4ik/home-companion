@@ -8,8 +8,15 @@
 //! id (the utterance is over: flush the final result unless an endpoint was already reported).
 //!
 //! Helper → body (stdout): one JSON object per line ([`Reply`]): `ready` once the model and the
-//! grammar are loaded, then one `result` per utterance, either at Vosk's own end of speech
-//! (`endpoint: true`, the body decides at once) or after `E` (`endpoint: false`).
+//! grammar are loaded, then per utterance:
+//!
+//! - `partial` lines while it is decoded: Vosk's partial text, sent only when it changed since the
+//!   last one of this utterance (a few per utterance), never after the utterance's last `result`;
+//! - a `result`, either at Vosk's own end of speech (`endpoint: true`) or after `E`
+//!   (`endpoint: false`). A result **with words** ends the utterance. An **empty** one does not:
+//!   the helper goes on decoding the audio that follows (partials resume), and a later endpoint
+//!   or another `E` with the same id gets another result. So sound without words never needs the
+//!   utterance started over.
 
 use std::io::{self, Read, Write};
 
@@ -107,6 +114,13 @@ pub enum Reply {
         /// Audio received for this utterance.
         audio_s: f64,
     },
+    /// Vosk's partial text of the utterance so far (changed since the last one).
+    Partial {
+        id: u64,
+        text: String,
+        /// Audio received for this utterance.
+        audio_s: f64,
+    },
     Error {
         message: String,
     },
@@ -163,6 +177,20 @@ mod tests {
         let mut out = Vec::new();
         r.write(&mut out).unwrap();
         let line = String::from_utf8(out).unwrap();
+        assert_eq!(Reply::parse(line.trim()).unwrap(), r);
+    }
+
+    #[test]
+    fn partials_round_trip() {
+        let r = Reply::Partial {
+            id: 4,
+            text: "che ore".into(),
+            audio_s: 1.12,
+        };
+        let mut out = Vec::new();
+        r.write(&mut out).unwrap();
+        let line = String::from_utf8(out).unwrap();
+        assert!(line.starts_with(r#"{"type":"partial","id":4,"#), "{line}");
         assert_eq!(Reply::parse(line.trim()).unwrap(), r);
     }
 }
