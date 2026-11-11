@@ -139,9 +139,10 @@ impl Vad {
         match self.span() {
             None => true,
             Some((a, b)) => {
-                // Sound at the very start is the wake word's tail and the wake cue coming back
-                // from the speaker, not something else said: tolerated before an early phrase.
-                let wake_tail = a <= WAKE_TAIL_S && first_word_start <= WAKE_TAIL_S + 1.2;
+                // Sound at the very start is the wake word's tail and the wake (or follow-up) cue
+                // coming back from the speaker, not something else said: tolerated before a
+                // phrase starting within a couple of seconds (a "no" after a pause, 1.95 s).
+                let wake_tail = a <= WAKE_TAIL_S && first_word_start <= WAKE_TAIL_S + 2.0;
                 b <= last_word_end + slack && (wake_tail || a + 2.0 * slack >= first_word_start)
             }
         }

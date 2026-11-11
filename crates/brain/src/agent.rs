@@ -104,6 +104,16 @@ const UNDO_KEPT: usize = 16;
 
 /// The question before a command that needs a yes, in the user's words: "Chiudo Tapparella
 /// salone?", "Sposto Tapparella salone al 30%?"; a service without a verb here keeps its name.
+/// The service as Home Assistant names it for the entity's domain: models say "close" for a
+/// cover ("close_cover"), "open" for a valve.
+pub fn service_for(domain: &str, service: &str) -> String {
+    match (domain, service) {
+        ("cover" | "valve", "open" | "close" | "stop") => format!("{service}_{domain}"),
+        ("cover" | "valve", "set_position") => format!("set_{domain}_position"),
+        _ => service.to_string(),
+    }
+}
+
 pub fn confirm_question(name: &str, service: &str, data: &Value, it: bool) -> String {
     let pos = data.get("position").and_then(Value::as_i64);
     let verb = match (service, it) {
@@ -1555,7 +1565,7 @@ impl Brain {
                 skipped.push(e.full_name());
                 continue;
             }
-            match self.run_control(ha, e, service, data, true) {
+            match self.run_control(ha, e, &service_for(e.domain(), service), data, true) {
                 Ok(()) => done.push(e.full_name()),
                 Err(err) => failed.push(format!("{}: {err}", e.full_name())),
             }
@@ -1600,6 +1610,7 @@ impl Brain {
             log::info!(event = "brain_entity_resolved", asked = entity_id.as_str(), used = e.entity_id.as_str(); "entity {entity_id} resolved by name");
         }
         let entity_id = e.entity_id.clone();
+        let service = service_for(e.domain(), &service);
         let ha = self.ha().ok_or("Home Assistant is not configured")?;
         let it = lang.starts_with("it");
         match self.gate_of(&e) {
@@ -2588,6 +2599,16 @@ mod tests {
                 + local_now().split(' ').nth(1).unwrap().len()
         );
         assert_eq!(date_of(0).len(), 10);
+    }
+
+    #[test]
+    fn services_named_as_the_domain_wants() {
+        use super::service_for as f;
+        assert_eq!(f("cover", "close"), "close_cover");
+        assert_eq!(f("valve", "open"), "open_valve");
+        assert_eq!(f("cover", "set_position"), "set_cover_position");
+        assert_eq!(f("cover", "close_cover"), "close_cover");
+        assert_eq!(f("light", "turn_on"), "turn_on");
     }
 
     #[test]
