@@ -51,6 +51,8 @@ pub enum Command {
     },
     /// Nothing to do: the conversation ends quietly ("silenzio", "lascia stare").
     Silence,
+    /// "Sì": the answer to an open Yes/No question (only then: else it is Home Assistant's).
+    Yes,
     /// The music playing through AirPlay: the sender pauses, plays, changes track.
     MusicPause,
     MusicPlay,
@@ -233,6 +235,7 @@ fn command(name: &str, b: Bound) -> Result<Command, String> {
         "volume_max" => plain(&b, Command::VolumeSet { percent: 100 })?,
         "volume_min" => plain(&b, Command::VolumeSet { percent: 5 })?,
         "silence" => plain(&b, Command::Silence)?,
+        "yes" => plain(&b, Command::Yes)?,
         "music_pause" => plain(&b, Command::MusicPause)?,
         "music_play" => plain(&b, Command::MusicPlay)?,
         "music_next" => plain(&b, Command::MusicNext)?,

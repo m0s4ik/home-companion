@@ -136,6 +136,7 @@ music_previous = [
     "rimetti la canzone di prima",
 ]
 silence = ["silenzio", "stai zitto", "zitto", "lascia stare", "niente", "non importa", "annulla", "basta", "basta così", "no grazie", "niente grazie", "no", "grazie", "va bene così", "a posto così"]
+yes = ["sì", "sì grazie", "sì certo", "certo", "conferma", "confermo", "procedi", "vai pure", "fallo"]
 repeat = ["ripeti", "puoi ripetere", "ripeti per favore", "cosa hai detto", "che cosa hai detto", "come hai detto", "ripetilo"]
 screen_off = ["spegni lo schermo", "spegni il display", "spegni lo schermo per favore"]
 dnd_on = [

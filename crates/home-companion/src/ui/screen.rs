@@ -1061,6 +1061,8 @@ pub struct Ui<S: Screen> {
     restart_timer: Timer,
     /// v0.2: the "done" and Yes/No cards of the brain's house commands.
     house: RefCell<HouseCards>,
+    /// A Yes/No question is open, as last told to the core (UiEvent::Question).
+    asking: Cell<bool>,
     /// The countdown's length last put on screen (it is set again when it moved enough).
     ask_left: Cell<f32>,
     /// Do not disturb (UiCommand::DoNotDisturb).
@@ -1342,6 +1344,7 @@ impl<S: Screen> Ui<S> {
             find: RefCell::new(None),
             restart_timer: Timer::default(),
             house: RefCell::new(HouseCards::default()),
+            asking: Cell::new(false),
             ask_left: Cell::new(0.0),
             dnd: Cell::new(Dnd::default()),
             this: RefCell::new(Weak::new()),
@@ -3153,11 +3156,12 @@ impl<S: Screen> Ui<S> {
                 self.screen.set_volume(p, false);
             }
             UiCommand::ScreenOff => self.screen_off(),
-            UiCommand::DeclineQuestion => {
+            c @ (UiCommand::DeclineQuestion | UiCommand::AcceptQuestion) => {
+                let yes = c == UiCommand::AcceptQuestion;
                 let id = self.house.borrow_mut().answer();
                 if let Some(id) = id {
-                    log::info!(event = "house_answer", id = id, yes = false, by = "voice"; "house: no to {id} (said)");
-                    self.brain_do(brain_link::confirm_answer(id, false));
+                    log::info!(event = "house_answer", id = id, yes = yes, by = "voice"; "house: {} to {id} (said)", if yes { "yes" } else { "no" });
+                    self.brain_do(brain_link::confirm_answer(id, yes));
                     self.render_house();
                 }
             }
@@ -5019,6 +5023,11 @@ impl<S: Screen> Ui<S> {
     /// Both cards as they are now.
     fn render_house(&self) {
         let h = self.house.borrow().clone();
+        // The core listens for a spoken yes or no as soon as a question opens.
+        if h.ask.is_some() != self.asking.get() {
+            self.asking.set(h.ask.is_some());
+            self.send(UiEvent::Question(h.ask.is_some()));
+        }
         match &h.done {
             Some(d) => {
                 let (line, name, state) = {

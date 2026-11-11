@@ -48,6 +48,9 @@ pub enum UiEvent {
     /// Yes or No touched on a house question: what the character is still saying or waiting
     /// for about it is over (the question repeated, the microphone open for the answer).
     AskAnswered,
+    /// A house Yes/No question opened (true) or closed on the screen: while open, the
+    /// microphone listens for the answer right away and "sì" is a reflex.
+    Question(bool),
     MessageOk(usize),
     Language(String),
     HomeAssistant,
@@ -187,6 +190,8 @@ pub enum UiCommand {
     /// "No" (or "basta", "lascia stare"…) said to the reflexes: a house question still open on
     /// the screen is answered No, as if touched.
     DeclineQuestion,
+    /// "Sì" said to the reflexes while a house question is open: answered Yes, as if touched.
+    AcceptQuestion,
     /// "Non disturbare" (a reflex): no sounds nor cards' sounds, the screen dim, until this
     /// unix time (Some) or off again (None).
     DoNotDisturb(Option<u64>),
@@ -459,6 +464,12 @@ pub struct Core {
     /// "Non disturbare" until then (seconds since the epoch): no card, reminder or announcement
     /// sounds, no final ticks; timers and alarms still ring.
     dnd_until: Option<u64>,
+    /// A house Yes/No question is open on the screen (UiEvent::Question).
+    question_open: bool,
+    /// The answer of the request that asked a house question is still on its way while the
+    /// microphone already listens for the yes or no: Home Assistant's messages belong to the
+    /// old run and are swallowed until it ends or the new utterance opens its own pipeline.
+    swallow_previous: bool,
     /// A reflex's answer waiting for its voice.
     voice_wait: Option<VoiceWait>,
     next_voice_id: u64,
@@ -669,6 +680,8 @@ impl Core {
             tape: crate::repeat::Tape::default(),
             replay: None,
             dnd_until: None,
+            question_open: false,
+            swallow_previous: false,
             voice_wait: None,
             next_voice_id: 1,
             say_wait: None,
@@ -999,6 +1012,7 @@ impl Core {
     /// Starts Home Assistant's pipeline for the current conversation (detection, run-pipeline,
     /// audio-start); false if the connection failed.
     fn open_pipeline(&mut self) -> bool {
+        self.swallow_previous = false;
         let detection = Message::Detection(wyoming::Detection {
             name: Some(self.cfg.wake_name.clone()),
             timestamp: None,
@@ -1343,6 +1357,10 @@ impl Core {
             }
         }));
         match decision {
+            // "Sì" answers an open question; any other time it is for Home Assistant.
+            Decision::Accept(Reflex::Yes) if !self.question_open => {
+                self.release(true, "yes without a question")
+            }
             Decision::Accept(c) => self.act(c, &text),
             Decision::Empty if speech_ms < Vad::MIN_SPEECH_MS => {
                 // Nobody spoke after the wake word (or after a question back: then quietly).
@@ -1622,6 +1640,10 @@ impl Core {
                 after.push(UiCommand::DeclineQuestion);
                 String::new()
             }
+            Reflex::Yes => {
+                after.push(UiCommand::AcceptQuestion);
+                String::new()
+            }
             Reflex::MusicPause | Reflex::MusicPlay | Reflex::MusicNext | Reflex::MusicPrevious => {
                 use crate::airplay::Remote;
                 let (remote, key) = match cmd {
@@ -1695,6 +1717,8 @@ impl Core {
             Reflex::TimerCancel { .. } | Reflex::AlarmCancel => Some(&self.cues.cancelled),
             // Soft and low: the screen goes dark, the evening goes quiet.
             Reflex::Silence | Reflex::ScreenOff | Reflex::GoodNight => Some(&self.cues.silence),
+            // The house card shows what follows (done, with Undo).
+            Reflex::Yes => None,
             Reflex::TimerLeft { .. } | Reflex::TimerList => Some(&self.cues.done),
             Reflex::DoNotDisturb { .. } | Reflex::DoNotDisturbMorning | Reflex::DoNotDisturbOff => {
                 Some(&self.cues.done)
@@ -1940,6 +1964,29 @@ impl Core {
     }
 
     fn on_message(&mut self, m: Message) {
+        if self.swallow_previous {
+            match &m {
+                Message::AudioStop { .. } | Message::Error { .. } => {
+                    // The old run is over: acknowledged as a stopped answer.
+                    self.swallow_previous = false;
+                    if matches!(m, Message::AudioStop { .. }) {
+                        self.send(&Message::Played);
+                    }
+                    log::info!(event = "question_late_answer"; "the asking request's answer ended: swallowed");
+                    return;
+                }
+                Message::Transcript(_)
+                | Message::Synthesize(_)
+                | Message::AudioStart { .. }
+                | Message::AudioChunk { .. }
+                | Message::VoiceStarted { .. }
+                | Message::VoiceStopped { .. } => {
+                    log::debug!("{} of the asking request: swallowed", m.kind());
+                    return;
+                }
+                _ => {}
+            }
+        }
         match m {
             Message::Describe | Message::Ping { .. } | Message::Pong { .. } | Message::Info(_) => {
                 log::trace!("{}", m.kind())
@@ -2447,6 +2494,12 @@ impl Core {
             },
             UiEvent::Stop => self.on_stop(),
             UiEvent::FalseWake => self.on_false_wake(),
+            UiEvent::Question(open) => {
+                self.question_open = open;
+                if open {
+                    self.listen_for_the_answer();
+                }
+            }
             UiEvent::AskAnswered => {
                 // Only the conversation: never the bell of a timer or the music.
                 if matches!(self.phase, Phase::Listening | Phase::Thinking | Phase::Speaking) {
@@ -2651,6 +2704,45 @@ impl Core {
         crate::ui::keycombo::resumed_shared();
         self.ui(UiCommand::Resumed);
         self.refresh_rows(true);
+    }
+
+    /// A house question opened while the character works on the request that asked it: the
+    /// spoken question (still being written, or being said) is dropped, the screen shows it,
+    /// and the microphone opens at once for "sì" or "no".
+    fn listen_for_the_answer(&mut self) {
+        let asked_here = self.conv.as_ref().is_some_and(|c| c.trigger != Trigger::Announcement);
+        if !asked_here {
+            return;
+        }
+        match self.phase {
+            Phase::Thinking => {
+                let end_stream = self
+                    .conv
+                    .as_ref()
+                    .is_some_and(|c| !c.audio_stop_sent && c.transcript_at.is_none());
+                if end_stream {
+                    self.send(&Message::AudioStop { timestamp: None });
+                }
+                if let Some(c) = &mut self.conv {
+                    c.discard_answer = true;
+                    c.audio_stop_sent |= end_stream;
+                }
+            }
+            Phase::Speaking => {
+                if let Some(c) = &mut self.conv {
+                    if let Some(s) = c.stream.take() {
+                        s.abort();
+                    }
+                }
+                self.send_played();
+                self.close("question");
+            }
+            _ => return,
+        }
+        log::info!(event = "question_listen"; "house question: listening for the answer now");
+        let waiting = self.phase == Phase::Thinking;
+        self.start_conversation(Trigger::FollowUp);
+        self.swallow_previous = waiting;
     }
 
     fn on_stop(&mut self) {

@@ -54,6 +54,7 @@ music_play = ["resume the music", "play the music", "resume", "continue the musi
 music_next = ["next song", "next track", "skip this song", "skip song", "play the next song"]
 music_previous = ["previous song", "previous track", "go back to the previous song", "play the previous song"]
 silence = ["silence", "be quiet", "never mind", "nothing", "cancel", "no thanks", "no thank you", "that's all", "no", "thanks", "thank you", "enough"]
+yes = ["yes", "yes please", "sure", "confirm", "go ahead", "do it"]
 repeat = ["repeat", "repeat that", "can you repeat that", "say that again", "what did you say", "come again"]
 screen_off = ["turn off the screen", "turn the screen off", "switch off the screen", "screen off"]
 dnd_on = [
