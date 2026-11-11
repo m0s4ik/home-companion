@@ -50,6 +50,15 @@ impl Hub {
         subs.retain_mut(|s| events.iter().all(|e| writeln!(s, "{e}").is_ok()));
     }
 
+    /// A subscriber added by hand (tests: one end of a `UnixStream::pair`).
+    #[doc(hidden)]
+    pub fn add_subscriber(&self, s: UnixStream) {
+        self.subscribers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(s);
+    }
+
     pub fn subscribers(&self) -> usize {
         self.subscribers.lock().map_or(0, |s| s.len())
     }

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::clock;
+use crate::clock::{self, Clock};
 use crate::config::Config;
 use crate::ha::Ha;
 use crate::jobs;
@@ -23,6 +23,8 @@ use crate::safety::{Gate, answer_to_confirm, sanitize};
 
 pub struct Brain {
     cfg: Config,
+    /// The time of the questions, the turns and the undo (tests drive it by hand).
+    clock: Arc<dyn Clock>,
     name: String,
     /// Home Assistant's AI task: the memory jobs and the morning summary think with it.
     ai: Client,
@@ -530,6 +532,11 @@ pub fn parse_ops(v: &Value) -> Vec<FactOp> {
 
 impl Brain {
     pub fn new(cfg: Config) -> Result<Brain, String> {
+        Brain::with_clock(cfg, Arc::new(clock::SystemClock))
+    }
+
+    /// A brain on another clock (tests: [`clock::ManualClock`]).
+    pub fn with_clock(cfg: Config, clock: Arc<dyn Clock>) -> Result<Brain, String> {
         let memory = Memory::open(
             &cfg.memory_dir(),
             cfg.memory.profile_max_chars,
@@ -561,8 +568,38 @@ impl Brain {
             screen_answer: Mutex::new(None),
             waiting: std::sync::atomic::AtomicUsize::new(0),
             last_answered: Mutex::new(None),
+            clock,
             cfg,
         })
+    }
+
+    /// Now on the brain's clock (ms since the epoch).
+    fn now_ms(&self) -> i64 {
+        self.clock.now_ms()
+    }
+
+    /// The user's own gate for one entity ("allow", "confirm", "never"; None: the default),
+    /// over the defaults of brain.toml.
+    pub fn set_gate(&self, entity_id: &str, gate: Option<&str>) -> Result<(), String> {
+        if gate.is_some_and(|g| gate_from(g).is_none()) {
+            return Err("gate: allow, confirm or never".into());
+        }
+        let m = self.mem();
+        let mut v = m
+            .meta("gates")
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({}));
+        match gate {
+            Some(g) => v[entity_id] = json!(g),
+            None => {
+                if let Some(o) = v.as_object_mut() {
+                    o.remove(entity_id);
+                }
+            }
+        }
+        m.set_meta("gates", &v.to_string())
+            .map_err(|e| e.to_string())
     }
 
     pub fn name(&self) -> &str {
@@ -659,7 +696,7 @@ impl Brain {
                 .cloned()
                 .ok_or("no such question (it may have expired or been answered)")?
         };
-        if now_ms() - p.asked_ms > CONFIRM_MS {
+        if self.now_ms() - p.asked_ms > CONFIRM_MS {
             return Err("that question has expired".into());
         }
         if self.waiting.load(std::sync::atomic::Ordering::SeqCst) > 0 {
@@ -676,7 +713,8 @@ impl Brain {
             }
             *pending = None;
         }
-        *self.last_answered.lock().unwrap_or_else(|e| e.into_inner()) = Some((id, yes, now_ms()));
+        *self.last_answered.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((id, yes, self.now_ms()));
         self.broadcast(&[crate::events::confirm_done(id, Some(yes))]);
         log::info!(event = "brain_gate", gate = "screen_answer", yes = yes; "answered on the screen");
         if !yes {
@@ -694,12 +732,9 @@ impl Brain {
         self.run_control(ha, &e, &p.service, &p.data, false)
     }
 
-    /// Tests: the last screen answer as if it came `ms` earlier.
-    #[doc(hidden)]
-    pub fn age_last_answer(&self, ms: i64) {
-        if let Some(a) = self.last_answered.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-            a.2 -= ms;
-        }
+    /// The questions' clock work (step 1 stand-in: only the expiry).
+    pub fn poll_questions(&self) {
+        self.expire_confirms(self.now_ms());
     }
 
     /// Questions nobody answered for 30 s are closed (`confirm_done` with null); called
@@ -730,7 +765,7 @@ impl Brain {
     pub fn undo_control(&self, id: i64) -> Result<(), String> {
         let d = {
             let mut v = self.done_controls.lock().unwrap_or_else(|e| e.into_inner());
-            let at = now_ms();
+            let at = self.now_ms();
             v.retain(|d| at - d.at_ms <= UNDO_MS);
             let i = v
                 .iter()
@@ -810,7 +845,7 @@ impl Brain {
         *self.entities.lock().unwrap_or_else(|e| e.into_inner()) = None;
         if let Some(u) = undo {
             let mut v = self.done_controls.lock().unwrap_or_else(|e| e.into_inner());
-            let at = now_ms();
+            let at = self.now_ms();
             v.retain(|d| at - d.at_ms <= UNDO_MS);
             v.push(DoneControl {
                 id,
@@ -1065,7 +1100,9 @@ impl Brain {
                         log::info!(event = "brain_dnd", on = on; "do not disturb to the device");
                         Ok(json!({"do_not_disturb": if on { "on" } else { "off" }}))
                     }
-                    _ => Err("the device's screen is not connected: do not disturb cannot change".into()),
+                    _ => Err(
+                        "the device's screen is not connected: do not disturb cannot change".into(),
+                    ),
                 }
             }
             "home_control" => self.home_control(&call.args, &self.language()),
@@ -1338,7 +1375,7 @@ impl Brain {
     fn asked(&self, words: &[&str]) -> bool {
         let h = self.heard.lock().unwrap_or_else(|e| e.into_inner()).clone();
         match h {
-            Some((text, at)) if now_ms() - at < 120_000 => asked_in(&text, words),
+            Some((text, at)) if self.now_ms() - at < 120_000 => asked_in(&text, words),
             _ => true,
         }
     }
@@ -1349,7 +1386,7 @@ impl Brain {
         if text.is_empty() {
             return;
         }
-        *self.heard.lock().unwrap_or_else(|e| e.into_inner()) = Some((text, now_ms()));
+        *self.heard.lock().unwrap_or_else(|e| e.into_inner()) = Some((text, self.now_ms()));
     }
 
     /// Home Assistant's answer to the last sentence heard: the exchange is kept for the memory.
@@ -1362,7 +1399,7 @@ impl Brain {
             .map(|(t, at)| (t.clone(), *at));
         let Some((user, at_ms)) = user else { return };
         let answer = sanitize(text, 1000);
-        if answer.is_empty() || now_ms() - at_ms > 120_000 {
+        if answer.is_empty() || self.now_ms() - at_ms > 120_000 {
             return;
         }
         let at = at_ms / 1000;
@@ -1652,7 +1689,7 @@ impl Brain {
                     let mut last = self.last_answered.lock().unwrap_or_else(|e| e.into_inner());
                     match *last {
                         Some((id, yes, at))
-                            if Some(id) == confirm_id && now_ms() - at <= SCREEN_ANSWER_MS =>
+                            if Some(id) == confirm_id && self.now_ms() - at <= SCREEN_ANSWER_MS =>
                         {
                             *last = None;
                             Some((id, yes))
@@ -1672,7 +1709,7 @@ impl Brain {
                                     *pending = None;
                                 }
                             }
-                            if now_ms() - p.asked_ms > CONFIRM_MS {
+                            if self.now_ms() - p.asked_ms > CONFIRM_MS {
                                 self.broadcast(&[crate::events::confirm_done(p.id, None)]);
                                 return Err(
                                     "the question expired: do nothing and say so briefly".into()
@@ -1719,7 +1756,7 @@ impl Brain {
                                 entity_id: entity_id.clone(),
                                 service: service.clone(),
                                 data,
-                                asked_ms: now_ms(),
+                                asked_ms: self.now_ms(),
                             });
                         *self.screen_answer.lock().unwrap_or_else(|e| e.into_inner()) = None;
                         *self.last_answered.lock().unwrap_or_else(|e| e.into_inner()) = None;
