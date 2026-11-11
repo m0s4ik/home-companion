@@ -188,6 +188,7 @@ export struct Words {
     night_to: string,
     night_hint: string,
     home_compact: string,
+    false_wake: string,
     home_compact_off: string,
     home_compact_on: string,
     setup_title: string,
@@ -766,6 +767,8 @@ export component CompanionWindow inherits Window {
     callback character-touched();
     callback home-assistant-clicked();
     callback stop-clicked();
+    // "Falso allarme": stopped, and the wake word's audio kept as a mistake (to train it).
+    callback false-wake-clicked();
     // ---- The control center (pulled down from the top of the desk).
     in-out property <bool> control-open: false;
     in property <[ControlRow]> control-tiles: [];
@@ -1455,6 +1458,16 @@ export component CompanionWindow inherits Window {
             fill: Theme.bg.mix(root.state-color, 0.82);
             clicked => {
                 root.stop-clicked();
+            }
+        }
+        // It woke by itself: stop, and keep what it heard as a mistake.
+        if root.state == "listening" || root.state == "thinking": BareButton {
+            x: root.slot-right;
+            y: Grid.band-y;
+            icon: Icons.ear-hearing-off-48;
+            label: root.t.false-wake;
+            clicked => {
+                root.false-wake-clicked();
             }
         }
         if root.state == "error": PrimaryButton {

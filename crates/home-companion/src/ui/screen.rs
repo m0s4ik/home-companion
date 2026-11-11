@@ -1458,6 +1458,10 @@ impl<S: Screen> Ui<S> {
             let _ = tx.send(CoreEvent::Ui(UiEvent::Stop));
         });
         let tx = self.core.clone();
+        self.screen.on_false_wake_clicked(move || {
+            let _ = tx.send(CoreEvent::Ui(UiEvent::FalseWake));
+        });
+        let tx = self.core.clone();
         let ui = Rc::downgrade(self);
         self.screen.on_message_ok(move |i| {
             // A card from Home Assistant: its own OK.

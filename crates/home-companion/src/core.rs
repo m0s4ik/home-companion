@@ -43,6 +43,8 @@ pub enum UiEvent {
     Say(String),
     Talk,
     Stop,
+    /// "Falso allarme": Stop, and the wake word's audio kept as a mistake (to train it).
+    FalseWake,
     MessageOk(usize),
     Language(String),
     HomeAssistant,
@@ -459,6 +461,11 @@ pub struct Core {
     /// What the body is saying in its own voice (a reflex's answer, a timer's announcement):
     /// a stop word that sounds like one of its words is the body's own voice ([`echoes`]).
     speaking_text: String,
+    /// The last recording saved and the last wake word heard (name, probability), for
+    /// "Falso allarme"; when the conversation began (unix seconds).
+    last_recording: Option<PathBuf>,
+    last_wake: Option<(String, f32)>,
+    conv_started_wall: Option<u64>,
     /// When the character's own phrase began to play, and how long it lasts.
     speaking_since: Option<Instant>,
     speaking_len: Option<Duration>,
@@ -660,6 +667,9 @@ impl Core {
             next_voice_id: 1,
             say_wait: None,
             speaking_text: String::new(),
+            last_recording: None,
+            last_wake: None,
+            conv_started_wall: None,
             speaking_since: None,
             speaking_len: None,
             ring_wait: None,
@@ -829,6 +839,7 @@ impl Core {
         let sidecar = self.sidecar.take();
         if let Some(r) = &self.d.recorder {
             if let Some(p) = r.stop() {
+                self.last_recording = Some(p.clone());
                 log::info!(event = "recorded", path = p.to_string_lossy().as_ref(); "utterance saved in {}", p.display());
                 // The reflex result next to it, to tune the threshold on real voices later.
                 if let Some(j) = sidecar {
@@ -943,6 +954,8 @@ impl Core {
         c.detection_at = Some(Instant::now());
         self.d.player.play(&self.cues.wake);
         self.d.mic.set(MicMode::Stream);
+        self.last_recording = None;
+        self.conv_started_wall = Some(now_unix() as u64);
         if let Some(r) = &self.d.recorder {
             r.start("utterance");
         }
@@ -1095,7 +1108,61 @@ impl Core {
         log::info!(event = "stop_word_saved", path = path.display().to_string().as_str(); "stop word debug: {}", path.display());
     }
 
+    /// "Falso allarme": the conversation stops, and its recording (the 3.5 s before the wake
+    /// word, what followed, the reflexes' verdict) is copied to `false-wakes/` beside the
+    /// recordings, out of their rotation: negatives to train the wake word again.
+    fn on_false_wake(&mut self) {
+        let wake = self.last_wake.clone();
+        self.on_stop();
+        // The recording of this conversation (stopped just now or at the end of the speech).
+        let started = self.conv_started_wall;
+        let Some(p) = self.last_recording.clone() else {
+            log::info!(event = "false_wake", saved = false; "false alarm: nothing recorded (recording off)");
+            return;
+        };
+        let Some(dir) = p
+            .parent()
+            .and_then(|d| d.parent())
+            .map(|d| d.join("false-wakes"))
+        else {
+            return;
+        };
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            log::warn!("{}: {e}", dir.display());
+            return;
+        }
+        let stem = p
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let mut copied = 0;
+        for name in [
+            format!("{stem}.wav"),
+            format!("{stem}-wake.wav"),
+            format!("{stem}.json"),
+        ] {
+            let from = p.with_file_name(&name);
+            if from.exists() && std::fs::copy(&from, dir.join(&name)).is_ok() {
+                copied += 1;
+            }
+        }
+        let info = serde_json::json!({
+            "false_wake": true,
+            "wake_word": wake.as_ref().map(|w| w.0.clone()),
+            "probability": wake.as_ref().map(|w| w.1),
+            "conversation_started_unix": started,
+            "files": stem,
+        });
+        let _ = std::fs::write(
+            dir.join(format!("{stem}-false.json")),
+            format!("{info:#}\n"),
+        );
+        log::info!(event = "false_wake", saved = true, files = copied, dir = dir.display().to_string().as_str(); "false alarm: {copied} files kept in {}", dir.display());
+    }
+
     fn on_wake(&mut self, d: wakeword::Detection) {
+        self.last_wake = Some((d.name.clone(), d.probability));
         log::info!(event = "wake_word", name = d.name.as_str(), probability = d.probability as f64, at_s = d.at.as_secs_f64(); "wake word {} ({:.3})", d.name, d.probability);
         match self.phase {
             Phase::Home | Phase::Offline | Phase::Error => self.start_conversation(Trigger::Wake),
@@ -2370,6 +2437,7 @@ impl Core {
                 _ => {}
             },
             UiEvent::Stop => self.on_stop(),
+            UiEvent::FalseWake => self.on_false_wake(),
             UiEvent::MessageOk(_) => {
                 if !self.ringing.is_empty() {
                     log::info!(event = "bell_stopped", by = "ok"; "bell stopped (OK)");

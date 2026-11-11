@@ -273,6 +273,7 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn on_talk_clicked(&self, f: impl Fn() + 'static);
     fn on_character_touched(&self, f: impl Fn() + 'static);
     fn on_stop_clicked(&self, f: impl Fn() + 'static);
+    fn on_false_wake_clicked(&self, f: impl Fn() + 'static);
     fn on_message_ok(&self, f: impl Fn(usize) + 'static);
     fn on_language_chosen(&self, f: impl Fn(&Self, String) + 'static);
     fn on_home_assistant_clicked(&self, f: impl Fn() + 'static);
@@ -538,6 +539,7 @@ macro_rules! impl_screen {
                     night_to,
                     night_hint,
                     home_compact,
+                    false_wake,
                     home_compact_off,
                     home_compact_on,
                     setup_title,
@@ -950,6 +952,9 @@ macro_rules! impl_screen {
             }
             fn on_stop_clicked(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_stop_clicked(self, f)
+            }
+            fn on_false_wake_clicked(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_false_wake_clicked(self, f)
             }
             fn on_message_ok(&self, f: impl Fn(usize) + 'static) {
                 $m::CompanionWindow::on_message_ok(self, move |i| f(i.max(0) as usize))
