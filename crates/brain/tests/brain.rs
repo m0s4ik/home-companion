@@ -802,19 +802,14 @@ fn a_whole_room_in_one_call() {
             "light.turn_off light.studio_sx"
         ]
     );
-    // The shutter needs a yes: not with the room (named back only).
+    // The room's only shutter: its own gate, a question on the screen (never done at once).
     let (r, err) = tool(
         &b,
         "home_control",
         json!({"area": "Studio", "domain": "cover", "service": "close_cover"}),
     );
-    assert!(!err, "{r}");
-    assert_eq!(r["done"], json!([]));
-    assert_eq!(
-        r["not_done_need_yes_or_never"].as_array().unwrap().len(),
-        1,
-        "{r}"
-    );
+    assert!(!err && r["needs_confirmation"] == true, "{r}");
+    assert!(services(&f).iter().all(|s| !s.starts_with("cover.")));
     // A list; an unknown area says which areas there are.
     let (r, err) = tool(
         &b,
