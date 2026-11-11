@@ -628,7 +628,7 @@ mod tests {
             let (_, v) = s.run_to(4.0).unwrap();
             assert_eq!(v, Verdict::Flush);
             let words = [w("no", 1.0, 1.95, 2.25)];
-            assert_eq!(s.fin("no", &words, false), Verdict::Act(Command::Silence));
+            assert_eq!(s.fin("no", &words, false), Verdict::Act(Command::No));
         }
     }
 
