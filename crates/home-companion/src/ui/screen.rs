@@ -1579,6 +1579,7 @@ impl<S: Screen> Ui<S> {
                 if let Some(id) = id {
                     log::info!(event = "house_answer", id = id, yes = yes; "house: {} to {id}", if yes { "yes" } else { "no" });
                     ui.brain_do(brain_link::confirm_answer(id, yes));
+                    ui.send(UiEvent::AskAnswered);
                 }
                 ui.render_house();
             }

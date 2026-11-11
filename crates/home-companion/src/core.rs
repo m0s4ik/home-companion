@@ -45,6 +45,9 @@ pub enum UiEvent {
     Stop,
     /// "Falso allarme": Stop, and the wake word's audio kept as a mistake (to train it).
     FalseWake,
+    /// Yes or No touched on a house question: what the character is still saying or waiting
+    /// for about it is over (the question repeated, the microphone open for the answer).
+    AskAnswered,
     MessageOk(usize),
     Language(String),
     HomeAssistant,
@@ -2438,6 +2441,13 @@ impl Core {
             },
             UiEvent::Stop => self.on_stop(),
             UiEvent::FalseWake => self.on_false_wake(),
+            UiEvent::AskAnswered => {
+                // Only the conversation: never the bell of a timer or the music.
+                if matches!(self.phase, Phase::Listening | Phase::Thinking | Phase::Speaking) {
+                    log::info!(event = "ask_answered", phase = self.phase.name(); "question answered on screen: the conversation ends");
+                    self.on_stop();
+                }
+            }
             UiEvent::MessageOk(_) => {
                 if !self.ringing.is_empty() {
                     log::info!(event = "bell_stopped", by = "ok"; "bell stopped (OK)");
@@ -3133,7 +3143,8 @@ fn duration_parts(secs: f64) -> Vec<(&'static str, u64)> {
 /// ("Sono le 18:32. Ha bisogno d'altro?") no — that one would open the microphone on whoever
 /// talks in the room.
 fn asks_for_answer(answer: &str) -> bool {
-    let a = answer.trim_end();
+    // A question in quotes ("…: \"Chiudo la tapparella?\"") is still a question.
+    let a = answer.trim_end_matches(|c: char| c.is_whitespace() || "\"'”»)".contains(c));
     if !a.ends_with('?') {
         return false;
     }
@@ -3245,6 +3256,8 @@ mod tests {
         assert!(!asks_for_answer("Fatto. C'è altro?"));
         assert!(!asks_for_answer("Done. Anything else I can do?"));
         assert!(!asks_for_answer("Fatto."));
+        assert!(asks_for_answer("Mi serve la Sua conferma: \"Chiudo la tapparella salone sinistra?\""));
+        assert!(asks_for_answer("Conferma: «Chiudo la tapparella?» "));
     }
     use super::*;
 
