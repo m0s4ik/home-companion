@@ -10,6 +10,7 @@ pub mod config;
 pub mod control;
 pub mod events;
 pub mod ha;
+pub mod house;
 pub mod jobs;
 pub mod lists;
 pub mod llm;
