@@ -65,8 +65,9 @@ pub struct Brain {
     screen_answer: Mutex<Option<(i64, bool)>>,
     /// How many `home_control` calls are waiting for an answer right now.
     waiting: std::sync::atomic::AtomicUsize,
-    /// The last question answered on the screen while nobody waited (the command already ran).
-    last_answered: Mutex<Option<(i64, bool)>>,
+    /// The last question answered on the screen while nobody waited (the command already ran),
+    /// and when (ms): it only counts for the model's turn still going on.
+    last_answered: Mutex<Option<(i64, bool, i64)>>,
 }
 
 #[derive(Default)]
@@ -663,7 +664,7 @@ impl Brain {
             }
             *pending = None;
         }
-        *self.last_answered.lock().unwrap_or_else(|e| e.into_inner()) = Some((id, yes));
+        *self.last_answered.lock().unwrap_or_else(|e| e.into_inner()) = Some((id, yes, now_ms()));
         self.broadcast(&[crate::events::confirm_done(id, Some(yes))]);
         log::info!(event = "brain_gate", gate = "screen_answer", yes = yes; "answered on the screen");
         if !yes {
@@ -679,6 +680,14 @@ impl Brain {
         }
         let ha = self.ha().ok_or("Home Assistant is not configured")?;
         self.run_control(ha, &e, &p.service, &p.data, false)
+    }
+
+    /// Tests: the last screen answer as if it came `ms` earlier.
+    #[doc(hidden)]
+    pub fn age_last_answer(&self, ms: i64) {
+        if let Some(a) = self.last_answered.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            a.2 -= ms;
+        }
     }
 
     /// Questions nobody answered for 30 s are closed (`confirm_done` with null); called
@@ -1614,7 +1623,10 @@ impl Brain {
                     .last_answered
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .filter(|(id, _)| Some(*id) == confirm_id);
+                    // An old id (a question answered minutes ago, reused by the model in a new
+                    // request) is a new request: it gets its own question.
+                    .filter(|(id, _, at)| Some(*id) == confirm_id && now_ms() - at <= CONFIRM_MS)
+                    .map(|(id, yes, _)| (id, yes));
                 match (same, screen_done) {
                     (Some(p), _) => match self.wait_answer(p.id, p.asked_ms) {
                         Some(yes) => {

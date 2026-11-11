@@ -1006,6 +1006,31 @@ fn a_screen_no_or_a_yes_during_the_wait_counts_like_a_spoken_answer() {
 }
 
 #[test]
+fn an_old_confirm_id_reused_later_asks_again() {
+    let f = Fake {
+        exposed: vec![("cover.soggiorno", "Tapparella soggiorno", "shutter")],
+        ..Fake::default()
+    };
+    let (cfg, dir) = setup("reuse", &fake_ha(f.clone()));
+    let b = Arc::new(Brain::new(cfg).unwrap());
+    let mut screen = Screen::connect(&b, &dir);
+    let args = json!({"entity_id": "cover.soggiorno", "service": "close_cover"});
+    let (r, _) = tool(&b, "home_control", args.clone());
+    let id = r["confirm_id"].as_i64().unwrap();
+    screen.event("confirm");
+    // No on the screen while nobody waits; the model, minutes later, sends the old id again.
+    b.answer_confirm(id, false).unwrap();
+    b.age_last_answer(5 * 60_000);
+    let mut again = args.clone();
+    again["confirm_id"] = json!(id);
+    let (r, err) = tool(&b, "home_control", again);
+    assert!(!err && r["needs_confirmation"] == true, "{r}");
+    assert_ne!(r["confirm_id"].as_i64(), Some(id));
+    assert!(services(&f).is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn an_unanswered_question_expires_after_a_minute() {
     let f = Fake {
         exposed: vec![("cover.soggiorno", "Tapparella soggiorno", "shutter")],
