@@ -97,6 +97,8 @@ fn undo_scene(id: i64) -> String {
 
 /// How long a question waits for a yes, and how long an "Undo" stays possible.
 const CONFIRM_MS: i64 = 30_000;
+/// A Yes/No tapped while nobody waited answers the model's next call only this soon after.
+const SCREEN_ANSWER_MS: i64 = 10_000;
 const UNDO_MS: i64 = 120_000;
 const UNDO_KEPT: usize = 16;
 
@@ -1619,14 +1621,21 @@ impl Brain {
                         Some(p.id) == confirm_id && p.entity_id == entity_id && p.service == service
                     })
                     .cloned();
-                let screen_done = self
-                    .last_answered
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    // An old id (a question answered minutes ago, reused by the model in a new
-                    // request) is a new request: it gets its own question.
-                    .filter(|(id, _, at)| Some(*id) == confirm_id && now_ms() - at <= CONFIRM_MS)
-                    .map(|(id, yes, _)| (id, yes));
+                // Used once, and only right after the tap (the model's call still on its way):
+                // an old id reused by the model in a new request ("chiudi la tapparella" said
+                // again) is a new request with its own question.
+                let screen_done = {
+                    let mut last = self.last_answered.lock().unwrap_or_else(|e| e.into_inner());
+                    match *last {
+                        Some((id, yes, at))
+                            if Some(id) == confirm_id && now_ms() - at <= SCREEN_ANSWER_MS =>
+                        {
+                            *last = None;
+                            Some((id, yes))
+                        }
+                        _ => None,
+                    }
+                };
                 match (same, screen_done) {
                     (Some(p), _) => match self.wait_answer(p.id, p.asked_ms) {
                         Some(yes) => {

@@ -1020,7 +1020,7 @@ fn an_old_confirm_id_reused_later_asks_again() {
     screen.event("confirm");
     // No on the screen while nobody waits; the model, minutes later, sends the old id again.
     b.answer_confirm(id, false).unwrap();
-    b.age_last_answer(5 * 60_000);
+    b.age_last_answer(20_000);
     let mut again = args.clone();
     again["confirm_id"] = json!(id);
     let (r, err) = tool(&b, "home_control", again);
