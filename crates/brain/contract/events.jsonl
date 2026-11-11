@@ -5,3 +5,6 @@
 {"event":"show_view","path":"/lovelace/energy"}
 {"event":"show_view","camera":"camera.front_door"}
 {"event":"upcoming","items":[{"start":1794150000,"end":1794153600,"all_day":false,"title":"Dentist","calendar":"calendar.family"}]}
+{"event":"dnd","on":true,"minutes":60}
+{"event":"dnd","on":true}
+{"event":"dnd","on":false}

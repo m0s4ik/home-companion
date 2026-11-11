@@ -11,6 +11,7 @@
 //! | `notify` | `id`, `kind`, `how`, `late`, `text`, `due_at` | a reminder card (jobs.rs builds it) |
 //! | `timer` | `seconds`, `name` (optional) | a local timer |
 //! | `timer_cancel` | `all` | stops the last timer, or all |
+//! | `dnd` | `on`, `minutes` (optional) | do not disturb on for `minutes`, or until the body's default (an hour by day, the morning at night); off when `on` is false |
 //! | `alarm` | `hour`, `minute`, `days` | a local alarm (days: bit 0 = Monday; 0 = once) |
 //! | `changed` | `id`, `entity_id`, `name`, `service`, `state` (or null), `undo` | a card "done" for a house command, with "Undo" when `undo` |
 //! | `confirm` | `id`, `text`, `expires_at` (unix s) | a Yes/No card; the answer goes back as `confirm.answer` |
@@ -30,6 +31,14 @@ pub fn timer(seconds: i64, name: Option<&str>) -> Value {
 
 pub fn timer_cancel(all: bool) -> Value {
     json!({"event": "timer_cancel", "all": all})
+}
+
+/// Do not disturb on (for `minutes`, or the body's default when None) or off.
+pub fn dnd(on: bool, minutes: Option<i64>) -> Value {
+    match (on, minutes) {
+        (true, Some(m)) => json!({"event": "dnd", "on": true, "minutes": m}),
+        _ => json!({"event": "dnd", "on": on}),
+    }
 }
 
 pub fn alarm(hour: u8, minute: u8, days: u8) -> Value {
@@ -122,6 +131,9 @@ mod tests {
                 title: "Dentist",
                 calendar: "calendar.family",
             }]),
+            dnd(true, Some(60)),
+            dnd(true, None),
+            dnd(false, Some(5)),
         ];
         let lines: Vec<Value> = include_str!("../contract/events.jsonl")
             .lines()

@@ -2219,7 +2219,7 @@ impl Core {
                     let follow = self.conv.as_ref().is_some_and(|c| {
                         !c.discard_answer
                             && c.trigger != Trigger::Announcement
-                            && c.answer.trim_end().ends_with('?')
+                            && asks_for_answer(&c.answer)
                     });
                     if let Some(c) = &mut self.conv {
                         c.stream = None;
@@ -3092,7 +3092,7 @@ impl Core {
 }
 
 /// Seconds since the local midnight at `t` (seconds since the epoch).
-fn local_seconds_of_day(t: i64) -> i64 {
+pub(crate) fn local_seconds_of_day(t: i64) -> i64 {
     // SAFETY: localtime_r only writes into the struct we pass.
     let tm = unsafe {
         let mut tm: libc::tm = std::mem::zeroed();
@@ -3129,7 +3129,47 @@ fn duration_parts(secs: f64) -> Vec<(&'static str, u64)> {
 
 /// "Non disturbare" without a duration: in the evening and at night (21:00-07:00) until the
 /// morning, as one says it before going to bed; by day for an hour, so it is not forgotten on.
-fn dnd_default_until(now: i64, local: i64) -> u64 {
+/// The answer ends with a question that waits for one: "A che ora?" yes, a closing courtesy
+/// ("Sono le 18:32. Ha bisogno d'altro?") no — that one would open the microphone on whoever
+/// talks in the room.
+fn asks_for_answer(answer: &str) -> bool {
+    let a = answer.trim_end();
+    if !a.ends_with('?') {
+        return false;
+    }
+    // The last sentence only.
+    let body = &a[..a.len() - 1];
+    let last = body
+        .rfind(['.', '!', '?', '\n'])
+        .map_or(body, |i| &body[i + 1..])
+        .to_lowercase();
+    const COURTESY: &[&str] = &[
+        "posso aiutar",
+        "posso assister",
+        "posso fare altro",
+        "posso esserle utile",
+        "posso esserti utile",
+        "ulteriore aiuto",
+        "bisogno d'altro",
+        "bisogno di altro",
+        "serve altro",
+        "c'è altro",
+        "c'è qualcos'altro",
+        "altro in cui",
+        "desidera altro",
+        "vuole altro",
+        "vuoi altro",
+        "qualcos'altro",
+        "in altro modo",
+        "anything else",
+        "can i help",
+        "help with anything",
+        "something else",
+    ];
+    !COURTESY.iter().any(|c| last.contains(c))
+}
+
+pub(crate) fn dnd_default_until(now: i64, local: i64) -> u64 {
     let hour = local / 3600;
     if !(MORNING_HOUR..21).contains(&hour) {
         next_morning(now, local)
@@ -3195,6 +3235,17 @@ fn quiet_after_command(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn courtesy_questions_do_not_open_the_microphone() {
+        assert!(asks_for_answer("A che ora devo ricordarglielo?"));
+        assert!(asks_for_answer("Chiudo la tapparella del salotto?"));
+        assert!(!asks_for_answer("Sono le 18:32 di oggi. Ha bisogno di ulteriore aiuto?"));
+        assert!(!asks_for_answer("Non posso farlo. Posso assisterLa in altro modo?"));
+        assert!(!asks_for_answer("Fatto. C'è altro?"));
+        assert!(!asks_for_answer("Done. Anything else I can do?"));
+        assert!(!asks_for_answer("Fatto."));
+    }
     use super::*;
 
     #[test]

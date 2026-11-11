@@ -19,6 +19,11 @@ pub(crate) struct SlidingWindow {
     threshold: u32,
     cooloff: usize,
     ignore: usize,
+    /// Near misses: the window's sum from 70% of the cutoff up is followed, and its peak is
+    /// handed out once it falls back without a detection (to tune the cutoff on real speech).
+    near_floor: u32,
+    peak: u32,
+    near: Option<f32>,
 }
 
 impl SlidingWindow {
@@ -34,7 +39,15 @@ impl SlidingWindow {
             threshold: cutoff_u8 * size as u32,
             cooloff,
             ignore: cooloff,
+            near_floor: cutoff_u8 * size as u32 * 7 / 10,
+            peak: 0,
+            near: None,
         }
+    }
+
+    /// The mean probability of the last near miss (0..1), once.
+    pub fn take_near(&mut self) -> Option<f32> {
+        self.near.take()
     }
 
     /// Invocations to ignore for a cool-off of `seconds`, given the feature step and model stride.
@@ -55,7 +68,14 @@ impl SlidingWindow {
         if sum > self.threshold {
             self.probs.fill(0);
             self.ignore = self.cooloff;
+            self.peak = 0;
             return true;
+        }
+        if sum >= self.near_floor {
+            self.peak = self.peak.max(sum);
+        } else if self.peak > 0 {
+            self.near = Some(self.peak as f32 / (self.probs.len() as f32 * 255.0));
+            self.peak = 0;
         }
         false
     }
@@ -65,6 +85,8 @@ impl SlidingWindow {
         self.probs.fill(0);
         self.next = 0;
         self.ignore = self.cooloff;
+        self.peak = 0;
+        self.near = None;
     }
 }
 
@@ -111,6 +133,22 @@ impl Rules {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_near_miss_is_reported_once_with_its_peak() {
+        let mut w = SlidingWindow::new(0.99, 2, 0);
+        for p in [0, 240, 245, 10, 0] {
+            assert!(!w.push(p));
+        }
+        let m = w.take_near().expect("near miss");
+        assert!((m - 242.5 / 255.0).abs() < 1e-3, "{m}");
+        assert_eq!(w.take_near(), None);
+        // A detection is not a near miss.
+        for p in [255, 255, 0, 0] {
+            w.push(p);
+        }
+        assert_eq!(w.take_near(), None);
+    }
     use super::*;
 
     #[test]

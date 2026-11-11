@@ -29,6 +29,9 @@ pub enum BrainMsg {
     Timer(u64, Option<String>),
     /// A `timer_cancel` event: stop the timer set last (false) or every timer (true).
     TimerCancel(bool),
+    /// A `dnd` event: do not disturb on for so many minutes (`Some(None)`: the default
+    /// length), or off (`None`).
+    Dnd(Option<Option<u64>>),
     /// An `alarm` event: a local alarm (hour, minute, days as in alarms.rs; 0 = once).
     Alarm(u8, u8, u8),
     /// A house command went through (`changed`): a "done" card, with "Undo" when `undo`.
@@ -106,6 +109,12 @@ pub fn parse_event(v: Value) -> Option<BrainMsg> {
         "timer_cancel" => {
             BrainMsg::TimerCancel(v.get("all").and_then(Value::as_bool).unwrap_or(false))
         }
+        "dnd" => match v.get("on").and_then(Value::as_bool)? {
+            true => BrainMsg::Dnd(Some(
+                v.get("minutes").and_then(Value::as_u64).filter(|m| *m > 0),
+            )),
+            false => BrainMsg::Dnd(None),
+        },
         "alarm" => {
             let n = |k: &str| v.get(k).and_then(Value::as_u64).map(|x| x as u8);
             match (n("hour"), n("minute")) {
@@ -502,6 +511,9 @@ mod tests {
                     title: "Dentist".into(),
                     calendar: "calendar.family".into(),
                 }]),
+                BrainMsg::Dnd(Some(Some(60))),
+                BrainMsg::Dnd(Some(None)),
+                BrainMsg::Dnd(None),
             ]
         );
         assert_eq!(

@@ -226,7 +226,11 @@ impl Detector {
                     self.stats.invocations += 1;
                     self.last_prob = prob;
                     let at_samples = self.stats.samples + off as u64;
-                    if self.rules.push(prob, at_samples) {
+                    let hit = self.rules.push(prob, at_samples);
+                    if let Some(mean) = self.rules.window.take_near() {
+                        log::info!("wake word {}: near miss, window mean {mean:.3}", self.name);
+                    }
+                    if hit {
                         self.stats.detections += 1;
                         let d = Detection {
                             name: self.name.clone(),

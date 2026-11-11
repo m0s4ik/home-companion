@@ -4684,6 +4684,7 @@ impl<S: Screen> Ui<S> {
         let mut upcoming_seen: Option<Vec<(i64, String)>> = None;
         let mut timers: Vec<(u64, Option<String>)> = Vec::new();
         let mut cancels: Vec<String> = Vec::new();
+        let mut dnd: Option<Option<u64>> = None;
         let mut alarms: Vec<(u8, u8, u8)> = Vec::new();
         let mut house_cards: Vec<HouseEvent> = Vec::new();
         while let Some(m) = b.try_recv() {
@@ -4802,6 +4803,19 @@ impl<S: Screen> Ui<S> {
                     log::info!(event = "brain_timer_cancel", all = all; "timer cancel from the brain: {ids:?}");
                     cancels.extend(ids);
                 }
+                BrainMsg::Dnd(on) => {
+                    // As the reflex: a length when said, else an hour by day or the morning.
+                    let now = now_unix() as i64;
+                    let until = on.map(|minutes| match minutes {
+                        Some(m) => now as u64 + m.min(24 * 60) * 60,
+                        None => crate::core::dnd_default_until(
+                            now,
+                            crate::core::local_seconds_of_day(now),
+                        ),
+                    });
+                    log::info!(event = "brain_dnd", on = until.is_some(); "do not disturb from the brain");
+                    dnd = Some(until);
+                }
                 BrainMsg::Alarm(h, m, days) => {
                     log::info!(event = "brain_alarm"; "alarm from the brain: {h:02}:{m:02}");
                     alarms.push((h, m, days));
@@ -4878,6 +4892,9 @@ impl<S: Screen> Ui<S> {
         }
         for id in cancels {
             self.send(UiEvent::TimerCancel(id));
+        }
+        if let Some(until) = dnd {
+            self.send(UiEvent::DoNotDisturb(until));
         }
         for (h, m, days) in alarms {
             self.send(UiEvent::AlarmSave(h, m, days));

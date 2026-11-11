@@ -1030,6 +1030,23 @@ impl Brain {
                     ),
                 }
             }
+            "do_not_disturb" => {
+                let on = call.args.get("on").and_then(Value::as_bool).unwrap_or(true);
+                let minutes = call
+                    .args
+                    .get("minutes")
+                    .and_then(Value::as_i64)
+                    .filter(|m| *m > 0)
+                    .map(|m| m.min(24 * 60));
+                match self.hub.get() {
+                    Some(h) if h.subscribers() > 0 => {
+                        h.broadcast(&[crate::events::dnd(on, minutes)]);
+                        log::info!(event = "brain_dnd", on = on; "do not disturb to the device");
+                        Ok(json!({"do_not_disturb": if on { "on" } else { "off" }}))
+                    }
+                    _ => Err("the device's screen is not connected: do not disturb cannot change".into()),
+                }
+            }
             "home_control" => self.home_control(&call.args, &self.language()),
             other => Err(format!("unknown tool {other}")),
         };
@@ -1153,6 +1170,20 @@ impl Brain {
             parameters: obj(
                 json!({"all": {"type": "boolean", "description": "every timer (default: the last one)"}}),
                 &[],
+            ),
+        });
+        v.push(ToolSpec {
+            name: "do_not_disturb",
+            description: "Do not disturb on the device: no sounds, no announcements, a dim screen, the \
+                          wake word still works. 'non disturbare', 'attiva il non disturbare per un'ora', \
+                          'silenzio fino a domani', 'disattiva il non disturbare'. on=false turns it off. \
+                          minutes: how long when said; omit it for the default (an hour by day, until \
+                          the morning at night). Never home_control for this: it is the device's, not \
+                          the house's.",
+            parameters: obj(
+                json!({"on": {"type": "boolean", "description": "true to turn it on, false to turn it off"},
+                       "minutes": {"type": "integer", "description": "how long, when the user said it"}}),
+                &["on"],
             ),
         });
         v.push(ToolSpec {
