@@ -1006,6 +1006,25 @@ fn a_screen_no_or_a_yes_during_the_wait_counts_like_a_spoken_answer() {
 }
 
 #[test]
+fn a_list_of_one_blind_asks_its_yes() {
+    let f = Fake {
+        exposed: vec![("cover.soggiorno", "Tapparella soggiorno", "shutter")],
+        ..Fake::default()
+    };
+    let (cfg, dir) = setup("list-one", &fake_ha(f.clone()));
+    let b = Arc::new(Brain::new(cfg).unwrap());
+    let _screen = Screen::connect(&b, &dir);
+    let (r, err) = tool(
+        &b,
+        "home_control",
+        json!({"entity_ids": ["cover.soggiorno"], "service": "set_cover_position", "data": {"position": 0}}),
+    );
+    assert!(!err && r["needs_confirmation"] == true, "{r}");
+    assert!(services(&f).is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn an_old_confirm_id_reused_later_asks_again() {
     let f = Fake {
         exposed: vec![("cover.soggiorno", "Tapparella soggiorno", "shutter")],

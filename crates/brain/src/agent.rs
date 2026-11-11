@@ -1505,6 +1505,7 @@ impl Brain {
         args: &Value,
         service: &str,
         data: &Value,
+        lang: &str,
     ) -> Result<Value, String> {
         let exposed = self.exposed(false)?;
         let targets: Vec<crate::ha::Entity> =
@@ -1549,6 +1550,18 @@ impl Brain {
                 }
                 found
             };
+        // One device (a list of one, a room with one blind): the single path, with its gates
+        // (a blind asks its yes on the screen instead of being skipped).
+        if let [one] = targets.as_slice() {
+            let mut single = args.clone();
+            if let Some(o) = single.as_object_mut() {
+                o.remove("entity_ids");
+                o.remove("area");
+                o.remove("domain");
+                o.insert("entity_id".into(), json!(one.entity_id));
+            }
+            return self.home_control(&single, lang);
+        }
         // A group whose members are all in the list too (a Hue room in its own area): its lights
         // are done one by one already.
         let ids: Vec<&str> = targets.iter().map(|e| e.entity_id.as_str()).collect();
@@ -1602,7 +1615,7 @@ impl Brain {
             return Err("service: a service name like turn_on".into());
         }
         if entity_id.is_empty() {
-            return self.home_control_many(args, &service, &data);
+            return self.home_control_many(args, &service, &data, lang);
         }
         let exposed = self.exposed(false)?;
         let e = resolve_entity(&exposed, &entity_id)?.clone();
