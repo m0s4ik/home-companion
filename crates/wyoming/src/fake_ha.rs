@@ -13,7 +13,9 @@
 //! Checks applied to every message, whatever the current step: microphone `audio-chunk`s must be
 //! 16000 Hz / 2 bytes / 1 channel with non-decreasing timestamps; `played` is only valid after
 //! an `audio-stop` sent by us that was not answered yet ("played before audio-stop"); the
-//! satellite must not close the live connection.
+//! satellite must not close the live connection; a `run-pipeline` only once the previous run is
+//! over, as Home Assistant runs one pipeline per satellite: its final message (the answer's
+//! `audio-stop` or an `error`) sent, or the run given up with [`Step::ForgetRun`].
 
 use std::io::BufReader;
 use std::net::{Shutdown, SocketAddr, TcpStream};
@@ -123,6 +125,9 @@ pub enum Step {
     ExpectAudioStop {
         timeout_ms: u64,
     },
+    /// The run in progress will never send its final message (a Home Assistant that lost it):
+    /// a new `run-pipeline` is no longer a failure.
+    ForgetRun,
 }
 
 /// What happened, written as JSON by `fake-ha --out`.
@@ -136,6 +141,10 @@ pub struct Record {
     pub audio_seconds: f64,
     pub detection_to_first_chunk_ms: Option<f64>,
     pub audio_stop_to_played_ms: Option<f64>,
+    /// Every message sent to the satellite but audio chunks: seconds since the start, type.
+    pub sent: Vec<(f64, String)>,
+    /// When each `run-pipeline` came, seconds since the start.
+    pub run_pipelines: Vec<f64>,
     pub failures: Vec<String>,
 }
 
@@ -156,6 +165,8 @@ struct State {
     audio_bytes: u64,
     /// We are closing the live connection: EOF is expected.
     closing: bool,
+    /// A pipeline run is open: `run-pipeline` received, its final message not sent yet.
+    run_open: bool,
 }
 
 impl State {
@@ -221,6 +232,7 @@ pub fn run(addr: SocketAddr, scenario: &Scenario) -> Result<Record, Error> {
         last_chunk_ts: None,
         audio_bytes: 0,
         closing: false,
+        run_open: false,
     }));
     let mut live: Option<Live> = None;
     let mut result = Ok(());
@@ -276,7 +288,20 @@ fn need_live<'a>(
 }
 
 fn send(live: &Live, state: &Shared, m: &Message) -> StepResult {
-    write(&live.writer, m).map_err(|e| failed(state, format!("sending {}: {e}", m.kind())))
+    write(&live.writer, m).map_err(|e| failed(state, format!("sending {}: {e}", m.kind())))?;
+    sent(&mut lock(state), m);
+    Ok(())
+}
+
+/// Records a message sent; an `error` ends the run.
+fn sent(st: &mut State, m: &Message) {
+    if matches!(m, Message::Error { .. }) {
+        st.run_open = false;
+    }
+    if !matches!(m, Message::AudioChunk { .. }) {
+        let t = st.t0.elapsed().as_secs_f64();
+        st.record.sent.push((t, m.kind().to_string()));
+    }
 }
 
 /// Waits for a message accepted by `f` (which returns `Some` to stop), checking for failures
@@ -582,6 +607,10 @@ fn run_step(addr: SocketAddr, step: &Step, state: &Shared, live: &mut Option<Liv
                 Ok(matches!(m, Message::Played).then_some(()))
             })
         }
+        Step::ForgetRun => {
+            lock(state).run_open = false;
+            Ok(())
+        }
         Step::ExpectAudioStop { timeout_ms } => {
             let l = need_live(live, state, "expect-audio-stop")?;
             wait_for(
@@ -637,6 +666,11 @@ fn send_audio(l: &Live, state: &Shared, path: &Path, tts: bool) -> Result<Durati
     }
     st.stops_pending += 1;
     st.last_stop_at = Some(Instant::now());
+    sent(&mut st, &stop);
+    if tts {
+        // The answer's end is the run's final message.
+        st.run_open = false;
+    }
     let bytes = format.bytes_per_second().max(1);
     Ok(Duration::from_secs_f64(pcm.len() as f64 / bytes as f64))
 }
@@ -815,6 +849,14 @@ fn check_message(st: &mut State, at: Instant, m: &Message, reply: &mut Option<Me
             }
         }
         Message::Detection(_) => st.detection_at = Some(at),
+        Message::RunPipeline(_) => {
+            if st.run_open {
+                st.fail("run-pipeline before the previous run's final message".into());
+            }
+            st.run_open = true;
+            let t = at.duration_since(st.t0).as_secs_f64();
+            st.record.run_pipelines.push(t);
+        }
         Message::AudioStart { .. } => st.last_chunk_ts = None,
         Message::AudioChunk {
             format,
