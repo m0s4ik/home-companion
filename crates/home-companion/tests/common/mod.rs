@@ -73,18 +73,21 @@ pub fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
-/// The brain's side of the port: every request, in order.
+/// The brain's side of the port: every request, in order, with when it came.
 #[derive(Clone, Default)]
-pub struct FakeBrain(pub Arc<Mutex<Vec<Value>>>);
+pub struct FakeBrain(pub Arc<Mutex<Vec<(Instant, Value)>>>);
 
 impl home_companion::brain_link::BrainPort for FakeBrain {
     fn send(&self, req: Value) {
-        self.0.lock().unwrap().push(req);
+        self.0.lock().unwrap().push((Instant::now(), req));
     }
 }
 
 impl FakeBrain {
     pub fn all(&self) -> Vec<Value> {
+        self.0.lock().unwrap().iter().map(|r| r.1.clone()).collect()
+    }
+    pub fn timed(&self) -> Vec<(Instant, Value)> {
         self.0.lock().unwrap().clone()
     }
     pub fn count(&self, cmd: &str) -> usize {
@@ -92,7 +95,7 @@ impl FakeBrain {
             .lock()
             .unwrap()
             .iter()
-            .filter(|r| r["cmd"] == cmd)
+            .filter(|r| r.1["cmd"] == cmd)
             .count()
     }
 }
@@ -360,6 +363,10 @@ pub struct Run {
     pub views: Vec<Phase>,
     pub ui: Vec<UiCommand>,
     pub port: Vec<Value>,
+    /// Each brain request's time, in seconds since just before the fake Home Assistant
+    /// started (its own clock starts a little later: an instant of the fake's `sent` is never
+    /// later than the same instant here).
+    pub port_at: Vec<(f64, Value)>,
 }
 
 impl Run {
@@ -369,6 +376,23 @@ impl Run {
             .iter()
             .filter(|r| r["cmd"] == cmd)
             .cloned()
+            .collect()
+    }
+    /// When each brain request with this `cmd` came (see [`Run::port_at`]).
+    pub fn port_times(&self, cmd: &str) -> Vec<f64> {
+        self.port_at
+            .iter()
+            .filter(|r| r.1["cmd"] == cmd)
+            .map(|r| r.0)
+            .collect()
+    }
+    /// When the fake Home Assistant sent its messages of this type, on its clock.
+    pub fn sent_times(&self, kind: &str) -> Vec<f64> {
+        self.record
+            .sent
+            .iter()
+            .filter(|s| s.1 == kind)
+            .map(|s| s.0)
             .collect()
     }
     pub fn outcomes(&self) -> Vec<(String, String)> {
@@ -532,6 +556,7 @@ pub fn run_setup(setup: Setup) -> Run {
     }
     let core = std::thread::spawn(move || Core::new(core_cfg, deps).run(core_rx));
     let scenario = setup.scenario;
+    let t0 = Instant::now();
     let ha = std::thread::spawn(move || fake_ha::run(addr, &scenario).unwrap());
     let mut ui = drive(&ui_rx, &core_tx, &setup.presses, &ha, &brain);
     let record = ha.join().unwrap();
@@ -560,6 +585,11 @@ pub fn run_setup(setup: Setup) -> Run {
         views,
         ui,
         port: brain.all(),
+        port_at: brain
+            .timed()
+            .into_iter()
+            .map(|(at, r)| (at.saturating_duration_since(t0).as_secs_f64(), r))
+            .collect(),
     }
 }
 

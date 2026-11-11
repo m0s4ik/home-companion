@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Andrea Mattera
 
-//! The body's side of the Yes/No question and of the reflex gate, row by row (C01-C23): each
+//! The body's side of the Yes/No question and of the reflex gate, row by row (C01-C25): each
 //! test a sequence seen for real (the model's ways of asking, the answering channels, the
 //! timings), the core in-process against the fake Home Assistant, the brain's events injected
 //! as the screen forwards them, and the brain's port recorded. C24 is in src/ui/house.rs.
@@ -126,7 +126,7 @@ fn c01_the_question_opens_the_microphone_and_swallows_the_asking_answer() {
     assert!(r.answers().is_empty(), "{:?}", r.answers());
     assert_eq!(r.record.run_pipelines.len(), 1);
     assert_eq!(r.received("played"), 1);
-    // The asking turn ended when its conversation closed (nothing said: it was not heard).
+    // The asking turn ended with its run (nothing said: it was not heard; see C25).
     assert_eq!(
         r.port("turn"),
         vec![json!({"cmd": "turn", "id": 1, "text": "chiudi la tapparella", "answers": null})]
@@ -839,4 +839,97 @@ fn c23_do_not_disturb_keeps_the_yes_received_sound() {
     assert_eq!(r.cues("success"), 1, "{:?}", r.summary.cues);
     // At home the question only shows: no conversation.
     assert!(r.summary.conversations.is_empty());
+}
+
+/// The asking turn's `turn.end`s and their times, and the first time the fake sent `kind`
+/// after the transcript of the asking request.
+fn asking_end(r: &Run, kind: &str) -> (Vec<Value>, f64, f64) {
+    let ends: Vec<Value> = r
+        .port("turn.end")
+        .into_iter()
+        .filter(|t| t["id"] == 1)
+        .collect();
+    let at: Vec<f64> = r
+        .port_at
+        .iter()
+        .filter(|p| p.1["cmd"] == "turn.end" && p.1["id"] == 1)
+        .map(|p| p.0)
+        .collect();
+    assert_eq!(at.len(), 1, "one turn.end of the asking turn: {ends:?}");
+    let transcript = r.sent_times("transcript")[0];
+    let sent = r
+        .sent_times(kind)
+        .into_iter()
+        .find(|t| *t > transcript)
+        .unwrap_or_else(|| panic!("no {kind} after the transcript"));
+    (ends, at[0], sent)
+}
+
+#[test]
+fn c25_the_asking_turn_ends_with_its_runs_answer() {
+    // The question closes the asking conversation while Home Assistant's run still works on
+    // it (the model may call the tool again): its turn stays open for the brain until the
+    // run's words come, then ends once with nothing said.
+    let r = window(Utt::says("sì"), &[]);
+    assert_clean(&r);
+    let (ends, end_at, synth_at) = asking_end(&r, "synthesize");
+    assert_eq!(ends, vec![json!({"cmd": "turn.end", "id": 1, "said": ""})]);
+    assert!(
+        end_at >= synth_at,
+        "turn.end at {end_at:.2} s, the run's answer at {synth_at:.2} s"
+    );
+}
+
+#[test]
+fn c25_the_asking_turn_ends_with_its_runs_error() {
+    let r = run_setup(
+        Setup::new(
+            asking(
+                1500,
+                vec![Step::SendError {
+                    text: "intent failed".into(),
+                    code: "intent-failed".into(),
+                }],
+                bye(2000),
+            ),
+            asking_presses(&[]),
+        )
+        .utts(vec![chiudi(), Utt::says("sì")]),
+    );
+    assert_clean(&r);
+    let (ends, end_at, error_at) = asking_end(&r, "error");
+    assert_eq!(ends, vec![json!({"cmd": "turn.end", "id": 1, "said": ""})]);
+    assert!(
+        end_at >= error_at,
+        "turn.end at {end_at:.2} s, the run's error at {error_at:.2} s"
+    );
+}
+
+#[test]
+fn c25_the_asking_turn_ends_at_the_cap_of_a_run_that_never_ends() {
+    // The run never ends; the answer is no reflex (unsure): it waits for the run, at most 3 s,
+    // and only then the asking turn ends and the answer's run opens.
+    let r = run_setup(
+        Setup::new(
+            asking(
+                0,
+                vec![Step::ForgetRun],
+                cat(vec![hear("forse", 800), answer("Come vuole."), bye(2500)]),
+            ),
+            asking_presses(&[]),
+        )
+        .utts(vec![chiudi(), Utt::says("forse").conf(0.5)]),
+    );
+    assert_clean(&r);
+    let (ends, end_at, _) = asking_end(&r, "transcript");
+    assert_eq!(ends, vec![json!({"cmd": "turn.end", "id": 1, "said": ""})]);
+    let transcript = r.sent_times("transcript")[0];
+    assert!(
+        end_at - transcript >= 2.5,
+        "turn.end {:.2} s after the asking transcript",
+        end_at - transcript
+    );
+    assert_eq!(r.record.run_pipelines.len(), 2);
+    let second = &r.port("turn")[1];
+    assert_eq!(second["answers"], 42, "{second}");
 }

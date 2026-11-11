@@ -964,8 +964,9 @@ impl Core {
                 (AnswerPolicy::Swallow(Swallow::Asked), "stopped") => "question",
                 _ => outcome,
             };
-            // Its turn ends now if Home Assistant said nothing for it.
-            self.end_turn(c.id, "");
+            // Its turn ends with nothing said: now, or when its run ends if Home Assistant still
+            // works on it (the model may call a tool of the brain again for that turn).
+            self.end_turn_unheard(c.id);
             if let Some(s) = c.stream.take() {
                 s.abort();
             }
@@ -1094,6 +1095,20 @@ impl Core {
         let said = if t.silenced { "" } else { said };
         let req = crate::brain_link::turn_end(conv, said);
         self.brain_send(req);
+    }
+
+    /// The turn of conversation `conv` ends with nothing said (the user did not hear it): now,
+    /// or, while Home Assistant's run for it is open, when that run ends (its words in
+    /// [`Core::on_previous_run`] or the current answer, [`Core::run_over`], the cap of
+    /// [`Core::release_waiting`], a disconnect), so that the brain keeps the turn the model's
+    /// tool calls belong to.
+    fn end_turn_unheard(&mut self, conv: u64) {
+        if self.run.as_ref().is_some_and(|r| r.conv == conv) {
+            self.turn_of(conv).silenced = true;
+            log::debug!("turn of conversation {conv} ends with its run");
+            return;
+        }
+        self.end_turn(conv, "");
     }
 
     /// The run is over (its final message, the think timeout, a disconnect): the turn of a
@@ -3289,7 +3304,7 @@ impl Core {
             return;
         };
         self.turn_of(id).silenced = true;
-        self.end_turn(id, "");
+        self.end_turn_unheard(id);
     }
 
     // ---- music and the control center ----------------------------------------------------

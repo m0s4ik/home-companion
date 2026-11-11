@@ -870,3 +870,46 @@ fn b32_a_light_at_once_with_undo() {
     assert!(got[0].starts_with("scene.turn_on scene."), "{got:?}");
     let _ = &s.hub;
 }
+
+/// The body keeps the asking turn open until Home Assistant's run for it ends (body row C25):
+/// a question answered by reflex or on the screen meanwhile, then the model's same call again
+/// in that run, reports the answer and asks nothing new.
+fn answered_outside_then_the_same_call(name: &str, yes: bool, via: &str) {
+    let mut s = S::new(name);
+    s.turn(7, "chiudi la tapparella", None);
+    let q = S::asked(&s.call("home_control", close("cover.study")));
+    s.expect(&[], &["confirm"]);
+    s.answer(q, yes, via);
+    if yes {
+        s.advance(if via == "voice_reflex" { 1000 } else { 0 });
+        s.expect(
+            &["cover.close_cover cover.study"],
+            &if via == "voice_reflex" {
+                vec!["confirm_pending", "changed", "confirm_done"]
+            } else {
+                vec!["changed", "confirm_done"]
+            },
+        );
+    } else {
+        s.expect(&[], &["confirm_done"]);
+    }
+    let r = s.call("home_control", close("cover.study"));
+    assert_eq!(
+        r["state"],
+        if yes { "done" } else { "answered_no" },
+        "{name}: {r}"
+    );
+    assert!(r["asked"].is_null(), "{name}: {r}");
+    s.expect(&[], &[]);
+    s.turn_end(7, "");
+    s.expect(&[], &[]);
+}
+
+#[test]
+fn b33_answered_by_reflex_or_screen_with_the_asking_turn_open() {
+    answered_outside_then_the_same_call("b33-reflex-yes", true, "voice_reflex");
+    answered_outside_then_the_same_call("b33-reflex-no", false, "voice_reflex");
+    answered_outside_then_the_same_call("b33-screen-yes", true, "screen");
+    answered_outside_then_the_same_call("b33-screen-no", false, "screen");
+    answered_outside_then_the_same_call("b33-stop", false, "stop");
+}
