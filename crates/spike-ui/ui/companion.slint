@@ -738,6 +738,11 @@ export component CompanionWindow inherits Window {
     // A command waits for a yes: the question, the time left (1 = just asked, 0 = over).
     in property <bool> ask-shown: false;
     in property <string> ask-text: "";
+    // The devices' names under the question (several), or "".
+    in property <string> ask-names: "";
+    // A spoken yes in its confirming second: the Yes button blinks (No still wins).
+    in property <bool> ask-pending: false;
+    in property <bool> ask-pending-lit: false;
     in property <float> ask-left: 1;
     callback ask-answered(bool);
     // Do not disturb: on, and its line ("Do not disturb · until 07:00").
@@ -4124,8 +4129,11 @@ export component CompanionWindow inherits Window {
     if root.ask-shown: Dialog {
         icon: Icons.help-circle-48;
         title: root.ask-text;
+        text: root.ask-names;
         cancel: root.t.no;
         confirm: root.t.yes;
+        confirm-blink: root.ask-pending;
+        confirm-lit: root.ask-pending-lit;
         left: root.ask-left;
         centre-x: root.dialog-cx;
         answered(yes) => {

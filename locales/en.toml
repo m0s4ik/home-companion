@@ -407,6 +407,7 @@ house_state_closing = "closing"
 house_done = "done"
 house_and_more = "{name} and {n} more"
 house_others = "and {n} more"
+house_failed = "{name}: not done"
 # The Yes/No card of a command that waits for an answer.
 yes = "Yes"
 no = "No"

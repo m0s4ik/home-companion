@@ -31,6 +31,8 @@ pub enum ReflexEvent {
     },
     /// The helper stopped (crash, language change): reflexes off until the next `Ready`.
     Lost,
+    /// The helper's partial text of utterance `id` changed (`audio_s`: audio decoded so far).
+    Partial { id: u64, text: String, audio_s: f32 },
     Result {
         id: u64,
         endpoint: bool,
@@ -289,10 +291,12 @@ fn run_once(
                 words,
                 ms,
             }),
-            // Partials are for the gate's early release (reflex::verdict), not wired yet.
-            Ok(Reply::Partial { id, text, audio_s }) => {
-                log::trace!("reflexes: partial {id} at {audio_s:.2} s: {text:?}")
-            }
+            // For the gate's early release (reflex::verdict).
+            Ok(Reply::Partial { id, text, audio_s }) => emit(ReflexEvent::Partial {
+                id,
+                text,
+                audio_s: audio_s as f32,
+            }),
             Ok(Reply::Error { message }) => log::warn!("reflexes: helper: {message}"),
             Err(e) => log::warn!("reflexes: {e}"),
         }

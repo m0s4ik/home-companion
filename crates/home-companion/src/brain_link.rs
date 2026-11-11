@@ -348,23 +348,6 @@ impl BrainPort for Ordered {
     }
 }
 
-/// The process's [`Ordered`] queue to the brain's socket.
-pub fn ordered() -> &'static Ordered {
-    static ORDERED: std::sync::OnceLock<Ordered> = std::sync::OnceLock::new();
-    ORDERED.get_or_init(|| Ordered::start(socket_path()))
-}
-
-/// What the user said (`heard`, the satellite's transcript) and Home Assistant's answer
-/// (`said`), for the brain: the exchanges become memories, the transcript lets the writing
-/// tools run. In order, through [`ordered`]; never blocking the caller; lost when the brain is
-/// away.
-pub fn tell(cmd: &'static str, text: &str) {
-    if text.trim().is_empty() || std::env::var_os("HOME_COMPANION_NO_BRAIN").is_some() {
-        return;
-    }
-    ordered().send(json!({"cmd": cmd, "text": text}));
-}
-
 /// How often the body hands its Home Assistant token to the brain (access tokens last 30 min;
 /// the body refreshes them a minute before they expire): every minute, so a restarted brain
 /// has it again soon (a local message; the refresh itself only when due).

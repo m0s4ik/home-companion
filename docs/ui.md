@@ -91,6 +91,11 @@ pause and cancel), `AlarmLine`, `ChatUser` / `ChatCharacter` (as tall as their t
 `Dialog` (scrim, icon, title, text, content, Cancel ring + gold action), `VolumeHud`, `ControlTile` and `LevelBar`
 (the control centre). No shadows, no blur, no gradients over content (one 48 px fade at the top of the chat list).
 
+The house **Yes/No question** (a cover, a valve) is a `Dialog` the brain owns: it opens on the brain's `confirm`
+and closes on its `confirm_done` only (a tap marks it and waits; safety nets: its expiry, 3 s after a tap). A spoken
+yes is taken back for one second: meanwhile the gold Yes button pulses (`confirm-blink`, about three pulses between
+its ring and the gold fill) and No stays a target that wins.
+
 ## 6. Screens
 
 - **Home**: clock; "Wednesday 4 November · ⛅ 14°" (date in the locale's case, temperature rounded, no unit, in

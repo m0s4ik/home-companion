@@ -1243,6 +1243,11 @@ export component Dialog inherits Rectangle {
     in property <bool> spinning: false;
     in property <bool> busy-bar: false;
     in property <float> left: -1;
+    // A spoken yes waits for its second (the brain's confirming second): the confirm button
+    // pulses between its plain look and the gold fill, about three times a second; both buttons
+    // stay targets (a No still wins). `confirm-lit`: held at the lit peak (a demo's still).
+    in property <bool> confirm-blink: false;
+    in property <bool> confirm-lit: false;
     in property <bool> scrim: true;
     in property <color> border: Theme.accent.with-alpha(0.5);
     in property <length> box-width: 672px;
@@ -1372,13 +1377,19 @@ export component Dialog inherits Rectangle {
                 }
             }
         }
-        if root.confirm != "": Rectangle {
+        if root.confirm != "": confirm-btn := Rectangle {
+            // 0 plain, 1 lit (gold fill).
+            property <float> glow: root.confirm-lit ? 1
+                : root.confirm-blink ? (1 - cos(mod(animation-tick() / 1ms, 333) / 333 * 360deg)) / 2
+                : 0;
+            property <color> ink: self.glow > 0 ? Theme.on-accent.mix(Theme.accent, self.glow) : Theme.accent;
             x: root.cancel != "" ? 48px + box.btn-w + 16px : 48px;
             y: box.buttons-y;
             width: box.btn-w;
             height: 88px;
             border-radius: self.height / 2;
-            background: confirm-touch.pressed ? Theme.accent.with-alpha(0.18) : transparent;
+            background: confirm-touch.pressed ? Theme.accent.with-alpha(0.18)
+                : self.glow > 0 ? Theme.accent.with-alpha(self.glow) : transparent;
             border-width: 2px;
             border-color: Theme.accent;
             HorizontalLayout {
@@ -1391,14 +1402,14 @@ export component Dialog inherits Rectangle {
                         width: 36px;
                         height: 36px;
                         source: root.confirm-icon;
-                        color: Theme.accent;
+                        color: confirm-btn.ink;
                     }
                 }
                 Text {
                     text: root.confirm;
                     font-size: 30px;
                     font-weight: 500;
-                    color: Theme.accent;
+                    color: confirm-btn.ink;
                     vertical-alignment: center;
                 }
             }

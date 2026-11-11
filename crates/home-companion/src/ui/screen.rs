@@ -422,6 +422,8 @@ pub struct Demo {
     pub usage_precise: bool,
     /// `--state house-done-group*`: four lights off by one sentence, one card.
     pub house_group: bool,
+    /// The Yes/No question with a spoken yes in its confirming second (the Yes button lit).
+    pub house_pending: bool,
     /// `--state mic-*`: the microphone off by the switch (line and tile); `mic_hud` = the
     /// switch's card, Some(on).
     pub mic_switch_off: bool,
@@ -433,7 +435,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 70] = [
+pub const DEMO_STATES: [&str; 71] = [
     "home",
     "cards",
     "cards-setup",
@@ -485,6 +487,7 @@ pub const DEMO_STATES: [&str; 70] = [
     "house-done-group-card",
     "house-done-speaking",
     "house-ask",
+    "house-ask-pending",
     "dnd",
     "control-dnd",
     "mic-switch-off",
@@ -629,6 +632,11 @@ impl Demo {
             "house-done-speaking" => Demo {
                 house: 1,
                 phase: Phase::Speaking,
+                ..home.clone()
+            },
+            "house-ask-pending" => Demo {
+                house: 2,
+                house_pending: true,
                 ..home.clone()
             },
             "house-ask" => Demo {
@@ -1061,8 +1069,10 @@ pub struct Ui<S: Screen> {
     restart_timer: Timer,
     /// v0.2: the "done" and Yes/No cards of the brain's house commands.
     house: RefCell<HouseCards>,
-    /// A Yes/No question is open, as last told to the core (UiEvent::Question).
-    asking: Cell<bool>,
+    /// The Yes/No question open, as last told to the core (UiEvent::Question).
+    asking: Cell<Option<i64>>,
+    /// Its Yes button blinks (a spoken yes in its confirming second), as last drawn.
+    ask_blink: Cell<bool>,
     /// The countdown's length last put on screen (it is set again when it moved enough).
     ask_left: Cell<f32>,
     /// Do not disturb (UiCommand::DoNotDisturb).
@@ -1200,8 +1210,14 @@ fn local_offset(t: i64) -> i64 {
 /// A house event of the brain, gathered while its messages are read (BrainMsg).
 enum HouseEvent {
     Done(i64, String, bool),
-    Ask(i64, String, i64),
-    AskOver(i64),
+    /// A question: id, text, the devices' names, expires_at.
+    Ask(i64, String, Vec<String>, i64),
+    /// A spoken yes received: id, until_ms.
+    Pending(i64, i64),
+    /// The question is over: id, answered (yes/no) or not, via, the devices that failed.
+    AskOver(i64, Option<bool>, String, Vec<String>),
+    /// A new subscription: the question on screen is forgotten (the brain replays it).
+    Resubscribed,
     View(brain_link::View),
 }
 
@@ -1344,7 +1360,8 @@ impl<S: Screen> Ui<S> {
             find: RefCell::new(None),
             restart_timer: Timer::default(),
             house: RefCell::new(HouseCards::default()),
-            asking: Cell::new(false),
+            asking: Cell::new(None),
+            ask_blink: Cell::new(false),
             ask_left: Cell::new(0.0),
             dnd: Cell::new(Dnd::default()),
             this: RefCell::new(Weak::new()),
@@ -1578,13 +1595,12 @@ impl<S: Screen> Ui<S> {
         let ui = Rc::downgrade(self);
         self.screen.on_ask_answered(move |yes| {
             if let Some(ui) = ui.upgrade() {
-                let id = ui.house.borrow_mut().answer();
+                // The core sends it to the brain; the card stays until the brain closes it.
+                let id = ui.house.borrow_mut().answer(ui.now());
                 if let Some(id) = id {
                     log::info!(event = "house_answer", id = id, yes = yes; "house: {} to {id}", if yes { "yes" } else { "no" });
-                    ui.brain_do(brain_link::confirm_answer(id, yes, brain_link::Via::Screen));
-                    ui.send(UiEvent::AskAnswered);
+                    ui.send(UiEvent::QuestionAnswer { id, yes });
                 }
-                ui.render_house();
             }
         });
         let ui = Rc::downgrade(self);
@@ -2971,7 +2987,11 @@ impl<S: Screen> Ui<S> {
                 self.screen.set_done_parts(&name, &state);
                 self.screen.set_done_popup(!d.house_card_only, 0.62);
             }
-            2 => self.screen.set_ask(true, l.sample("house_question"), 0.62),
+            2 => {
+                self.screen
+                    .set_ask(true, l.sample("house_question"), "", 0.62);
+                self.screen.set_ask_pending(d.house_pending, true);
+            }
             _ => {}
         }
     }
@@ -3156,19 +3176,6 @@ impl<S: Screen> Ui<S> {
                 self.screen.set_volume(p, false);
             }
             UiCommand::ScreenOff => self.screen_off(),
-            c @ (UiCommand::DeclineQuestion | UiCommand::AcceptQuestion) => {
-                let yes = c == UiCommand::AcceptQuestion;
-                let id = self.house.borrow_mut().answer();
-                if let Some(id) = id {
-                    log::info!(event = "house_answer", id = id, yes = yes, by = "voice"; "house: {} to {id} (said)", if yes { "yes" } else { "no" });
-                    self.brain_do(brain_link::confirm_answer(
-                        id,
-                        yes,
-                        brain_link::Via::VoiceReflex,
-                    ));
-                    self.render_house();
-                }
-            }
             UiCommand::DoNotDisturb(until) => self.set_dnd(until),
             UiCommand::Announcing(on) => self.screen.set_announcing(on),
             UiCommand::Suspending => {
@@ -4711,6 +4718,9 @@ impl<S: Screen> Ui<S> {
             let mv = &mut d.memories;
             match m {
                 BrainMsg::Present(p) => {
+                    if p {
+                        house_cards.push(HouseEvent::Resubscribed);
+                    }
                     mv.present = p;
                     if !p {
                         mv.status = word(&l, "brain_off", &name);
@@ -4849,16 +4859,28 @@ impl<S: Screen> Ui<S> {
                 BrainMsg::Confirm {
                     id,
                     text,
+                    names,
                     expires_at,
-                    ..
                 } => {
                     log::info!(event = "house_confirm", id = id; "house: asks {text:?}");
-                    house_cards.push(HouseEvent::Ask(id, text, expires_at));
+                    house_cards.push(HouseEvent::Ask(id, text, names, expires_at));
                 }
-                BrainMsg::ConfirmPending { .. } => {}
-                BrainMsg::ConfirmDone { id, yes, .. } => {
-                    log::info!(event = "house_confirm_done", id = id, answered = yes.is_some(); "house: question {id} over");
-                    house_cards.push(HouseEvent::AskOver(id));
+                BrainMsg::ConfirmPending { id, until_ms } => {
+                    log::info!(event = "house_confirm_pending", id = id; "house: yes to {id} received");
+                    house_cards.push(HouseEvent::Pending(id, until_ms));
+                }
+                BrainMsg::ConfirmDone {
+                    id,
+                    yes,
+                    via,
+                    failed,
+                } => {
+                    log::info!(event = "house_confirm_done", id = id, answered = yes.is_some(), via = via.as_str(); "house: question {id} over");
+                    let failed = failed
+                        .iter()
+                        .map(|n| l.text("house_failed").replace("{name}", n))
+                        .collect();
+                    house_cards.push(HouseEvent::AskOver(id, yes, via, failed));
                 }
                 BrainMsg::ShowView(v) => house_cards.push(HouseEvent::View(v)),
                 BrainMsg::Upcoming(items) => {
@@ -4958,11 +4980,11 @@ impl<S: Screen> Ui<S> {
                 // just before, nor the night's, that the touch is for).
                 self.wake(WakeSource::Conversation);
             }
-            HouseEvent::Ask(id, text, expires_at) => {
+            HouseEvent::Ask(id, text, names, expires_at) => {
                 if !self
                     .house
                     .borrow_mut()
-                    .confirm(id, text, expires_at, self.now())
+                    .confirm(id, text, names, expires_at, self.now())
                 {
                     log::info!(event = "house_confirm", id = id; "house: question {id} over already");
                     return;
@@ -4972,9 +4994,17 @@ impl<S: Screen> Ui<S> {
                 self.wake(WakeSource::Conversation);
                 self.screen.set_control_open(false);
             }
-            HouseEvent::AskOver(id) => {
-                self.house.borrow_mut().confirm_done(id);
+            HouseEvent::Pending(id, until_ms) => {
+                if self.house.borrow_mut().pending(id, until_ms) {
+                    self.send(UiEvent::QuestionPending(id, until_ms.max(0) as u64));
+                }
             }
+            HouseEvent::AskOver(id, yes, via, failed) => {
+                self.house
+                    .borrow_mut()
+                    .confirm_done(id, yes, &via, failed, now);
+            }
+            HouseEvent::Resubscribed => self.house.borrow_mut().clear_question(),
             HouseEvent::View(v) => {
                 self.show_view(v);
                 return;
@@ -5013,6 +5043,16 @@ impl<S: Screen> Ui<S> {
             let left = self.house.borrow().popup_left(Instant::now());
             self.screen.set_done_popup(true, left);
         }
+        let blink = self
+            .house
+            .borrow()
+            .ask
+            .as_ref()
+            .is_some_and(|a| a.blinking((now_unix * 1000.0) as i64));
+        if blink != self.ask_blink.get() {
+            self.ask_blink.set(blink);
+            self.screen.set_ask_pending(blink, false);
+        }
         let left = self.house.borrow().ask_left(now_unix);
         if (left - self.ask_left.get()).abs() >= 0.004 {
             self.ask_left.set(left);
@@ -5028,11 +5068,31 @@ impl<S: Screen> Ui<S> {
 
     /// Both cards as they are now.
     fn render_house(&self) {
+        // The core hears of every question that comes and goes (it listens for a spoken yes
+        // or no as soon as one opens).
+        let closed = self.house.borrow_mut().take_closed();
         let h = self.house.borrow().clone();
-        // The core listens for a spoken yes or no as soon as a question opens.
-        if h.ask.is_some() != self.asking.get() {
-            self.asking.set(h.ask.is_some());
-            self.send(UiEvent::Question(h.ask.is_some()));
+        if let Some(c) = closed.filter(|c| self.asking.get() == Some(c.id)) {
+            self.asking.set(None);
+            self.send(UiEvent::QuestionClosed {
+                id: c.id,
+                yes: c.yes,
+                via: c.via,
+            });
+        }
+        let open = h.ask.as_ref().map(|a| a.id);
+        if open != self.asking.get() {
+            if let Some(old) = self.asking.get() {
+                self.send(UiEvent::QuestionClosed {
+                    id: old,
+                    yes: None,
+                    via: "screen".into(),
+                });
+            }
+            self.asking.set(open);
+            if let Some(id) = open {
+                self.send(UiEvent::Question(id));
+            }
         }
         match &h.done {
             Some(d) => {
@@ -5051,10 +5111,16 @@ impl<S: Screen> Ui<S> {
         self.refresh_home();
         let left = h.ask_left(self.now());
         self.ask_left.set(left);
+        let blink = h
+            .ask
+            .as_ref()
+            .is_some_and(|a| a.blinking((self.now() * 1000.0) as i64));
+        self.ask_blink.set(blink);
         match &h.ask {
-            Some(a) => self.screen.set_ask(true, &a.text, left),
-            None => self.screen.set_ask(false, "", 0.0),
+            Some(a) => self.screen.set_ask(true, &a.text, &a.names_line(), left),
+            None => self.screen.set_ask(false, "", "", 0.0),
         }
+        self.screen.set_ask_pending(blink, false);
     }
 
     /// A touch at (x, y) is for a card of the house over Home Assistant's view (the Yes/No

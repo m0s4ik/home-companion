@@ -37,15 +37,55 @@ pub struct DoneCard {
     popup_until: Option<Instant>,
 }
 
-/// A house command waits for a yes (BrainMsg::Confirm).
+/// After a tap on Yes or No, the card waits this long for the brain's `confirm_done` before it
+/// closes by itself (the brain is gone or did not hear it).
+pub const TAPPED_WAIT_S: f64 = 3.0;
+
+/// A house command waits for a yes (BrainMsg::Confirm). The brain's events are its only truth:
+/// it opens with `confirm`, blinks with `confirm_pending`, closes with `confirm_done`; the
+/// safety nets (the brain died) close it at `expires_at` or [`TAPPED_WAIT_S`] after a tap.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AskCard {
     pub id: i64,
     pub text: String,
+    /// The full name of each device it is about.
+    pub names: Vec<String>,
     /// Unix seconds: the brain gives up then (and says so with `confirm_done`).
     pub expires_at: i64,
     /// When it came (unix seconds), for the countdown's full length.
     since: f64,
+    /// Yes or No touched then (unix seconds): further taps are ignored.
+    tapped: Option<f64>,
+    /// A spoken yes was received: the commands run then (unix ms) unless a no comes first.
+    pending_until_ms: Option<i64>,
+}
+
+impl AskCard {
+    /// The line under the question: the devices' names when there are several (one is in the
+    /// question already).
+    pub fn names_line(&self) -> String {
+        if self.names.len() > 1 {
+            self.names.join(", ")
+        } else {
+            String::new()
+        }
+    }
+
+    /// The Yes button blinks: a spoken yes waits for its second to pass.
+    pub fn blinking(&self, now_ms: i64) -> bool {
+        self.pending_until_ms.is_some_and(|u| now_ms < u)
+    }
+}
+
+/// How a question left the screen (for the core: UiEvent::QuestionClosed).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Closed {
+    pub id: i64,
+    /// Answered (the brain's `confirm_done`), or None.
+    pub yes: Option<bool>,
+    /// As the brain names it, or "screen" (the card's own safety net), "brain" (a new
+    /// subscription: the brain replays what is still open).
+    pub via: String,
 }
 
 /// The two cards; at most one of each (a newer one replaces the older).
@@ -53,6 +93,8 @@ pub struct AskCard {
 pub struct HouseCards {
     pub done: Option<DoneCard>,
     pub ask: Option<AskCard>,
+    /// The last question that left the screen, until the screen tells the core.
+    closed: Option<Closed>,
 }
 
 impl HouseCards {
@@ -118,34 +160,105 @@ impl HouseCards {
     }
 
     /// A question: shown until `expires_at` or its `confirm_done`. False (nothing shown) when
-    /// it has expired already (a late event).
-    pub fn confirm(&mut self, id: i64, text: String, expires_at: i64, now_unix: f64) -> bool {
+    /// it has expired already (a late event). A newer question replaces the one on screen; the
+    /// same one again (the brain's replay) keeps its tap and its blink.
+    pub fn confirm(
+        &mut self,
+        id: i64,
+        text: String,
+        names: Vec<String>,
+        expires_at: i64,
+        now_unix: f64,
+    ) -> bool {
         if (expires_at as f64) <= now_unix {
             return false;
         }
+        if let Some(old) = self.ask.as_ref().filter(|a| a.id != id) {
+            self.closed = Some(Closed {
+                id: old.id,
+                yes: None,
+                via: "replaced".into(),
+            });
+        }
+        let keep = self.ask.take().filter(|a| a.id == id);
         self.ask = Some(AskCard {
             id,
             text,
+            names,
             expires_at,
-            since: now_unix,
+            since: keep.as_ref().map_or(now_unix, |a| a.since),
+            tapped: keep.as_ref().and_then(|a| a.tapped),
+            pending_until_ms: keep.and_then(|a| a.pending_until_ms),
         });
         true
     }
 
-    /// The question `id` is over (answered here, by voice, or expired at the brain): true if
-    /// it was the one on screen.
-    pub fn confirm_done(&mut self, id: i64) -> bool {
+    /// A spoken yes to `id` was received (`confirm_pending`): the Yes button blinks until
+    /// `until_ms`. False when that question is not on screen.
+    pub fn pending(&mut self, id: i64, until_ms: i64) -> bool {
+        match self.ask.as_mut().filter(|a| a.id == id) {
+            Some(a) => {
+                a.pending_until_ms = Some(until_ms);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The question `id` is over (`confirm_done`): the card closes. After a yes, the devices
+    /// that did not do it (`failed`, already worded: "Tapparella: non riuscito") stay as a card
+    /// without Undo. True if it was the one on screen.
+    pub fn confirm_done(
+        &mut self,
+        id: i64,
+        yes: Option<bool>,
+        via: &str,
+        failed: Vec<String>,
+        now: Instant,
+    ) -> bool {
+        if yes == Some(true) {
+            for line in failed {
+                self.changed(id, line, false, now);
+            }
+        }
         if self.ask.as_ref().is_some_and(|a| a.id == id) {
             self.ask = None;
+            self.closed = Some(Closed {
+                id,
+                yes,
+                via: via.to_string(),
+            });
             return true;
         }
         false
     }
 
-    /// Yes or No touched: the question's id, the card closed (the brain's `confirm_done`
-    /// follows and finds nothing to close).
-    pub fn answer(&mut self) -> Option<i64> {
-        self.ask.take().map(|a| a.id)
+    /// Yes or No touched: the question's id, once (further taps are ignored). The card stays
+    /// until the brain says the question is over.
+    pub fn answer(&mut self, now_unix: f64) -> Option<i64> {
+        let a = self.ask.as_mut()?;
+        if a.tapped.is_some() {
+            return None;
+        }
+        a.tapped = Some(now_unix);
+        Some(a.id)
+    }
+
+    /// A new subscription to the brain: the question on screen is forgotten (the brain replays
+    /// it if it is still open).
+    pub fn clear_question(&mut self) {
+        if let Some(a) = self.ask.take() {
+            self.closed = Some(Closed {
+                id: a.id,
+                yes: None,
+                via: "brain".into(),
+            });
+        }
+    }
+
+    /// The last question that left the screen, once.
+    pub fn take_closed(&mut self) -> Option<Closed> {
+        self.closed.take()
     }
 
     /// "Undo" touched: the commands' ids, the card closed.
@@ -172,11 +285,20 @@ impl HouseCards {
                 gone = true;
             }
         }
-        if self
+        if let Some(id) = self
             .ask
             .as_ref()
-            .is_some_and(|a| now_unix >= a.expires_at as f64)
+            .filter(|a| {
+                now_unix >= a.expires_at as f64
+                    || a.tapped.is_some_and(|t| now_unix >= t + TAPPED_WAIT_S)
+            })
+            .map(|a| a.id)
         {
+            self.closed = Some(Closed {
+                id,
+                yes: None,
+                via: "screen".into(),
+            });
             self.ask = None;
             gone = true;
         }
@@ -453,43 +575,171 @@ mod tests {
         assert_eq!(c.undo(), None);
     }
 
+    fn ask(c: &mut HouseCards, id: i64) -> bool {
+        c.confirm(
+            id,
+            "Chiudo?".into(),
+            vec!["Tapparella".into()],
+            2000,
+            1000.0,
+        )
+    }
+
     #[test]
     fn ask_expires_and_counts_down() {
         let t0 = Instant::now();
         let mut c = HouseCards::default();
-        assert!(c.confirm(42, "Close the blind?".into(), 1030, 1000.0));
+        assert!(c.confirm(42, "Close the blind?".into(), vec![], 1030, 1000.0));
         assert_eq!(c.ask_left(1000.0), 1.0);
         assert!((c.ask_left(1015.0) - 0.5).abs() < 1e-6);
         assert!(!c.tick(t0, 1029.9));
+        // The safety net: closed at expires_at (the brain died), the core told so.
         assert!(c.tick(t0, 1030.0));
         assert!(c.ask.is_none());
+        assert_eq!(
+            c.take_closed(),
+            Some(Closed {
+                id: 42,
+                yes: None,
+                via: "screen".into()
+            })
+        );
+        assert_eq!(c.take_closed(), None, "once");
         assert_eq!(c.ask_left(1031.0), 0.0);
         // Already over when it arrives: nothing.
-        assert!(!c.confirm(43, "late".into(), 999, 1000.0));
+        assert!(!c.confirm(43, "late".into(), vec![], 999, 1000.0));
         assert!(c.ask.is_none());
     }
 
     #[test]
     fn confirm_done_closes_only_its_own() {
+        let t0 = Instant::now();
         let mut c = HouseCards::default();
-        c.confirm(42, "a".into(), 2000, 1000.0);
-        assert!(!c.confirm_done(41), "another question");
+        ask(&mut c, 42);
+        assert!(
+            !c.confirm_done(41, None, "timeout", vec![], t0),
+            "another question"
+        );
         assert!(c.ask.is_some());
         // A newer question replaced 42: 42's end leaves it.
-        c.confirm(43, "b".into(), 2000, 1000.0);
-        assert!(!c.confirm_done(42));
-        assert!(c.confirm_done(43));
+        ask(&mut c, 43);
+        assert_eq!(
+            c.take_closed().map(|x| (x.id, x.via)),
+            Some((42, "replaced".into()))
+        );
+        assert!(!c.confirm_done(42, None, "replaced", vec![], t0));
+        assert!(c.confirm_done(43, Some(false), "voice_reflex", vec![], t0));
         assert!(c.ask.is_none());
-        assert!(!c.confirm_done(43));
+        assert_eq!(
+            c.take_closed(),
+            Some(Closed {
+                id: 43,
+                yes: Some(false),
+                via: "voice_reflex".into()
+            })
+        );
+        assert!(!c.confirm_done(43, Some(false), "voice_reflex", vec![], t0));
     }
 
+    /// C24: a tap marks the card (later taps ignored) and it stays until the brain's
+    /// `confirm_done`; without one it closes 3 s after the tap.
     #[test]
-    fn answer_takes_the_question() {
+    fn a_tap_marks_the_card_until_the_brain_closes_it() {
+        let t0 = Instant::now();
         let mut c = HouseCards::default();
-        assert_eq!(c.answer(), None);
-        c.confirm(42, "a".into(), 2000, 1000.0);
-        assert_eq!(c.answer(), Some(42));
+        assert_eq!(c.answer(1000.0), None, "nothing to answer");
+        ask(&mut c, 42);
+        assert_eq!(c.answer(1001.0), Some(42));
+        assert_eq!(c.answer(1001.5), None, "one tap only");
+        assert!(c.ask.is_some(), "still on screen after the tap");
+        assert!(!c.tick(t0, 1003.9));
+        assert!(c.confirm_done(42, Some(true), "screen", vec![], t0));
         assert!(c.ask.is_none());
+        // No confirm_done: 3 s after the tap it goes by itself.
+        ask(&mut c, 44);
+        let _ = c.take_closed();
+        assert_eq!(c.answer(1010.0), Some(44));
+        assert!(!c.tick(t0, 1012.9));
+        assert!(c.tick(t0, 1013.0));
+        assert_eq!(c.take_closed().map(|x| (x.id, x.yes)), Some((44, None)));
+    }
+
+    /// C24: a spoken yes makes the Yes button blink until its time; confirm_done ends it.
+    #[test]
+    fn pending_blinks_until_its_time() {
+        let t0 = Instant::now();
+        let mut c = HouseCards::default();
+        assert!(!c.pending(42, 5000), "no question on screen");
+        ask(&mut c, 42);
+        assert!(!c.ask.as_ref().unwrap().blinking(1000));
+        assert!(!c.pending(41, 5000), "another question");
+        assert!(c.pending(42, 5000));
+        let a = c.ask.clone().unwrap();
+        assert!(a.blinking(4999) && !a.blinking(5000));
+        // The brain's replay of the same question keeps the blink.
+        ask(&mut c, 42);
+        assert!(c.ask.as_ref().unwrap().blinking(4000));
+        assert!(c.confirm_done(42, Some(true), "voice_reflex", vec![], t0));
+        assert!(c.ask.is_none());
+    }
+
+    /// C24: a new subscription forgets the question; the brain's replay brings it back.
+    #[test]
+    fn a_new_subscription_clears_and_the_replay_restores() {
+        let mut c = HouseCards::default();
+        ask(&mut c, 42);
+        c.clear_question();
+        assert!(c.ask.is_none());
+        assert_eq!(
+            c.take_closed().map(|x| (x.id, x.via)),
+            Some((42, "brain".into()))
+        );
+        assert!(ask(&mut c, 42));
+        assert_eq!(c.ask.as_ref().map(|a| a.id), Some(42));
+        c.clear_question();
+        c.clear_question();
+        assert_eq!(c.take_closed().map(|x| x.id), Some(42));
+        assert_eq!(c.take_closed(), None);
+    }
+
+    /// C24: several names under the question; after a yes the ones that failed stay as a card
+    /// without Undo.
+    #[test]
+    fn names_and_failed_lines() {
+        let t0 = Instant::now();
+        let mut c = HouseCards::default();
+        c.confirm(
+            42,
+            "Chiudo 2 tapparelle?".into(),
+            vec!["Tapparella sinistra".into(), "Tapparella destra".into()],
+            2000,
+            1000.0,
+        );
+        assert_eq!(
+            c.ask.as_ref().unwrap().names_line(),
+            "Tapparella sinistra, Tapparella destra"
+        );
+        ask(&mut c, 43);
+        assert_eq!(
+            c.ask.as_ref().unwrap().names_line(),
+            "",
+            "one name: in the question"
+        );
+        assert!(c.confirm_done(
+            43,
+            Some(true),
+            "screen",
+            vec!["Tapparella: non riuscito".into()],
+            t0
+        ));
+        let d = c.done.clone().expect("a card for what failed");
+        assert_eq!(d.lines, vec!["Tapparella: non riuscito".to_string()]);
+        assert!(!d.undo && !c.popup());
+        // A no: no card.
+        let mut c = HouseCards::default();
+        ask(&mut c, 44);
+        c.confirm_done(44, Some(false), "screen", vec!["x".into()], t0);
+        assert!(c.done.is_none());
     }
 
     #[test]

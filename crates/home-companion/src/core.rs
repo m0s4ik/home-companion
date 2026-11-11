@@ -17,15 +17,16 @@ use audio::{AudioEvent, CaptureFrame, Player, Recorder, SourceId, StreamFormat};
 use wyoming::{AudioFormat, Disconnect, Message, ServerEvent};
 
 use crate::alarms::{Alarm, Alarms};
-use crate::conversation::{Conversation, Record, Trigger};
+use crate::conversation::{AnswerPolicy, Conversation, Record, Swallow, Trigger};
 use crate::cues::Cues;
 use crate::reflex::{ReflexEvent, Reflexes};
 use crate::settings::Settings;
 use crate::timers::{TimerView, Timers, now_unix};
 use crate::volume::{Volume, VolumeRequest};
+use reflex::Command as Reflex;
 use reflex::proto::Request as ReflexRequest;
 use reflex::vad::Vad;
-use reflex::{Command as Reflex, Decision};
+use reflex::verdict::{self as rv, Verdict};
 
 /// What the screen sends.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,12 +46,25 @@ pub enum UiEvent {
     Stop,
     /// "Falso allarme": Stop, and the wake word's audio kept as a mistake (to train it).
     FalseWake,
-    /// Yes or No touched on a house question: what the character is still saying or waiting
-    /// for about it is over (the question repeated, the microphone open for the answer).
-    AskAnswered,
-    /// A house Yes/No question opened (true) or closed on the screen: while open, the
-    /// microphone listens for the answer right away and "sì" is a reflex.
-    Question(bool),
+    /// The brain's Yes/No question `id` is on the screen (BrainMsg::Confirm): when the character
+    /// is still busy with the request that asked it, the microphone opens at once for the
+    /// answer, where "sì" and "no" are reflexes.
+    Question(i64),
+    /// Yes or No touched on the question `id`: the core sends the answer to the brain.
+    QuestionAnswer {
+        id: i64,
+        yes: bool,
+    },
+    /// A spoken yes to question `id` was received (BrainMsg::ConfirmPending): its commands run
+    /// at `until_ms` (unix ms) unless a no (touched, or Stop) comes first.
+    QuestionPending(i64, u64),
+    /// The question `id` is off the screen: the brain's `confirm_done` (`yes` Some: answered,
+    /// `via` as the brain names it) or the screen's own safety net (`yes` None, `via` "screen").
+    QuestionClosed {
+        id: i64,
+        yes: Option<bool>,
+        via: String,
+    },
     MessageOk(usize),
     Language(String),
     HomeAssistant,
@@ -187,11 +201,6 @@ pub enum UiCommand {
     Suspending,
     /// "Spegni lo schermo" (a reflex): the backlight off until a touch, a key or a wake word.
     ScreenOff,
-    /// "No" (or "basta", "lascia stare"…) said to the reflexes: a house question still open on
-    /// the screen is answered No, as if touched.
-    DeclineQuestion,
-    /// "Sì" said to the reflexes while a house question is open: answered Yes, as if touched.
-    AcceptQuestion,
     /// "Non disturbare" (a reflex): no sounds nor cards' sounds, the screen dim, until this
     /// unix time (Some) or off again (None).
     DoNotDisturb(Option<u64>),
@@ -348,6 +357,8 @@ pub struct Summary {
     pub rung: Vec<String>,
     pub phases: Vec<Phase>,
     pub detections_sent: u32,
+    /// The cues played, by name ("success", "wake"…), in order.
+    pub cues: Vec<&'static str>,
 }
 
 /// Everything the core drives. `audio` and `server` are owned so the core can stop them at
@@ -375,6 +386,9 @@ pub struct Deps {
     pub music: Option<crate::airplay::Music>,
     /// The reflexes' answers said aloud in Home Assistant's voice (None: their sounds only).
     pub voice: Option<Box<dyn crate::voice::VoiceLink>>,
+    /// home-companion-brain, in order: the turns of the conversations and the answers to its
+    /// questions (None: no brain, nothing is sent).
+    pub brain: Option<Box<dyn crate::brain_link::BrainPort>>,
 }
 
 /// A reflex's answer waiting for its voice; the sound plays instead at `deadline`.
@@ -385,29 +399,84 @@ struct VoiceWait {
     deadline: Instant,
 }
 
-/// An utterance held back for the reflexes: buffered and fed to the helper while the user speaks;
-/// at the end of speech either done locally or sent to Home Assistant in one burst.
+/// An utterance held back: buffered and fed to the reflex helper while the user speaks, the
+/// helper's events judged by [`reflex::verdict`]; then either done locally or sent to Home
+/// Assistant in one burst (and live after it while the user still speaks). Also without a
+/// helper, while Home Assistant's previous run is still open (one run at a time).
 struct Gate {
     id: u64,
     buf: Vec<i16>,
     vad: Vad,
-    started: Instant,
-    /// `E` sent to the helper (the end of speech came before its own).
-    end_sent: Option<Instant>,
-    /// The helper's result, kept until the end of speech.
-    result: Option<(String, Vec<reflex::Word>, bool, f64)>,
-    /// Listened again once after sound without words (a breath, a pause after the wake word).
-    retried: bool,
+    /// The verdict's memory (None: no helper, only waiting for the previous run).
+    st: Option<reflex::verdict::GateState>,
+    /// The utterance is for Home Assistant (decided): it waits for the previous run to end.
+    want: Option<Want>,
+    /// The helper's last partial and the audio it had decoded (for the logs).
+    partial: Option<(String, f32)>,
+    /// The helper's last result's words (what a reflex heard).
+    heard: String,
 }
 
-/// Sound without words this soon after the wake word (a breath, the tail of the wake word, a
-/// pause before speaking): the reflexes listen again once, on all the audio, before Home
-/// Assistant gets it.
-const NO_WORDS_WAIT: Duration = Duration::from_secs(3);
+impl Gate {
+    /// `helper`: the reflexes judge it; false: it only waits for the previous run.
+    fn new(id: u64, helper: bool) -> Gate {
+        Gate {
+            id,
+            buf: Vec::with_capacity(16_000 * 4),
+            vad: Vad::new(),
+            st: helper.then(rv::GateState::new),
+            want: None,
+            partial: None,
+            heard: String::new(),
+        }
+    }
+}
 
-/// After the end of speech, how long the helper may take before the utterance goes to Home
-/// Assistant anyway.
-const REFLEX_ANSWER_WAIT: Duration = Duration::from_millis(1500);
+/// What happened to a held utterance, for the verdict.
+enum Seen {
+    Tick,
+    Lost,
+    Partial(String, f32),
+    Final(String, Vec<reflex::Word>, bool),
+}
+
+/// A release waiting for Home Assistant's previous run to end.
+#[derive(Debug, Clone, Copy)]
+struct Want {
+    /// The speech is over (buffer, then `audio-stop`); else live after the buffer.
+    over: bool,
+    why: &'static str,
+    since: Instant,
+}
+
+/// Home Assistant's pipeline run of a conversation: from `run-pipeline` to its final message
+/// (`audio-stop` or `error`), the think timeout or a disconnect. One at a time.
+#[derive(Debug, Clone)]
+struct Run {
+    conv: u64,
+    opened: Instant,
+    /// The question the conversation answered when the run opened (its `turn`'s `answers` if
+    /// the transcript comes after the conversation is gone).
+    answering: Option<i64>,
+    /// `played` sent already (a stopped answer): not again at its `audio-stop`.
+    played: bool,
+}
+
+/// A conversation's `turn` for the brain: sent once (its transcript), ended once.
+#[derive(Debug, Clone, Default)]
+struct Turn {
+    conv: u64,
+    sent: bool,
+    ended: bool,
+    /// Stopped by the user: it ends with nothing said (the user did not hear it).
+    silenced: bool,
+}
+
+/// The turns remembered (one per conversation; the oldest go).
+const TURNS_KEPT: usize = 8;
+
+/// A new utterance waits at most this long for the previous run's final message.
+const PREVIOUS_RUN_CAP: Duration = Duration::from_secs(3);
 /// A local answer stays on screen this long.
 const LOCAL_ANSWER: Duration = Duration::from_secs(5);
 
@@ -464,12 +533,21 @@ pub struct Core {
     /// "Non disturbare" until then (seconds since the epoch): no card, reminder or announcement
     /// sounds, no final ticks; timers and alarms still ring.
     dnd_until: Option<u64>,
-    /// A house Yes/No question is open on the screen (UiEvent::Question).
-    question_open: bool,
-    /// The answer of the request that asked a house question is still on its way while the
-    /// microphone already listens for the yes or no: Home Assistant's messages belong to the
-    /// old run and are swallowed until it ends or the new utterance opens its own pipeline.
-    swallow_previous: bool,
+    /// The brain's Yes/No question on the screen (UiEvent::Question).
+    question: Option<i64>,
+    /// A spoken yes to that question was received: its commands run then, unless a no comes
+    /// first (the stop word listens meanwhile).
+    confirming: Option<(i64, Instant)>,
+    /// The success sound already played for this question's yes (its "done" card is silent).
+    dinged: Option<i64>,
+    /// Home Assistant's pipeline run that is open.
+    run: Option<Run>,
+    /// An announcement arrived over a conversation of ours: swallowed until its `audio-stop`.
+    stray_audio: bool,
+    /// The conversations' turns for the brain.
+    turns: Vec<Turn>,
+    /// The conversation of the last run that ended (its words may follow its audio).
+    last_run_conv: Option<u64>,
     /// A reflex's answer waiting for its voice.
     voice_wait: Option<VoiceWait>,
     next_voice_id: u64,
@@ -618,23 +696,6 @@ fn one_letter_away(a: &str, b: &str) -> bool {
     }
 }
 
-/// A sentence ending on a word that cannot end it (a preposition, an article, "e"): the speaker
-/// paused in the middle ("metti una sveglia alle …").
-fn unfinished(text: &str) -> bool {
-    const OPEN: &[&str] = &[
-        "alle", "alla", "allo", "al", "all", "a", "ad", "di", "del", "della", "da", "dal", "dalle",
-        "tra", "fra", "per", "in", "con", "su", "e", "il", "lo", "la", "le", "gli", "un", "una",
-        "uno", "at", "to", "for", "in", "of", "the", "a", "an", "and",
-    ];
-    text.split_whitespace()
-        .last()
-        .map(|w| {
-            w.trim_matches(|c: char| !c.is_alphanumeric())
-                .to_lowercase()
-        })
-        .is_some_and(|w| OPEN.contains(&w.as_str()))
-}
-
 fn level_to_bar(db: f32) -> f32 {
     ((db + 50.0) / 40.0).clamp(0.0, 1.0)
 }
@@ -680,8 +741,13 @@ impl Core {
             tape: crate::repeat::Tape::default(),
             replay: None,
             dnd_until: None,
-            question_open: false,
-            swallow_previous: false,
+            question: None,
+            confirming: None,
+            dinged: None,
+            run: None,
+            stray_audio: false,
+            turns: Vec::new(),
+            last_run_conv: None,
             voice_wait: None,
             next_voice_id: 1,
             say_wait: None,
@@ -845,7 +911,7 @@ impl Core {
         self.d.mic.request_reset();
         self.listen_deadline = None;
         self.speak_deadline = None;
-        if self.conv.as_ref().is_none_or(|c| !c.discard_answer) {
+        if self.conv.as_ref().is_none_or(|c| !c.policy.swallows()) {
             self.think_deadline = None;
         }
         self.wave.clear();
@@ -876,8 +942,7 @@ impl Core {
     /// when it comes, acknowledged with `played` as a stopped answer.
     fn end_quietly(&mut self) {
         let Some(c) = &mut self.conv else { return };
-        c.discard_answer = true;
-        c.quiet_answer = true;
+        c.policy = AnswerPolicy::Swallow(Swallow::HouseQuiet);
         log::info!(event = "house_quiet", id = c.id, text = c.answer.as_str(); "short answer after a house command: not spoken");
         self.mic_idle();
         self.d.mic.request_reset();
@@ -894,11 +959,13 @@ impl Core {
             if c.trigger == Trigger::Announcement {
                 self.ui(UiCommand::Announcing(false));
             }
-            let outcome = if c.quiet_answer && outcome == "stopped" {
-                "house_quiet"
-            } else {
-                outcome
+            let outcome = match (c.policy, outcome) {
+                (AnswerPolicy::Swallow(Swallow::HouseQuiet), "stopped") => "house_quiet",
+                (AnswerPolicy::Swallow(Swallow::Asked), "stopped") => "question",
+                _ => outcome,
             };
+            // Its turn ends now if Home Assistant said nothing for it.
+            self.end_turn(c.id, "");
             if let Some(s) = c.stream.take() {
                 s.abort();
             }
@@ -938,12 +1005,131 @@ impl Core {
         self.send(&Message::Played);
         if let Some(c) = &mut self.conv {
             c.played_at = Some(Instant::now());
+            if let Some(r) = self.run.as_mut().filter(|r| r.conv == c.id) {
+                r.played = true;
+            }
+        }
+    }
+
+    /// A cue by its name, recorded in the summary.
+    fn cue(&mut self, name: &'static str) {
+        if let Some(clip) = self.clip(name) {
+            self.d.player.play(&clip);
+            self.summary.cues.push(name);
+        }
+    }
+
+    fn clip(&self, name: &str) -> Option<Arc<audio::Clip>> {
+        let c = &self.cues;
+        Some(
+            match name {
+                "wake" => &c.wake,
+                "error" => &c.error,
+                "not_understood" => &c.not_understood,
+                "timer_set" => &c.timer_set,
+                "alarm_set" => &c.alarm_set,
+                "cancelled" => &c.cancelled,
+                "time" => &c.time,
+                "done" => &c.done,
+                "success" => &c.success,
+                "silence" => &c.silence,
+                "reminder" => &c.reminder,
+                "tap" => &c.tap,
+                "home" => &c.home,
+                "tick" => &c.tick,
+                _ => return None,
+            }
+            .clone(),
+        )
+    }
+
+    /// A request to the brain, in order (none without a brain).
+    fn brain_send(&self, req: serde_json::Value) {
+        if let Some(b) = &self.d.brain {
+            b.send(req);
+        }
+    }
+
+    /// The turn of conversation `conv`, made if missing.
+    fn turn_of(&mut self, conv: u64) -> &mut Turn {
+        let i = match self.turns.iter().position(|t| t.conv == conv) {
+            Some(i) => i,
+            None => {
+                if self.turns.len() >= TURNS_KEPT {
+                    self.turns.remove(0);
+                }
+                self.turns.push(Turn {
+                    conv,
+                    ..Turn::default()
+                });
+                self.turns.len() - 1
+            }
+        };
+        &mut self.turns[i]
+    }
+
+    /// The `turn` of conversation `conv` for the brain: once, with a transcript.
+    fn start_turn(&mut self, conv: u64, text: &str, answering: Option<i64>) {
+        if text.trim().is_empty() {
+            return;
+        }
+        let t = self.turn_of(conv);
+        if t.sent {
+            return;
+        }
+        t.sent = true;
+        self.brain_send(crate::brain_link::turn(conv, text, answering));
+    }
+
+    /// The `turn` of conversation `conv` ends (once): Home Assistant's words, or "".
+    fn end_turn(&mut self, conv: u64, said: &str) {
+        let Some(t) = self
+            .turns
+            .iter_mut()
+            .find(|t| t.conv == conv && t.sent && !t.ended)
+        else {
+            return;
+        };
+        t.ended = true;
+        let said = if t.silenced { "" } else { said };
+        let req = crate::brain_link::turn_end(conv, said);
+        self.brain_send(req);
+    }
+
+    /// The run is over (its final message, the think timeout, a disconnect): the turn of a
+    /// conversation already gone ends if nothing ended it (the current one's ends when it
+    /// closes), and an utterance waiting for it goes to Home Assistant now.
+    fn run_over(&mut self, why: &str) {
+        let Some(r) = self.run.clone() else { return };
+        self.last_run_conv = Some(r.conv);
+        if self.conv.as_ref().is_none_or(|c| c.id != r.conv) {
+            self.end_turn(r.conv, "");
+        }
+        log::debug!(
+            "run of conversation {} over ({why}) after {:.1} s",
+            r.conv,
+            r.opened.elapsed().as_secs_f64()
+        );
+        self.run = None;
+        self.release_waiting();
+    }
+
+    /// The success sound for a house command or a spoken yes received: never over an answer
+    /// speaking or the bell (do not disturb does not silence it: the user just asked).
+    fn success_cue(&mut self) {
+        if !matches!(self.phase, Phase::Speaking | Phase::Ringing) {
+            self.cue("success");
         }
     }
 
     // ---- conversations ----------------------------------------------------------------
 
     fn start_conversation(&mut self, trigger: Trigger) {
+        self.start_conversation_for(trigger, None);
+    }
+
+    /// A new conversation; `answering`: the brain's question it hears the answer to.
+    fn start_conversation_for(&mut self, trigger: Trigger, answering: Option<i64>) {
         // With the reflex helper up, the utterance is held back and decoded locally first; Home
         // Assistant is not needed for a reflex (Wi-Fi off, Home Assistant down).
         self.speaking_text.clear();
@@ -957,7 +1143,7 @@ impl Core {
             .is_some_and(|r| r.usable() && r.link.send(ReflexRequest::Start(id)));
         if !self.ha_ready() && !gated {
             log::info!(event = "no_home_assistant", trigger = trigger.name(); "{} with no Home Assistant", trigger.name());
-            self.d.player.play(&self.cues.error);
+            self.cue("error");
             self.flash_until = Some(Instant::now() + self.cfg.offline_flash);
             self.ui(UiCommand::View(Phase::Offline));
             return;
@@ -971,27 +1157,25 @@ impl Core {
         self.next_id += 1;
         let mut c = Conversation::new(id, trigger);
         c.detection_at = Some(Instant::now());
-        self.d.player.play(&self.cues.wake);
+        c.answering = answering;
+        self.cue("wake");
         self.d.mic.set(MicMode::Stream);
         self.last_recording = None;
         self.conv_started_wall = Some(now_unix() as u64);
         if let Some(r) = &self.d.recorder {
             r.start("utterance");
         }
-        log::info!(event = "conversation_start", id = id, trigger = trigger.name(), reflexes = gated; "conversation {id} started ({}{})", trigger.name(), if gated { ", reflexes first" } else { "" });
+        log::info!(event = "conversation_start", id = id, trigger = trigger.name(), reflexes = gated, answering = answering.unwrap_or(-1); "conversation {id} started ({}{})", trigger.name(), if gated { ", reflexes first" } else { "" });
         self.conv = Some(c);
         self.ui(UiCommand::Heard(String::new()));
         self.ui(UiCommand::Answer(String::new()));
         let ok = if gated {
-            self.gate = Some(Gate {
-                id,
-                buf: Vec::with_capacity(16_000 * 4),
-                vad: Vad::new(),
-                started: Instant::now(),
-                end_sent: None,
-                result: None,
-                retried: false,
-            });
+            self.gate = Some(Gate::new(id, true));
+            true
+        } else if self.run.is_some() {
+            // Home Assistant's previous run is still open: the speech is held until it ends.
+            self.gate = Some(Gate::new(id, false));
+            self.release(false, "no reflexes");
             true
         } else {
             self.gate = None;
@@ -1010,9 +1194,8 @@ impl Core {
     }
 
     /// Starts Home Assistant's pipeline for the current conversation (detection, run-pipeline,
-    /// audio-start); false if the connection failed.
+    /// audio-start); false if the connection failed. Only with no run open (see [`Run`]).
     fn open_pipeline(&mut self) -> bool {
-        self.swallow_previous = false;
         let detection = Message::Detection(wyoming::Detection {
             name: Some(self.cfg.wake_name.clone()),
             timestamp: None,
@@ -1026,6 +1209,12 @@ impl Core {
             });
         if let Some(c) = &mut self.conv {
             c.run_pipeline_at = Some(Instant::now());
+            self.run = Some(Run {
+                conv: c.id,
+                opened: Instant::now(),
+                answering: c.answering,
+                played: false,
+            });
         }
         self.summary.detections_sent += 1;
         ok
@@ -1045,7 +1234,7 @@ impl Core {
         self.mic_idle();
         self.d.mic.request_reset();
         self.stop_recorder();
-        self.d.player.play(&self.cues.error);
+        self.cue("error");
         self.close(outcome);
         self.listen_deadline = None;
         self.wave.clear();
@@ -1053,10 +1242,23 @@ impl Core {
     }
 
     /// The stop word listens only while there is something to stop: an answer, a bell, a due
-    /// reminder on the screen.
+    /// reminder on the screen, the second in which a spoken yes can still be taken back.
     fn stop_wanted(&self, p: Phase) -> bool {
         matches!(p, Phase::Thinking | Phase::Speaking | Phase::Ringing)
             || (self.noticing && matches!(p, Phase::Home | Phase::Offline))
+            || self.confirming_now().is_some()
+    }
+
+    /// The stop word detector follows [`Self::stop_wanted`] now.
+    fn refresh_stop_listening(&self) {
+        self.d.mic.set_stop_listening(self.stop_wanted(self.phase));
+    }
+
+    /// The question whose spoken yes is in its confirming second, if it still is.
+    fn confirming_now(&self) -> Option<i64> {
+        self.confirming
+            .filter(|(_, until)| Instant::now() < *until)
+            .map(|(id, _)| id)
     }
 
     fn on_stop_word(&mut self, d: wakeword::Detection) {
@@ -1093,6 +1295,7 @@ impl Core {
             // Thinking: a wrong transcript on the screen; the answer is dropped (the pipeline
             // itself cannot be cancelled).
             Phase::Thinking | Phase::Speaking | Phase::Ringing => self.on_stop(),
+            _ if self.confirming_now().is_some() => self.on_stop(),
             Phase::Home | Phase::Offline if self.noticing => self.ui(UiCommand::NoticeStop),
             _ => {}
         }
@@ -1210,7 +1413,7 @@ impl Core {
         }
         let Some(c) = &mut self.conv else { return };
         let first = *c.first_frame.get_or_insert(f.index);
-        let ts = (f.index.saturating_sub(first) * audio::FRAME_MS as u64) as i64;
+        let ts = ((f.index.saturating_sub(first) + c.live_offset) * audio::FRAME_MS as u64) as i64;
         self.chunk_buf.clear();
         for s in f.samples.iter() {
             self.chunk_buf.extend_from_slice(&s.to_le_bytes());
@@ -1233,60 +1436,45 @@ impl Core {
     // ---- reflexes -----------------------------------------------------------------------
 
     /// A frame of an utterance held back: buffered, fed to the helper and to the speech
-    /// detector; at the end of speech the decision (or `E` to the helper first).
+    /// detector, then the verdict (reflex::verdict) on time passing. Waiting for the previous
+    /// run: buffered only (live speech), or dropped (the speech is over).
     fn on_mic_gated(&mut self, f: &CaptureFrame) {
         if self.wave.len() == BARS / 2 {
             self.wave.pop_back();
         }
         self.wave.push_front(level_to_bar(f.level.rms_dbfs));
-        let max = self
+        let Some(g) = &mut self.gate else { return };
+        if let Some(w) = g.want {
+            if !w.over {
+                g.buf.extend_from_slice(&f.samples);
+            }
+            self.release_waiting();
+            return;
+        }
+        g.buf.extend_from_slice(&f.samples);
+        g.vad.push(&f.samples);
+        let fed = self
             .d
             .reflexes
             .as_ref()
-            .map_or(Duration::from_secs(8), |r| r.max_listen);
-        let Some(g) = &mut self.gate else { return };
-        g.buf.extend_from_slice(&f.samples);
-        g.vad.push(&f.samples);
-        let fed = g.end_sent.is_some()
-            || self
-                .d
-                .reflexes
-                .as_ref()
-                .is_some_and(|r| r.link.send(ReflexRequest::Audio(f.samples.to_vec())));
-        if !fed {
-            self.release(false, "the helper is not taking audio");
-            return;
-        }
-        let over = g.vad.ended() || g.vad.nobody_spoke();
-        if g.end_sent.is_none() && over {
-            if g.result.is_some() {
-                self.decide();
-                return;
-            }
-            g.end_sent = Some(Instant::now());
-            let id = g.id;
-            if let Some(r) = &self.d.reflexes {
-                r.link.send(ReflexRequest::End(id));
-            }
-            return;
-        }
-        if g.end_sent
-            .is_some_and(|t| t.elapsed() >= REFLEX_ANSWER_WAIT)
-        {
-            self.release(true, "no answer from the helper");
-        } else if g.end_sent.is_none() && g.started.elapsed() >= max {
-            self.release(false, "still speaking");
-        }
+            .is_some_and(|r| r.link.send(ReflexRequest::Audio(f.samples.to_vec())));
+        self.judge(if fed { Seen::Tick } else { Seen::Lost });
     }
 
     fn on_reflex(&mut self, e: ReflexEvent) {
+        let ours = |g: &Gate, id: u64| g.id == id && g.want.is_none() && g.st.is_some();
         match e {
             ReflexEvent::Ready { .. } => {}
             ReflexEvent::Lost => {
-                if let Some(g) = &self.gate {
-                    let over = g.end_sent.is_some();
-                    self.release(over, "the helper stopped");
-                }
+                self.judge(Seen::Lost);
+            }
+            ReflexEvent::Partial { id, text, audio_s } => {
+                let Some(g) = self.gate.as_mut().filter(|g| ours(g, id)) else {
+                    return;
+                };
+                log::debug!("reflex partial at {audio_s:.2} s: {text:?}");
+                g.partial = Some((text.clone(), audio_s));
+                self.judge(Seen::Partial(text, audio_s));
             }
             ReflexEvent::Result {
                 id,
@@ -1295,142 +1483,226 @@ impl Core {
                 words,
                 ms,
             } => {
-                let Some(g) = &mut self.gate else { return };
-                if g.id != id {
+                let Some(g) = self.gate.as_mut().filter(|g| ours(g, id)) else {
                     return;
-                }
-                g.result = Some((text, words, endpoint, ms));
-                // Vosk's own end of speech can come first: the decision waits for the
-                // detector's, so the words are checked against everything that was said.
-                if g.end_sent.is_some() || g.vad.ended() || g.vad.nobody_spoke() {
-                    self.decide();
+                };
+                g.heard = text.clone();
+                let min = reflex::grammar::min_conf(&words);
+                let heard_s = g.vad.heard_ms() as f32 / 1000.0;
+                let after_speech = g.vad.span().map_or(0.0, |(_, b)| heard_s - b);
+                let speech_ms = g.vad.speech_ms();
+                let threshold = self.d.reflexes.as_ref().map_or(1.0, |r| r.threshold);
+                let (v, why) = self.judge(Seen::Final(text.clone(), words.clone(), endpoint));
+                let verdict = format!("{v:?}");
+                log::info!(
+                    event = "reflex", text = text.as_str(), min_conf = min as f64, verdict = verdict.as_str(), why = why,
+                    vosk_end = endpoint, decided_after_speech_s = after_speech as f64, helper_ms = ms;
+                    "reflex: {text:?} (min {min:.2}) {verdict} ({why}), {after_speech:.2} s after the speech"
+                );
+                let command = match &v {
+                    Verdict::Act(c) => serde_json::to_value(c).ok(),
+                    _ => None,
+                };
+                let side = serde_json::json!({
+                    "text": text,
+                    "words": words,
+                    "min_conf": min,
+                    "threshold": threshold,
+                    "verdict": verdict,
+                    "why": why,
+                    "command": command,
+                    "vosk_end": endpoint,
+                    "speech_ms": speech_ms,
+                    "decided_after_speech_s": after_speech,
+                });
+                // The last result is the one that decided (an empty one may come first).
+                match self.sidecar.as_mut() {
+                    Some(j) => j["reflex"] = side,
+                    None => self.sidecar = Some(serde_json::json!({ "reflex": side })),
                 }
             }
         }
     }
 
-    /// The rule (design section 5) on the helper's result, at the end of speech.
-    fn decide(&mut self) {
-        let Some(g) = &self.gate else { return };
-        let Some((text, words, endpoint, ms)) = g.result.clone() else {
-            return;
+    /// One event of the held utterance through the verdict, and what it says done. Returns the
+    /// verdict and why.
+    fn judge(&mut self, seen: Seen) -> (Verdict, &'static str) {
+        let answering = self.conv.as_ref().is_some_and(|c| c.answering.is_some());
+        let Some(g) = self.gate.as_mut().filter(|g| g.want.is_none()) else {
+            return (Verdict::Hold, "");
         };
-        let (decision, threshold) = match &self.d.reflexes {
-            Some(r) => (
-                r.grammar
-                    .as_ref()
-                    .map_or(Decision::Reject("no grammar"), |gr| {
-                        gr.decide_covered(&text, &words, r.threshold, &g.vad)
-                    }),
-                r.threshold,
+        let Some(st) = g.st.as_mut() else {
+            return (Verdict::Hold, "");
+        };
+        let Some((r, grammar)) = self
+            .d
+            .reflexes
+            .as_ref()
+            .and_then(|r| r.grammar.as_ref().map(|gr| (r, gr)))
+        else {
+            self.release(false, "no reflexes");
+            return (Verdict::Release { live: true }, "no reflexes");
+        };
+        let ctx = rv::Ctx {
+            grammar,
+            threshold: r.threshold,
+            rule: rv::Rule::default(),
+            limits: rv::Limits {
+                max_listen_s: r.max_listen.as_secs_f32(),
+                ..rv::Limits::default()
+            },
+            vad: &g.vad,
+            answering,
+            // The utterance's audio: the helper's and the detector's clock.
+            elapsed_s: g.buf.len() as f32 / 16_000.0,
+        };
+        let v = match &seen {
+            Seen::Tick => rv::verdict(st, &ctx, rv::Event::Tick),
+            Seen::Lost => rv::verdict(st, &ctx, rv::Event::HelperLost),
+            Seen::Partial(text, audio_s) => rv::verdict(
+                st,
+                &ctx,
+                rv::Event::Partial {
+                    text,
+                    audio_s: *audio_s,
+                },
             ),
-            None => (Decision::Reject("no reflexes"), 1.0),
+            Seen::Final(text, words, endpoint) => rv::verdict(
+                st,
+                &ctx,
+                rv::Event::Final {
+                    text,
+                    words,
+                    endpoint: *endpoint,
+                },
+            ),
         };
-        let min = reflex::grammar::min_conf(&words);
-        let heard_s = g.vad.heard_ms() as f32 / 1000.0;
-        let after_speech = g.vad.span().map_or(0.0, |(_, b)| heard_s - b);
-        let wait_ms = g
-            .end_sent
-            .map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
-        let speech_ms = g.vad.speech_ms();
-        let (verdict, command) = match &decision {
-            Decision::Accept(c) => ("accepted".to_string(), serde_json::to_value(c).ok()),
-            Decision::Reject(why) => (format!("rejected: {why}"), None),
-            Decision::Empty => ("empty".to_string(), None),
-        };
-        log::info!(
-            event = "reflex", text = text.as_str(), min_conf = min as f64, verdict = verdict.as_str(),
-            vosk_end = endpoint, decided_after_speech_s = after_speech as f64, helper_wait_ms = wait_ms, helper_ms = ms;
-            "reflex: {text:?} (min {min:.2}) {verdict}, {after_speech:.2} s after the speech (helper {wait_ms:.0} ms)"
-        );
-        self.sidecar = Some(serde_json::json!({
-            "reflex": {
-                "text": text,
-                "words": words,
-                "min_conf": min,
-                "threshold": threshold,
-                "verdict": verdict,
-                "command": command,
-                "vosk_end": endpoint,
-                "speech_ms": speech_ms,
-                "decided_after_speech_s": after_speech,
-            }
-        }));
-        match decision {
-            // "Sì" answers an open question; any other time it is for Home Assistant.
-            Decision::Accept(Reflex::Yes) if !self.question_open => {
-                self.release(true, "yes without a question")
-            }
-            Decision::Accept(c) => self.act(c, &text),
-            Decision::Empty if speech_ms < Vad::MIN_SPEECH_MS => {
-                // Nobody spoke after the wake word (or after a question back: then quietly).
-                self.gate = None;
-                self.mic_idle();
-                self.d.mic.request_reset();
-                self.stop_recorder();
-                if self
-                    .conv
-                    .as_ref()
-                    .is_none_or(|c| c.trigger != Trigger::FollowUp)
-                {
-                    self.d.player.play(&self.cues.not_understood);
+        let why = st.why();
+        let by_partial = st.released_by_partial();
+        let (id, heard) = (g.id, g.heard.clone());
+        let partial = g.partial.clone();
+        match v.clone() {
+            Verdict::Hold => {}
+            Verdict::Flush => {
+                if let Some(r) = &self.d.reflexes {
+                    r.link.send(ReflexRequest::End(id));
                 }
-                self.close("no speech");
-                self.listen_deadline = None;
-                self.go_idle();
             }
-            // Sound but no words yet, early: listen again, the sentence may come.
-            Decision::Empty
-                if self
-                    .gate
-                    .as_ref()
-                    .is_some_and(|g| !g.retried && g.started.elapsed() < NO_WORDS_WAIT) =>
-            {
-                self.listen_again();
+            Verdict::Release { live } => {
+                if by_partial {
+                    if let Some((text, audio_s)) = &partial {
+                        let j = self.sidecar.get_or_insert_with(|| serde_json::json!({}));
+                        j["partial"] = serde_json::json!({
+                            "text": text,
+                            "audio_s": audio_s,
+                            "verdict": format!("{v:?}"),
+                            "why": why,
+                        });
+                    }
+                }
+                self.release(!live, why);
             }
-            // Sound but no words yet (the tail of the wake word, a breath, a pause before
-            // speaking): the sentence has not started, so it is not over. Home Assistant
-            // listens on, live, and decides when it ends.
-            Decision::Empty => self.release(false, "no words yet"),
-            // "metti una sveglia alle" and a pause: the sentence is not over.
-            _ if unfinished(&text) => self.release(false, "sentence not finished"),
-            _ => self.release(true, "not a reflex"),
+            Verdict::Act(c) => self.reflex(c, &heard),
+            Verdict::Quiet => self.no_speech(),
+        }
+        (v, why)
+    }
+
+    /// Nobody spoke after the wake word (or after a question back: then quietly).
+    fn no_speech(&mut self) {
+        self.gate = None;
+        self.mic_idle();
+        self.d.mic.request_reset();
+        self.stop_recorder();
+        if self
+            .conv
+            .as_ref()
+            .is_none_or(|c| c.trigger != Trigger::FollowUp)
+        {
+            self.cue("not_understood");
+        }
+        self.close("no speech");
+        self.listen_deadline = None;
+        self.go_idle();
+    }
+
+    /// A reflex the verdict accepted. "Sì", "no" and "basta" answer the brain's question when
+    /// this conversation was opened for it; any other time "sì" is for Home Assistant and "no"
+    /// or "basta" end the conversation.
+    fn reflex(&mut self, cmd: Reflex, heard: &str) {
+        let answering = self.conv.as_ref().and_then(|c| c.answering);
+        match (&cmd, answering) {
+            (Reflex::Yes | Reflex::No | Reflex::Silence, Some(id)) => {
+                let yes = cmd == Reflex::Yes;
+                log::info!(event = "question_answer", id = id, yes = yes, via = "voice_reflex"; "question {id}: {} (said)", if yes { "yes" } else { "no" });
+                self.brain_send(crate::brain_link::confirm_answer(
+                    id,
+                    yes,
+                    crate::brain_link::Via::VoiceReflex,
+                ));
+                if let Some(c) = &mut self.conv {
+                    c.answering = None;
+                }
+                self.act(cmd, heard);
+            }
+            (Reflex::Yes, None) => self.release(true, "yes without a question"),
+            _ => self.act(cmd, heard),
         }
     }
 
-    /// Sound without words: the helper starts over on everything heard so far and keeps
-    /// listening; its next end of speech decides (a second time without words: Home Assistant).
-    fn listen_again(&mut self) {
+    /// The utterance goes to Home Assistant (`over`: the speech is over, else live after the
+    /// buffer). With Home Assistant's previous run still open it waits, buffering, for that
+    /// run's end ([`Self::release_waiting`]).
+    fn release(&mut self, over: bool, why: &'static str) {
         let Some(g) = &mut self.gate else { return };
-        g.retried = true;
-        g.vad = Vad::new();
-        g.end_sent = None;
-        g.result = None;
-        let (id, buf) = (g.id, g.buf.clone());
-        log::info!(event = "reflex_again", audio_s = buf.len() as f64 / 16_000.0; "reflex: no words yet, listening again");
-        let sent = self.d.reflexes.as_ref().is_some_and(|r| {
-            r.link.send(ReflexRequest::Start(id)) && r.link.send(ReflexRequest::Audio(buf))
-        });
-        if !sent {
-            self.release(false, "the helper is not taking audio");
+        if g.want.is_some() {
+            return;
         }
-    }
-
-    /// The utterance goes to Home Assistant: the pipeline starts, the buffered audio follows in
-    /// one burst, then `audio-stop` (`over`) or the live stream (still speaking).
-    fn release(&mut self, over: bool, why: &str) {
-        let Some(g) = self.gate.take() else { return };
-        if !over {
+        if !over && g.st.is_some() {
+            // The helper stops: the speech goes on to Home Assistant.
             if let Some(r) = &self.d.reflexes {
                 r.link.send(ReflexRequest::End(g.id));
             }
         }
+        g.want = Some(Want {
+            over,
+            why,
+            since: Instant::now(),
+        });
+        if let Some(r) = &self.run {
+            log::info!(event = "previous_run_wait", conversation = r.conv, why = why; "to Home Assistant ({why}) when its previous run ends");
+        }
+        self.release_waiting();
+    }
+
+    /// A release waiting for the previous run goes now if that run is over, or after
+    /// [`PREVIOUS_RUN_CAP`] anyway.
+    fn release_waiting(&mut self) {
+        let Some(w) = self.gate.as_ref().and_then(|g| g.want) else {
+            return;
+        };
+        if let Some(r) = &self.run {
+            if w.since.elapsed() < PREVIOUS_RUN_CAP {
+                return;
+            }
+            let conv = r.conv;
+            log::warn!(event = "previous_run_cap", conversation = conv, waited_s = w.since.elapsed().as_secs_f64(); "Home Assistant's run of conversation {conv} never ended: a new one anyway");
+            self.end_turn(conv, "");
+            self.run = None;
+        }
+        let Some(g) = self.gate.take() else { return };
+        self.send_release(g, w.over, w.why);
+    }
+
+    /// The pipeline starts, the buffered audio follows in one burst, then `audio-stop` (`over`)
+    /// or the live stream (still speaking).
+    fn send_release(&mut self, g: Gate, over: bool, why: &str) {
         if !self.ha_ready() {
             log::info!(event = "no_home_assistant", why = why; "not a reflex ({why}) and no Home Assistant");
             self.mic_idle();
             self.d.mic.request_reset();
             self.stop_recorder();
-            self.d.player.play(&self.cues.not_understood);
+            self.cue("not_understood");
             self.close("no_home_assistant");
             self.listen_deadline = None;
             self.go_idle();
@@ -1460,9 +1732,12 @@ impl Core {
         if let Some(c) = &mut self.conv {
             c.frames_sent += frames;
             c.first_chunk_at.get_or_insert(t);
+            // The live frames go on from the buffer's end (timestamps from 0, as without it).
+            c.first_frame = None;
+            c.live_offset = frames;
         }
         log::info!(
-            event = "reflex_release", why = why, audio_s = g.buf.len() as f64 / 16_000.0, over = over, burst_ms = t.elapsed().as_secs_f64() * 1000.0;
+            event = "reflex_release", why = why, audio_s = g.buf.len() as f64 / 16_000.0, over = over, live = !over, burst_ms = t.elapsed().as_secs_f64() * 1000.0;
             "to Home Assistant ({why}): {:.1} s of audio in {:.0} ms{}",
             g.buf.len() as f64 / 16_000.0,
             t.elapsed().as_secs_f64() * 1000.0,
@@ -1481,6 +1756,9 @@ impl Core {
                 c.audio_stop_sent = true;
             }
             self.end_listening();
+        } else {
+            // Home Assistant listens on, live: its own end of speech ends it.
+            self.listen_deadline = Some(Instant::now() + self.cfg.listen_timeout);
         }
     }
 
@@ -1636,14 +1914,8 @@ impl Core {
                 let p = self.d.volume.as_ref().map_or(percent, |v| v.percent());
                 self.reflex_text("reflex_volume", &[("percent", &p.to_string())])
             }
-            Reflex::Silence | Reflex::No => {
-                after.push(UiCommand::DeclineQuestion);
-                String::new()
-            }
-            Reflex::Yes => {
-                after.push(UiCommand::AcceptQuestion);
-                String::new()
-            }
+            // The answer to the brain's question went with `reflex`; otherwise nothing to do.
+            Reflex::Silence | Reflex::No | Reflex::Yes => String::new(),
             Reflex::MusicPause | Reflex::MusicPlay | Reflex::MusicNext | Reflex::MusicPrevious => {
                 use crate::airplay::Remote;
                 let (remote, key) = match cmd {
@@ -1710,31 +1982,29 @@ impl Core {
         self.stop_recorder();
         log::info!(event = "reflex_done", heard = heard, answer = answer.as_str(); "reflex done: {heard:?} → {answer:?}");
         // Each reflex has its own sound: it is clear the body did it (Home Assistant answers aloud).
-        let cue = match &cmd {
-            Reflex::Time => Some(&self.cues.time),
-            Reflex::TimerStart { .. } => Some(&self.cues.timer_set),
-            Reflex::AlarmSet { .. } => Some(&self.cues.alarm_set),
-            Reflex::TimerCancel { .. } | Reflex::AlarmCancel => Some(&self.cues.cancelled),
+        let cue_name: Option<&'static str> = match &cmd {
+            Reflex::Time => Some("time"),
+            Reflex::TimerStart { .. } => Some("timer_set"),
+            Reflex::AlarmSet { .. } => Some("alarm_set"),
+            Reflex::TimerCancel { .. } | Reflex::AlarmCancel => Some("cancelled"),
             // Soft and low: the screen goes dark, the evening goes quiet.
-            Reflex::Silence | Reflex::No | Reflex::ScreenOff | Reflex::GoodNight => {
-                Some(&self.cues.silence)
-            }
+            Reflex::Silence | Reflex::No | Reflex::ScreenOff | Reflex::GoodNight => Some("silence"),
             // The house card shows what follows (done, with Undo).
             Reflex::Yes => None,
-            Reflex::TimerLeft { .. } | Reflex::TimerList => Some(&self.cues.done),
+            Reflex::TimerLeft { .. } | Reflex::TimerList => Some("done"),
             Reflex::DoNotDisturb { .. } | Reflex::DoNotDisturbMorning | Reflex::DoNotDisturbOff => {
-                Some(&self.cues.done)
+                Some("done")
             }
             Reflex::MusicPause | Reflex::MusicPlay | Reflex::MusicNext | Reflex::MusicPrevious => {
-                Some(&self.cues.done)
+                Some("done")
             }
             // The voice itself is the answer; with nothing to repeat, the done sound.
             Reflex::Repeat if replay_for.is_some() => None,
-            Reflex::Repeat => Some(&self.cues.done),
+            Reflex::Repeat => Some("done"),
             // The volume keys' own tick already plays at the new level.
             Reflex::VolumeUp | Reflex::VolumeDown | Reflex::VolumeSet { .. } => None,
         };
-        let cue = cue.cloned();
+        let cue = cue_name.and_then(|n| self.clip(n));
         // Said aloud in Home Assistant's voice when it comes in time; else the sound, as
         // offline (never both).
         let say = spoken.unwrap_or_else(|| answer.clone());
@@ -1760,8 +2030,8 @@ impl Core {
                 text: say,
                 deadline: Instant::now() + crate::voice::VOICE_WAIT,
             });
-        } else if let Some(c) = &cue {
-            self.d.player.play(c);
+        } else if let Some(n) = cue_name {
+            self.cue(n);
         }
         if let Some(c) = &mut self.conv {
             c.heard = heard.to_string();
@@ -1950,6 +2220,16 @@ impl Core {
                 } else {
                     log::debug!("{peer} disconnected ({reason}) before run-satellite (a probe)");
                 }
+                self.stray_audio = false;
+                if let Some(r) = self.run.clone() {
+                    self.end_turn(r.conv, "");
+                    self.run = None;
+                }
+                if self.gate.as_ref().is_some_and(|g| g.want.is_some()) {
+                    // Held for Home Assistant: it is gone.
+                    self.release_waiting();
+                    return;
+                }
                 if self.gate.is_some() || self.local_until.is_some() {
                     // A reflex in progress does not need Home Assistant.
                     return;
@@ -1966,27 +2246,41 @@ impl Core {
     }
 
     fn on_message(&mut self, m: Message) {
-        if self.swallow_previous {
-            match &m {
-                Message::AudioStop { .. } | Message::Error { .. } => {
-                    // The old run is over: acknowledged as a stopped answer.
-                    self.swallow_previous = false;
-                    if matches!(m, Message::AudioStop { .. }) {
-                        self.send(&Message::Played);
-                    }
-                    log::info!(event = "question_late_answer"; "the asking request's answer ended: swallowed");
-                    return;
-                }
-                Message::Transcript(_)
+        let pipeline = matches!(
+            m,
+            Message::Transcript(_)
                 | Message::Synthesize(_)
                 | Message::AudioStart { .. }
                 | Message::AudioChunk { .. }
+                | Message::AudioStop { .. }
                 | Message::VoiceStarted { .. }
-                | Message::VoiceStopped { .. } => {
-                    log::debug!("{} of the asking request: swallowed", m.kind());
+                | Message::VoiceStopped { .. }
+                | Message::Error { .. }
+        );
+        if pipeline {
+            let audio = matches!(
+                m,
+                Message::AudioStart { .. } | Message::AudioChunk { .. } | Message::AudioStop { .. }
+            );
+            let conv = self.conv.as_ref().map(|c| (c.id, c.trigger));
+            match (&self.run, conv) {
+                // The current conversation's run.
+                (Some(r), Some((id, _))) if r.conv == id => {}
+                // A run whose conversation is gone or replaced.
+                (Some(_), _) => return self.on_previous_run(m),
+                // Audio with no run: an announcement (or its end), unless a conversation of
+                // ours is on (held back for the reflexes): then it is swallowed.
+                (None, Some((_, t))) if t != Trigger::Announcement && audio => {
+                    return self.on_stray_audio(m);
+                }
+                (None, None) if self.stray_audio && audio => return self.on_stray_audio(m),
+                (None, _) if audio => {}
+                // Its words after its audio (Home Assistant may send them in either order).
+                (None, Some((id, _))) if self.last_run_conv == Some(id) => {}
+                (None, _) => {
+                    log::debug!("{} with no run open: ignored", m.kind());
                     return;
                 }
-                _ => {}
             }
         }
         match m {
@@ -2026,7 +2320,7 @@ impl Core {
             Message::VoiceStopped { .. } => {
                 log::debug!("voice-stopped");
                 if self.phase == Phase::Listening
-                    && self.conv.as_ref().is_some_and(|c| !c.discard_answer)
+                    && self.conv.as_ref().is_some_and(|c| !c.policy.swallows())
                 {
                     self.end_listening();
                 }
@@ -2034,12 +2328,15 @@ impl Core {
             Message::Transcript(t) => self.on_transcript(t.text),
             Message::Synthesize(s) => {
                 let mut quiet = false;
+                if let Some(id) = self.conv.as_ref().map(|c| c.id) {
+                    self.end_turn(id, &s.text);
+                }
                 if let Some(c) = &mut self.conv {
                     c.synth_at = Some(Instant::now());
-                    if !c.discard_answer {
+                    if !c.policy.swallows() {
                         c.answer = s.text.clone();
-                        crate::brain_link::tell("said", &s.text);
-                        quiet = c.house_done && quiet_after_command(&s.text);
+                        quiet =
+                            c.policy == AnswerPolicy::AfterCommand && quiet_after_command(&s.text);
                         if !quiet {
                             self.ui(UiCommand::Answer(s.text));
                         }
@@ -2051,8 +2348,14 @@ impl Core {
             }
             Message::AudioStart { format, .. } => self.on_audio_start(format),
             Message::AudioChunk { audio, .. } => self.on_audio_chunk(&audio),
-            Message::AudioStop { .. } => self.on_audio_stop(),
-            Message::Error { text, code } => self.on_error(text, code),
+            Message::AudioStop { .. } => {
+                self.on_audio_stop();
+                self.run_over("audio-stop");
+            }
+            Message::Error { text, code } => {
+                self.on_error(text, code);
+                self.run_over("error");
+            }
             Message::TimerStarted(t) => {
                 let now = now_unix();
                 self.d.timers.start(&t, now);
@@ -2121,8 +2424,9 @@ impl Core {
         c.transcript_at = Some(Instant::now());
         c.heard = text.clone();
         log::info!(event = "transcript", text = text.as_str(); "heard: {text}");
-        crate::brain_link::tell("heard", &text);
-        if c.discard_answer {
+        let (id, answering, swallowed) = (c.id, c.answering, c.policy.swallows());
+        self.start_turn(id, &text, answering);
+        if swallowed {
             return;
         }
         if self.phase == Phase::Listening {
@@ -2132,6 +2436,55 @@ impl Core {
         self.ui(UiCommand::Heard(text));
     }
 
+    /// A message of Home Assistant's previous run (its conversation stopped, replaced, or the
+    /// question's asking request): never shown nor played; its turn still reaches the brain,
+    /// its `audio-stop` is acknowledged with `played` and its end lets a waiting utterance go.
+    fn on_previous_run(&mut self, m: Message) {
+        let Some(r) = self.run.clone() else { return };
+        match m {
+            Message::Transcript(t) => {
+                log::info!(event = "previous_run", conversation = r.conv, text = t.text.as_str(); "transcript of conversation {}'s run: {}", r.conv, t.text);
+                self.start_turn(r.conv, &t.text, r.answering);
+            }
+            Message::Synthesize(s) => {
+                log::info!(event = "previous_run", conversation = r.conv, answer = s.text.as_str(); "answer of conversation {}'s run: swallowed", r.conv);
+                self.end_turn(r.conv, &s.text);
+            }
+            Message::AudioStop { .. } => {
+                if !r.played {
+                    self.send(&Message::Played);
+                }
+                log::info!(event = "previous_run_over", conversation = r.conv; "conversation {}'s run ended: swallowed", r.conv);
+                self.run_over("audio-stop");
+            }
+            Message::Error { text, .. } => {
+                log::info!(event = "previous_run_over", conversation = r.conv, error = text.as_str(); "conversation {}'s run ended with an error: swallowed", r.conv);
+                self.run_over("error");
+            }
+            other => log::trace!(
+                "{} of conversation {}'s run: swallowed",
+                other.kind(),
+                r.conv
+            ),
+        }
+    }
+
+    /// Audio from Home Assistant with no run open while a conversation of ours is on (an
+    /// announcement over it): swallowed, acknowledged with `played` at its end.
+    fn on_stray_audio(&mut self, m: Message) {
+        match m {
+            Message::AudioStart { .. } => {
+                log::info!(event = "announcement", muted = true; "announcement during a conversation: swallowed");
+                self.stray_audio = true;
+            }
+            Message::AudioStop { .. } if self.stray_audio => {
+                self.stray_audio = false;
+                self.send(&Message::Played);
+            }
+            _ => {}
+        }
+    }
+
     fn on_audio_start(&mut self, format: AudioFormat) {
         let sf = StreamFormat {
             rate: format.rate,
@@ -2139,7 +2492,7 @@ impl Core {
             channels: format.channels,
         };
         match &mut self.conv {
-            Some(c) if c.discard_answer => {
+            Some(c) if c.policy.swallows() => {
                 c.audio_start_at = Some(Instant::now());
                 c.answer_format = Some(format);
                 self.tape.cancel();
@@ -2173,7 +2526,7 @@ impl Core {
                 c.answer_format = Some(format);
                 if self.dnd(now_unix()) {
                     // Swallowed like a stopped answer: `played` at its audio-stop.
-                    c.discard_answer = true;
+                    c.policy = AnswerPolicy::Swallow(Swallow::Stopped);
                     log::info!(event = "announcement", id = id, muted = true; "announcement {id}: muted (do not disturb)");
                     self.conv = Some(c);
                     return;
@@ -2221,7 +2574,7 @@ impl Core {
         };
         let now = Instant::now();
         c.audio_stop_at = Some(now);
-        if c.discard_answer || c.stream.is_none() {
+        if c.policy.swallows() || c.stream.is_none() {
             self.tape.cancel();
         } else {
             self.tape.commit(&c.answer, now);
@@ -2238,7 +2591,7 @@ impl Core {
             }
             None => {
                 // Swallowed (Stop was pressed) or no audio-start: acknowledge at once.
-                let discard = c.discard_answer;
+                let discard = c.policy.swallows();
                 self.send_played();
                 self.close(if discard { "stopped" } else { "played" });
                 if self.phase.in_conversation() {
@@ -2252,7 +2605,7 @@ impl Core {
         let code = code.unwrap_or_else(|| "error".into());
         log::warn!(event = "pipeline_error", code = code.as_str(), text = text.as_str(); "Home Assistant: {text} ({code})");
         match &self.conv {
-            Some(c) if c.discard_answer => self.close("stopped"),
+            Some(c) if c.policy.swallows() => self.close("stopped"),
             Some(_) if self.phase.in_conversation() || self.phase == Phase::Ringing => {
                 let outcome = format!("error:{code}");
                 self.fail(&outcome);
@@ -2275,7 +2628,7 @@ impl Core {
                     // A question back ("Cosa devo ricordarti?"): listen again without the wake
                     // word, as Home Assistant would ask a voice satellite of its own.
                     let follow = self.conv.as_ref().is_some_and(|c| {
-                        !c.discard_answer
+                        !c.policy.swallows()
                             && c.trigger != Trigger::Announcement
                             && asks_for_answer(&c.answer)
                     });
@@ -2496,19 +2849,10 @@ impl Core {
             },
             UiEvent::Stop => self.on_stop(),
             UiEvent::FalseWake => self.on_false_wake(),
-            UiEvent::Question(open) => {
-                self.question_open = open;
-                if open {
-                    self.listen_for_the_answer();
-                }
-            }
-            UiEvent::AskAnswered => {
-                // Only the conversation: never the bell of a timer or the music.
-                if matches!(self.phase, Phase::Listening | Phase::Thinking | Phase::Speaking) {
-                    log::info!(event = "ask_answered", phase = self.phase.name(); "question answered on screen: the conversation ends");
-                    self.on_stop();
-                }
-            }
+            UiEvent::Question(id) => self.on_question(id),
+            UiEvent::QuestionAnswer { id, yes } => self.on_question_answer(id, yes),
+            UiEvent::QuestionPending(id, until_ms) => self.on_question_pending(id, until_ms),
+            UiEvent::QuestionClosed { id, yes, via } => self.on_question_closed(id, yes, &via),
             UiEvent::MessageOk(_) => {
                 if !self.ringing.is_empty() {
                     log::info!(event = "bell_stopped", by = "ok"; "bell stopped (OK)");
@@ -2530,15 +2874,18 @@ impl Core {
             UiEvent::MusicNext => self.music_remote(crate::airplay::Remote::Next),
             UiEvent::HouseDone => {
                 let first = self.conv.as_mut().is_some_and(|c| {
-                    let first = !c.house_done && !c.discard_answer;
-                    c.house_done = true;
+                    let first = c.policy == AnswerPolicy::Play;
+                    if first {
+                        c.policy = AnswerPolicy::AfterCommand;
+                    }
                     first
                 });
                 // The command went through: the "ok" at once, with the card (the AI's words
-                // and their voice come many seconds later). Once per conversation, and never
-                // over an answer already speaking or the bell.
-                if first && !matches!(self.phase, Phase::Speaking | Phase::Ringing) {
-                    self.d.player.play(&self.cues.success);
+                // and their voice come many seconds later). Once per conversation, never over
+                // an answer already speaking or the bell, and not again after a spoken yes's
+                // own (QuestionPending).
+                if first && self.dinged.is_none() {
+                    self.success_cue();
                 }
             }
             UiEvent::MirrorStop => {
@@ -2593,8 +2940,7 @@ impl Core {
             }
             UiEvent::Notice(on) => {
                 self.noticing = on;
-                let stop = self.stop_wanted(self.phase);
-                self.d.mic.set_stop_listening(stop);
+                self.refresh_stop_listening();
             }
             UiEvent::AlarmDelete(id) => {
                 self.d.alarms.remove(id);
@@ -2607,7 +2953,7 @@ impl Core {
                     && !matches!(self.phase, Phase::Speaking | Phase::Ringing)
                     && !self.dnd(now_unix())
                 {
-                    self.d.player.play(&self.cues.tap);
+                    self.cue("tap");
                 }
             }
             UiEvent::Home => {
@@ -2615,12 +2961,12 @@ impl Core {
                     && !matches!(self.phase, Phase::Speaking | Phase::Ringing)
                     && !self.dnd(now_unix())
                 {
-                    self.d.player.play(&self.cues.home);
+                    self.cue("home");
                 }
             }
             UiEvent::Say(text) => {
                 if !self.speaker_busy() && !matches!(self.phase, Phase::Speaking | Phase::Ringing) {
-                    self.d.player.play(&self.cues.success);
+                    self.cue("success");
                 }
                 if let Some(v) = &self.d.voice
                     && !self.dnd(now_unix())
@@ -2633,14 +2979,14 @@ impl Core {
             }
             UiEvent::Success => {
                 if !self.speaker_busy() && !matches!(self.phase, Phase::Speaking | Phase::Ringing) {
-                    self.d.player.play(&self.cues.success);
+                    self.cue("success");
                 }
             }
             UiEvent::Reminder => {
                 if self.dnd(now_unix()) {
                     log::info!("card sound muted (do not disturb)");
                 } else if !self.speaker_busy() {
-                    self.d.player.play(&self.cues.reminder);
+                    self.cue("reminder");
                 }
             }
             UiEvent::Screenshot => {
@@ -2708,12 +3054,22 @@ impl Core {
         self.refresh_rows(true);
     }
 
-    /// A house question opened while the character works on the request that asked it: the
-    /// spoken question (still being written, or being said) is dropped, the screen shows it,
-    /// and the microphone opens at once for "sì" or "no".
-    fn listen_for_the_answer(&mut self) {
-        let asked_here = self.conv.as_ref().is_some_and(|c| c.trigger != Trigger::Announcement);
-        if !asked_here {
+    /// The brain's question `id` is on the screen. While the character works on the request
+    /// that asked it (thinking, or saying it), the spoken question is dropped (the screen shows
+    /// it) and the microphone opens at once for "sì" or "no": a new conversation answering
+    /// `id`. Any other time (home, a bell, an announcement) only the pop-up.
+    fn on_question(&mut self, id: i64) {
+        if self.question == Some(id) {
+            // The brain's replay after a new subscription.
+            return;
+        }
+        self.question = Some(id);
+        let asked_here = self
+            .conv
+            .as_ref()
+            .is_some_and(|c| c.trigger != Trigger::Announcement);
+        if !asked_here || !matches!(self.phase, Phase::Thinking | Phase::Speaking) {
+            log::info!(event = "question", id = id, listening = false, phase = self.phase.name(); "question {id} on the screen");
             return;
         }
         match self.phase {
@@ -2726,12 +3082,13 @@ impl Core {
                     self.send(&Message::AudioStop { timestamp: None });
                 }
                 if let Some(c) = &mut self.conv {
-                    c.discard_answer = true;
+                    c.policy = AnswerPolicy::Swallow(Swallow::Asked);
                     c.audio_stop_sent |= end_stream;
                 }
             }
-            Phase::Speaking => {
+            _ => {
                 if let Some(c) = &mut self.conv {
+                    c.policy = AnswerPolicy::Swallow(Swallow::Asked);
                     if let Some(s) = c.stream.take() {
                         s.abort();
                     }
@@ -2739,25 +3096,120 @@ impl Core {
                 self.send_played();
                 self.close("question");
             }
-            _ => return,
         }
-        log::info!(event = "question_listen"; "house question: listening for the answer now");
-        let waiting = self.phase == Phase::Thinking;
-        self.start_conversation(Trigger::FollowUp);
-        self.swallow_previous = waiting;
+        log::info!(event = "question_listen", id = id; "question {id}: listening for the answer now");
+        self.start_conversation_for(Trigger::FollowUp, Some(id));
     }
 
+    /// Yes or No touched: the answer goes to the brain; the conversation that waited for it
+    /// (or the one that asked it) ends without a word.
+    fn on_question_answer(&mut self, id: i64, yes: bool) {
+        log::info!(event = "question_answer", id = id, yes = yes, via = "screen"; "question {id}: {} (touched)", if yes { "yes" } else { "no" });
+        self.brain_send(crate::brain_link::confirm_answer(
+            id,
+            yes,
+            crate::brain_link::Via::Screen,
+        ));
+        let ours = self.conv.as_mut().is_some_and(|c| {
+            let ours = c.answering == Some(id) || c.policy == AnswerPolicy::Swallow(Swallow::Asked);
+            if ours {
+                // Answered: its ending says nothing more to the brain.
+                c.answering = None;
+                c.policy = AnswerPolicy::Swallow(Swallow::Asked);
+            }
+            ours
+        });
+        if ours && self.phase.in_conversation() {
+            self.stop_conversation();
+        }
+    }
+
+    /// A spoken yes was received: the success sound now (once for this question), the stop
+    /// word listens until its commands run, and Home Assistant's words about it are swallowed.
+    fn on_question_pending(&mut self, id: i64, until_ms: u64) {
+        let left = until_ms.saturating_sub(now_unix_ms()).min(5_000);
+        self.confirming = Some((id, Instant::now() + Duration::from_millis(left)));
+        self.refresh_stop_listening();
+        log::info!(event = "question_pending", id = id, left_ms = left; "question {id}: yes received, carried out in {left} ms");
+        if self.dinged != Some(id) {
+            self.dinged = Some(id);
+            self.success_cue();
+        }
+        let with_ha = self.gate.is_none() && self.phase.in_conversation();
+        if let Some(c) = self.conv.as_mut().filter(|c| c.answering == Some(id)) {
+            if with_ha {
+                c.policy = AnswerPolicy::Swallow(Swallow::Asked);
+            }
+        }
+    }
+
+    /// The question is off the screen. Its answering conversation still held for the reflexes
+    /// (nothing said yet) ends without a sound; one with Home Assistant goes on, its answer
+    /// swallowed when the question was answered (the brain heard it in its transcript).
+    fn on_question_closed(&mut self, id: i64, yes: Option<bool>, via: &str) {
+        log::info!(event = "question_closed", id = id, answered = yes.is_some(), via = via; "question {id} closed ({via})");
+        if self.question == Some(id) {
+            self.question = None;
+        }
+        if self.confirming.is_some_and(|(c, _)| c == id) {
+            self.confirming = None;
+            self.refresh_stop_listening();
+        }
+        if self.dinged == Some(id) {
+            self.dinged = None;
+        }
+        let held = self.gate.as_ref().is_some_and(|g| g.want.is_none());
+        let Some(c) = self.conv.as_mut().filter(|c| c.answering == Some(id)) else {
+            return;
+        };
+        c.answering = None;
+        if self.phase == Phase::Listening && held {
+            log::info!(event = "question_window_over", id = id; "question {id} over: its listening ends");
+            if c.policy == AnswerPolicy::Play {
+                c.policy = AnswerPolicy::Swallow(Swallow::Asked);
+            }
+            self.stop_conversation();
+        } else if yes.is_some() && self.phase.in_conversation() {
+            c.policy = AnswerPolicy::Swallow(Swallow::Asked);
+        }
+    }
+
+    /// Stop (the button, the stop word, "Falso allarme"). In the conversation opened to hear
+    /// the answer to the brain's question, or in the second a spoken yes can be taken back, it
+    /// is a No; never otherwise (a question open on the screen stays).
     fn on_stop(&mut self) {
         log::info!(event = "stop", phase = self.phase.name(); "Stop pressed in {}", self.phase.name());
-        if matches!(self.phase, Phase::Listening | Phase::Thinking | Phase::Speaking) {
-            // Stopping the character while a house question is open (a "no" heard as the stop
-            // word over the question itself, "basta", Ferma) answers it No.
-            self.ui(UiCommand::DeclineQuestion);
+        let answering = self
+            .conv
+            .as_ref()
+            .and_then(|c| c.answering)
+            .filter(|_| self.phase.in_conversation());
+        let confirming = self.confirming_now();
+        if let Some(id) = answering.or(confirming) {
+            log::info!(event = "question_answer", id = id, yes = false, via = "stop"; "question {id}: no (stop)");
+            self.brain_send(crate::brain_link::confirm_answer(
+                id,
+                false,
+                crate::brain_link::Via::Stop,
+            ));
+            if let Some(c) = self.conv.as_mut().filter(|c| c.answering == Some(id)) {
+                c.answering = None;
+            }
+            if answering.is_none() && matches!(self.phase, Phase::Home | Phase::Offline) {
+                return;
+            }
         }
+        self.stop_conversation();
+    }
+
+    /// What Stop does to what is going on (no answer to the brain's question).
+    fn stop_conversation(&mut self) {
         if self.phase == Phase::Listening && self.gate.is_some() {
             // Held back for the reflexes: Home Assistant never heard of it.
             if let (Some(g), Some(r)) = (self.gate.take(), &self.d.reflexes) {
-                r.link.send(ReflexRequest::End(g.id));
+                if g.st.is_some() && g.want.is_none() {
+                    r.link.send(ReflexRequest::End(g.id));
+                }
             }
             self.mic_idle();
             self.d.mic.request_reset();
@@ -2784,9 +3236,10 @@ impl Core {
                 self.send(&Message::AudioStop { timestamp: None });
                 self.stop_recorder();
                 if let Some(c) = &mut self.conv {
-                    c.discard_answer = true;
+                    c.swallow(Swallow::Stopped);
                     c.audio_stop_sent = true;
                 }
+                self.silence_turn();
                 self.listen_deadline = None;
                 self.think_deadline = Some(Instant::now() + self.cfg.think_timeout);
                 self.go_idle();
@@ -2803,9 +3256,10 @@ impl Core {
                     self.send(&Message::AudioStop { timestamp: None });
                 }
                 if let Some(c) = &mut self.conv {
-                    c.discard_answer = true;
+                    c.swallow(Swallow::Stopped);
                     c.audio_stop_sent |= end_stream;
                 }
+                self.silence_turn();
                 self.go_idle();
             }
             Phase::Speaking => {
@@ -2826,6 +3280,16 @@ impl Core {
             }
             _ => {}
         }
+    }
+
+    /// The current conversation's answer will not be heard: its turn ends now with nothing
+    /// said (or, before the transcript, when Home Assistant's words come).
+    fn silence_turn(&mut self) {
+        let Some(id) = self.conv.as_ref().map(|c| c.id) else {
+            return;
+        };
+        self.turn_of(id).silenced = true;
+        self.end_turn(id, "");
     }
 
     // ---- music and the control center ----------------------------------------------------
@@ -2863,7 +3327,7 @@ impl Core {
         self.mic_switch_off = !on;
         log::info!(event = "mic_hw_switch", on = on, initial = initial; "microphone switch {}", if on { "on" } else { "muted" });
         if !on && self.phase == Phase::Listening {
-            self.on_stop();
+            self.stop_conversation();
         }
         if !self.phase.in_conversation() {
             self.mic_idle();
@@ -3057,7 +3521,7 @@ impl Core {
                 self.night(),
             )
         {
-            self.d.player.play(&self.cues.tick);
+            self.cue("tick");
         }
         self.save_volume(Duration::from_secs(1));
         if self.phase == Phase::Error && self.error_until.is_some_and(|t| now >= t) {
@@ -3084,18 +3548,24 @@ impl Core {
         {
             self.release(false, "listening too long");
         }
-        if self.phase == Phase::Listening && self.listen_deadline.is_some_and(|t| now >= t) {
+        if self.phase == Phase::Listening
+            && self.gate.is_none()
+            && self.listen_deadline.is_some_and(|t| now >= t)
+        {
             log::warn!(event = "timeout", stage = "listening"; "no answer from Home Assistant while listening");
             self.send(&Message::AudioStop { timestamp: None });
             self.fail("timeout");
         }
         if self.think_deadline.is_some_and(|t| now >= t) {
             self.think_deadline = None;
+            let conv = self.conv.as_ref().map(|c| c.id);
             match &self.conv {
-                Some(c) if c.discard_answer => self.close("stopped"),
+                Some(c) if c.policy.swallows() => self.close("stopped"),
                 // The command was carried out and its card is up: the AI's words never came
                 // (it hung after the tool), but nothing failed for the user.
-                Some(c) if c.house_done && self.phase == Phase::Thinking => {
+                Some(c)
+                    if c.policy == AnswerPolicy::AfterCommand && self.phase == Phase::Thinking =>
+                {
                     log::warn!(event = "timeout", stage = "thinking", house_done = true; "no answer from Home Assistant after a house command: ended quietly");
                     self.mic_idle();
                     self.d.mic.request_reset();
@@ -3111,6 +3581,23 @@ impl Core {
                 }
                 _ => {}
             }
+            if conv.is_some() && self.run.as_ref().map(|r| r.conv) == conv {
+                self.run_over("think timeout");
+            }
+        }
+        // A run nobody ended (its conversation went on without it).
+        if self
+            .run
+            .as_ref()
+            .is_some_and(|r| r.opened.elapsed() > self.cfg.listen_timeout + self.cfg.think_timeout)
+        {
+            log::warn!(event = "timeout", stage = "run"; "Home Assistant's run never ended: forgotten");
+            self.run_over("too old");
+        }
+        self.release_waiting();
+        if self.confirming.is_some_and(|(_, t)| now >= t) {
+            self.confirming = None;
+            self.refresh_stop_listening();
         }
         if self.speak_deadline.is_some_and(|t| now >= t) {
             self.speak_deadline = None;
@@ -3206,6 +3693,11 @@ impl Core {
     }
 }
 
+/// Milliseconds since the epoch.
+fn now_unix_ms() -> u64 {
+    (now_unix() * 1000.0) as u64
+}
+
 /// Seconds since the local midnight at `t` (seconds since the epoch).
 pub(crate) fn local_seconds_of_day(t: i64) -> i64 {
     // SAFETY: localtime_r only writes into the struct we pass.
@@ -3248,8 +3740,7 @@ fn duration_parts(secs: f64) -> Vec<(&'static str, u64)> {
 /// ("Sono le 18:32. Ha bisogno d'altro?") no — that one would open the microphone on whoever
 /// talks in the room.
 fn asks_for_answer(answer: &str) -> bool {
-    // A question in quotes ("…: \"Chiudo la tapparella?\"") is still a question.
-    let a = answer.trim_end_matches(|c: char| c.is_whitespace() || "\"'”»)".contains(c));
+    let a = answer.trim_end();
     if !a.ends_with('?') {
         return false;
     }
@@ -3356,13 +3847,15 @@ mod tests {
     fn courtesy_questions_do_not_open_the_microphone() {
         assert!(asks_for_answer("A che ora devo ricordarglielo?"));
         assert!(asks_for_answer("Chiudo la tapparella del salotto?"));
-        assert!(!asks_for_answer("Sono le 18:32 di oggi. Ha bisogno di ulteriore aiuto?"));
-        assert!(!asks_for_answer("Non posso farlo. Posso assisterLa in altro modo?"));
+        assert!(!asks_for_answer(
+            "Sono le 18:32 di oggi. Ha bisogno di ulteriore aiuto?"
+        ));
+        assert!(!asks_for_answer(
+            "Non posso farlo. Posso assisterLa in altro modo?"
+        ));
         assert!(!asks_for_answer("Fatto. C'è altro?"));
         assert!(!asks_for_answer("Done. Anything else I can do?"));
         assert!(!asks_for_answer("Fatto."));
-        assert!(asks_for_answer("Mi serve la Sua conferma: \"Chiudo la tapparella salone sinistra?\""));
-        assert!(asks_for_answer("Conferma: «Chiudo la tapparella?» "));
     }
     use super::*;
 
@@ -3477,16 +3970,6 @@ mod tests {
         m.request_reset();
         assert!(m.take_reset());
         assert!(!m.take_reset());
-    }
-
-    #[test]
-    fn sentences_cut_on_an_open_word() {
-        assert!(super::unfinished("metti una sveglia alle"));
-        assert!(super::unfinished("metti un timer di"));
-        assert!(super::unfinished("set an alarm at"));
-        assert!(!super::unfinished("metti una sveglia alle sette"));
-        assert!(!super::unfinished("che ore sono"));
-        assert!(!super::unfinished(""));
     }
 
     #[test]

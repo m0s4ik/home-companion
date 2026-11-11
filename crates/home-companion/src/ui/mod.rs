@@ -341,9 +341,13 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_done_popup(&self, popup: bool, left: f32);
     /// The pop-up's two lines: the thing and its state.
     fn set_done_parts(&self, name: &str, state: &str);
-    /// A house command waits for a yes: shown, the question, the time left (1..0).
-    fn set_ask(&self, shown: bool, text: &str, left: f32);
+    /// A house command waits for a yes: shown, the question, the line under it (the devices'
+    /// names, or ""), the time left (1..0).
+    fn set_ask(&self, shown: bool, title: &str, text: &str, left: f32);
     fn set_ask_left(&self, left: f32);
+    /// A spoken yes in its confirming second: the Yes button blinks (`still`: held lit, for a
+    /// demo's screenshot).
+    fn set_ask_pending(&self, on: bool, still: bool);
     /// Do not disturb: on, its line.
     fn set_dnd(&self, on: bool, line: &str);
     /// The Wi-Fi signal on every page header and in the control center: 0 not connected,
@@ -1209,13 +1213,18 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_done_name(self, name.into());
                 $m::CompanionWindow::set_done_state(self, state.into());
             }
-            fn set_ask(&self, shown: bool, text: &str, left: f32) {
-                $m::CompanionWindow::set_ask_text(self, text.into());
+            fn set_ask(&self, shown: bool, title: &str, text: &str, left: f32) {
+                $m::CompanionWindow::set_ask_text(self, title.into());
+                $m::CompanionWindow::set_ask_names(self, text.into());
                 $m::CompanionWindow::set_ask_left(self, left);
                 $m::CompanionWindow::set_ask_shown(self, shown);
             }
             fn set_ask_left(&self, left: f32) {
                 $m::CompanionWindow::set_ask_left(self, left)
+            }
+            fn set_ask_pending(&self, on: bool, still: bool) {
+                $m::CompanionWindow::set_ask_pending(self, on && !still);
+                $m::CompanionWindow::set_ask_pending_lit(self, on && still);
             }
             fn set_dnd(&self, on: bool, line: &str) {
                 $m::CompanionWindow::set_dnd_line(self, line.into());

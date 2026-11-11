@@ -405,6 +405,7 @@ house_state_closing = "Sto chiudendo"
 house_done = "fatto"
 house_and_more = "{name} e altri {n}"
 house_others = "e altri {n}"
+house_failed = "{name}: non riuscito"
 # The Yes/No card of a command that waits for an answer.
 yes = "Sì"
 no = "No"

@@ -6,193 +6,18 @@
 //! channel when the screen shows the right state. The wake word itself is covered by the
 //! end-to-end test (tools/run-e2e.sh).
 
+mod common;
+
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use common::*;
 use home_companion::core::{
     Core, CoreConfig, CoreEvent, Deps, MicControl, Phase, Summary, UiCommand, UiEvent,
 };
 use home_companion::timers::Timers;
-use wyoming::fake_ha::{self, Record, Scenario, Step};
-
-/// When to press a button: on the first `View(phase)` after `after` such views, then wait.
-#[derive(Clone, Copy)]
-struct Press {
-    on: Phase,
-    wait: Duration,
-    event: fn() -> UiEvent,
-}
-
-fn talk() -> UiEvent {
-    UiEvent::Talk
-}
-fn stop() -> UiEvent {
-    UiEvent::Stop
-}
-
-struct Run {
-    record: Record,
-    summary: Summary,
-    views: Vec<Phase>,
-}
-
-fn run(scenario: Scenario, presses: &[Press]) -> Run {
-    run_with(scenario, presses, None)
-}
-
-/// `reflex`: a fake helper that answers this text at the end of every utterance.
-fn run_with(scenario: Scenario, presses: &[Press], reflex: Option<&'static str>) -> Run {
-    let model = wakeword::Model::load(
-        &character::repo_characters().join("alfred/wakeword/okay_alfred.json"),
-    )
-    .unwrap();
-    let cfg = home_companion::config::Config::default();
-    let info = home_companion::satellite_info(&cfg, &model);
-
-    let (core_tx, core_rx) = mpsc::channel::<CoreEvent>();
-    let (ui_tx, ui_rx) = mpsc::channel();
-    let mic = Arc::new(MicControl::default());
-    let tx = core_tx.clone();
-    let acfg = audio::AudioConfig {
-        backend: audio::Backend::Null,
-        realtime: false,
-        ..Default::default()
-    };
-    let audio = audio::Audio::start(
-        &acfg,
-        Box::new(move |e| {
-            let _ = tx.send(CoreEvent::Audio(e));
-        }),
-    )
-    .unwrap();
-    let player = audio.player();
-    let frames = audio.subscribe(16);
-    let wake = home_companion::wake_thread::spawn(
-        frames,
-        None,
-        Vec::new(),
-        mic.clone(),
-        core_tx.clone(),
-        Arc::new(Mutex::new(None)),
-    )
-    .unwrap();
-    let tx = core_tx.clone();
-    let server = wyoming::Server::start(
-        wyoming::ServerConfig {
-            bind: "127.0.0.1:0".parse().unwrap(),
-            allowed: vec![wyoming::Net::parse("127.0.0.1").unwrap()],
-            info,
-            ping_interval: Some(Duration::from_secs(2)),
-            ..Default::default()
-        },
-        Box::new(move |e| {
-            let _ = tx.send(CoreEvent::Server(e));
-        }),
-    )
-    .unwrap();
-    let addr = server.local_addr();
-    let reflexes = reflex.map(|text| {
-        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        home_companion::reflex::Reflexes::new(
-            Box::new(AnsweringReflex {
-                tx: Mutex::new(core_tx.clone()),
-                text,
-            }),
-            &home_companion::config::ReflexesCfg::default(),
-            repo.join("characters/alfred/grammar"),
-            repo.join("locales"),
-            "it",
-        )
-    });
-    let deps = Deps {
-        sender: server.sender(),
-        player,
-        recorder: None,
-        ui: ui_tx,
-        mic,
-        audio: Some(audio),
-        server: Some(server),
-        timers: Timers::in_memory(),
-        alarms: home_companion::alarms::Alarms::in_memory(),
-        settings: None,
-        volume: None,
-        wake_stats: Arc::new(Mutex::new(None)),
-        stop_flag: None,
-        reflexes,
-        music: None,
-        voice: None,
-    };
-    let core_cfg = CoreConfig {
-        bell_repeats: 2,
-        bell_gap: Duration::from_millis(200),
-        ..Default::default()
-    };
-    let core = std::thread::spawn(move || Core::new(core_cfg, deps).run(core_rx));
-    let ha = std::thread::spawn(move || fake_ha::run(addr, &scenario).unwrap());
-    let views = drive(&ui_rx, &core_tx, presses, &ha);
-    let record = ha.join().unwrap();
-    // Let the last events settle (a bell ending, a phase change).
-    std::thread::sleep(Duration::from_millis(300));
-    core_tx.send(CoreEvent::Quit).unwrap();
-    let summary = core.join().unwrap();
-    wake.join().unwrap();
-    let mut views = views;
-    views.extend(ui_rx.try_iter().filter_map(|c| {
-        if let UiCommand::View(p) = c {
-            Some(p)
-        } else {
-            None
-        }
-    }));
-    Run {
-        record,
-        summary,
-        views,
-    }
-}
-
-/// Watches the screen commands and presses the buttons; returns the views seen.
-fn drive(
-    ui: &Receiver<UiCommand>,
-    core: &Sender<CoreEvent>,
-    presses: &[Press],
-    ha: &std::thread::JoinHandle<Record>,
-) -> Vec<Phase> {
-    let mut views = Vec::new();
-    let mut next = 0;
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while Instant::now() < deadline && !ha.is_finished() {
-        if let Ok(UiCommand::View(p)) = ui.recv_timeout(Duration::from_millis(50)) {
-            views.push(p);
-            if next < presses.len() && presses[next].on == p {
-                let pr = presses[next];
-                std::thread::sleep(pr.wait);
-                core.send(CoreEvent::Ui((pr.event)())).unwrap();
-                next += 1;
-            }
-        }
-    }
-    assert_eq!(
-        next,
-        presses.len(),
-        "not every button was pressed; views {views:?}"
-    );
-    views
-}
-
-fn outcomes(s: &Summary) -> Vec<(String, String)> {
-    s.conversations
-        .iter()
-        .map(|c| (c.trigger.to_string(), c.outcome.clone()))
-        .collect()
-}
-
-const TALK_AT_HOME: Press = Press {
-    on: Phase::Home,
-    wait: Duration::from_millis(100),
-    event: talk,
-};
+use wyoming::fake_ha::{self, Scenario, Step};
 
 #[test]
 fn talk_button_conversation_timers_announcement_pause() {
@@ -200,7 +25,7 @@ fn talk_button_conversation_timers_announcement_pause() {
     assert!(r.record.failures.is_empty(), "{:?}", r.record.failures);
     assert!(r.record.audio_seconds >= 1.5);
     assert_eq!(
-        outcomes(&r.summary),
+        r.outcomes(),
         vec![
             ("talk".into(), "played".into()),
             ("announcement".into(), "played".into())
@@ -248,17 +73,14 @@ fn stop_before_the_transcript_ends_the_stream_and_swallows_the_error() {
     let presses = [
         TALK_AT_HOME,
         Press {
-            on: Phase::Listening,
+            on: When::View(Phase::Listening),
             wait: Duration::from_millis(800),
             event: stop,
         },
     ];
     let r = run(fake_ha::builtin("stop-button").unwrap(), &presses);
     assert!(r.record.failures.is_empty(), "{:?}", r.record.failures);
-    assert_eq!(
-        outcomes(&r.summary),
-        vec![("talk".into(), "stopped".into())]
-    );
+    assert_eq!(r.outcomes(), vec![("talk".into(), "stopped".into())]);
     assert!(
         !r.summary.phases.contains(&Phase::Error),
         "a stopped conversation shows no error: {:?}",
@@ -280,17 +102,14 @@ fn stop_while_speaking_sends_played_at_once() {
     let presses = [
         TALK_AT_HOME,
         Press {
-            on: Phase::Speaking,
+            on: When::View(Phase::Speaking),
             wait: Duration::from_millis(300),
             event: stop,
         },
     ];
     let r = run(Scenario { ping: true, steps }, &presses);
     assert!(r.record.failures.is_empty(), "{:?}", r.record.failures);
-    assert_eq!(
-        outcomes(&r.summary),
-        vec![("talk".into(), "stopped".into())]
-    );
+    assert_eq!(r.outcomes(), vec![("talk".into(), "stopped".into())]);
     let ms = r.record.audio_stop_to_played_ms.unwrap();
     assert!(
         ms < 1000.0,
@@ -357,7 +176,7 @@ fn talk_with_no_home_assistant_shows_offline_and_starts_nothing() {
     // Connected but never ready (no run-satellite): Talk plays the done cue, no detection.
     let steps = vec![Step::Connect, Step::Sleep { ms: 1500 }, Step::Disconnect];
     let presses = [Press {
-        on: Phase::Offline,
+        on: When::View(Phase::Offline),
         wait: Duration::from_millis(300),
         event: talk,
     }];
@@ -419,6 +238,7 @@ fn volume_keys_step_show_the_bar_and_save_at_exit() {
         reflexes: None,
         music: None,
         voice: None,
+        brain: None,
     };
     let core = std::thread::spawn(move || Core::new(CoreConfig::default(), deps).run(core_rx));
     let step = |dir, repeat| CoreEvent::Volume(VolumeRequest::Step { dir, repeat });
@@ -493,6 +313,7 @@ fn the_microphone_switch_wins_over_the_tile_and_talk() {
         reflexes: None,
         music: None,
         voice: None,
+        brain: None,
     };
     let core = std::thread::spawn(move || Core::new(CoreConfig::default(), deps).run(core_rx));
     let settle = || std::thread::sleep(Duration::from_millis(100));
@@ -568,32 +389,6 @@ fn the_microphone_switch_wins_over_the_tile_and_talk() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A helper that is always ready and records what the body sends.
-struct FakeReflex(Arc<Mutex<Vec<reflex::proto::Request>>>);
-
-impl home_companion::reflex::ReflexLink for FakeReflex {
-    fn ready(&self) -> bool {
-        true
-    }
-    fn send(&self, r: reflex::proto::Request) -> bool {
-        self.0.lock().unwrap().push(r);
-        true
-    }
-    fn set_language(&self, _: &str) {}
-}
-
-fn frame(index: u64, amp: f32) -> CoreEvent {
-    let samples: Vec<i16> = (0..320)
-        .map(|i| (((index * 320 + i) as f32 * 0.2).sin() * amp * 32767.0) as i16)
-        .collect();
-    let level = audio::Level::of(&samples);
-    CoreEvent::MicFrame(audio::CaptureFrame {
-        samples: samples.into(),
-        index,
-        level,
-    })
-}
-
 /// Runs the core with no Home Assistant and the fake helper: Talk, a spoken second (a tone),
 /// silence, then the helper's `result`. Returns the UI commands and what the helper got.
 fn reflex_run(text: &str, conf: f32) -> (Vec<UiCommand>, Vec<reflex::proto::Request>, Summary) {
@@ -665,6 +460,7 @@ fn reflex_run_voice(
         reflexes: Some(reflexes),
         music: None,
         voice,
+        brain: None,
     };
     let core = std::thread::spawn(move || Core::new(CoreConfig::default(), deps).run(core_rx));
     core_tx.send(CoreEvent::Ui(UiEvent::Talk)).unwrap();
@@ -812,38 +608,6 @@ fn not_a_reflex_without_home_assistant_ends_offline() {
     );
 }
 
-/// A helper that answers `text` (every word sure, covering 0-6 s) to each `E`.
-struct AnsweringReflex {
-    tx: Mutex<Sender<CoreEvent>>,
-    text: &'static str,
-}
-
-impl home_companion::reflex::ReflexLink for AnsweringReflex {
-    fn ready(&self) -> bool {
-        true
-    }
-    fn send(&self, r: reflex::proto::Request) -> bool {
-        if let reflex::proto::Request::End(id) = r {
-            let _ = self.tx.lock().unwrap().send(CoreEvent::Reflex(
-                home_companion::reflex::ReflexEvent::Result {
-                    id,
-                    endpoint: false,
-                    text: self.text.into(),
-                    words: vec![reflex::Word {
-                        word: self.text.into(),
-                        conf: 1.0,
-                        start: 0.0,
-                        end: 6.0,
-                    }],
-                    ms: 3.0,
-                },
-            ));
-        }
-        true
-    }
-    fn set_language(&self, _: &str) {}
-}
-
 #[test]
 fn not_a_reflex_goes_to_home_assistant_in_one_burst() {
     // The null microphone is silent: the detector gives up after 5 s ("nobody spoke"), the fake
@@ -865,7 +629,7 @@ fn not_a_reflex_goes_to_home_assistant_in_one_burst() {
         Step::Disconnect,
     ];
     let presses = [Press {
-        on: Phase::Home,
+        on: When::View(Phase::Home),
         wait: Duration::from_millis(200),
         event: talk,
     }];
@@ -911,12 +675,6 @@ fn good_night_turns_the_screen_off_and_does_not_disturb_until_the_morning() {
             .any(|c| matches!(c, UiCommand::Answer(a) if !a.is_empty()))
     );
     assert_eq!(summary.detections_sent, 0);
-}
-
-#[test]
-fn a_spoken_no_declines_the_open_question() {
-    let (ui, _, _) = reflex_run("no", 1.0);
-    assert!(ui.contains(&UiCommand::DeclineQuestion), "{ui:?}");
 }
 
 #[test]
@@ -999,10 +757,6 @@ fn nothing_to_repeat_and_no_timers_to_list() {
     );
 }
 
-fn tap() -> UiEvent {
-    UiEvent::Tap
-}
-
 #[test]
 fn repeat_plays_the_last_answer_again() {
     // An announcement, then Talk and "ripeti": the same words come back on the screen and the
@@ -1019,12 +773,12 @@ fn repeat_plays_the_last_answer_again() {
     ];
     let presses = [
         Press {
-            on: Phase::Speaking,
+            on: When::View(Phase::Speaking),
             wait: Duration::ZERO,
             event: tap,
         },
         Press {
-            on: Phase::Home,
+            on: When::View(Phase::Home),
             wait: Duration::from_millis(200),
             event: talk,
         },
@@ -1035,7 +789,7 @@ fn repeat_plays_the_last_answer_again() {
     let speaking = r.views.iter().filter(|p| **p == Phase::Speaking).count();
     assert!(speaking >= 2, "{:?}", r.views);
     assert_eq!(
-        outcomes(&r.summary),
+        r.outcomes(),
         vec![
             ("announcement".into(), "played".into()),
             ("talk".into(), "reflex".into())

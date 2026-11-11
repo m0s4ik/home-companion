@@ -612,6 +612,11 @@ fn go<S: Screen>(
         reflexes,
         music,
         voice,
+        // The turns and the answers to the brain's questions, in order (dropped while the brain
+        // is away).
+        brain: Some(Box::new(home_companion::brain_link::Ordered::start(
+            home_companion::brain_link::socket_path(),
+        ))),
     };
     let core = Core::new(core_cfg, deps);
     let core_thread = match std::thread::Builder::new()

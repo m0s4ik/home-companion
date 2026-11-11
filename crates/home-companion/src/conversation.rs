@@ -28,6 +28,38 @@ impl Trigger {
     }
 }
 
+/// What happens to Home Assistant's answer (its words, its voice) in a conversation. Set in one
+/// place each (core.rs); read wherever the answer arrives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswerPolicy {
+    /// Shown and spoken.
+    Play,
+    /// The brain carried out a house command here (its "done" card is up, the success sound
+    /// played): a short answer is not spoken ([`Swallow::HouseQuiet`]), a silent Home Assistant
+    /// ends the conversation quietly ("house_done_silent"), not as an error.
+    AfterCommand,
+    /// Never shown nor spoken; its audio, when it comes, is acknowledged with `played`.
+    Swallow(Swallow),
+}
+
+/// Why an answer is swallowed (the conversation's outcome says it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Swallow {
+    /// Stop pressed (or do not disturb on an announcement).
+    Stopped,
+    /// A short answer after a house command: the success sound already said it.
+    HouseQuiet,
+    /// The brain's Yes/No question was asked or answered in this conversation: the screen and
+    /// the brain say what follows, Home Assistant's words would repeat it.
+    Asked,
+}
+
+impl AnswerPolicy {
+    pub fn swallows(self) -> bool {
+        matches!(self, AnswerPolicy::Swallow(_))
+    }
+}
+
 pub struct Conversation {
     pub id: u64,
     pub trigger: Trigger,
@@ -43,21 +75,20 @@ pub struct Conversation {
     pub played_at: Option<Instant>,
     /// Capture frame index of the first chunk sent (chunk timestamps start at 0).
     pub first_frame: Option<u64>,
+    /// Frames sent in one burst before the live ones (held back for the reflexes): the live
+    /// chunks' timestamps go on from there.
+    pub live_offset: u64,
     pub frames_sent: u64,
     pub heard: String,
     pub answer: String,
     /// Bytes of answer audio received and their format.
     pub answer_bytes: u64,
     pub answer_format: Option<wyoming::AudioFormat>,
-    /// Stop pressed while listening or thinking: a late answer is swallowed and acknowledged
-    /// with `played` (as the Python satellite's stop.patch did).
-    pub discard_answer: bool,
-    /// The brain carried out a house command in this conversation (its "done" card is up): a
-    /// Home Assistant that falls silent afterwards ends the conversation quietly, not as an error.
-    pub house_done: bool,
-    /// The answer after a house command was short ("Fatto."): the success sound already said
-    /// it, so its voice is swallowed (as `discard_answer`) and logged as `house_quiet`.
-    pub quiet_answer: bool,
+    /// What happens to Home Assistant's answer in this conversation ([`AnswerPolicy`]).
+    pub policy: AnswerPolicy,
+    /// The brain's Yes/No question this conversation was opened to hear the answer to (the
+    /// microphone opened by itself when the question appeared): its id.
+    pub answering: Option<i64>,
     /// We ended our microphone stream with `audio-stop` (the Stop button).
     pub audio_stop_sent: bool,
     /// The answer's audio stream, while it plays.
@@ -102,16 +133,23 @@ impl Conversation {
             audio_stop_at: None,
             played_at: None,
             first_frame: None,
+            live_offset: 0,
             frames_sent: 0,
             heard: String::new(),
             answer: String::new(),
             answer_bytes: 0,
             answer_format: None,
-            discard_answer: false,
-            house_done: false,
-            quiet_answer: false,
+            policy: AnswerPolicy::Play,
+            answering: None,
             audio_stop_sent: false,
             stream: None,
+        }
+    }
+
+    /// Its answer is swallowed for `why`, unless it already is (the first reason stays).
+    pub fn swallow(&mut self, why: Swallow) {
+        if !self.policy.swallows() {
+            self.policy = AnswerPolicy::Swallow(why);
         }
     }
 
