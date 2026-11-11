@@ -104,23 +104,29 @@ pub enum Via {
     Screen,
     /// "Sì" / "no" heard by the reflexes.
     VoiceReflex,
+    /// "Sì" / "no" in Home Assistant's transcript (the brain names it itself, see `turn`).
+    VoiceHa,
     /// The stop word (always a no).
     Stop,
+    /// Nobody answered in time (the brain names it itself).
+    Timeout,
 }
 
 impl Via {
-    pub fn name(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Via::Screen => "screen",
             Via::VoiceReflex => "voice_reflex",
+            Via::VoiceHa => "voice_ha",
             Via::Stop => "stop",
+            Via::Timeout => "timeout",
         }
     }
 }
 
 /// A Yes or No on the brain's question `id` (send it in order, [`Ordered`]).
 pub fn confirm_answer(id: i64, yes: bool, via: Via) -> Value {
-    json!({"cmd": "confirm.answer", "id": id, "yes": yes, "via": via.name()})
+    json!({"cmd": "confirm.answer", "id": id, "yes": yes, "via": via.as_str()})
 }
 
 /// Home Assistant's transcript of the body's conversation `id`; `answers` = the id of the
@@ -318,7 +324,7 @@ pub struct Ordered {
 }
 
 impl Ordered {
-    pub fn start_at(path: PathBuf) -> Ordered {
+    pub fn start(path: PathBuf) -> Ordered {
         let (tx, rx) = channel::<Value>();
         let _ = std::thread::Builder::new()
             .name("brain-ordered".into())
@@ -345,7 +351,7 @@ impl BrainPort for Ordered {
 /// The process's [`Ordered`] queue to the brain's socket.
 pub fn ordered() -> &'static Ordered {
     static ORDERED: std::sync::OnceLock<Ordered> = std::sync::OnceLock::new();
-    ORDERED.get_or_init(|| Ordered::start_at(socket_path()))
+    ORDERED.get_or_init(|| Ordered::start(socket_path()))
 }
 
 /// What the user said (`heard`, the satellite's transcript) and Home Assistant's answer
@@ -702,7 +708,7 @@ mod tests {
                 });
             }
         });
-        let o = Ordered::start_at(path);
+        let o = Ordered::start(path);
         for n in 0..20 {
             o.send(json!({"cmd": "turn", "n": n}));
         }
@@ -715,7 +721,7 @@ mod tests {
 
     #[test]
     fn a_missing_socket_drops_the_request() {
-        let o = Ordered::start_at(PathBuf::from("/nonexistent/brain.sock"));
+        let o = Ordered::start(PathBuf::from("/nonexistent/brain.sock"));
         o.send(json!({"cmd": "turn"}));
     }
 

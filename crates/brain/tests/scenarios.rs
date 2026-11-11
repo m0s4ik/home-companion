@@ -404,7 +404,7 @@ fn b12_a_screen_yes_inside_the_second_executes_once() {
 #[test]
 fn b13_a_yes_heard_by_home_assistant() {
     let mut s = S::new("b13");
-    s.turn(7, "chiudi la tapparella dello studio", None);
+    s.turn(7, "chiudi la tapparella", None);
     let q = S::asked(&s.call("home_control", close("cover.study")));
     s.expect(&[], &["confirm"]);
     s.turn(8, "Sì.", Some(q));
@@ -420,7 +420,7 @@ fn b13_a_yes_heard_by_home_assistant() {
 #[test]
 fn b14_a_no_heard_by_home_assistant() {
     let mut s = S::new("b14");
-    s.turn(7, "chiudi la tapparella dello studio", None);
+    s.turn(7, "chiudi la tapparella", None);
     let q = S::asked(&s.call("home_control", close("cover.study")));
     s.expect(&[], &["confirm"]);
     s.turn(8, "No, grazie.", Some(q));
@@ -473,7 +473,7 @@ fn b16_sentences_that_are_not_an_answer() {
 #[test]
 fn b17_the_model_calls_again_after_the_yes() {
     let mut s = S::new("b17");
-    s.turn(7, "chiudi la tapparella dello studio", None);
+    s.turn(7, "chiudi la tapparella", None);
     let q = S::asked(&s.call("home_control", close("cover.study")));
     s.turn(8, "sì", Some(q));
     s.expect(&[], &["confirm", "confirm_pending"]);
@@ -500,6 +500,14 @@ fn b17_the_model_calls_again_after_the_yes() {
 fn b18_double_answers() {
     let mut s = S::new("b18");
     let q = S::asked(&s.call("home_control", close("cover.study")));
+    s.expect(&[], &["confirm"]);
+    // voice_ha and timeout are the brain's own names, never an answer from the body.
+    for via in ["voice_ha", "timeout"] {
+        let r = s.answer(q, true, via);
+        assert_eq!(r["ok"], false, "{via}: {r}");
+        s.advance(2000);
+        s.expect(&[], &[]);
+    }
     s.answer(q, true, "screen");
     let r = s.answer(q, true, "screen");
     assert_eq!(
@@ -508,7 +516,7 @@ fn b18_double_answers() {
     );
     s.expect(
         &["cover.close_cover cover.study"],
-        &["confirm", "changed", "confirm_done"],
+        &["changed", "confirm_done"],
     );
     let q = S::asked(&s.call("home_control", close("cover.living_left")));
     s.answer(q, true, "screen");
@@ -688,6 +696,7 @@ fn b24_a_second_question_while_one_is_open() {
     s.advance(5000);
     let r = s.call("home_control", close("cover.study"));
     assert_eq!(r["state"], "waiting", "{r}");
+    assert_eq!(r["asked"]["id"], q, "{r}");
     assert_eq!(r["say"], SAY_NOTHING);
     s.expect(&[], &[]);
     let replay = s.subscribe();

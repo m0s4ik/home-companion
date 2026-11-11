@@ -881,6 +881,9 @@ impl Brain {
             .chain(qs.closed.iter())
             .find(|q| q.key == key && same_turn(q))?;
         let mut r = json!({"state": q.state.reported()});
+        if matches!(q.state, State::Open) {
+            r["asked"] = json!({"question": q.text, "id": q.id});
+        }
         if let Some(say) = q.state.say() {
             r["say"] = json!(say);
         }

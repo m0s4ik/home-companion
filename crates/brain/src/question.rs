@@ -46,12 +46,12 @@ impl Via {
         }
     }
 
-    /// A `via` the body may send (the brain's own reasons are not answers).
+    /// A `via` the body may send. The brain's own reasons are not answers: voice_ha is built
+    /// by `Brain::turn` from Home Assistant's transcript, timeout and replaced by the brain.
     pub fn parse(s: &str) -> Option<Via> {
         Some(match s {
             "screen" => Via::Screen,
             "voice_reflex" => Via::VoiceReflex,
-            "voice_ha" => Via::VoiceHa,
             "stop" => Via::Stop,
             _ => return None,
         })
@@ -281,9 +281,10 @@ mod tests {
 
     #[test]
     fn only_the_body_answers_names() {
-        for v in [Via::Screen, Via::VoiceReflex, Via::VoiceHa, Via::Stop] {
+        for v in [Via::Screen, Via::VoiceReflex, Via::Stop] {
             assert_eq!(Via::parse(v.name()), Some(v));
         }
+        assert_eq!(Via::parse("voice_ha"), None);
         assert_eq!(Via::parse("timeout"), None);
         assert_eq!(Via::parse("replaced"), None);
         // A yes "by the stop word" means nothing.
