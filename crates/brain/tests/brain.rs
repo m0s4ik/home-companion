@@ -4,256 +4,13 @@
 //! home-companion-brain end to end against a fake Home Assistant (WebSocket API): the tools Home
 //! Assistant's AI calls over MCP, the memory jobs through `ai_task`, the shopping list.
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+mod common;
+
 use std::sync::{Arc, Mutex};
 
 use brain::agent::Brain;
-use brain::config::Config;
+use common::*;
 use serde_json::{Value, json};
-
-type Todo = Arc<Mutex<Vec<(String, String, String)>>>;
-
-/// What the fake Home Assistant knows and answers.
-#[derive(Default, Clone)]
-struct Fake {
-    /// `ai_task.generate_data` answers, in order; the instructions it got are kept.
-    ai: Arc<Mutex<Vec<String>>>,
-    asked: Arc<Mutex<Vec<String>>>,
-    /// Exposed entities: (entity_id, name, device_class).
-    exposed: Vec<(&'static str, &'static str, &'static str)>,
-    todo: Todo,
-    /// Every command received.
-    calls: Arc<Mutex<Vec<Value>>>,
-    /// Other entities in `get_states` (not exposed): (entity_id, friendly name).
-    states: Vec<(&'static str, &'static str)>,
-    /// The `calendar.get_events` answer (`{"calendar.x": {"events": […]}}`).
-    calendar: Arc<Mutex<Value>>,
-    /// Areas of exposed entities: (entity_id, area name).
-    areas: Vec<(&'static str, &'static str)>,
-    /// Groups among the exposed entities: (entity_id, members).
-    groups: Vec<(&'static str, Vec<&'static str>)>,
-}
-
-/// "2026-11-05T17:00:00Z" for a time in seconds (UTC).
-fn rfc3339(ts: i64) -> String {
-    let days = ts.div_euclid(86400);
-    let secs = ts.rem_euclid(86400);
-    // Howard Hinnant's civil_from_days.
-    let z = days + 719468;
-    let era = z.div_euclid(146097);
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
-    format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
-        secs / 3600,
-        secs % 3600 / 60,
-        secs % 60
-    )
-}
-
-fn ws_read(s: &mut TcpStream) -> Option<Value> {
-    let mut h = [0u8; 2];
-    s.read_exact(&mut h).ok()?;
-    let mut len = (h[1] & 0x7f) as usize;
-    if len == 126 {
-        let mut b = [0u8; 2];
-        s.read_exact(&mut b).ok()?;
-        len = u16::from_be_bytes(b) as usize;
-    } else if len == 127 {
-        let mut b = [0u8; 8];
-        s.read_exact(&mut b).ok()?;
-        len = u64::from_be_bytes(b) as usize;
-    }
-    let mut mask = [0u8; 4];
-    if h[1] & 0x80 != 0 {
-        s.read_exact(&mut mask).ok()?;
-    }
-    let mut p = vec![0u8; len];
-    s.read_exact(&mut p).ok()?;
-    for (i, b) in p.iter_mut().enumerate() {
-        *b ^= mask[i % 4];
-    }
-    if h[0] & 0x0f != 1 {
-        return None;
-    }
-    serde_json::from_slice(&p).ok()
-}
-
-fn ws_send(s: &mut TcpStream, v: &Value) {
-    let p = v.to_string().into_bytes();
-    let mut f = vec![0x81u8];
-    if p.len() < 126 {
-        f.push(p.len() as u8);
-    } else {
-        f.push(126);
-        f.extend_from_slice(&(p.len() as u16).to_be_bytes());
-    }
-    f.extend_from_slice(&p);
-    let _ = s.write_all(&f);
-}
-
-fn answer(f: &Fake, cmd: &Value) -> Value {
-    f.calls.lock().unwrap().push(cmd.clone());
-    let mut t = f.todo.lock().unwrap();
-    match (
-        cmd["type"].as_str(),
-        cmd["domain"].as_str(),
-        cmd["service"].as_str(),
-    ) {
-        (Some("ai_task/preferences/get"), _, _) => json!({"gen_data_entity_id": "ai_task.test"}),
-        (Some("call_service"), Some("ai_task"), Some("generate_data")) => {
-            f.asked.lock().unwrap().push(
-                cmd["service_data"]["instructions"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string(),
-            );
-            let mut q = f.ai.lock().unwrap();
-            let data = if q.is_empty() {
-                String::new()
-            } else {
-                q.remove(0)
-            };
-            json!({"response": {"data": data, "conversation_id": "c"}})
-        }
-        (Some("homeassistant/expose_entity/list"), _, _) => {
-            let m: serde_json::Map<String, Value> = f
-                .exposed
-                .iter()
-                .map(|(id, _, _)| (id.to_string(), json!({"conversation": true})))
-                .collect();
-            json!({"exposed_entities": m})
-        }
-        (Some("get_states"), _, _) => json!(
-            f.exposed
-                .iter()
-                .map(|(id, name, class)| {
-                    let mut a = json!({"friendly_name": name, "device_class": class});
-                    if let Some((_, m)) = f.groups.iter().find(|(g, _)| g == id) {
-                        a["entity_id"] = json!(m);
-                    }
-                    json!({"entity_id": id, "state": "open", "attributes": a})
-                })
-                .chain(
-                    f.states
-                        .iter()
-                        .map(|(id, name)| json!({"entity_id": id, "state": "idle",
-                    "attributes": {"friendly_name": name}}))
-                )
-                .collect::<Vec<_>>()
-        ),
-        (Some("call_service"), Some("calendar"), Some("get_events")) => {
-            json!({"context": {}, "response": f.calendar.lock().unwrap().clone()})
-        }
-        (Some("config/entity_registry/list_for_display"), _, _) => json!({"entities":
-            f.areas.iter().map(|(id, a)| json!({"ei": id, "ai": a.to_lowercase()})).collect::<Vec<_>>()}),
-        (Some("config/area_registry/list"), _, _) => {
-            json!(
-                f.areas
-                    .iter()
-                    .map(|(_, a)| json!({"area_id": a.to_lowercase(), "name": a}))
-                    .collect::<Vec<_>>()
-            )
-        }
-        (Some("config/device_registry/list"), _, _) => json!([]),
-        (Some("todo/item/list"), _, _) => json!({"items": t.iter().map(|(u, s, st)|
-            json!({"uid": u, "summary": s, "status": st})).collect::<Vec<_>>()}),
-        (Some("call_service"), _, Some("add_item")) => {
-            let n = t.len() + 1;
-            t.push((
-                format!("u{n}"),
-                cmd["service_data"]["item"].as_str().unwrap().into(),
-                "needs_action".into(),
-            ));
-            json!(null)
-        }
-        (Some("call_service"), _, Some("update_item")) => {
-            let uid = cmd["service_data"]["item"].as_str().unwrap();
-            for i in t.iter_mut().filter(|i| i.0 == uid) {
-                i.2 = cmd["service_data"]["status"].as_str().unwrap().into();
-            }
-            json!(null)
-        }
-        (Some("call_service"), _, Some("remove_item")) => {
-            let uids: Vec<String> = cmd["service_data"]["item"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_str().unwrap().to_string())
-                .collect();
-            t.retain(|i| !uids.contains(&i.0));
-            json!(null)
-        }
-        _ => json!(null),
-    }
-}
-
-/// A fake Home Assistant: any number of commands on each connection, answered in order.
-fn fake_ha(f: Fake) -> String {
-    let l = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", l.local_addr().unwrap());
-    std::thread::spawn(move || {
-        for c in l.incoming() {
-            let Ok(mut s) = c else { break };
-            let f = f.clone();
-            std::thread::spawn(move || {
-                let mut req = Vec::new();
-                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
-                    let mut b = [0u8; 512];
-                    let n = s.read(&mut b).unwrap_or(0);
-                    if n == 0 {
-                        return;
-                    }
-                    req.extend_from_slice(&b[..n]);
-                }
-                let _ = s.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n");
-                ws_send(&mut s, &json!({"type": "auth_required"}));
-                if ws_read(&mut s).is_none() {
-                    return;
-                }
-                ws_send(&mut s, &json!({"type": "auth_ok"}));
-                while let Some(cmd) = ws_read(&mut s) {
-                    let result = answer(&f, &cmd);
-                    ws_send(
-                        &mut s,
-                        &json!({"id": cmd["id"], "type": "result", "success": true, "result": result}),
-                    );
-                }
-            });
-        }
-    });
-    url
-}
-
-fn setup(name: &str, ha_url: &str) -> (Config, PathBuf) {
-    let dir = std::env::temp_dir().join(format!(
-        "home-companion-brain-test-{name}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let tok = dir.join("tok");
-    std::fs::write(&tok, "t\n").unwrap();
-    let mut c = Config {
-        character_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/../../characters/alfred").into(),
-        ..Config::default()
-    };
-    c.home_assistant.url = ha_url.into();
-    c.home_assistant.token_file = tok.to_string_lossy().into();
-    c.memory.dir = dir.join("mem").to_string_lossy().into();
-    (c, dir)
-}
-
-fn tool(b: &Brain, name: &str, args: Value) -> (Value, bool) {
-    b.mcp_call(name, &args)
-}
 
 #[test]
 fn remember_and_recall_through_the_tools() {
@@ -298,78 +55,6 @@ fn end_of_conversation_extraction_through_ai_task() {
     assert!(
         asked[0].contains("la caldaia è in cantina, ricordatelo"),
         "{asked:?}"
-    );
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[test]
-fn house_gates_need_a_spoken_yes_and_never_open_doors() {
-    let f = Fake {
-        exposed: vec![
-            ("cover.soggiorno", "Tapparella soggiorno", "shutter"),
-            ("cover.garage", "Garage", "garage"),
-            ("light.cucina", "Luce cucina", ""),
-        ],
-        ..Fake::default()
-    };
-    let (cfg, dir) = setup("gate", &fake_ha(f.clone()));
-    let b = Brain::new(cfg).unwrap();
-    let services = |f: &Fake| -> Vec<String> {
-        f.calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|c| c["type"] == "call_service")
-            .map(|c| {
-                format!(
-                    "{}.{} {}",
-                    c["domain"].as_str().unwrap(),
-                    c["service"].as_str().unwrap(),
-                    c["service_data"]["entity_id"].as_str().unwrap_or("")
-                )
-            })
-            .collect()
-    };
-    // A light: at once.
-    let (r, err) = tool(
-        &b,
-        "home_control",
-        json!({"entity_id": "light.cucina", "service": "turn_on"}),
-    );
-    assert!(!err, "{r}");
-    // A garage door: never.
-    let (r, err) = tool(
-        &b,
-        "home_control",
-        json!({"entity_id": "cover.garage", "service": "open_cover"}),
-    );
-    assert!(err && r.to_string().contains("never"), "{r}");
-    // A shutter: asks, and runs only after the user's own "sì".
-    let args = json!({"entity_id": "cover.soggiorno", "service": "close_cover"});
-    let (r, err) = tool(&b, "home_control", args.clone());
-    assert!(!err && r["needs_confirmation"] == true, "{r}");
-    let id = r["confirm_id"].clone();
-    let mut confirmed = args.clone();
-    confirmed["confirm_id"] = id;
-    std::thread::sleep(std::time::Duration::from_millis(5));
-    b.heard("no, lascia stare");
-    let (r, err) = tool(&b, "home_control", confirmed.clone());
-    assert!(err && r.to_string().contains("did not confirm"), "{r}");
-    let (r, _) = tool(&b, "home_control", args);
-    let mut again = json!({"entity_id": "cover.soggiorno", "service": "close_cover"});
-    again["confirm_id"] = r["confirm_id"].clone();
-    std::thread::sleep(std::time::Duration::from_millis(5));
-    b.heard("sì");
-    let (r, err) = tool(&b, "home_control", again);
-    assert!(!err && r["done"] == true, "{r}");
-    assert_eq!(
-        services(&f),
-        // The light: a snapshot for its Undo first; the shutter after a yes has no Undo.
-        [
-            "scene.create ",
-            "light.turn_on light.cucina",
-            "cover.close_cover cover.soggiorno"
-        ]
     );
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -573,72 +258,6 @@ fn shopping_list_add_read_done_remove() {
 
 // ---- v0.2: several lists, calendars, house commands on the screen, views, announcements
 
-use std::io::BufRead;
-use std::os::unix::net::UnixStream;
-
-/// The body's side of the control socket: a `subscribe` connection reading the brain's events.
-struct Screen {
-    r: std::io::BufReader<UnixStream>,
-}
-
-impl Screen {
-    fn connect(b: &Arc<Brain>, dir: &std::path::Path) -> Screen {
-        let hub = Arc::new(brain::control::Hub::default());
-        b.set_hub(hub.clone());
-        let path = dir.join("c.sock").to_string_lossy().to_string();
-        brain::control::start(b.clone(), hub.clone(), &path).unwrap();
-        let mut s = UnixStream::connect(&path).unwrap();
-        s.write_all(b"{\"cmd\":\"subscribe\"}\n").unwrap();
-        s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .unwrap();
-        let mut r = std::io::BufReader::new(s);
-        let mut line = String::new();
-        r.read_line(&mut line).unwrap();
-        assert!(line.contains("\"ok\":true"), "{line}");
-        // The connection joins the hub after the replay: wait for it.
-        for _ in 0..100 {
-            if hub.subscribers() > 0 {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        assert_eq!(hub.subscribers(), 1);
-        Screen { r }
-    }
-
-    /// The next event named `name` (others are skipped); panics after 5 s.
-    fn event(&mut self, name: &str) -> Value {
-        loop {
-            let mut line = String::new();
-            assert!(
-                self.r.read_line(&mut line).unwrap() > 0,
-                "closed while waiting for {name}"
-            );
-            let v: Value = serde_json::from_str(line.trim()).unwrap();
-            if v["event"] == name {
-                return v;
-            }
-        }
-    }
-}
-
-fn services(f: &Fake) -> Vec<String> {
-    f.calls
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|c| c["type"] == "call_service")
-        .map(|c| {
-            format!(
-                "{}.{} {}",
-                c["domain"].as_str().unwrap(),
-                c["service"].as_str().unwrap(),
-                c["service_data"]["entity_id"].as_str().unwrap_or("")
-            )
-        })
-        .collect()
-}
-
 #[test]
 fn list_tools_work_on_several_lists_by_name() {
     let f = Fake {
@@ -760,13 +379,13 @@ fn upcoming_events_on_subscribe_and_with_the_chosen_calendars() {
 #[test]
 fn a_whole_room_in_one_call() {
     let f = Fake {
-        exposed: vec![
+        exposed: exposed(&[
             ("light.studio", "Studio", ""),
             ("light.studio_sx", "Studio SX", ""),
             ("light.libreria", "Libreria", ""),
             ("light.cucina", "Luce cucina", ""),
             ("cover.studio", "Tapparella studio", "shutter"),
-        ],
+        ]),
         areas: vec![
             ("light.studio", "Studio"),
             ("light.studio_sx", "Studio"),
@@ -808,7 +427,7 @@ fn a_whole_room_in_one_call() {
         "home_control",
         json!({"area": "Studio", "domain": "cover", "service": "close_cover"}),
     );
-    assert!(!err && r["needs_confirmation"] == true, "{r}");
+    assert!(!err && r["asked"].is_object(), "{r}");
     assert!(services(&f).iter().all(|s| !s.starts_with("cover.")));
     // A list; an unknown area says which areas there are.
     let (r, err) = tool(
@@ -829,10 +448,11 @@ fn a_whole_room_in_one_call() {
 #[test]
 fn a_house_command_is_reported_and_can_be_undone() {
     let f = Fake {
-        exposed: vec![
+        exposed: exposed(&[
             ("light.cucina", "Luce cucina", ""),
             ("cover.soggiorno", "Tapparella soggiorno", "shutter"),
-        ],
+            ("climate.casa", "Termostato", ""),
+        ]),
         ..Fake::default()
     };
     let (cfg, dir) = setup("undo", &fake_ha(f.clone()));
@@ -920,90 +540,27 @@ fn a_house_command_is_reported_and_can_be_undone() {
     assert!(!err);
     let c = screen.event("changed");
     assert_eq!(c["undo"], true);
+    // A service outside the table is refused; one with no clear inverse has no Undo.
     let (_, err) = tool(
         &b,
         "home_control",
         json!({"entity_id": "light.cucina", "service": "set_foo"}),
     );
-    assert!(!err);
+    assert!(err);
+    let (r, err) = tool(
+        &b,
+        "home_control",
+        json!({"entity_id": "climate.casa", "service": "set_temperature", "data": {"temperature": 20}}),
+    );
+    assert!(!err, "{r}");
     assert_eq!(screen.event("changed")["undo"], false);
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[test]
-fn a_blind_asks_on_the_screen_and_a_yes_there_does_it_without_undo() {
-    let f = Fake {
-        exposed: vec![("cover.soggiorno", "Tapparella soggiorno", "shutter")],
-        ..Fake::default()
-    };
-    let (cfg, dir) = setup("screen-yes", &fake_ha(f.clone()));
-    let b = Arc::new(Brain::new(cfg).unwrap());
-    let mut screen = Screen::connect(&b, &dir);
-    let args = json!({"entity_id": "cover.soggiorno", "service": "close_cover"});
-    let (r, _) = tool(&b, "home_control", args.clone());
-    assert_eq!(r["needs_confirmation"], true, "{r}");
-    let c = screen.event("confirm");
-    let id = c["id"].as_i64().unwrap();
-    assert_eq!(r["confirm_id"], id);
-    assert!(c["text"].as_str().unwrap().contains("Tapparella soggiorno"));
-    assert!(c["expires_at"].as_i64().unwrap() - brain::memory::now() > 25);
-    // Nothing happened yet; the model has moved on and the user taps Yes.
-    assert!(services(&f).is_empty());
-    b.answer_confirm(id, true).unwrap();
-    let d = screen.event("confirm_done");
-    assert_eq!(
-        (d["id"].as_i64(), d["yes"].as_bool()),
-        (Some(id), Some(true))
-    );
-    let ch = screen.event("changed");
-    assert_eq!(
-        (ch["service"].as_str(), ch["undo"].as_bool()),
-        (Some("close_cover"), Some(false)),
-        "{ch}"
-    );
-    assert_eq!(services(&f), ["cover.close_cover cover.soggiorno"]);
-    // A second tap is refused; the model's late call with the id does not run it again.
-    assert!(b.answer_confirm(id, true).is_err());
-    let mut again = args;
-    again["confirm_id"] = json!(id);
-    let (r, err) = tool(&b, "home_control", again);
-    assert!(!err && r["done"] == true, "{r}");
-    assert_eq!(services(&f).len(), 1);
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[test]
-fn a_screen_no_or_a_yes_during_the_wait_counts_like_a_spoken_answer() {
-    let f = Fake {
-        exposed: vec![("cover.soggiorno", "Tapparella soggiorno", "shutter")],
-        ..Fake::default()
-    };
-    let (cfg, dir) = setup("screen-wait", &fake_ha(f.clone()));
-    let b = Arc::new(Brain::new(cfg).unwrap());
-    let mut screen = Screen::connect(&b, &dir);
-    let args = json!({"entity_id": "cover.soggiorno", "service": "close_cover"});
-    for (yes, n_calls) in [(false, 0), (true, 1)] {
-        let (r, _) = tool(&b, "home_control", args.clone());
-        let id = r["confirm_id"].as_i64().unwrap();
-        let mut again = args.clone();
-        again["confirm_id"] = json!(id);
-        // The model's second call waits for the answer; the screen answers meanwhile.
-        let b2 = b.clone();
-        let waiter = std::thread::spawn(move || tool(&b2, "home_control", again));
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        b.answer_confirm(id, yes).unwrap();
-        let (r, err) = waiter.join().unwrap();
-        assert_eq!(err, !yes, "{r}");
-        assert_eq!(screen.event("confirm_done")["yes"], yes);
-        assert_eq!(services(&f).len(), n_calls);
-    }
     let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn a_list_of_one_blind_asks_its_yes() {
     let f = Fake {
-        exposed: vec![("cover.soggiorno", "Tapparella soggiorno", "shutter")],
+        exposed: exposed(&[("cover.soggiorno", "Tapparella soggiorno", "shutter")]),
         ..Fake::default()
     };
     let (cfg, dir) = setup("list-one", &fake_ha(f.clone()));
@@ -1014,60 +571,7 @@ fn a_list_of_one_blind_asks_its_yes() {
         "home_control",
         json!({"entity_ids": ["cover.soggiorno"], "service": "set_cover_position", "data": {"position": 0}}),
     );
-    assert!(!err && r["needs_confirmation"] == true, "{r}");
-    assert!(services(&f).is_empty());
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[test]
-fn an_old_confirm_id_reused_later_asks_again() {
-    let f = Fake {
-        exposed: vec![("cover.soggiorno", "Tapparella soggiorno", "shutter")],
-        ..Fake::default()
-    };
-    let (cfg, dir) = setup("reuse", &fake_ha(f.clone()));
-    let b = Arc::new(Brain::new(cfg).unwrap());
-    let mut screen = Screen::connect(&b, &dir);
-    let args = json!({"entity_id": "cover.soggiorno", "service": "close_cover"});
-    let (r, _) = tool(&b, "home_control", args.clone());
-    let id = r["confirm_id"].as_i64().unwrap();
-    screen.event("confirm");
-    // No on the screen while nobody waits; the model, minutes later, sends the old id again.
-    b.answer_confirm(id, false).unwrap();
-    b.age_last_answer(20_000);
-    let mut again = args.clone();
-    again["confirm_id"] = json!(id);
-    let (r, err) = tool(&b, "home_control", again);
-    assert!(!err && r["needs_confirmation"] == true, "{r}");
-    assert_ne!(r["confirm_id"].as_i64(), Some(id));
-    assert!(services(&f).is_empty());
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[test]
-fn an_unanswered_question_expires_after_a_minute() {
-    let f = Fake {
-        exposed: vec![("cover.soggiorno", "Tapparella soggiorno", "shutter")],
-        ..Fake::default()
-    };
-    let (cfg, dir) = setup("expire", &fake_ha(f.clone()));
-    let b = Arc::new(Brain::new(cfg).unwrap());
-    let mut screen = Screen::connect(&b, &dir);
-    let (r, _) = tool(
-        &b,
-        "home_control",
-        json!({"entity_id": "cover.soggiorno", "service": "close_cover"}),
-    );
-    let id = r["confirm_id"].as_i64().unwrap();
-    screen.event("confirm");
-    b.expire_confirms(brain::agent::now_ms() + 30_000);
-    b.expire_confirms(brain::agent::now_ms() + 61_000);
-    let d = screen.event("confirm_done");
-    assert_eq!(
-        (d["id"].as_i64(), d["yes"].clone()),
-        (Some(id), Value::Null)
-    );
-    assert!(b.answer_confirm(id, true).is_err());
+    assert!(!err && r["asked"].is_object(), "{r}");
     assert!(services(&f).is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -1075,10 +579,10 @@ fn an_unanswered_question_expires_after_a_minute() {
 #[test]
 fn show_view_opens_paths_and_exposed_cameras_only() {
     let f = Fake {
-        exposed: vec![
+        exposed: exposed(&[
             ("camera.front", "Front door", ""),
             ("light.cucina", "Luce cucina", ""),
-        ],
+        ]),
         states: vec![("camera.secret", "Bedroom camera")],
         ..Fake::default()
     };

@@ -16,8 +16,10 @@
 //! | `{"cmd":"job.snooze","id":N,"minutes":M}` | `{"ok":true,"id":N\|null}`: acknowledged, the same words again in M minutes (default 10) |
 //! | `{"cmd":"subscribe"}` | `{"ok":true}`, then the reminders delivered and not yet touched, then every new event (events.rs) on this connection |
 //! | `{"cmd":"ha.token","token":…,"expires_at":…,"url":…,"satellite_entity":…,"allow":[…],"language":…,"lists":[…],"calendars":[…]}` | `{"ok":true}`: the body's Home Assistant link; `lists`/`calendars` are the `todo.*`/`calendar.*` entities chosen on the screen (absent = unchanged, empty = all) |
-//! | `{"cmd":"heard","text":…}` / `{"cmd":"said","text":…}` | `{"ok":true}`: the user's transcript and Home Assistant's answer |
-//! | `{"cmd":"confirm.answer","id":N,"yes":B}` | `{"ok":true}`: Yes or No on the screen for the `confirm` event `id` |
+//! | `{"cmd":"turn","id":N,"text":…,"answers":Q\|null}` | `{"ok":true}`: Home Assistant's transcript of the body's conversation `id` (the body's counter, used only to pair `turn.end`); it becomes the open turn, which the model's tool calls belong to. With `answers` = the id of a question still waiting, a whole-sentence yes or no answers it (via `voice_ha`) |
+//! | `{"cmd":"turn.end","id":N,"said":…}` | `{"ok":true}`: Home Assistant's answer to the open turn `id`: the exchange is kept for the memory and the turn closes (another id: nothing) |
+//! | `{"cmd":"heard","text":…}` / `{"cmd":"said","text":…}` | `{"ok":true}`: **deprecated**: `heard` = a `turn` with an id of the brain's own that answers nothing, `said` = the `turn.end` of the open turn |
+//! | `{"cmd":"confirm.answer","id":N,"yes":B,"via":V}` | `{"ok":true,"state":"open\|confirming\|executing\|yes\|no\|expired"}`: the answer to the `confirm` event `id`; `via` = `screen` (default), `voice_reflex`, `stop`. Open + yes on the screen: carried out at once; a spoken yes: `confirm_pending`, carried out a second later unless a no comes first; a no (any via): closed. A late or repeated answer changes nothing and says the state; an unknown id is an error. Never waits for Home Assistant |
 //! | `{"cmd":"control.undo","id":N}` | `{"ok":true}`: the screen's "Undo" on the `changed` event `id` |
 //!
 //! The examples both sides test against: `contract/requests.jsonl` and `contract/events.jsonl`.
@@ -33,6 +35,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::agent::Brain;
+use crate::question::Via;
 
 /// The connections that asked for events.
 #[derive(Default)]
@@ -48,6 +51,15 @@ impl Hub {
         }
         let mut subs = self.subscribers.lock().unwrap_or_else(|e| e.into_inner());
         subs.retain_mut(|s| events.iter().all(|e| writeln!(s, "{e}").is_ok()));
+    }
+
+    /// A subscriber added by hand (tests: one end of a `UnixStream::pair`).
+    #[doc(hidden)]
+    pub fn add_subscriber(&self, s: UnixStream) {
+        self.subscribers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(s);
     }
 
     pub fn subscribers(&self) -> usize {
@@ -122,6 +134,25 @@ pub fn answer(brain: &Brain, req: &Value) -> (Value, bool) {
             }
             _ => err("token and expires_at are required".into()),
         },
+        "turn" => match req.get("id").and_then(Value::as_u64) {
+            Some(turn) => {
+                brain.turn(
+                    turn,
+                    req.get("text").and_then(Value::as_str).unwrap_or(""),
+                    req.get("answers").and_then(Value::as_i64),
+                );
+                json!({"ok": true})
+            }
+            None => err("id: the conversation's number is required".into()),
+        },
+        "turn.end" => match req.get("id").and_then(Value::as_u64) {
+            Some(turn) => {
+                brain.turn_end(turn, req.get("said").and_then(Value::as_str).unwrap_or(""));
+                json!({"ok": true})
+            }
+            None => err("id: the conversation's number is required".into()),
+        },
+        // Deprecated: `turn` and `turn.end`.
         "heard" => {
             brain.heard(req.get("text").and_then(Value::as_str).unwrap_or(""));
             json!({"ok": true})
@@ -130,12 +161,19 @@ pub fn answer(brain: &Brain, req: &Value) -> (Value, bool) {
             brain.said(req.get("text").and_then(Value::as_str).unwrap_or(""));
             json!({"ok": true})
         }
-        "confirm.answer" => match req.get("yes").and_then(Value::as_bool) {
-            Some(yes) => brain
-                .answer_confirm(id, yes)
-                .map_or_else(err, |_| json!({"ok": true})),
-            None => err("yes: true or false is required".into()),
-        },
+        "confirm.answer" => {
+            let via = match req.get("via").and_then(Value::as_str) {
+                None => Some(Via::Screen),
+                Some(v) => Via::parse(v),
+            };
+            match (req.get("yes").and_then(Value::as_bool), via) {
+                (Some(yes), Some(via)) => brain
+                    .answer(id, yes, via)
+                    .map_or_else(err, |state| json!({"ok": true, "state": state})),
+                (None, _) => err("yes: true or false is required".into()),
+                (_, None) => err("via: screen, voice_reflex or stop".into()),
+            }
+        }
         "control.undo" => brain
             .undo_control(id)
             .map_or_else(err, |_| json!({"ok": true})),

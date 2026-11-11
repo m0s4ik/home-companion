@@ -8,21 +8,26 @@
 //! a background pass writes its summary and the lasting facts (add / update / delete).
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::clock;
+use crate::clock::{self, Clock};
 use crate::config::Config;
 use crate::ha::Ha;
+use crate::house::Action;
 use crate::jobs;
 use crate::llm::{Client, LlmError, ToolCall, ToolSpec};
 use crate::memory::{FactOp, Memory, NOTES, PROFILE, Tidy, TidyResult, now};
-use crate::safety::{Gate, answer_to_confirm, sanitize};
+use crate::question::{Effect, Question, State, Via};
+use crate::safety::{Gate, sanitize};
+use reflex::grammar::AnswerWords;
 
 pub struct Brain {
     cfg: Config,
+    /// The time of the questions, the turns and the undo (tests drive it by hand).
+    clock: Arc<dyn Clock>,
     name: String,
     /// Home Assistant's AI task: the memory jobs and the morning summary think with it.
     ai: Client,
@@ -42,11 +47,15 @@ pub struct Brain {
     memory: Mutex<Memory>,
     /// One memory job at a time.
     busy: Mutex<()>,
-    /// A house command waiting for a spoken yes.
-    pending_control: Mutex<Option<PendingControl>>,
-    /// The last sentence the user said (from the body, as Home Assistant's satellite
-    /// heard it) and when (ms), waiting for its answer to be stored as an exchange.
-    heard: Mutex<Option<(String, i64)>>,
+    /// The turns: the one going on (Home Assistant's transcript of the body's conversation,
+    /// until its answer) and the last one.
+    turns: Mutex<Turns>,
+    /// The Yes/No questions (question.rs): the live one, the ones being carried out, the last
+    /// closed one. `questions_cv` wakes the thread that runs them.
+    questions: Mutex<Questions>,
+    questions_cv: Condvar,
+    /// The yes/no words of the grammar, by language.
+    answer_words: Mutex<Option<(String, Arc<AnswerWords>)>>,
     /// The exposed entities, kept a minute (every house command needs them).
     entities: Mutex<Option<(Instant, Vec<crate::ha::Entity>)>>,
     /// The body's subscriptions (the control socket): timers go to the device this way.
@@ -61,13 +70,60 @@ pub struct Brain {
     /// House commands that can be undone from the screen (the last 16, for 2 minutes: one Undo can
     /// take back a group, one command per light).
     done_controls: Mutex<Vec<DoneControl>>,
-    /// A Yes/No tapped on the screen, for the model's waiting `home_control` call to find.
-    screen_answer: Mutex<Option<(i64, bool)>>,
-    /// How many `home_control` calls are waiting for an answer right now.
-    waiting: std::sync::atomic::AtomicUsize,
-    /// The last question answered on the screen while nobody waited (the command already ran),
-    /// and when (ms): it only counts for the model's turn still going on.
-    last_answered: Mutex<Option<(i64, bool, i64)>>,
+}
+
+/// One turn of the body's conversation (`turn` … `turn.end`).
+#[derive(Debug, Clone)]
+struct Turn {
+    /// The brain's own counter (the body's ids restart with the body).
+    seq: u64,
+    /// The body's conversation id, to pair `turn.end`.
+    id: u64,
+    text: String,
+    /// The question this turn answers, as the body knows it.
+    answers: Option<i64>,
+    at_ms: i64,
+}
+
+#[derive(Default)]
+struct Turns {
+    open: Option<Turn>,
+    last: Option<Turn>,
+    seq: u64,
+}
+
+/// At most one question waits for an answer; answered ones run outside the lock.
+#[derive(Default)]
+struct Questions {
+    /// Open or Confirming.
+    live: Option<Question>,
+    /// Executing: (question, started).
+    run: Vec<(Question, bool)>,
+    /// The last one closed (yes, no, expired): what the model sees when it calls again.
+    closed: Option<Question>,
+    /// Something changed since the questions' thread last looked.
+    dirty: bool,
+}
+
+impl Questions {
+    fn state_of(&self, id: i64) -> Option<&'static str> {
+        self.live
+            .iter()
+            .chain(self.run.iter().map(|(q, _)| q))
+            .chain(self.closed.iter())
+            .find(|q| q.id == id)
+            .map(|q| q.state.name())
+    }
+}
+
+/// The ids `heard` gives its turns (the body never uses this bit).
+const LEGACY_TURN: u64 = 1 << 62;
+
+const NEVER_NOTE: &str = "never controlled by voice (locks, alarms, doors, gates, garage doors, or \
+     the user's choice): tell the user to use the Home Assistant app";
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 #[derive(Default)]
@@ -95,57 +151,9 @@ fn undo_scene(id: i64) -> String {
     format!("home_companion_undo_{}", id.rem_euclid(UNDO_KEPT as i64))
 }
 
-/// How long a question waits for a yes, and how long an "Undo" stays possible.
-const CONFIRM_MS: i64 = 30_000;
-/// A Yes/No tapped while nobody waited answers the model's next call only this soon after.
-const SCREEN_ANSWER_MS: i64 = 10_000;
+/// How long an "Undo" stays possible, and how many are kept.
 const UNDO_MS: i64 = 120_000;
 const UNDO_KEPT: usize = 16;
-
-/// The question before a command that needs a yes, in the user's words: "Chiudo Tapparella
-/// salone?", "Sposto Tapparella salone al 30%?"; a service without a verb here keeps its name.
-/// The service as Home Assistant names it for the entity's domain: models say "close" for a
-/// cover ("close_cover"), "open" for a valve.
-pub fn service_for(domain: &str, service: &str) -> String {
-    match (domain, service) {
-        ("cover" | "valve", "open" | "close" | "stop") => format!("{service}_{domain}"),
-        ("cover" | "valve", "set_position") => format!("set_{domain}_position"),
-        _ => service.to_string(),
-    }
-}
-
-pub fn confirm_question(name: &str, service: &str, data: &Value, it: bool) -> String {
-    let pos = data.get("position").and_then(Value::as_i64);
-    let verb = match (service, it) {
-        ("open_cover" | "open_valve", true) => "Apro",
-        ("open_cover" | "open_valve", false) => "Open",
-        ("close_cover" | "close_valve", true) => "Chiudo",
-        ("close_cover" | "close_valve", false) => "Close",
-        ("stop_cover", true) => "Fermo",
-        ("stop_cover", false) => "Stop",
-        ("turn_on", true) => "Accendo",
-        ("turn_on", false) => "Turn on",
-        ("turn_off", true) => "Spengo",
-        ("turn_off", false) => "Turn off",
-        ("set_cover_position" | "set_valve_position", _) => {
-            let p = pos.map_or(String::new(), |p| format!(" {p}%"));
-            return if it {
-                format!("Sposto {name} al{p}?")
-            } else {
-                format!("Move {name} to{p}?")
-            };
-        }
-        _ => {
-            let s = service.replace('_', " ");
-            return if it {
-                format!("{name} ({s}): confermi?")
-            } else {
-                format!("{name} ({s}): confirm?")
-            };
-        }
-    };
-    format!("{verb} {name}?")
-}
 
 /// The service that undoes `service`, when there is a clear one.
 fn inverse(service: &str) -> Option<&'static str> {
@@ -170,16 +178,6 @@ fn state_after(service: &str, prior: &str) -> Option<&'static str> {
         ("toggle", "off") => Some("on"),
         _ => None,
     }
-}
-
-/// A house command asked with "Confermi?".
-#[derive(Debug, Clone)]
-struct PendingControl {
-    id: i64,
-    entity_id: String,
-    service: String,
-    data: Value,
-    asked_ms: i64,
 }
 
 pub fn now_ms() -> i64 {
@@ -530,6 +528,11 @@ pub fn parse_ops(v: &Value) -> Vec<FactOp> {
 
 impl Brain {
     pub fn new(cfg: Config) -> Result<Brain, String> {
+        Brain::with_clock(cfg, Arc::new(clock::SystemClock))
+    }
+
+    /// A brain on another clock (tests: [`clock::ManualClock`]).
+    pub fn with_clock(cfg: Config, clock: Arc<dyn Clock>) -> Result<Brain, String> {
         let memory = Memory::open(
             &cfg.memory_dir(),
             cfg.memory.profile_max_chars,
@@ -549,8 +552,10 @@ impl Brain {
             ai,
             memory: Mutex::new(memory),
             busy: Mutex::new(()),
-            pending_control: Mutex::new(None),
-            heard: Mutex::new(None),
+            turns: Mutex::new(Turns::default()),
+            questions: Mutex::new(Questions::default()),
+            questions_cv: Condvar::new(),
+            answer_words: Mutex::new(None),
             entities: Mutex::new(None),
             hub: std::sync::OnceLock::new(),
             chosen_lists: Mutex::new(Vec::new()),
@@ -558,11 +563,38 @@ impl Brain {
             upcoming: Mutex::new(UpcomingState::default()),
             seq: std::sync::atomic::AtomicI64::new(now_ms() % 1_000_000),
             done_controls: Mutex::new(Vec::new()),
-            screen_answer: Mutex::new(None),
-            waiting: std::sync::atomic::AtomicUsize::new(0),
-            last_answered: Mutex::new(None),
+            clock,
             cfg,
         })
+    }
+
+    /// Now on the brain's clock (ms since the epoch).
+    fn now_ms(&self) -> i64 {
+        self.clock.now_ms()
+    }
+
+    /// The user's own gate for one entity ("allow", "confirm", "never"; None: the default),
+    /// over the defaults of brain.toml.
+    pub fn set_gate(&self, entity_id: &str, gate: Option<&str>) -> Result<(), String> {
+        if gate.is_some_and(|g| gate_from(g).is_none()) {
+            return Err("gate: allow, confirm or never".into());
+        }
+        let m = self.mem();
+        let mut v = m
+            .meta("gates")
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({}));
+        match gate {
+            Some(g) => v[entity_id] = json!(g),
+            None => {
+                if let Some(o) = v.as_object_mut() {
+                    o.remove(entity_id);
+                }
+            }
+        }
+        m.set_meta("gates", &v.to_string())
+            .map_err(|e| e.to_string())
     }
 
     pub fn name(&self) -> &str {
@@ -644,85 +676,232 @@ impl Brain {
         self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
     }
 
-    /// Yes or No on the screen for the `confirm` event `id` (events.rs). It counts like a
-    /// spoken answer: a `home_control` call that is waiting sees it; when the model has moved
-    /// on, a yes carries out the pending command itself.
-    pub fn answer_confirm(&self, id: i64, yes: bool) -> Result<(), String> {
-        let p = {
-            let pending = self
-                .pending_control
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            pending
-                .as_ref()
-                .filter(|p| p.id == id)
-                .cloned()
-                .ok_or("no such question (it may have expired or been answered)")?
-        };
-        if now_ms() - p.asked_ms > CONFIRM_MS {
-            return Err("that question has expired".into());
-        }
-        if self.waiting.load(std::sync::atomic::Ordering::SeqCst) > 0 {
-            *self.screen_answer.lock().unwrap_or_else(|e| e.into_inner()) = Some((id, yes));
-            return Ok(());
-        }
-        {
-            let mut pending = self
-                .pending_control
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if pending.as_ref().is_none_or(|q| q.id != id) {
-                return Err("no such question (it was answered meanwhile)".into());
+    /// The one door for answers to the question `id` (`confirm.answer`, a `turn` that answers
+    /// it): it only changes the question's state and tells the body (`confirm_pending`, or
+    /// `confirm_done` for a no); Home Assistant is called by [`Brain::poll_questions`], never
+    /// here. The state after it ("open", "confirming", "executing", "yes", "no", "expired").
+    pub fn answer(&self, id: i64, yes: bool, via: Via) -> Result<&'static str, String> {
+        let now = self.now_ms();
+        let mut events = Vec::new();
+        let state = {
+            let mut qs = lock(&self.questions);
+            if let Some(q) = qs.live.as_mut().filter(|q| q.id == id) {
+                let effect = q.answer(yes, via, now);
+                log::info!(event = "brain_gate", gate = "answer", yes = yes, via = via.name(), effect = format!("{effect:?}").as_str(); "question {id}: answered");
+                match effect {
+                    Effect::Ignored => {}
+                    Effect::Pending { until_ms } => {
+                        events.push(crate::events::confirm_pending(id, until_ms));
+                    }
+                    Effect::Execute => {
+                        if let Some(q) = qs.live.take() {
+                            qs.run.push((q, false));
+                        }
+                    }
+                    Effect::No => {
+                        events.push(crate::events::confirm_done(
+                            id,
+                            Some(false),
+                            via.name(),
+                            &[],
+                        ));
+                        qs.closed = qs.live.take();
+                    }
+                }
+                qs.dirty = true;
             }
-            *pending = None;
-        }
-        *self.last_answered.lock().unwrap_or_else(|e| e.into_inner()) = Some((id, yes, now_ms()));
-        self.broadcast(&[crate::events::confirm_done(id, Some(yes))]);
-        log::info!(event = "brain_gate", gate = "screen_answer", yes = yes; "answered on the screen");
-        if !yes {
-            return Ok(());
-        }
-        let e = self
-            .exposed(false)?
-            .into_iter()
-            .find(|e| e.entity_id == p.entity_id)
-            .ok_or_else(|| format!("{} is not exposed any more", p.entity_id))?;
-        if self.gate_of(&e) == Gate::Never {
-            return Err("not allowed: this device is never controlled by voice".into());
-        }
-        let ha = self.ha().ok_or("Home Assistant is not configured")?;
-        self.run_control(ha, &e, &p.service, &p.data, false)
+            qs.state_of(id).ok_or("no such question")?
+        };
+        self.broadcast(&events);
+        self.questions_cv.notify_all();
+        Ok(state)
     }
 
-    /// Tests: the last screen answer as if it came `ms` earlier.
-    #[doc(hidden)]
-    pub fn age_last_answer(&self, ms: i64) {
-        if let Some(a) = self.last_answered.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-            a.2 -= ms;
-        }
-    }
-
-    /// Questions nobody answered for 30 s are closed (`confirm_done` with null); called
-    /// every few seconds from main with the current time (ms).
-    pub fn expire_confirms(&self, at_ms: i64) {
-        let gone = {
-            let mut pending = self
-                .pending_control
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if pending
-                .as_ref()
-                .is_some_and(|p| at_ms - p.asked_ms > CONFIRM_MS)
+    /// The questions' clock work, with the brain's clock: an open question unanswered for 30 s
+    /// closes (`confirm_done`, timeout); a spoken yes whose second has passed, or a yes on the
+    /// screen, runs: each action on a fresh list of the exposed entities, only if still exposed
+    /// and not "never", without Undo (`changed`), then one `confirm_done` with the devices that
+    /// failed. No lock is held while Home Assistant works.
+    pub fn poll_questions(&self) {
+        let now = self.now_ms();
+        let mut events = Vec::new();
+        let todo: Vec<Question> = {
+            let mut qs = lock(&self.questions);
+            qs.dirty = false;
+            if qs.live.as_ref().is_some_and(|q| q.expired(now))
+                && let Some(mut q) = qs.live.take()
             {
-                pending.take()
-            } else {
-                None
+                log::info!(event = "brain_gate", gate = "expired"; "question {} went unanswered", q.id);
+                q.state = State::Expired { via: Via::Timeout };
+                events.push(crate::events::confirm_done(
+                    q.id,
+                    None,
+                    Via::Timeout.name(),
+                    &[],
+                ));
+                qs.closed = Some(q);
             }
+            if qs.live.as_mut().is_some_and(|q| q.confirm_due(now))
+                && let Some(q) = qs.live.take()
+            {
+                qs.run.push((q, false));
+            }
+            qs.run
+                .iter_mut()
+                .filter(|(_, started)| !*started)
+                .map(|(q, started)| {
+                    *started = true;
+                    q.clone()
+                })
+                .collect()
         };
-        if let Some(p) = gone {
-            log::info!(event = "brain_gate", gate = "expired"; "a question went unanswered");
-            self.broadcast(&[crate::events::confirm_done(p.id, None)]);
+        self.broadcast(&events);
+        for q in todo {
+            self.execute(q);
         }
+    }
+
+    /// Carries out a question answered yes (see [`Brain::poll_questions`]).
+    fn execute(&self, mut q: Question) {
+        let via = match q.state {
+            State::Executing { via } => via,
+            _ => Via::Screen,
+        };
+        let mut failed = Vec::new();
+        match (self.ha(), self.exposed(true)) {
+            (Some(ha), Ok(exposed)) => {
+                for a in &q.actions {
+                    let name = a.entity.full_name();
+                    let Some(e) = exposed.iter().find(|e| e.entity_id == a.entity.entity_id) else {
+                        log::warn!(event = "brain_gate", gate = "gone"; "{} is not exposed any more", a.entity.entity_id);
+                        failed.push(name);
+                        continue;
+                    };
+                    if self.gate_of(e) == Gate::Never {
+                        log::warn!(event = "brain_gate", gate = "never"; "{} became never", e.entity_id);
+                        failed.push(name);
+                        continue;
+                    }
+                    if let Err(err) = self.run_control(ha, e, &a.service, &a.data, false) {
+                        log::warn!(event = "brain_house", entity = e.entity_id.as_str(); "{}: {err}", a.service);
+                        failed.push(name);
+                    }
+                }
+            }
+            (_, r) => {
+                log::warn!(event = "brain_house"; "question {}: Home Assistant: {:?}", q.id, r.err());
+                failed = q.names.clone();
+            }
+        }
+        log::info!(event = "brain_gate", gate = "confirmed", via = via.name(), failed = failed.len(); "question {} carried out", q.id);
+        let id = q.id;
+        q.state = State::Yes {
+            via,
+            failed: failed.clone(),
+        };
+        {
+            let mut qs = lock(&self.questions);
+            qs.run.retain(|(x, _)| x.id != id);
+            qs.closed = Some(q);
+        }
+        self.broadcast(&[crate::events::confirm_done(
+            id,
+            Some(true),
+            via.name(),
+            &failed,
+        )]);
+    }
+
+    /// When the questions next need [`Brain::poll_questions`] (ms on the brain's clock).
+    pub fn next_question_deadline_ms(&self) -> Option<i64> {
+        let qs = lock(&self.questions);
+        if qs.run.iter().any(|(_, started)| !started) {
+            return Some(self.now_ms());
+        }
+        qs.live.as_ref().and_then(Question::deadline)
+    }
+
+    /// Waits until a question changed (a new one, an answer) or `max` passed.
+    pub fn wait_questions(&self, max: Duration) {
+        let qs = lock(&self.questions);
+        if qs.dirty {
+            return;
+        }
+        let _ = self.questions_cv.wait_timeout(qs, max);
+    }
+
+    /// A new question for the actions that need a yes; the live one (if any) closes as
+    /// replaced, never carried out. (id, text).
+    fn ask(&self, actions: Vec<Action>) -> (i64, String) {
+        let id = self.next_id();
+        let it = self.language().starts_with("it");
+        let text = crate::house::question_text(&actions, it);
+        let turn = self.open_turn().map(|t| t.seq);
+        let q = Question::new(id, actions, text.clone(), self.now_ms(), turn);
+        let mut events = Vec::new();
+        {
+            let mut qs = lock(&self.questions);
+            if let Some(mut old) = qs.live.take() {
+                log::info!(event = "brain_gate", gate = "replaced"; "question {} replaced by {id}", old.id);
+                old.state = State::Expired { via: Via::Replaced };
+                events.push(crate::events::confirm_done(
+                    old.id,
+                    None,
+                    Via::Replaced.name(),
+                    &[],
+                ));
+                qs.closed = Some(old);
+            }
+            events.push(crate::events::confirm(
+                id,
+                &q.text,
+                &q.names,
+                q.expires_at(),
+            ));
+            log::info!(event = "brain_gate", gate = "confirm", devices = q.names.len(); "question {id}: {text}");
+            qs.live = Some(q);
+            qs.dirty = true;
+        }
+        self.broadcast(&events);
+        self.questions_cv.notify_all();
+        (id, text)
+    }
+
+    /// The question these actions already have in this turn, as `home_control` reports it:
+    /// None when there is none (a new one is asked).
+    fn known_question(&self, actions: &[Action]) -> Option<Value> {
+        let key = crate::house::key_of(actions);
+        let open = self.open_turn()?;
+        let same_turn = |q: &Question| q.turn == Some(open.seq) || open.answers == Some(q.id);
+        let qs = lock(&self.questions);
+        let q = qs
+            .live
+            .iter()
+            .chain(qs.run.iter().map(|(q, _)| q))
+            .chain(qs.closed.iter())
+            .find(|q| q.key == key && same_turn(q))?;
+        let mut r = json!({"state": q.state.reported()});
+        if matches!(q.state, State::Open) {
+            r["asked"] = json!({"question": q.text, "id": q.id});
+        }
+        if let Some(say) = q.state.say() {
+            r["say"] = json!(say);
+        }
+        match &q.state {
+            State::Executing { .. } => r["done"] = json!(q.names),
+            State::Yes { failed, .. } => {
+                r["done"] = json!(
+                    q.names
+                        .iter()
+                        .filter(|n| !failed.contains(n))
+                        .collect::<Vec<_>>()
+                );
+                r["failed"] = json!(failed);
+            }
+            _ => {}
+        }
+        log::info!(event = "brain_gate", gate = "known", state = q.state.name(); "question {} asked again", q.id);
+        Some(r)
     }
 
     /// "Undo" on the screen for the `changed` event `id` (events.rs): the inverse service, for
@@ -730,7 +909,7 @@ impl Brain {
     pub fn undo_control(&self, id: i64) -> Result<(), String> {
         let d = {
             let mut v = self.done_controls.lock().unwrap_or_else(|e| e.into_inner());
-            let at = now_ms();
+            let at = self.now_ms();
             v.retain(|d| at - d.at_ms <= UNDO_MS);
             let i = v
                 .iter()
@@ -810,7 +989,7 @@ impl Brain {
         *self.entities.lock().unwrap_or_else(|e| e.into_inner()) = None;
         if let Some(u) = undo {
             let mut v = self.done_controls.lock().unwrap_or_else(|e| e.into_inner());
-            let at = now_ms();
+            let at = self.now_ms();
             v.retain(|d| at - d.at_ms <= UNDO_MS);
             v.push(DoneControl {
                 id,
@@ -1065,10 +1244,12 @@ impl Brain {
                         log::info!(event = "brain_dnd", on = on; "do not disturb to the device");
                         Ok(json!({"do_not_disturb": if on { "on" } else { "off" }}))
                     }
-                    _ => Err("the device's screen is not connected: do not disturb cannot change".into()),
+                    _ => Err(
+                        "the device's screen is not connected: do not disturb cannot change".into(),
+                    ),
                 }
             }
-            "home_control" => self.home_control(&call.args, &self.language()),
+            "home_control" => self.home_control(&call.args),
             other => Err(format!("unknown tool {other}")),
         };
         r.unwrap_or_else(|e| json!({"error": e}))
@@ -1270,13 +1451,13 @@ impl Brain {
                               turn_off, toggle with data brightness_pct; cover: open_cover, \
                               close_cover, stop_cover, set_cover_position with data position; climate: \
                               set_temperature with data temperature; media_player: media_pause, \
-                              volume_set…). If the answer says needs_confirmation, ask the user the \
-                              question it gives and, only after they answer, call again with the same \
-                              arguments and confirm_id. Locks, alarms, doors, gates and garage doors are \
-                              never controlled by voice. For a whole room or several devices ('spegni le \
-                              luci dello studio', 'turn off the kitchen lights') give area (and domain) \
-                              or entity_ids instead of entity_id: one call does every device that may \
-                              be done at once, and says which ones; never pick just one of them.",
+                              volume_set…). If the result has asked, say nothing: the question is on \
+                              the screen and the device listens for the answer. Locks, alarms, doors, \
+                              gates and garage doors are never controlled by voice. For a whole room or \
+                              several devices ('spegni le luci dello studio', 'turn off the kitchen \
+                              lights') give area (and domain) or entity_ids instead of entity_id: one \
+                              call does every device that may be done at once, and says which ones; \
+                              never pick just one of them.",
                 parameters: obj(
                     json!({
                         "entity_id": {"type": "string"},
@@ -1291,7 +1472,7 @@ impl Brain {
                                 "percentage": {"type": "integer"},
                                 "volume_level": {"type": "number"}
                             }},
-                        "confirm_id": {"type": "integer"},
+                        "confirm_id": {"type": "integer", "description": "ignored"},
                         "area": {"type": "string", "description": "every device of this area (with domain)"},
                         "domain": {"type": "string", "description": "with area: light, switch, cover… (default light)"},
                         "entity_ids": {"type": "array", "items": {"type": "string"}, "description": "several devices at once"}
@@ -1332,47 +1513,137 @@ impl Brain {
         (v, err)
     }
 
-    /// Whether the sentence the user just said (the satellite's last transcript, within two
-    /// minutes) has one of `words`: the writing tools run only then. Nothing heard (Home
-    /// Assistant's text chat, a script): allowed, there is nothing to judge by.
+    /// The turn going on (Home Assistant's transcript, until its answer).
+    fn open_turn(&self) -> Option<Turn> {
+        lock(&self.turns).open.clone()
+    }
+
+    /// Whether the sentence the user just said (the open or last turn, within two minutes) has
+    /// one of `words`: the writing tools run only then. Nothing heard (Home Assistant's text
+    /// chat, a script): allowed, there is nothing to judge by.
     fn asked(&self, words: &[&str]) -> bool {
-        let h = self.heard.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        match h {
-            Some((text, at)) if now_ms() - at < 120_000 => asked_in(&text, words),
+        let t = {
+            let t = lock(&self.turns);
+            t.open.clone().or_else(|| t.last.clone())
+        };
+        match t {
+            Some(t) if !t.text.is_empty() && self.now_ms() - t.at_ms < 120_000 => {
+                asked_in(&t.text, words)
+            }
             _ => true,
         }
     }
 
-    /// The body heard the user (Home Assistant's transcript on the satellite).
-    pub fn heard(&self, text: &str) {
+    /// Home Assistant's transcript of the body's conversation `id` (`turn`): it becomes the
+    /// open turn, which the model's tool calls belong to. With `answers` = the id of a question
+    /// still open, the whole sentence is weighed with the yes/no words of the grammar: a
+    /// clear yes or no answers it (via voice_ha); anything else does not.
+    pub fn turn(&self, id: u64, text: &str, answers: Option<i64>) {
         let text = sanitize(text, 500);
-        if text.is_empty() {
+        let at_ms = self.now_ms();
+        {
+            let mut t = lock(&self.turns);
+            t.seq += 1;
+            let turn = Turn {
+                seq: t.seq,
+                id,
+                text: text.clone(),
+                answers,
+                at_ms,
+            };
+            t.open = Some(turn.clone());
+            t.last = Some(turn);
+        }
+        let Some(q) = answers else { return };
+        let open = lock(&self.questions)
+            .live
+            .as_ref()
+            .is_some_and(|x| x.id == q && x.state.answerable());
+        if !open {
             return;
         }
-        *self.heard.lock().unwrap_or_else(|e| e.into_inner()) = Some((text, now_ms()));
+        match self.answer_words().classify(&text) {
+            Some(yes) => {
+                let _ = self.answer(q, yes, Via::VoiceHa);
+            }
+            None => {
+                log::info!(event = "brain_gate", gate = "not_an_answer"; "turn {id} does not answer question {q}")
+            }
+        }
     }
 
-    /// Home Assistant's answer to the last sentence heard: the exchange is kept for the memory.
-    pub fn said(&self, text: &str) {
-        let user = self
-            .heard
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .map(|(t, at)| (t.clone(), *at));
-        let Some((user, at_ms)) = user else { return };
-        let answer = sanitize(text, 1000);
-        if answer.is_empty() || now_ms() - at_ms > 120_000 {
+    /// Home Assistant's answer to the turn `id` (`turn.end`): the exchange is kept for the
+    /// memory and the turn closes. Another turn's end changes nothing.
+    pub fn turn_end(&self, id: u64, said: &str) {
+        let turn = {
+            let mut t = lock(&self.turns);
+            if t.open.as_ref().is_some_and(|o| o.id == id) {
+                t.open.take()
+            } else {
+                None
+            }
+        };
+        let Some(turn) = turn else { return };
+        let answer = sanitize(said, 1000);
+        if answer.is_empty() || turn.text.is_empty() || self.now_ms() - turn.at_ms > 120_000 {
             return;
         }
-        let at = at_ms / 1000;
+        let at = turn.at_ms / 1000;
         let gap = self.cfg.memory.session_gap_minutes as i64 * 60;
         let m = self.mem();
         let session = m.session(gap, at).unwrap_or(0);
-        if let Err(e) = m.add_exchange(session, at, &user, &answer, "home_assistant", "", 0, (0, 0))
-        {
+        if let Err(e) = m.add_exchange(
+            session,
+            at,
+            &turn.text,
+            &answer,
+            "home_assistant",
+            "",
+            0,
+            (0, 0),
+        ) {
             log::warn!(event = "brain_memory"; "exchange not saved: {e}");
         }
+    }
+
+    /// Deprecated (`heard`): a turn with an id of the brain's own that answers nothing.
+    pub fn heard(&self, text: &str) {
+        if sanitize(text, 500).trim().is_empty() {
+            return;
+        }
+        let id = LEGACY_TURN | (self.now_ms() as u64 & !LEGACY_TURN);
+        self.turn(id, text, None);
+    }
+
+    /// Deprecated (`said`): the end of the open turn.
+    pub fn said(&self, text: &str) {
+        if let Some(t) = self.open_turn() {
+            self.turn_end(t.id, text);
+        }
+    }
+
+    /// The yes/no words of the character's grammar in the language in use (read again when
+    /// the language changes); a minimum of them when the file is missing.
+    fn answer_words(&self) -> Arc<AnswerWords> {
+        let lang = self.language();
+        let short = lang.split(['-', '_']).next().unwrap_or("it").to_string();
+        let mut cache = lock(&self.answer_words);
+        if let Some((l, w)) = cache.as_ref()
+            && *l == short
+        {
+            return w.clone();
+        }
+        let path = Path::new(&self.cfg.character_dir).join(format!("grammar/{short}.toml"));
+        let words = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| reflex::grammar::answer_words(&t))
+            .unwrap_or_else(|e| {
+                log::warn!(event = "brain_answer_words"; "{}: {e}; the built-in minimum", path.display());
+                AnswerWords::minimum()
+            });
+        let w = Arc::new(words);
+        *cache = Some((short, w.clone()));
+        w
     }
 
     fn exposed(&self, fresh: bool) -> Result<Vec<crate::ha::Entity>, String> {
@@ -1497,298 +1768,51 @@ impl Brain {
         )))
     }
 
-    /// home_control on a room (`area` + `domain`) or a list (`entity_ids`): every device that may
-    /// be done at once, each with its own card and Undo (the screen groups them); the ones that
-    /// need a yes or are never done by voice are only named back.
-    fn home_control_many(
-        &self,
-        args: &Value,
-        service: &str,
-        data: &Value,
-        lang: &str,
-    ) -> Result<Value, String> {
+    /// `home_control`: plan → gate each action → the allowed ones at once (with Undo), the ones
+    /// that need a yes in ONE question (or the state of the question they already have in this
+    /// turn), the never ones named back. The result always has done, asked, refused, failed.
+    fn home_control(&self, args: &Value) -> Result<Value, String> {
         let exposed = self.exposed(false)?;
-        let targets: Vec<crate::ha::Entity> =
-            if let Some(ids) = args.get("entity_ids").and_then(Value::as_array) {
-                ids.iter()
-                    .filter_map(Value::as_str)
-                    .map(|id| resolve_entity(&exposed, id).cloned())
-                    .collect::<Result<_, _>>()?
-            } else {
-                let area = args
-                    .get("area")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim()
-                    .to_lowercase();
-                if area.is_empty() {
-                    return Err("entity_id, entity_ids or area: which devices?".into());
-                }
-                let domain = args
-                    .get("domain")
-                    .and_then(Value::as_str)
-                    .unwrap_or("light")
-                    .trim()
-                    .to_string();
-                let found: Vec<_> = exposed
-                    .iter()
-                    .filter(|e| e.area.trim().to_lowercase() == area && e.domain() == domain)
-                    .cloned()
-                    .collect();
-                if found.is_empty() {
-                    let mut areas: Vec<&str> = exposed
-                        .iter()
-                        .map(|e| e.area.as_str())
-                        .filter(|a| !a.is_empty())
-                        .collect();
-                    areas.sort_unstable();
-                    areas.dedup();
-                    return Err(format!(
-                        "no exposed {domain} in area {area:?}; areas: {}",
-                        areas.join(", ")
-                    ));
-                }
-                found
-            };
-        // One device (a list of one, a room with one blind): the single path, with its gates
-        // (a blind asks its yes on the screen instead of being skipped).
-        if let [one] = targets.as_slice() {
-            let mut single = args.clone();
-            if let Some(o) = single.as_object_mut() {
-                o.remove("entity_ids");
-                o.remove("area");
-                o.remove("domain");
-                o.insert("entity_id".into(), json!(one.entity_id));
+        let actions = crate::house::plan(&exposed, args, &|e| self.gate_of(e) == Gate::Never)?;
+        let (mut allow, mut confirm, mut never) = (Vec::new(), Vec::new(), Vec::new());
+        for a in actions {
+            match self.gate_of(&a.entity) {
+                Gate::Allow => allow.push(a),
+                Gate::Confirm => confirm.push(a),
+                Gate::Never => never.push(a),
             }
-            return self.home_control(&single, lang);
         }
-        // A group whose members are all in the list too (a Hue room in its own area): its lights
-        // are done one by one already.
-        let ids: Vec<&str> = targets.iter().map(|e| e.entity_id.as_str()).collect();
-        let targets: Vec<&crate::ha::Entity> = targets
-            .iter()
-            .filter(|e| {
-                e.members.is_empty() || !e.members.iter().all(|m| ids.contains(&m.as_str()))
-            })
-            .collect();
+        let refused: Vec<String> = never.iter().map(|a| a.entity.full_name()).collect();
+        let mut r = json!({"done": [], "asked": null, "refused": refused, "failed": []});
+        if !refused.is_empty() {
+            log::info!(event = "brain_gate", gate = "never", devices = refused.len(); "house command refused");
+            r["note"] = json!(NEVER_NOTE);
+        }
+        if !confirm.is_empty()
+            && let Some(known) = self.known_question(&confirm)
+        {
+            for (k, v) in known.as_object().into_iter().flatten() {
+                r[k] = v.clone();
+            }
+            return Ok(r);
+        }
         let ha = self.ha().ok_or("Home Assistant is not configured")?;
-        let (mut done, mut skipped, mut failed) = (Vec::new(), Vec::new(), Vec::new());
-        for e in targets {
-            if self.gate_of(e) != Gate::Allow {
-                skipped.push(e.full_name());
-                continue;
-            }
-            match self.run_control(ha, e, &service_for(e.domain(), service), data, true) {
-                Ok(()) => done.push(e.full_name()),
-                Err(err) => failed.push(format!("{}: {err}", e.full_name())),
+        let (mut done, mut failed) = (Vec::new(), Vec::new());
+        for a in &allow {
+            match self.run_control(ha, &a.entity, &a.service, &a.data, true) {
+                Ok(()) => done.push(a.entity.full_name()),
+                Err(e) => failed.push(format!("{}: {e}", a.entity.full_name())),
             }
         }
-        log::info!(event = "brain_house_many", done = done.len(), skipped = skipped.len(), failed = failed.len(); "house: {service} on {} devices", done.len());
-        if done.is_empty() && !failed.is_empty() {
-            return Err(failed.join("; "));
-        }
-        let mut r = json!({"done": done});
-        if !skipped.is_empty() {
-            r["not_done_need_yes_or_never"] = json!(skipped);
-        }
-        if !failed.is_empty() {
-            r["failed"] = json!(failed);
+        log::info!(event = "brain_house", done = done.len(), failed = failed.len(), asked = confirm.len(), refused = never.len(); "house command");
+        r["done"] = json!(done);
+        r["failed"] = json!(failed);
+        if !confirm.is_empty() {
+            let (id, text) = self.ask(confirm);
+            r["asked"] = json!({"question": text, "id": id});
+            r["say"] = json!(crate::question::SAY_NOTHING);
         }
         Ok(r)
-    }
-
-    fn home_control(&self, args: &Value, lang: &str) -> Result<Value, String> {
-        let get = |k: &str| {
-            args.get(k)
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim()
-                .to_string()
-        };
-        let (entity_id, service) = (get("entity_id"), get("service"));
-        let data = args
-            .get("data")
-            .filter(|d| d.is_object())
-            .cloned()
-            .unwrap_or(json!({}));
-        if service.is_empty() || !service.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
-            return Err("service: a service name like turn_on".into());
-        }
-        if entity_id.is_empty() {
-            return self.home_control_many(args, &service, &data, lang);
-        }
-        let exposed = self.exposed(false)?;
-        let e = resolve_entity(&exposed, &entity_id)?.clone();
-        if e.entity_id != entity_id {
-            log::info!(event = "brain_entity_resolved", asked = entity_id.as_str(), used = e.entity_id.as_str(); "entity {entity_id} resolved by name");
-        }
-        let entity_id = e.entity_id.clone();
-        let service = service_for(e.domain(), &service);
-        let ha = self.ha().ok_or("Home Assistant is not configured")?;
-        let it = lang.starts_with("it");
-        match self.gate_of(&e) {
-            Gate::Never => {
-                log::info!(event = "brain_gate", gate = "never", domain = e.domain(); "house command refused");
-                return Err("not allowed: this device is never controlled by voice (locks, alarms, doors, \
-                            gates, garage doors, or the user's choice); tell the user to use the Home \
-                            Assistant app"
-                    .into());
-            }
-            Gate::Confirm => {
-                let confirm_id = args.get("confirm_id").and_then(Value::as_i64);
-                let same = self
-                    .pending_control
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .as_ref()
-                    .filter(|p| {
-                        Some(p.id) == confirm_id && p.entity_id == entity_id && p.service == service
-                    })
-                    .cloned();
-                // Used once, and only right after the tap (the model's call still on its way):
-                // an old id reused by the model in a new request ("chiudi la tapparella" said
-                // again) is a new request with its own question.
-                let screen_done = {
-                    let mut last = self.last_answered.lock().unwrap_or_else(|e| e.into_inner());
-                    match *last {
-                        Some((id, yes, at))
-                            if Some(id) == confirm_id && now_ms() - at <= SCREEN_ANSWER_MS =>
-                        {
-                            *last = None;
-                            Some((id, yes))
-                        }
-                        _ => None,
-                    }
-                };
-                match (same, screen_done) {
-                    (Some(p), _) => match self.wait_answer(p.id, p.asked_ms) {
-                        Some(yes) => {
-                            {
-                                let mut pending = self
-                                    .pending_control
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner());
-                                if pending.as_ref().is_some_and(|q| q.id == p.id) {
-                                    *pending = None;
-                                }
-                            }
-                            if now_ms() - p.asked_ms > CONFIRM_MS {
-                                self.broadcast(&[crate::events::confirm_done(p.id, None)]);
-                                return Err(
-                                    "the question expired: do nothing and say so briefly".into()
-                                );
-                            }
-                            self.broadcast(&[crate::events::confirm_done(p.id, Some(yes))]);
-                            if !yes {
-                                return Err(
-                                    "the user did not confirm: do nothing and say so briefly"
-                                        .into(),
-                                );
-                            }
-                            log::info!(event = "brain_gate", gate = "confirmed", domain = e.domain(); "house command confirmed");
-                            self.run_control(ha, &e, &p.service, &p.data, false)?;
-                            return Ok(json!({"done": true}));
-                        }
-                        None => {
-                            return Err(
-                                "no spoken yes from the user yet: ask the question and wait for \
-                                        their answer before calling again"
-                                    .into(),
-                            );
-                        }
-                    },
-                    // The user already answered on the screen while the model was talking.
-                    (None, Some((_, true))) => {
-                        return Ok(
-                            json!({"done": true, "note": "the user said yes on the screen: already done"}),
-                        );
-                    }
-                    (None, Some((_, false))) => {
-                        return Err(
-                            "the user said no on the screen: do nothing and say so briefly".into(),
-                        );
-                    }
-                    (None, None) => {
-                        let id = self.next_id();
-                        let old = self
-                            .pending_control
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .replace(PendingControl {
-                                id,
-                                entity_id: entity_id.clone(),
-                                service: service.clone(),
-                                data,
-                                asked_ms: now_ms(),
-                            });
-                        *self.screen_answer.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                        *self.last_answered.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                        if let Some(o) = old {
-                            self.broadcast(&[crate::events::confirm_done(o.id, None)]);
-                        }
-                        log::info!(event = "brain_gate", gate = "confirm", domain = e.domain(); "house command waits for a yes");
-                        let pending_data = self
-                            .pending_control
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .as_ref()
-                            .map(|p| p.data.clone())
-                            .unwrap_or_default();
-                        let text = confirm_question(&e.full_name(), &service, &pending_data, it);
-                        self.broadcast(&[crate::events::confirm(
-                            id,
-                            &text,
-                            now() + CONFIRM_MS / 1000,
-                        )]);
-                        return Ok(json!({"needs_confirmation": true, "confirm_id": id,
-                            "ask": format!("Ask exactly: '{text}' (one short question)"),
-                            "then": "only after the user answers, call home_control again with the same arguments and this confirm_id"}));
-                    }
-                }
-            }
-            Gate::Allow => {}
-        }
-        self.run_control(ha, &e, &service, &data, true)?;
-        Ok(json!({"done": true}))
-    }
-
-    /// The answer to question `id` asked at `asked_ms`: a yes or a no tapped on the screen, or
-    /// said in the first sentence heard since, or None. Waits up to 3 s: the satellite's
-    /// transcript may arrive just after the model's call.
-    fn wait_answer(&self, id: i64, asked_ms: i64) -> Option<bool> {
-        use std::sync::atomic::Ordering::SeqCst;
-        self.waiting.fetch_add(1, SeqCst);
-        let r = self.wait_answer_inner(id, asked_ms);
-        self.waiting.fetch_sub(1, SeqCst);
-        r
-    }
-
-    fn wait_answer_inner(&self, id: i64, asked_ms: i64) -> Option<bool> {
-        let until = Instant::now() + Duration::from_secs(3);
-        loop {
-            {
-                let mut a = self.screen_answer.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some((sid, yes)) = *a
-                    && sid == id
-                {
-                    *a = None;
-                    return Some(yes);
-                }
-            }
-            let h = self.heard.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            if let Some((text, at)) = h
-                && at > asked_ms
-            {
-                if at - asked_ms > CONFIRM_MS {
-                    return Some(false);
-                }
-                return Some(answer_to_confirm(&text).unwrap_or(false));
-            }
-            if Instant::now() >= until {
-                return None;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
     }
 }
 
@@ -2400,6 +2424,18 @@ impl Brain {
         {
             v.push(u);
         }
+        // The question still open, as it was asked.
+        if let Some(q) = lock(&self.questions).live.as_ref() {
+            v.push(crate::events::confirm(
+                q.id,
+                &q.text,
+                &q.names,
+                q.expires_at(),
+            ));
+            if let State::Confirming { until_ms, .. } = q.state {
+                v.push(crate::events::confirm_pending(q.id, until_ms));
+            }
+        }
         v
     }
 }
@@ -2612,41 +2648,5 @@ mod tests {
                 + local_now().split(' ').nth(1).unwrap().len()
         );
         assert_eq!(date_of(0).len(), 10);
-    }
-
-    #[test]
-    fn services_named_as_the_domain_wants() {
-        use super::service_for as f;
-        assert_eq!(f("cover", "close"), "close_cover");
-        assert_eq!(f("valve", "open"), "open_valve");
-        assert_eq!(f("cover", "set_position"), "set_cover_position");
-        assert_eq!(f("cover", "close_cover"), "close_cover");
-        assert_eq!(f("light", "turn_on"), "turn_on");
-    }
-
-    #[test]
-    fn confirm_questions_in_the_user_words() {
-        use super::confirm_question as q;
-        assert_eq!(
-            q("Tapparella salone", "close_cover", &json!({}), true),
-            "Chiudo Tapparella salone?"
-        );
-        assert_eq!(
-            q("Living blind", "open_cover", &json!({}), false),
-            "Open Living blind?"
-        );
-        assert_eq!(
-            q(
-                "Tapparella salone",
-                "set_cover_position",
-                &json!({"position": 30}),
-                true
-            ),
-            "Sposto Tapparella salone al 30%?"
-        );
-        assert_eq!(
-            q("X", "set_foo", &json!({}), true),
-            "X (set foo): confermi?"
-        );
     }
 }

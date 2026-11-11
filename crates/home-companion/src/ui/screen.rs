@@ -1581,7 +1581,7 @@ impl<S: Screen> Ui<S> {
                 let id = ui.house.borrow_mut().answer();
                 if let Some(id) = id {
                     log::info!(event = "house_answer", id = id, yes = yes; "house: {} to {id}", if yes { "yes" } else { "no" });
-                    ui.brain_do(brain_link::confirm_answer(id, yes));
+                    ui.brain_do(brain_link::confirm_answer(id, yes, brain_link::Via::Screen));
                     ui.send(UiEvent::AskAnswered);
                 }
                 ui.render_house();
@@ -3161,7 +3161,11 @@ impl<S: Screen> Ui<S> {
                 let id = self.house.borrow_mut().answer();
                 if let Some(id) = id {
                     log::info!(event = "house_answer", id = id, yes = yes, by = "voice"; "house: {} to {id} (said)", if yes { "yes" } else { "no" });
-                    self.brain_do(brain_link::confirm_answer(id, yes));
+                    self.brain_do(brain_link::confirm_answer(
+                        id,
+                        yes,
+                        brain_link::Via::VoiceReflex,
+                    ));
                     self.render_house();
                 }
             }
@@ -4846,11 +4850,13 @@ impl<S: Screen> Ui<S> {
                     id,
                     text,
                     expires_at,
+                    ..
                 } => {
                     log::info!(event = "house_confirm", id = id; "house: asks {text:?}");
                     house_cards.push(HouseEvent::Ask(id, text, expires_at));
                 }
-                BrainMsg::ConfirmDone { id, yes } => {
+                BrainMsg::ConfirmPending { .. } => {}
+                BrainMsg::ConfirmDone { id, yes, .. } => {
                     log::info!(event = "house_confirm_done", id = id, answered = yes.is_some(); "house: question {id} over");
                     house_cards.push(HouseEvent::AskOver(id));
                 }

@@ -1,7 +1,10 @@
 {"event":"changed","id":41,"entity_id":"light.kitchen","name":"Kitchen light","service":"turn_off","state":"off","undo":true}
-{"event":"confirm","id":42,"text":"Living room blind: close it?","expires_at":1794150000}
-{"event":"confirm_done","id":42,"yes":true}
-{"event":"confirm_done","id":43,"yes":null}
+{"event":"confirm","id":42,"text":"Close Living room blind?","names":["Living room blind"],"expires_at":1794150000}
+{"event":"confirm_pending","id":42,"until_ms":1794150001000}
+{"event":"confirm_done","id":42,"yes":true,"via":"voice_reflex","failed":[]}
+{"event":"confirm_done","id":42,"yes":true,"via":"screen","failed":["Living room blind"]}
+{"event":"confirm_done","id":43,"yes":false,"via":"stop","failed":[]}
+{"event":"confirm_done","id":44,"yes":null,"via":"timeout","failed":[]}
 {"event":"show_view","path":"/lovelace/energy"}
 {"event":"show_view","camera":"camera.front_door"}
 {"event":"upcoming","items":[{"start":1794150000,"end":1794153600,"all_day":false,"title":"Dentist","calendar":"calendar.family"}]}

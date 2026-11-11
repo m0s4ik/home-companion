@@ -1,3 +1,8 @@
-{"cmd":"confirm.answer","id":42,"yes":true}
+{"cmd":"confirm.answer","id":42,"yes":true,"via":"screen"}
 {"cmd":"control.undo","id":41}
 {"cmd":"ha.token","token":"t","expires_at":1794150000,"url":"http://ha.example:8123","satellite_entity":"assist_satellite.x","allow":["192.0.2.10"],"language":"it","lists":["todo.shopping","todo.bring_home"],"calendars":[]}
+{"cmd":"turn","id":7,"text":"Close the living room blind.","answers":null}
+{"cmd":"turn","id":8,"text":"sì","answers":42}
+{"cmd":"turn.end","id":7,"said":"Done."}
+{"cmd":"confirm.answer","id":42,"yes":false,"via":"stop"}
+{"cmd":"confirm.answer","id":42,"yes":true,"via":"voice_reflex"}

@@ -14,8 +14,9 @@
 //! | `dnd` | `on`, `minutes` (optional) | do not disturb on for `minutes`, or until the body's default (an hour by day, the morning at night); off when `on` is false |
 //! | `alarm` | `hour`, `minute`, `days` | a local alarm (days: bit 0 = Monday; 0 = once) |
 //! | `changed` | `id`, `entity_id`, `name`, `service`, `state` (or null), `undo` | a card "done" for a house command, with "Undo" when `undo` |
-//! | `confirm` | `id`, `text`, `expires_at` (unix s) | a Yes/No card; the answer goes back as `confirm.answer` |
-//! | `confirm_done` | `id`, `yes` (true/false; null = expired) | the Yes/No card closes (answered by voice, on screen or too late) |
+//! | `confirm` | `id`, `text`, `names` (the full name of each device), `expires_at` (unix s, asked + 30 s) | a Yes/No card; the answer goes back as `confirm.answer` (or as a `turn` that `answers` it) |
+//! | `confirm_pending` | `id`, `until_ms` (unix ms) | a spoken yes was heard: the commands run at `until_ms` unless a no (or the stop word) comes first |
+//! | `confirm_done` | `id`, `yes` (true/false; null = nobody answered), `via` (`screen`, `voice_reflex`, `voice_ha`, `stop`, `timeout`, `replaced`), `failed` (names of the devices that did not do it) | the question is over, exactly once per question; after a yes its `changed` events come first |
 //! | `show_view` | `path` (a Home Assistant path) or `camera` (a `camera.*` entity) | opens Home Assistant's view there |
 //! | `upcoming` | `items`: `start`, `end` (unix s), `all_day`, `title`, `calendar` | the calendar events for the "next" card, soonest first; sent on subscribe and when they change |
 
@@ -58,14 +59,21 @@ pub fn changed(
            "service": service, "state": state, "undo": undo})
 }
 
-/// A house command waits for a yes: the question as the screen shows it.
-pub fn confirm(id: i64, text: &str, expires_at: i64) -> Value {
-    json!({"event": "confirm", "id": id, "text": text, "expires_at": expires_at})
+/// House commands wait for a yes: the question as the screen shows it, the devices' names.
+pub fn confirm(id: i64, text: &str, names: &[String], expires_at: i64) -> Value {
+    json!({"event": "confirm", "id": id, "text": text, "names": names, "expires_at": expires_at})
 }
 
-/// The question `id` is over: `Some(answer)` or `None` when nobody answered in time.
-pub fn confirm_done(id: i64, yes: Option<bool>) -> Value {
-    json!({"event": "confirm_done", "id": id, "yes": yes})
+/// A spoken yes to question `id`: the commands run at `until_ms` unless a no comes first.
+pub fn confirm_pending(id: i64, until_ms: i64) -> Value {
+    json!({"event": "confirm_pending", "id": id, "until_ms": until_ms})
+}
+
+/// The question `id` is over: `Some(answer)`, or `None` when nobody answered (timeout) or
+/// another question took its place; `via` as in question.rs; `failed`: the devices that did
+/// not do it after a yes.
+pub fn confirm_done(id: i64, yes: Option<bool>, via: &str, failed: &[String]) -> Value {
+    json!({"event": "confirm_done", "id": id, "yes": yes, "via": via, "failed": failed})
 }
 
 /// What to open in Home Assistant's view.
@@ -119,9 +127,17 @@ mod tests {
                 Some("off"),
                 true,
             ),
-            confirm(42, "Living room blind: close it?", 1_794_150_000),
-            confirm_done(42, Some(true)),
-            confirm_done(43, None),
+            confirm(
+                42,
+                "Close Living room blind?",
+                &["Living room blind".to_string()],
+                1_794_150_000,
+            ),
+            confirm_pending(42, 1_794_150_001_000),
+            confirm_done(42, Some(true), "voice_reflex", &[]),
+            confirm_done(42, Some(true), "screen", &["Living room blind".to_string()]),
+            confirm_done(43, Some(false), "stop", &[]),
+            confirm_done(44, None, "timeout", &[]),
             show_view(View::Path("/lovelace/energy")),
             show_view(View::Camera("camera.front_door")),
             upcoming(&[Upcoming {

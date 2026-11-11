@@ -5,11 +5,13 @@
 //! per request and answer. Two threads, never the UI thread: one sends the requests the UI
 //! queues (a fresh connection each, 5 s at most), one keeps a `subscribe` connection open for
 //! the reminder cards (`notify` events), reconnecting every 10 s while the brain is away. The UI
-//! reads what came back with [`BrainLink::try_recv`] from its own loop.
+//! reads what came back with [`BrainLink::try_recv`] from its own loop. What must reach the brain
+//! in order (the turns of a conversation, the answers to a question) goes through [`Ordered`].
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
@@ -36,14 +38,26 @@ pub enum BrainMsg {
     Alarm(u8, u8, u8),
     /// A house command went through (`changed`): a "done" card, with "Undo" when `undo`.
     Changed(Changed),
-    /// A house command waits for a yes (`confirm`): a Yes/No card until `expires_at` (unix s).
+    /// House commands wait for a yes (`confirm`): a Yes/No card until `expires_at` (unix s);
+    /// `names` = the full name of each device.
     Confirm {
         id: i64,
         text: String,
+        names: Vec<String>,
         expires_at: i64,
     },
-    /// The question `id` is over (`confirm_done`): answered (`Some`) or expired (`None`).
-    ConfirmDone { id: i64, yes: Option<bool> },
+    /// A spoken yes to question `id` (`confirm_pending`): the commands run at `until_ms` (unix
+    /// ms) unless a no comes first.
+    ConfirmPending { id: i64, until_ms: i64 },
+    /// The question `id` is over (`confirm_done`): answered (`Some`) or not (`None`: timeout,
+    /// replaced); `via` as the brain names it ("screen", "voice_reflex", "voice_ha", "stop",
+    /// "timeout", "replaced"); `failed` = the devices that did not do it after a yes.
+    ConfirmDone {
+        id: i64,
+        yes: Option<bool>,
+        via: String,
+        failed: Vec<String>,
+    },
     /// Open Home Assistant's view there (`show_view`).
     ShowView(View),
     /// The calendar events for the "next" card, soonest first (`upcoming`).
@@ -83,9 +97,47 @@ pub struct Upcoming {
     pub calendar: String,
 }
 
-/// The screen's Yes or No on the brain's question `id` (send it with [`BrainLink::send`]).
-pub fn confirm_answer(id: i64, yes: bool) -> Value {
-    json!({"cmd": "confirm.answer", "id": id, "yes": yes})
+/// Where an answer to the brain's question comes from (`confirm.answer`'s `via`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Via {
+    /// Yes or No touched on the screen.
+    Screen,
+    /// "Sì" / "no" heard by the reflexes.
+    VoiceReflex,
+    /// "Sì" / "no" in Home Assistant's transcript (the brain names it itself, see `turn`).
+    VoiceHa,
+    /// The stop word (always a no).
+    Stop,
+    /// Nobody answered in time (the brain names it itself).
+    Timeout,
+}
+
+impl Via {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Via::Screen => "screen",
+            Via::VoiceReflex => "voice_reflex",
+            Via::VoiceHa => "voice_ha",
+            Via::Stop => "stop",
+            Via::Timeout => "timeout",
+        }
+    }
+}
+
+/// A Yes or No on the brain's question `id` (send it in order, [`Ordered`]).
+pub fn confirm_answer(id: i64, yes: bool, via: Via) -> Value {
+    json!({"cmd": "confirm.answer", "id": id, "yes": yes, "via": via.as_str()})
+}
+
+/// Home Assistant's transcript of the body's conversation `id`; `answers` = the id of the
+/// question open on the screen when the user spoke (None: it answers nothing).
+pub fn turn(id: u64, text: &str, answers: Option<i64>) -> Value {
+    json!({"cmd": "turn", "id": id, "text": text, "answers": answers})
+}
+
+/// Home Assistant's answer to the conversation `id`: the turn is over.
+pub fn turn_end(id: u64, said: &str) -> Value {
+    json!({"cmd": "turn.end", "id": id, "said": said})
 }
 
 /// The screen's "Undo" on the house command `id`.
@@ -98,6 +150,15 @@ pub fn undo(id: i64) -> Value {
 pub fn parse_event(v: Value) -> Option<BrainMsg> {
     let str_of = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(String::from);
     let int_of = |v: &Value, k: &str| v.get(k).and_then(Value::as_i64);
+    let strs_of = |v: &Value, k: &str| -> Vec<String> {
+        v.get(k)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(String::from)
+            .collect()
+    };
     Some(match v.get("event").and_then(Value::as_str)? {
         "notify" => BrainMsg::Notify(v),
         "timer" => match v.get("seconds").and_then(Value::as_u64) {
@@ -135,11 +196,18 @@ pub fn parse_event(v: Value) -> Option<BrainMsg> {
         "confirm" => BrainMsg::Confirm {
             id: int_of(&v, "id")?,
             text: str_of(&v, "text")?,
+            names: strs_of(&v, "names"),
             expires_at: int_of(&v, "expires_at").unwrap_or(0),
+        },
+        "confirm_pending" => BrainMsg::ConfirmPending {
+            id: int_of(&v, "id")?,
+            until_ms: int_of(&v, "until_ms")?,
         },
         "confirm_done" => BrainMsg::ConfirmDone {
             id: int_of(&v, "id")?,
             yes: v.get("yes").and_then(Value::as_bool),
+            via: str_of(&v, "via").unwrap_or_default(),
+            failed: strs_of(&v, "failed"),
         },
         "show_view" => match (str_of(&v, "path"), str_of(&v, "camera")) {
             (Some(p), _) if p.starts_with('/') => BrainMsg::ShowView(View::Path(p)),
@@ -179,8 +247,13 @@ pub fn socket_path() -> PathBuf {
 
 /// One request on a fresh connection.
 pub fn request(path: &std::path::Path, req: &Value) -> Option<Value> {
+    request_within(path, req, Duration::from_secs(5))
+}
+
+/// One request on a fresh connection, waiting `wait` at most for its answer.
+pub fn request_within(path: &std::path::Path, req: &Value, wait: Duration) -> Option<Value> {
     let mut s = UnixStream::connect(path).ok()?;
-    s.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    s.set_read_timeout(Some(wait)).ok()?;
     s.set_write_timeout(Some(Duration::from_secs(2))).ok()?;
     writeln!(s, "{req}").ok()?;
     let mut line = String::new();
@@ -236,23 +309,60 @@ impl BrainLink {
     }
 }
 
+/// Something that takes requests for the brain (the real socket, or a test's recorder).
+pub trait BrainPort: Send + Sync {
+    /// Queues one request; never blocks the caller.
+    fn send(&self, req: Value);
+}
+
+/// Requests that must reach the brain in the order they were made (a turn before its end, a
+/// question's answers): one thread ("brain-ordered") sends them one at a time, each on a fresh
+/// connection, and waits for its answer (2 s at most) before the next. With no socket (the
+/// brain is not installed or not running) a request is dropped at once.
+pub struct Ordered {
+    tx: Mutex<Sender<Value>>,
+}
+
+impl Ordered {
+    pub fn start(path: PathBuf) -> Ordered {
+        let (tx, rx) = channel::<Value>();
+        let _ = std::thread::Builder::new()
+            .name("brain-ordered".into())
+            .spawn(move || {
+                for req in rx {
+                    if !path.exists() {
+                        continue;
+                    }
+                    if request_within(&path, &req, Duration::from_secs(2)).is_none() {
+                        log::debug!("brain: no answer to {}", req["cmd"]);
+                    }
+                }
+            });
+        Ordered { tx: Mutex::new(tx) }
+    }
+}
+
+impl BrainPort for Ordered {
+    fn send(&self, req: Value) {
+        let _ = self.tx.lock().unwrap_or_else(|e| e.into_inner()).send(req);
+    }
+}
+
+/// The process's [`Ordered`] queue to the brain's socket.
+pub fn ordered() -> &'static Ordered {
+    static ORDERED: std::sync::OnceLock<Ordered> = std::sync::OnceLock::new();
+    ORDERED.get_or_init(|| Ordered::start(socket_path()))
+}
+
 /// What the user said (`heard`, the satellite's transcript) and Home Assistant's answer
-/// (`said`), for the brain: a spoken "sì" confirms a house command, the exchanges become
-/// memories. A short thread each, never blocking the caller; lost when the brain is away.
+/// (`said`), for the brain: the exchanges become memories, the transcript lets the writing
+/// tools run. In order, through [`ordered`]; never blocking the caller; lost when the brain is
+/// away.
 pub fn tell(cmd: &'static str, text: &str) {
     if text.trim().is_empty() || std::env::var_os("HOME_COMPANION_NO_BRAIN").is_some() {
         return;
     }
-    let req = json!({"cmd": cmd, "text": text});
-    let path = socket_path();
-    if !path.exists() {
-        return;
-    }
-    let _ = std::thread::Builder::new()
-        .name("brain-tell".into())
-        .spawn(move || {
-            let _ = request(&path, &req);
-        });
+    ordered().send(json!({"cmd": cmd, "text": text}));
 }
 
 /// How often the body hands its Home Assistant token to the brain (access tokens last 30 min;
@@ -494,14 +604,38 @@ mod tests {
                 }),
                 BrainMsg::Confirm {
                     id: 42,
-                    text: "Living room blind: close it?".into(),
+                    text: "Close Living room blind?".into(),
+                    names: vec!["Living room blind".into()],
                     expires_at: 1_794_150_000,
+                },
+                BrainMsg::ConfirmPending {
+                    id: 42,
+                    until_ms: 1_794_150_001_000,
                 },
                 BrainMsg::ConfirmDone {
                     id: 42,
-                    yes: Some(true)
+                    yes: Some(true),
+                    via: "voice_reflex".into(),
+                    failed: vec![],
                 },
-                BrainMsg::ConfirmDone { id: 43, yes: None },
+                BrainMsg::ConfirmDone {
+                    id: 42,
+                    yes: Some(true),
+                    via: "screen".into(),
+                    failed: vec!["Living room blind".into()],
+                },
+                BrainMsg::ConfirmDone {
+                    id: 43,
+                    yes: Some(false),
+                    via: "stop".into(),
+                    failed: vec![],
+                },
+                BrainMsg::ConfirmDone {
+                    id: 44,
+                    yes: None,
+                    via: "timeout".into(),
+                    failed: vec![],
+                },
                 BrainMsg::ShowView(View::Path("/lovelace/energy".into())),
                 BrainMsg::ShowView(View::Camera("camera.front_door".into())),
                 BrainMsg::Upcoming(vec![Upcoming {
@@ -530,8 +664,65 @@ mod tests {
     #[test]
     fn contract_requests_match() {
         let req = contract(include_str!("../../brain/contract/requests.jsonl"));
-        assert_eq!(confirm_answer(42, true), req[0]);
+        assert_eq!(confirm_answer(42, true, Via::Screen), req[0]);
         assert_eq!(undo(41), req[1]);
+        assert_eq!(turn(7, "Close the living room blind.", None), req[3]);
+        assert_eq!(turn(8, "sì", Some(42)), req[4]);
+        assert_eq!(turn_end(7, "Done."), req[5]);
+        assert_eq!(confirm_answer(42, false, Via::Stop), req[6]);
+        assert_eq!(confirm_answer(42, true, Via::VoiceReflex), req[7]);
+        assert_eq!(req.len(), 8);
+    }
+
+    /// Requests reach the brain in the order they were made, even when it answers slowly.
+    #[test]
+    fn ordered_requests_arrive_in_order() {
+        let dir = std::env::temp_dir().join(format!(
+            "home-companion-brain-ordered-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("brain.sock");
+        let _ = std::fs::remove_file(&path);
+        let l = UnixListener::bind(&path).unwrap();
+        let (got_tx, got_rx) = channel::<i64>();
+        std::thread::spawn(move || {
+            let mut seed: u64 = 7;
+            for c in l.incoming() {
+                let mut c = c.unwrap();
+                // Every connection answered on its own thread, after a short "random" delay.
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let delay = Duration::from_millis((seed >> 33) % 15);
+                let got_tx = got_tx.clone();
+                std::thread::spawn(move || {
+                    let mut line = String::new();
+                    BufReader::new(c.try_clone().unwrap())
+                        .read_line(&mut line)
+                        .unwrap();
+                    let v: Value = serde_json::from_str(&line).unwrap();
+                    std::thread::sleep(delay);
+                    let _ = got_tx.send(v["n"].as_i64().unwrap());
+                    let _ = writeln!(c, "{}", json!({"ok": true}));
+                });
+            }
+        });
+        let o = Ordered::start(path);
+        for n in 0..20 {
+            o.send(json!({"cmd": "turn", "n": n}));
+        }
+        let got: Vec<i64> = (0..20)
+            .map(|_| got_rx.recv_timeout(Duration::from_secs(5)).unwrap())
+            .collect();
+        assert_eq!(got, (0..20).collect::<Vec<_>>());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_missing_socket_drops_the_request() {
+        let o = Ordered::start(PathBuf::from("/nonexistent/brain.sock"));
+        o.send(json!({"cmd": "turn"}));
     }
 
     #[test]
