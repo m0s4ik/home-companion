@@ -459,6 +459,9 @@ pub struct Core {
     /// What the body is saying in its own voice (a reflex's answer, a timer's announcement):
     /// a stop word that sounds like one of its words is the body's own voice ([`echoes`]).
     speaking_text: String,
+    /// When the character's own phrase began to play, and how long it lasts.
+    speaking_since: Option<Instant>,
+    speaking_len: Option<Duration>,
     /// A timer or alarm rang: its words wait for their voice (id, until when); the bell after.
     ring_wait: Option<(u64, Instant)>,
     /// The ringing's words playing.
@@ -471,20 +474,98 @@ pub struct Core {
 /// Home Assistant in 1-2 s).
 const RING_VOICE_WAIT: Duration = Duration::from_millis(3000);
 
-/// A stop word (its name, "stop_alfred" → "stop") that sounds like a word of `text`: the same
-/// word or one letter away ("pasta" for "basta"). Then the detector heard the body's own voice.
-fn echoes(stop_word: &str, text: &str) -> bool {
+/// The voice's pace when the length of a phrase is not known yet (Home Assistant's answer still
+/// arriving): characters a second.
+const VOICE_CHARS_PER_S: f32 = 14.0;
+/// Around the moment a word like a stop word is said, its detection is the character's own
+/// voice: from this long before (an early estimate) to this long after (the detector answers
+/// at the word's end, with its window).
+const ECHO_BEFORE_S: f32 = 2.0;
+const ECHO_AFTER_S: f32 = 3.0;
+
+/// A word like a stop word in what the character says, and when.
+#[derive(Debug, Clone, PartialEq)]
+struct Echo {
+    word: String,
+    /// When the word is said, from the start of the voice (seconds), and the voice's length
+    /// (known, or estimated from the text).
+    at_s: f32,
+    len_s: f32,
+    estimated: bool,
+    /// When the stop word was heard, from the same start (None: no start known).
+    heard_s: Option<f32>,
+    /// Inside the window around the word: the detection is ignored.
+    ignored: bool,
+}
+
+/// The stop word's name ("stop_alfred" → "stop") against the words of `text`: a word that sounds
+/// like it (the same, one letter away like "pasta" for "basta", or holding it like
+/// "abbastanza"), placed in time by its position in the text; `elapsed` since the voice began,
+/// `len` its length when known. The closest such word, or None.
+fn echo_at(
+    stop_word: &str,
+    text: &str,
+    elapsed: Option<Duration>,
+    len: Option<Duration>,
+) -> Option<Echo> {
     let name = stop_word
         .split('_')
         .next()
         .unwrap_or(stop_word)
         .to_lowercase();
     if name.chars().count() < 4 {
-        return false;
+        return None;
     }
-    text.split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .any(|w| one_letter_away(&w.to_lowercase(), &name))
+    let total = text.chars().count().max(1) as f32;
+    let (len_s, estimated) = match len {
+        Some(d) => (d.as_secs_f32(), false),
+        None => (total / VOICE_CHARS_PER_S, true),
+    };
+    let heard_s = elapsed.map(|d| d.as_secs_f32());
+    let mut best: Option<Echo> = None;
+    for (start, w) in word_spans(text) {
+        let lw = w.to_lowercase();
+        if !(one_letter_away(&lw, &name) || lw.contains(&name)) {
+            continue;
+        }
+        let mid = start as f32 + w.chars().count() as f32 / 2.0;
+        let at_s = mid / total * len_s;
+        let ignored = heard_s.is_none_or(|h| h >= at_s - ECHO_BEFORE_S && h <= at_s + ECHO_AFTER_S);
+        let e = Echo {
+            word: w.to_string(),
+            at_s,
+            len_s,
+            estimated,
+            heard_s,
+            ignored,
+        };
+        let closer = |a: &Echo| heard_s.map_or(0.0, |h| (h - a.at_s).abs());
+        if best.as_ref().is_none_or(|b| {
+            (e.ignored && !b.ignored) || (e.ignored == b.ignored && closer(&e) < closer(b))
+        }) {
+            best = Some(e);
+        }
+    }
+    best
+}
+
+/// The words of `text` with their first character's index.
+fn word_spans(text: &str) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    let mut start: Option<(usize, usize)> = None;
+    for (ci, (bi, c)) in text.char_indices().enumerate() {
+        if c.is_alphanumeric() {
+            if start.is_none() {
+                start = Some((ci, bi));
+            }
+        } else if let Some((sc, sb)) = start.take() {
+            out.push((sc, &text[sb..bi]));
+        }
+    }
+    if let Some((sc, sb)) = start {
+        out.push((sc, &text[sb..]));
+    }
+    out
 }
 
 /// Equal, or one letter changed, added or removed.
@@ -579,6 +660,8 @@ impl Core {
             next_voice_id: 1,
             say_wait: None,
             speaking_text: String::new(),
+            speaking_since: None,
+            speaking_len: None,
             ring_wait: None,
             ring_speech: None,
             bell_at: None,
@@ -834,6 +917,8 @@ impl Core {
         // With the reflex helper up, the utterance is held back and decoded locally first; Home
         // Assistant is not needed for a reflex (Wi-Fi off, Home Assistant down).
         self.speaking_text.clear();
+        self.speaking_since = None;
+        self.speaking_len = None;
         let id = self.next_id;
         let gated = self
             .d
@@ -944,10 +1029,31 @@ impl Core {
     fn on_stop_word(&mut self, d: wakeword::Detection) {
         log::info!(event = "stop_word", name = d.name.as_str(), probability = d.probability as f64, phase = self.phase.name(); "stop word {} ({:.3}) in {}", d.name, d.probability, self.phase.name());
         if matches!(self.phase, Phase::Speaking | Phase::Ringing) {
-            let answer = self.conv.as_ref().map_or("", |c| c.answer.as_str());
-            if echoes(&d.name, &self.speaking_text) || echoes(&d.name, answer) {
-                log::info!(event = "stop_word_echo", name = d.name.as_str(); "stop word {} ignored: the body says a word like it", d.name);
-                return;
+            // What the character is saying, since when, and how long it lasts: its own phrase
+            // (a reflex's answer, a ringing timer's words) or Home Assistant's answer.
+            let (text, since, len) =
+                if !self.speaking_text.is_empty() && self.speaking_since.is_some() {
+                    (
+                        self.speaking_text.clone(),
+                        self.speaking_since,
+                        self.speaking_len,
+                    )
+                } else if let Some(c) = &self.conv {
+                    (
+                        c.answer.clone(),
+                        c.first_sample_at.or(c.audio_start_at),
+                        None,
+                    )
+                } else {
+                    (String::new(), None, None)
+                };
+            if let Some(e) = echo_at(&d.name, &text, since.map(|t| t.elapsed()), len) {
+                self.save_echo(&d, &text, &e);
+                if e.ignored {
+                    log::info!(event = "stop_word_echo", name = d.name.as_str(), word = e.word.as_str(), at_s = e.at_s as f64, heard_s = e.heard_s.unwrap_or(-1.0) as f64; "stop word {} ignored: the body says {:?} near then", d.name, e.word);
+                    return;
+                }
+                log::info!(event = "stop_word_near", name = d.name.as_str(), word = e.word.as_str(), at_s = e.at_s as f64, heard_s = e.heard_s.unwrap_or(-1.0) as f64; "stop word {}: {:?} is said at another time, so it is the user's", d.name, e.word);
             }
         }
         match self.phase {
@@ -957,6 +1063,36 @@ impl Core {
             Phase::Home | Phase::Offline if self.noticing => self.ui(UiCommand::NoticeStop),
             _ => {}
         }
+    }
+
+    /// Debug: a stop word met a word like it in the character's phrase (ignored or not): the
+    /// microphone's last seconds and what was known, next to the recordings, to check the
+    /// estimate of when the word is said.
+    fn save_echo(&self, d: &wakeword::Detection, text: &str, e: &Echo) {
+        let Some(r) = &self.d.recorder else { return };
+        let label = format!(
+            "stop-{}-{}",
+            if e.ignored { "ignored" } else { "near" },
+            d.name
+        );
+        let Some(path) = r.save_context(&label) else {
+            return;
+        };
+        let info = serde_json::json!({
+            "stop_word": d.name,
+            "probability": d.probability,
+            "ignored": e.ignored,
+            "text": text,
+            "word": e.word,
+            "word_at_s": e.at_s,
+            "voice_len_s": e.len_s,
+            "len_estimated": e.estimated,
+            "heard_at_s": e.heard_s,
+            "window_s": [-ECHO_BEFORE_S, ECHO_AFTER_S],
+            "audio": "the microphone's last seconds, ending when the stop word was heard",
+        });
+        let _ = std::fs::write(path.with_extension("json"), info.to_string());
+        log::info!(event = "stop_word_saved", path = path.display().to_string().as_str(); "stop word debug: {}", path.display());
     }
 
     fn on_wake(&mut self, d: wakeword::Detection) {
@@ -1574,6 +1710,8 @@ impl Core {
                 }
                 s.finish();
                 after = sp.duration() + Duration::from_millis(400);
+                self.speaking_since = Some(Instant::now());
+                self.speaking_len = Some(sp.duration());
                 log::info!(event = "ring_voice", seconds = sp.duration().as_secs_f64(); "the ringing said aloud: {:?}", self.speaking_text);
                 self.ring_speech = Some(s);
             }
@@ -1614,6 +1752,8 @@ impl Core {
             return;
         };
         let dur = sp.duration();
+        self.speaking_since = Some(Instant::now());
+        self.speaking_len = Some(dur);
         let s = self.d.player.open_stream(sp.format);
         if let Err(e) = s.push(&sp.pcm) {
             log::warn!("reflex voice: {e}");
@@ -2114,6 +2254,8 @@ impl Core {
     fn start_bell(&mut self) {
         // The words are over: "basta" is the user's again.
         self.speaking_text.clear();
+        self.speaking_since = None;
+        self.speaking_len = None;
         if self.bell.is_none() && self.phase == Phase::Ringing {
             self.bell = Some(self.d.player.play_repeated(
                 &self.cues.bell,
@@ -2988,22 +3130,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_stop_word_like_a_word_being_said_is_the_bodys_voice() {
-        assert!(echoes(
-            "basta",
-            "Tè un minuto; Pasta 4 minuti e 32 secondi."
-        ));
-        assert!(echoes("basta", "Il timer «Pasta» è finito."));
-        assert!(echoes("basta", "Basta così."));
-        assert!(!echoes("basta", "Il timer «Tè» è finito."));
-        assert!(!echoes("basta", "Sono le 7:30."));
-        assert!(echoes("stop_alfred", "Stop."));
-        assert!(!echoes("stop", "Pasta pronta."));
+    fn a_stop_word_like_a_word_being_said_is_the_bodys_voice_near_that_word() {
+        let secs = |s: f32| Some(Duration::from_secs_f32(s));
+        let text = "Tè un minuto e 45 secondi; Pasta 4 minuti e 32 secondi.";
+        // 55 characters in 6.2 s: "Pasta" (28-32) at about 3.4 s.
+        let e = echo_at("basta", text, secs(4.0), secs(6.2)).unwrap();
+        assert_eq!(e.word, "Pasta");
+        assert!((e.at_s - 3.4).abs() < 0.3, "{}", e.at_s);
+        assert!(e.ignored && !e.estimated);
+        // Heard long before the word: the user's.
+        let e = echo_at("basta", text, secs(0.5), secs(6.2)).unwrap();
+        assert!(!e.ignored);
+        // A long answer: only near the word.
+        let long = format!(
+            "{} Ne ho abbastanza. {}",
+            "parole ".repeat(40),
+            "altre ".repeat(40)
+        );
+        let e = echo_at("basta", &long, secs(1.0), None).unwrap();
+        assert_eq!(e.word, "abbastanza");
+        assert!(e.estimated && !e.ignored, "{e:?}");
+        let at = e.at_s;
+        assert!(
+            echo_at("basta", &long, secs(at + 1.0), None)
+                .unwrap()
+                .ignored
+        );
+        // No start known: ignored as before (the whole phrase).
+        assert!(
+            echo_at("basta", "Il timer «Pasta» è finito.", None, None)
+                .unwrap()
+                .ignored
+        );
+        assert_eq!(
+            echo_at("basta", "Il timer «Tè» è finito.", secs(1.0), None),
+            None
+        );
+        assert_eq!(echo_at("stop", "Pasta pronta.", secs(1.0), None), None);
+        assert!(
+            echo_at("stop_alfred", "Stop.", secs(0.2), None)
+                .unwrap()
+                .ignored
+        );
         assert!(one_letter_away("basta", "basti"));
-        assert!(one_letter_away("basta", "bast"));
-        assert!(one_letter_away("basta", "bastaa"));
         assert!(!one_letter_away("basta", "bestia"));
-        assert!(!one_letter_away("basta", "pasti"));
+        assert_eq!(word_spans("È «Pasta»!"), vec![(0, "È"), (3, "Pasta")]);
     }
 
     #[test]

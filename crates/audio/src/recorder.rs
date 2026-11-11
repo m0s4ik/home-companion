@@ -118,6 +118,41 @@ impl Recorder {
         Some(path)
     }
 
+    /// The last `wake_context_ms` heard while not recording (the character's own voice while it
+    /// answers, a stop word over it) as `<dir>/<yyyymmdd-hhmmss>-<label>.wav`, kept as it is;
+    /// its path, or None (nothing kept, no directory, a write error).
+    pub fn save_context(&self, label: &str) -> Option<PathBuf> {
+        let st = lock(&self.0.state);
+        if st.context.is_empty() {
+            return None;
+        }
+        let dir = &self.0.cfg.dir;
+        if let Err(e) = create_private_dir(dir) {
+            log::warn!("recorder: {}: {e}", dir.display());
+            return None;
+        }
+        let path = unique_path(dir, &format!("{}-{}", local_timestamp(), sanitize(label)));
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: CAPTURE_RATE,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let written = hound::WavWriter::create(&path, spec).and_then(|mut w| {
+            for &s in st.context.iter() {
+                w.write_sample(s)?;
+            }
+            w.finalize()
+        });
+        match written {
+            Ok(()) => Some(path),
+            Err(e) => {
+                log::warn!("recorder: {}: {e}", path.display());
+                None
+            }
+        }
+    }
+
     pub fn is_recording(&self) -> bool {
         lock(&self.0.state).writer.is_some()
     }
