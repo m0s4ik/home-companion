@@ -289,6 +289,10 @@ fn run_once(
                 words,
                 ms,
             }),
+            // Partials are for the gate's early release (reflex::verdict), not wired yet.
+            Ok(Reply::Partial { id, text, audio_s }) => {
+                log::trace!("reflexes: partial {id} at {audio_s:.2} s: {text:?}")
+            }
             Ok(Reply::Error { message }) => log::warn!("reflexes: helper: {message}"),
             Err(e) => log::warn!("reflexes: {e}"),
         }

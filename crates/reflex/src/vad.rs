@@ -112,6 +112,11 @@ impl Vad {
         self.speech_frames * FRAME_MS
     }
 
+    /// Silence since the last speech frame (or since the start).
+    pub fn silence_ms(&self) -> u32 {
+        self.silence_run * FRAME_MS
+    }
+
     /// Speech, then enough silence.
     pub fn ended(&self) -> bool {
         self.speech_ms() >= Self::MIN_SPEECH_MS

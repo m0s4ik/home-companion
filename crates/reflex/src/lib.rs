@@ -15,5 +15,7 @@ pub mod grammar;
 pub mod proto;
 pub mod slots;
 pub mod vad;
+pub mod verdict;
 
 pub use grammar::{Command, Decision, Grammar, Word};
+pub use verdict::{Verdict, verdict};

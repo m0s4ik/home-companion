@@ -35,6 +35,7 @@ unsafe extern "C" {
         len: c_int,
     ) -> c_int;
     fn vosk_recognizer_result(rec: *mut VoskRecognizer) -> *const c_char;
+    fn vosk_recognizer_partial_result(rec: *mut VoskRecognizer) -> *const c_char;
     fn vosk_recognizer_final_result(rec: *mut VoskRecognizer) -> *const c_char;
     fn vosk_recognizer_reset(rec: *mut VoskRecognizer);
     fn vosk_recognizer_free(rec: *mut VoskRecognizer);
@@ -89,6 +90,14 @@ impl<'m> Recognizer<'m> {
     pub fn result(&mut self) -> String {
         // SAFETY: Vosk returns a NUL-terminated string owned by the recognizer, valid until the next call.
         unsafe { CStr::from_ptr(vosk_recognizer_result(self.rec.as_ptr())) }
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// The partial result JSON of the utterance so far (`{"partial": "..."}`); does not end it.
+    pub fn partial(&mut self) -> String {
+        // SAFETY: Vosk returns a NUL-terminated string owned by the recognizer, valid until the next call.
+        unsafe { CStr::from_ptr(vosk_recognizer_partial_result(self.rec.as_ptr())) }
             .to_string_lossy()
             .into_owned()
     }

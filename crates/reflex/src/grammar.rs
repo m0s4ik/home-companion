@@ -296,7 +296,7 @@ fn command(name: &str, b: Bound) -> Result<Command, String> {
 #[derive(Debug, Clone)]
 pub struct Grammar {
     pub language: String,
-    phrases: BTreeMap<String, Command>,
+    pub(crate) phrases: BTreeMap<String, Command>,
 }
 
 impl Grammar {
