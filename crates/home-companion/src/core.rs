@@ -2655,6 +2655,11 @@ impl Core {
 
     fn on_stop(&mut self) {
         log::info!(event = "stop", phase = self.phase.name(); "Stop pressed in {}", self.phase.name());
+        if matches!(self.phase, Phase::Listening | Phase::Thinking | Phase::Speaking) {
+            // Stopping the character while a house question is open (a "no" heard as the stop
+            // word over the question itself, "basta", Ferma) answers it No.
+            self.ui(UiCommand::DeclineQuestion);
+        }
         if self.phase == Phase::Listening && self.gate.is_some() {
             // Held back for the reflexes: Home Assistant never heard of it.
             if let (Some(g), Some(r)) = (self.gate.take(), &self.d.reflexes) {
