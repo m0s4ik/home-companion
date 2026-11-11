@@ -1008,7 +1008,9 @@ export component CompanionWindow inherits Window {
     for n in 3: Image {
         property <bool> on: music-prop-img.shown && !root.music-paused;
         // Each note on its own 3.6 s rise, a third apart; they drift right and fade.
-        property <float> t: mod(animation-tick() / 1ms + n * 1200, 3600) / 3600;
+        // The clock is read only while the notes rise: animation-tick() keeps the whole window
+        // redrawing at the panel's rate (about a third of a core on the ThinkSmart View).
+        property <float> t: self.on ? mod(animation-tick() / 1ms + n * 1200, 3600) / 3600 : 0;
         // From the horn's mouth (its top left), up and a little out.
         x: music-prop-img.x + 6px - self.t * 18px + (n == 1 ? 16px : 0px);
         y: music-prop-img.y - 6px - self.t * 110px;
