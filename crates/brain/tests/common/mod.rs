@@ -206,6 +206,12 @@ fn answer(f: &Fake, cmd: &Value) -> Result<Value, String> {
                 )
             }
             (Some("config/device_registry/list"), _, _) => json!([]),
+            (Some("lovelace/dashboards/list"), _, _) => {
+                json!([{"url_path": "dashboard-casa", "title": "Casa"}])
+            }
+            (Some("lovelace/config"), _, _) if cmd["url_path"].is_null() => {
+                json!({"views": [{"path": "energy"}, {"title": "no path"}]})
+            }
             (Some("todo/item/list"), _, _) => json!({"items": t.iter().map(|(u, s, st)|
             json!({"uid": u, "summary": s, "status": st})).collect::<Vec<_>>()}),
             (Some("call_service"), _, Some("add_item")) => {

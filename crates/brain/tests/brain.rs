@@ -598,6 +598,25 @@ fn show_view_opens_paths_and_exposed_cameras_only() {
     let (_, err) = tool(&b, "show_view", json!({"camera": "camera.front"}));
     assert!(!err);
     assert_eq!(screen.event("show_view")["camera"], "camera.front");
+    // A camera by its name's words; a dashboard and a view by number.
+    let (r, err) = tool(&b, "show_view", json!({"camera": "camera.front_door"}));
+    assert!(!err, "{r}");
+    assert_eq!(screen.event("show_view")["camera"], "camera.front");
+    for p in ["/dashboard-casa", "/lovelace/1", "/energy"] {
+        let (r, err) = tool(&b, "show_view", json!({"path": p}));
+        assert!(!err, "{p}: {r}");
+        assert_eq!(screen.event("show_view")["path"], p);
+    }
+    // 13/11: a made-up dashboard for a camera is refused, with what there is.
+    let (r, err) = tool(&b, "show_view", json!({"path": "/lovelace/gamma-ingresso"}));
+    assert!(err, "{r}");
+    let r = r.to_string();
+    assert!(
+        r.contains("camera.front (Front door)") && r.contains("/dashboard-casa"),
+        "{r}"
+    );
+    let (r, err) = tool(&b, "show_view", json!({"path": "/gamma-ingresso"}));
+    assert!(err, "{r}");
     // Not exposed, not a camera, bad paths, both or neither.
     for args in [
         json!({"camera": "camera.secret"}),

@@ -124,7 +124,8 @@ pub fn pick(
     };
     let by_name = |w: &str| {
         let w = normalize(w);
-        pool.iter().any(|(id, n)| normalize(n) == w || normalize(id).ends_with(&w))
+        pool.iter()
+            .any(|(id, n)| normalize(n) == w || normalize(id).ends_with(&w))
     };
     let wanted = if !wanted.is_empty() && (pool.len() == 1 || (shopping_word && !by_name(wanted))) {
         ""
@@ -279,12 +280,17 @@ mod tests {
     #[test]
     fn the_shopping_list_by_any_name() {
         let k = |v: &[(&str, &str)]| -> Vec<(String, String)> {
-            v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+            v.iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect()
         };
         // One list, called "Casa" (Bring!): "spesa" and any name mean it.
         let one = k(&[("todo.casa", "Casa")]);
         assert_eq!(pick(&one, &[], "", "spesa").unwrap().0, "todo.casa");
-        assert_eq!(pick(&one, &[], "", "lista della spesa").unwrap().0, "todo.casa");
+        assert_eq!(
+            pick(&one, &[], "", "lista della spesa").unwrap().0,
+            "todo.casa"
+        );
         // Several: "spesa" is the shopping one, or the first; a real name still wins.
         let two = k(&[("todo.casa", "Casa"), ("todo.lavori", "Lavori")]);
         assert_eq!(pick(&two, &[], "", "spesa").unwrap().0, "todo.casa");
