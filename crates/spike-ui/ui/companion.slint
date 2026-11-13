@@ -579,7 +579,7 @@ export component CompanionWindow inherits Window {
     in property <bool> offline: false;
     // Start-up: the character's loading animation, its name, "Starting…"; no clock.
     in property <bool> starting: false;
-    // Nothing moves by itself (the golden screenshots): the start-up line, the ringing ring.
+    // Nothing moves by itself (the golden screenshots): the start-up line, the ringing ring, the music notes.
     in property <bool> still: false;
     // Night mode: the clock alone, dim; its one line (the next alarm, a running timer).
     in property <bool> night: false;
@@ -1015,7 +1015,7 @@ export component CompanionWindow inherits Window {
         // Each note on its own 3.6 s rise, a third apart; they drift right and fade.
         // The clock is read only while the notes rise: animation-tick() keeps the whole window
         // redrawing at the panel's rate (about a third of a core on the ThinkSmart View).
-        property <float> t: self.on ? mod(animation-tick() / 1ms + n * 1200, 3600) / 3600 : 0;
+        property <float> t: !self.on ? 0 : root.still ? 0.3 + n * 0.25 : mod(animation-tick() / 1ms + n * 1200, 3600) / 3600;
         // From the horn's mouth (its top left), up and a little out.
         x: music-prop-img.x + 6px - self.t * 18px + (n == 1 ? 16px : 0px);
         y: music-prop-img.y - 6px - self.t * 110px;
