@@ -475,6 +475,21 @@ struct Run {
     answering: Option<i64>,
     /// `played` sent already (a stopped answer): not again at its `audio-stop`.
     played: bool,
+    /// Its last message from Home Assistant (or its start).
+    last_heard: Instant,
+    /// The brain asked a question in it (then): the model is told to say nothing after it.
+    asked_at: Option<Instant>,
+}
+
+impl Run {
+    /// Over though nothing said so. Home Assistant tells a Wyoming satellite nothing at a run's
+    /// end: a model that answers nothing (always after a question) leaves the run open here
+    /// for good. Over: quiet [`ASKED_QUIET`] after its question, or quiet as long as a
+    /// conversation waits for its answer at most ([`AFTER_TRANSCRIPT`]).
+    fn quiet(&self, now: Instant) -> bool {
+        let quiet = now.saturating_duration_since(self.last_heard);
+        quiet >= AFTER_TRANSCRIPT || (self.asked_at.is_some() && quiet >= ASKED_QUIET)
+    }
 }
 
 /// A conversation's `turn` for the brain: sent once (its transcript), ended once.
@@ -492,6 +507,9 @@ const TURNS_KEPT: usize = 8;
 
 /// A new utterance waits at most this long for the previous run's final message.
 const PREVIOUS_RUN_CAP: Duration = Duration::from_secs(3);
+/// After its question, a run quiet this long is over (Home Assistant ends it in about 2 s, the
+/// model's empty answer, without a word to the satellite).
+const ASKED_QUIET: Duration = Duration::from_secs(6);
 /// A local answer stays on screen this long.
 const LOCAL_ANSWER: Duration = Duration::from_secs(5);
 
@@ -1264,6 +1282,8 @@ impl Core {
                 opened: Instant::now(),
                 answering: c.answering,
                 played: false,
+                last_heard: Instant::now(),
+                asked_at: None,
             });
         }
         self.summary.detections_sent += 1;
@@ -1733,7 +1753,7 @@ impl Core {
             why,
             since: Instant::now(),
         });
-        if let Some(r) = &self.run {
+        if let Some(r) = self.run.as_ref().filter(|r| !r.quiet(Instant::now())) {
             log::info!(event = "previous_run_wait", conversation = r.conv, why = why; "to Home Assistant ({why}) when its previous run ends");
         }
         self.release_waiting();
@@ -1745,6 +1765,12 @@ impl Core {
         let Some(w) = self.gate.as_ref().and_then(|g| g.want) else {
             return;
         };
+        if let Some(r) = self.run.as_ref().filter(|r| r.quiet(Instant::now())) {
+            let conv = r.conv;
+            log::info!(event = "previous_run_quiet", conversation = conv, quiet_s = r.last_heard.elapsed().as_secs_f64(), asked = r.asked_at.is_some(); "Home Assistant's run of conversation {conv} is quiet: over");
+            self.run_over("quiet");
+            return;
+        }
         if let Some(r) = &self.run {
             if w.since.elapsed() < PREVIOUS_RUN_CAP {
                 return;
@@ -2345,6 +2371,9 @@ impl Core {
                 | Message::Error { .. }
         );
         if pipeline {
+            if let Some(r) = &mut self.run {
+                r.last_heard = Instant::now();
+            }
             let audio = matches!(
                 m,
                 Message::AudioStart { .. } | Message::AudioChunk { .. } | Message::AudioStop { .. }
@@ -3170,6 +3199,11 @@ impl Core {
         }
         self.question = Some(id);
         self.question_text = text;
+        if let Some(r) = &mut self.run {
+            let now = Instant::now();
+            r.asked_at = Some(now);
+            r.last_heard = now;
+        }
         let asked_here = self
             .conv
             .as_ref()

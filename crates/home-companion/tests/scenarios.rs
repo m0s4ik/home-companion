@@ -933,3 +933,51 @@ fn c25_the_asking_turn_ends_at_the_cap_of_a_run_that_never_ends() {
     let second = &r.port("turn")[1];
     assert_eq!(second["answers"], 42, "{second}");
 }
+
+#[test]
+fn c26_a_run_quiet_after_its_question_is_over_without_a_wait() {
+    // Seen 13/11: after the question the model answers nothing; Home Assistant ends the run
+    // then without a word to the satellite. The next utterance, seconds later, must not wait
+    // 3 s for a run that is long over.
+    let r = run_setup(
+        Setup::new(
+            asking(
+                0,
+                vec![Step::ForgetRun],
+                cat(vec![
+                    vec![Step::Sleep { ms: 5000 }],
+                    hear("forse", 800),
+                    answer("Come vuole."),
+                    bye(2500),
+                ]),
+            ),
+            vec![
+                TALK_AT_HOME,
+                press(When::Port("turn", 1), 50, question),
+                press(When::Port("confirm.answer", 1), 7000, talk),
+            ],
+        )
+        .utts(vec![
+            chiudi(),
+            Utt::says("no"),
+            Utt::says("forse").conf(0.5),
+        ]),
+    );
+    assert_clean(&r);
+    assert_eq!(
+        r.port("confirm.answer"),
+        vec![confirm(false, "voice_reflex")]
+    );
+    assert_eq!(r.record.run_pipelines.len(), 2);
+    let no_at = r.port_times("confirm.answer")[0];
+    let gap = r.record.run_pipelines[1] - no_at;
+    // 7 s, the speech and the reflex's verdict; the old wait added 3 s more.
+    assert!(gap < 10.0, "the second run {gap:.2} s after the no");
+    // The asking turn ended once, before the new one.
+    let ends: Vec<Value> = r
+        .port("turn.end")
+        .into_iter()
+        .filter(|t| t["id"] == 1)
+        .collect();
+    assert_eq!(ends, vec![json!({"cmd": "turn.end", "id": 1, "said": ""})]);
+}
