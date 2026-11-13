@@ -3,7 +3,7 @@
 A **lightweight voice companion for Home Assistant** that turns an old smart display into a desk assistant with
 a face: a wake word heard on the device, an animated character on the screen, local timers and alarms, AirPlay
 music and screen mirroring, and your Home Assistant dashboard one tap away. The thinking is done by **the AI you
-already set up in Home Assistant** (Google Gemini, OpenAI, Anthropic, a local model): no API key on the device,
+already set up in Home Assistant** (Google Gemini, OpenAI, Anthropic): no API key on the device,
 no cloud of ours.
 
 The first device is the Lenovo ThinkSmart View (2 GB, a phone-class Snapdragon) running
@@ -23,23 +23,62 @@ If this project saved you some time, you can also
 
 ## What it does
 
+### 🏠 The home screen
+
+Alfred on a third of the screen; next to him the clock, the date and Home Assistant's weather, and one card per
+thing that matters now: a due reminder, the running timers, the next alarm, the next calendar event, what AirPlay is
+playing, a mirrored screen to go back to. Below: **HA**, **Talk** and **More**. A tap on the weather opens the
+forecast. Settings → Screen has a compact home, with room for a fourth card.
+
+At night Alfred sleeps: the clock stays, dimmed, with the next alarm, and a touch brings the home back for a few
+seconds. By day the brightness follows the room's light. When Home Assistant does not answer, the home says so and
+retries by itself; timers and alarms go on working.
+
+<p align="center">
+<img src="docs/images/night.png" width="400" alt="The night screen: Alfred asleep in his nightcap, the dimmed clock at 23:48 and the next alarm at 07:00"> <!-- state: night -->
+<img src="docs/images/offline.png" width="400" alt="Home Assistant is not answering: Alfred on a deckchair under a beach umbrella, the card says he retries by himself and that timers and alarms work"> <!-- state: offline -->
+</p>
+
 ### 🗣️ Talk to it
 
-Say **"Okay Alfred"**: the wake word is heard on the device, and no audio leaves it before that. Your question
-goes to Home Assistant's own voice pipeline (your speech-to-text, your AI agent, your voice) and Alfred answers on
-the screen and out loud. "Stop" or "basta" interrupts him; after a question of his, a "no thanks" closes it.
+Say **"Okay Alfred"**, or tap Talk: the wake word is heard on the device, and no audio leaves it before that. Your
+question goes to Home Assistant's own voice pipeline (your speech-to-text, your AI agent, your voice) and Alfred
+answers on the screen and out loud. "Stop" or "basta" interrupts him; "repeat" says the last answer again; after a
+question of his, a "no thanks" closes it.
 
-<p align="center"><img src="docs/images/speaking.png" width="640" alt="Alfred answering: how long do I boil eggs for"></p>
+If he woke up by mistake, **False alarm** next to Stop ends it and keeps that recording on the device, to train
+the wake word better.
 
-**Reflexes**: the time, timers, alarms, the volume and the music ("what time is it", "set a timer for 10 minutes",
-"next song") are understood **on the device** (Vosk with a closed grammar): instant, and they work with the Wi-Fi
-down. Anything else goes to Home Assistant.
+<p align="center">
+<img src="docs/images/listening.png" width="400" alt="Alfred with a hand to his ear: I'm listening, with the Stop and False alarm buttons"> <!-- state: listening -->
+<img src="docs/images/speaking.png" width="400" alt="Alfred answering: how long do I boil eggs for"> <!-- state: speaking -->
+</p>
 
-**Tools for your AI**: the device lends Home Assistant's agent its own tools over HA's built-in MCP client —
-memories, reminders, the shopping list, timers and alarms, and the house **with safety gates** (covers and valves
-only after a "yes"; locks, alarms, doors and gates never by voice).
+**Reflexes**: the time, timers, alarms, the volume, the music and the screen ("what time is it", "set a timer for
+10 minutes", "next song", "turn off the screen") are understood **on the device** (Vosk with a closed grammar):
+instant, and they work with the Wi-Fi down. Their answers are spoken in Home Assistant's voice, kept on the device
+once heard. Anything else goes to Home Assistant.
 
-Your scripts exposed to Assist work as tools, and your automations' sentence triggers still run first (Home Assistant checks them before the AI agent, even with "prefer local intents" off, whenever the request comes through the voice pipeline; only the answer to a follow-up question goes straight to the agent).
+**Tools for your AI**: the device lends Home Assistant's agent its own tools over HA's built-in MCP client:
+memories, reminders, lists, timers and alarms, do not disturb, and the house **with safety gates**.
+
+More → **What to say** lists examples of each kind on the screen.
+
+### ⏱️ Timers, alarms and reminders, on the device
+
+Timers and alarms live **on the device**: "set a pasta timer for 10 minutes", "wake me up at 7", "what timers do I
+have", "how long is left for the pasta", "cancel the timer" are reflexes, understood locally and done at once, and
+they ring even with the Wi-Fi or Home Assistant down. Several timers at a time, each with its name, pause and
+resume, alarms on chosen days; the last ten seconds tick and a named timer says its name when it rings. Home
+Assistant sees them as the satellite's timers.
+
+Reminders come from your AI ("remind me to call mum at five"): Alfred keeps them on the device and, when one is
+due, shows it full screen with a chime until you tap OK, or say "stop", or put it off ten minutes.
+
+<p align="center">
+<img src="docs/images/timers.png" width="400" alt="Timers and alarms: two timers, one paused, and two alarms with their days"> <!-- state: timers -->
+<img src="docs/images/reminder-due.png" width="400" alt="A due reminder full screen: Call mum, at 14:25, with OK and In 10 minutes"> <!-- state: reminder-due -->
+</p>
 
 ### 💡 The house, with a safety net
 
@@ -50,37 +89,44 @@ or no by voice or with a tap; after a spoken yes you have two seconds to take it
 says what was done, with Undo. Locks, alarms, doors and gates are never moved by voice.
 
 <p align="center">
-<img src="docs/images/house-ask.png" width="400" alt="Living room blind: close it? No and Yes, and the time left to answer">
-<img src="docs/images/house-done-asked.png" width="400" alt="The same window after the yes: Living room blind, Closed, with Undo and its time">
+<img src="docs/images/house-ask.png" width="400" alt="Living room blind: close it? No and Yes, and the time left to answer"> <!-- state: house-ask -->
+<img src="docs/images/house-done-asked.png" width="400" alt="The same window after the yes: Living room blind, Closed, with Undo and its time"> <!-- state: house-done-asked -->
 </p>
 
-### 🏠 The home screen
+### 🔕 The control centre and do not disturb
 
-The clock, the date and Home Assistant's weather, and one card per thing that matters now: a due reminder, the
-running timers, the next alarm, what AirPlay is playing, a mirrored screen to go back to. Below: **HA**, **Talk**
-and **More** (memories, reminders, shopping, settings); a pull from the top edge opens the control centre (volume,
-brightness, microphone, AirPlay, night). At night only the clock stays, dimmed;
-the brightness follows the room's light.
+A pull from the top edge opens the control centre: Wi-Fi, AirPlay, the microphone, night mode, do not disturb and
+the link to Home Assistant, each a tile that says how it stands; under them the volume, the brightness (by hand or
+automatic) and what is playing.
 
-### ⏱️ Timers, alarms and reminders, on the device
+**Do not disturb**, from its tile or by voice ("do not disturb for an hour", "good night"), silences the cards'
+sounds and the announcements; timers and alarms still ring. A bell asleep on a cushion at Alfred's feet shows it
+is on.
 
-Timers and alarms live **on the device**: "set a timer for 10 minutes", "wake me up at 7", "how much time is left",
-"cancel the timer" are reflexes, understood locally and done at once, and they ring even with the Wi-Fi or Home
-Assistant down. Several timers at a time, pause and resume, alarms on chosen days; Home Assistant sees them as the
-satellite's timers.
-
-Reminders come from your AI ("remind me to call mum at five"): Alfred keeps them on the device and, when one is
-due, shows it full screen with a chime until you tap OK, or say "stop", or put it off ten minutes.
+The **microphone switch** on top of the ThinkSmart View cuts the microphones in hardware; the screen shows it with
+a red "Microphone off" over the clock, and the control centre's tile says who switched it off.
 
 <p align="center">
-<img src="docs/images/timers.png" width="400" alt="Timers and alarms: two timers, one paused, and two alarms with their days">
-<img src="docs/images/reminder-due.png" width="400" alt="A due reminder full screen: Call mum, at 14:25, with OK and In 10 min">
+<img src="docs/images/control.png" width="400" alt="The control centre: tiles for Wi-Fi, Bluetooth, AirPlay, Microphone, Night, Do not disturb and HA, the volume and brightness bars, the song that is playing"> <!-- state: control-music -->
+<img src="docs/images/dnd.png" width="400" alt="The home with do not disturb on: Do not disturb until 07:00 over the clock and a bell on a red cushion at Alfred's feet"> <!-- state: dnd -->
 </p>
+
+### 🧠 Memories, reminders and lists
+
+What you tell Alfred to remember ("remember that the boiler is in the cellar") is kept **on the device** and tidied
+at night; More → Memories shows all of it, one tap forgets a memory, another forgets everything. Conversations are
+kept on the screen too, if you want them (Settings → Keep conversations).
+
+Lists and calendars are Home Assistant's: "add milk to the shopping list" writes to a `todo.*` list (Home
+Assistant's own, Bring!, ...), and the home's next card reads your `calendar.*` calendars. Home Assistant page →
+"Lists and calendars" has a switch for each; all of them are used until you switch some off, and several lists make
+a section each on the Shopping page.
 
 ### 📊 Home Assistant on the screen
 
 Your Home Assistant dashboard full screen, kept loaded in the background so it opens at once. The gold button, or
-a swipe from its edge, brings you back to Alfred; "Okay Alfred" still works over it.
+a swipe from its edge, brings you back to Alfred; "Okay Alfred" still works over it. "Show me the front door
+camera", or the name of a dashboard, opens it by voice.
 
 <p align="center">
 <img src="docs/images/home-assistant-3d.png" width="400" alt="A 3D floor plan of a house in Home Assistant, with its lights, covers, speaker and thermostat, and the gold home button">
@@ -88,7 +134,51 @@ a swipe from its edge, brings you back to Alfred; "Okay Alfred" still works over
 </p>
 <p align="center"><sub>A test Home Assistant with its demo devices.</sub></p>
 
-#### Cards from Home Assistant
+### 🎵 AirPlay: music and screen mirroring
+
+Pick the device in the AirPlay menu of an iPhone, an iPad or a Mac. **Music** shows its cover, title and artist,
+can be paused and skipped from the screen or by voice, and the phone's volume slider is the device's volume; the
+music goes quiet while Alfred listens, and a gramophone plays at his feet. **Screen mirroring** uses the hardware
+video decoder: upright, Alfred and the controls stay at the sides; sideways, the picture fills the screen and the
+controls come with a tap.
+
+<p align="center">
+<img src="docs/images/airplay.png" width="400" alt="A phone mirrored over AirPlay: the home button and Alfred on the left, the phone in the middle, the time, the controls and the volume on the right"> <!-- state: mirror-portrait -->
+<img src="docs/images/music.png" width="400" alt="AirPlay music: the cover, the title and the artist under it, the bar with previous, pause and next, the gramophone at Alfred's feet"> <!-- state: music -->
+</p>
+
+### 🔗 Set up from the screen
+
+At the first start the screen asks the language, finds Home Assistant on the network and shows a QR code: open it
+with a phone logged in to Home Assistant and the device sets itself up there: the Wyoming satellite, its tools
+over MCP, Alfred's agent under your AI and his voice pipeline. Nothing to type, nothing to copy.
+
+<p align="center">
+<img src="docs/images/setup-found.png" width="400" alt="Where is Home Assistant? Found on this network: two instances to tap, with Search again and Later"> <!-- state: first-ha-found -->
+<img src="docs/images/setup-qr.png" width="400" alt="Let's link Home Assistant: a QR code and three steps, scan, allow, done"> <!-- state: setup -->
+</p>
+
+### 🎛️ The Home Assistant page
+
+More → Home Assistant is where the link is looked after. Choose the AI Alfred thinks with, the speech-to-text, the
+text-to-speech and the voice among those your Home Assistant has; **Check and repair** looks at every step of the
+setup again and redoes what is missing; **Unlink** takes away what the device added to Home Assistant.
+
+**AI use** shows what the conversations cost: today, this month and the last 30 days. It is an estimate from
+reference prices, or the real numbers if your AI in Home Assistant is the
+[OpenAI with Token & Cost Tracking](https://github.com/m0s4ik/ha-openai-usage) integration.
+
+<p align="center">
+<img src="docs/images/ha-page.png" width="400" alt="The Home Assistant page: Intelligence, Speech-to-text, Text-to-speech and Voice with what is in use, the AI's cost today, Check and repair, Unlink"> <!-- state: ha -->
+<img src="docs/images/ai-use.png" width="400" alt="AI use: today's cost, this month's, requests and tokens, and a bar chart of the last 30 days"> <!-- state: usage-precise -->
+</p>
+
+### 🪶 Light
+
+Written in Rust for a 2 GB device. On the ThinkSmart View the body uses ~120 MB, the reflexes ~140 MB and the
+preloaded dashboard ~450 MB, on a system that uses 190 MB by itself.
+
+## From your automations
 
 An automation or a script can put a card on the home screen with Home Assistant's built-in `event` action, nothing
 to install:
@@ -106,42 +196,7 @@ event_data:
 ```
 
 The card plays the soft reminder sound by day and goes away with its OK. `home_companion_card_dismiss` with an `id`
-takes a card away. The home's "next" card shows the next calendar event or reminder, whichever is first, and
-tapping the weather opens the forecast.
-
-#### Lists and calendars
-
-Home Assistant page → "Lists and calendars": every `todo.*` list (Home Assistant's own, Bring!, ...) and every
-`calendar.*` calendar Home Assistant has, each with a switch. All of them are shown until you switch some off; several
-lists make a section each on the shopping page.
-
-### 🎵 AirPlay: music and screen mirroring
-
-Pick the device in the AirPlay menu of an iPhone, an iPad or a Mac. **Music** shows its title and cover, can be
-paused and skipped from the screen or by voice, and the phone's volume slider is the device's volume; the music
-goes quiet while Alfred listens. **Screen mirroring** uses the hardware video decoder: upright, Alfred and the
-controls stay at the sides; sideways, the picture fills the screen and the controls come with a tap.
-
-<p align="center">
-<img src="docs/images/airplay.png" width="400" alt="A phone mirrored over AirPlay: the home button and Alfred on the left, the phone in the middle, the time, the controls and the volume on the right">
-<img src="docs/images/music.png" width="400" alt="AirPlay music: the cover, the title and the artist under it, the bar with previous, pause and next, the gramophone at Alfred's feet">
-</p>
-
-### 🔗 Set up from the screen
-
-At the first start the screen asks the language, finds Home Assistant on the network and shows a QR code: open it
-with a phone logged in to Home Assistant and the device sets itself up there — the Wyoming satellite, its tools
-over MCP, Alfred's agent under your AI and his voice pipeline. Nothing to type, nothing to copy.
-
-<p align="center">
-<img src="docs/images/setup-qr.png" width="400" alt="Let's link Home Assistant: a QR code and three steps, scan, allow, done">
-<img src="docs/images/setup-done.png" width="400" alt="The Home Assistant page once linked: the AI, speech-to-text, text-to-speech and voice in use, the AI's cost today, Check and repair, Unlink">
-</p>
-
-### 🪶 Light
-
-Written in Rust for a 2 GB device. On the ThinkSmart View the body uses ~120 MB, the reflexes ~140 MB and the
-preloaded dashboard ~450 MB, on a system that uses 190 MB by itself.
+takes a card away.
 
 ## How it works
 
@@ -160,16 +215,20 @@ Home Assistant does the thinking; the device is its body. Only what a normal Hom
 used: Wyoming, the MCP client, the WebSocket API with the token from the QR link, `ai_task`. No add-ons, no MQTT,
 no second key.
 
+Your scripts exposed to Assist work as tools. Your automations' sentence triggers still run first: Home Assistant
+checks them before the AI agent whenever the request comes through the voice pipeline, even with "prefer local
+intents" off. Only the answer to a follow-up question goes straight to the agent.
+
 ## Install
 
 You need a **Lenovo ThinkSmart View with [thinksmart-view-debian](https://github.com/m0s4ik/thinksmart-view-debian)
-v0.3-rc3 or later**, built with `WEB=1` (the Home Assistant view) and `AIRPLAY=1` (AirPlay) if you want them. The
+v0.4** (v0.3-rc3 or later works), built with `WEB=1` (the Home Assistant view) and `AIRPLAY=1` (AirPlay) if you want them. The
 system image is where the Wi-Fi and your ssh key are set. Then, on the device:
 
 ```sh
-curl -LO https://github.com/m0s4ik/home-companion/releases/download/v0.1.0/home-companion-0.1.0-arm64.tar.gz
-tar xzf home-companion-0.1.0-arm64.tar.gz
-cd home-companion-0.1.0-arm64 && ./install.sh
+curl -LO https://github.com/m0s4ik/home-companion/releases/download/v0.2.0/home-companion-0.2.0-arm64.tar.gz
+tar xzf home-companion-0.2.0-arm64.tar.gz
+cd home-companion-0.2.0-arm64 && ./install.sh
 ```
 
 The installer asks nothing: it checks the system (it never lets apt replace the image's Mesa), installs the
@@ -177,13 +236,16 @@ programs and the services, downloads the speech models of every language and sta
 language → Home Assistant (found on the network) → QR code. Options (`--language`, `--ha-url`, `--no-airplay`,
 `--uninstall`, `--dry-run`…) and the manual steps are in [packaging/README.md](packaging/README.md).
 
+**Updating** is the same three lines with the new version: an installed one is updated in place and its settings
+stay.
+
 To change the Wi-Fi later: `nmcli device wifi connect "<ssid>" password "<password>"` on the device.
 
 ## Languages
 
 Italian and English, complete: the screen (`locales/`), the reflexes' grammar
 (`characters/alfred/grammar/`) and the speech model the installer downloads. With any other language set in Home
-Assistant, the device still works — Home Assistant answers in its language — without the local reflexes.
+Assistant, the device still works (Home Assistant answers in its language) without the local reflexes.
 
 Adding a language: a `locales/<lang>.toml`, a `characters/alfred/grammar/<lang>.toml`, the number words in
 `crates/reflex/src/slots.rs`, and the [Vosk model](https://alphacephei.com/vosk/models) in the installer's
@@ -196,7 +258,7 @@ Cross-compiled from an amd64 Debian 13 with the arm64 multiarch libraries:
 ```sh
 cargo build --release --target aarch64-unknown-linux-gnu -p home-companion --no-default-features --features fbdev,gpu
 cargo run -p home-companion -- --simulator          # the screen in a window on a laptop
-tools/release/build-bundle.sh 0.1.0                 # the release bundle
+tools/release/build-bundle.sh 0.2.0                 # the release bundle
 ```
 
 Contributing, with or without a coding assistant: [AGENTS.md](AGENTS.md).
