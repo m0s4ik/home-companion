@@ -4119,7 +4119,8 @@ export component CompanionWindow inherits Window {
     property <bool> ask-done: !root.ask-shown && root.done-shown && root.done-popup && root.done-from-ask;
     if (root.ask-shown || root.ask-done) && !root.starting: Dialog {
         property <bool> asking: root.ask-shown && !root.ask-working;
-        scrim: self.asking;
+        // The veil stays to the end: one window, and the page under it does not read through.
+        scrim: true;
         closable: root.ask-done;
         icon: root.ask-done ? Icons.check-circle-48 : root.ask-working ? Icons.refresh-44 : Icons.help-circle-48;
         title: root.ask-done ? root.done-name : root.ask-working ? root.ask-working-title : root.ask-text;

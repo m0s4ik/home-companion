@@ -2632,7 +2632,7 @@ impl<S: Screen> Ui<S> {
         }
         if d.control {
             let st = crate::ui::control::ControlState {
-                wifi: Some("Casa".into()),
+                wifi: Some("Home".into()),
                 bluetooth: None,
                 airplay: Some(if d.cards {
                     "iPhone".into()
@@ -2651,7 +2651,7 @@ impl<S: Screen> Ui<S> {
                 .set_control(true, &tiles, 62, true, &w("cc_auto"));
         }
         self.screen.set_setup(
-            &w("wifi_named").replace("{ssid}", "Casa"),
+            &w("wifi_named").replace("{ssid}", "Home"),
             &w("setup_ha").replace("{host}", "ha.example.org"),
         );
         // A real code of the link, to a sample address (screenshots, docs).
@@ -2767,7 +2767,7 @@ impl<S: Screen> Ui<S> {
                     "{} · {}",
                     l.text("brain_status")
                         .replace("{facts}", &n)
-                        .replace("{model}", "gemini"),
+                        .replace("{model}", "gpt-5-mini"),
                     l.text("tidy_line")
                         .replace("{t}", "03:30")
                         .replace("{merged}", "2")
@@ -4230,9 +4230,10 @@ impl<S: Screen> Ui<S> {
         let d = self.desk.borrow();
         let mut parts = Vec::new();
         if !d.timers.is_empty() {
+            let n = d.timers.len();
             parts.push(
-                l.text("tile_timers")
-                    .replace("{n}", &d.timers.len().to_string()),
+                l.text(if n == 1 { "tile_timer" } else { "tile_timers" })
+                    .replace("{n}", &n.to_string()),
             );
         }
         let alarms = crate::alarms::Alarms::from_list(d.alarms.clone());
