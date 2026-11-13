@@ -3357,7 +3357,9 @@ impl Core {
                 let t = self.reflex_text("question_no", &[]);
                 self.notice(&t);
             }
-            (None, "timeout") => {
+            // Unanswered: the brain's timeout, or the screen's own safety net a moment before it
+            // (never a question replaced by a newer one).
+            (None, v) if v != "replaced" => {
                 let t = self.reflex_text("question_expired", &[]);
                 self.notice(&t);
             }
