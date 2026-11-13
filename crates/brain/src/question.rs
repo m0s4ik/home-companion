@@ -20,8 +20,9 @@ pub const ASK_MS: i64 = 30_000;
 pub const CONFIRM_DELAY_MS: i64 = 2_000;
 
 /// What the model is told when the question is on the screen.
-pub const SAY_NOTHING: &str =
-    "nothing: the question is on the screen and the device listens for the answer";
+pub const SAY_NOTHING: &str = "nothing: the device asks the question and hears the answer itself; \
+     you will not see the answer and nothing is pending for you. Every later request, even the same \
+     one, is a new call to home_control";
 
 /// Where an answer came from (or why the question closed without one).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

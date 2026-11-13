@@ -198,8 +198,7 @@ fn assert_shape(r: &Value) {
     assert!(r.get("asked").is_some(), "asked in {r}");
 }
 
-const SAY_NOTHING: &str =
-    "nothing: the question is on the screen and the device listens for the answer";
+use brain::question::SAY_NOTHING;
 
 #[test]
 fn b01_close_one_cover_asks() {
