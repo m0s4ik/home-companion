@@ -540,7 +540,7 @@ fn a_house_command_is_reported_and_can_be_undone() {
     assert!(!err);
     let c = screen.event("changed");
     assert_eq!(c["undo"], true);
-    // A service outside the table is refused; one with no clear inverse has no Undo.
+    // A service outside the table is refused; one with no inverse is undone by its snapshot.
     let (_, err) = tool(
         &b,
         "home_control",
@@ -553,7 +553,7 @@ fn a_house_command_is_reported_and_can_be_undone() {
         json!({"entity_id": "climate.casa", "service": "set_temperature", "data": {"temperature": 20}}),
     );
     assert!(!err, "{r}");
-    assert_eq!(screen.event("changed")["undo"], false);
+    assert_eq!(screen.event("changed")["undo"], true);
     let _ = std::fs::remove_dir_all(dir);
 }
 

@@ -787,6 +787,31 @@ fn b27_undo_after_a_yes() {
 }
 
 #[test]
+fn b27b_undo_of_a_position_after_a_yes() {
+    let mut s = S::new("b27b");
+    let q = S::asked(&s.call(
+        "home_control",
+        json!({"entity_id": "cover.study", "service": "set_cover_position", "data": {"position": 0}}),
+    ));
+    s.answer(q, true, "screen");
+    let ev = s.expect(
+        &[
+            "scene.create",
+            "cover.set_cover_position cover.study {\"position\":0}",
+        ],
+        &["confirm", "changed", "confirm_done"],
+    );
+    assert_eq!(ev[1]["undo"], true);
+    let r = s.control(json!({"cmd": "control.undo", "id": ev[1]["id"]}));
+    assert_eq!(r["ok"], true, "{r}");
+    let got = s.services();
+    assert!(
+        got.len() == 1 && got[0].starts_with("scene.turn_on scene."),
+        "{got:?}"
+    );
+}
+
+#[test]
 fn b28_the_answering_turn_after_a_no() {
     let mut s = S::new("b28");
     s.turn(7, "chiudi la tapparella", None);

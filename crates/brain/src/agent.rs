@@ -156,6 +156,9 @@ const UNDO_MS: i64 = 120_000;
 const UNDO_KEPT: usize = 16;
 
 /// The service that undoes `service`, when there is a clear one.
+/// The undo of a service with no inverse: only the snapshot scene can undo it.
+const SNAPSHOT_ONLY: &str = "";
+
 fn inverse(service: &str) -> Option<&'static str> {
     Some(match service {
         "turn_on" => "turn_off",
@@ -997,6 +1000,9 @@ impl Brain {
                 }
             }
         }
+        if d.undo_service == SNAPSHOT_ONLY {
+            return Err("the device could not be put back as it was".into());
+        }
         self.run_control(ha, &e, d.undo_service, &json!({}), false)
     }
 
@@ -1012,7 +1018,8 @@ impl Brain {
         undo_ok: bool,
     ) -> Result<(), String> {
         let id = self.next_id();
-        let undo = inverse(service).filter(|_| undo_ok);
+        // A service with no inverse ("set_cover_position") is undone by the snapshot alone.
+        let undo = inverse(service).or(Some(SNAPSHOT_ONLY)).filter(|_| undo_ok);
         // Before the command: a snapshot of the entity for the undo (brightness, colour…).
         let scene = undo.and_then(|_| {
             let scene = undo_scene(id);
@@ -1028,6 +1035,8 @@ impl Brain {
                 }
             }
         });
+        // Without an inverse, no snapshot means no undo.
+        let undo = undo.filter(|u| *u != SNAPSHOT_ONLY || scene.is_some());
         ha.control(&e.entity_id, service, data, Duration::from_secs(10))?;
         // The state changed: the cached list is stale.
         *self.entities.lock().unwrap_or_else(|e| e.into_inner()) = None;
