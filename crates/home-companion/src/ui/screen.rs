@@ -2586,15 +2586,7 @@ impl<S: Screen> Ui<S> {
                 } else {
                     2
                 };
-                let sample = if d.music_wide {
-                    "cover-sample-wide.png"
-                } else {
-                    "cover-sample.png"
-                };
-                let blur = (layout == 2)
-                    .then(|| blurred_cover(&design.join(sample)))
-                    .flatten();
-                self.screen.set_music_layout(layout, blur);
+                self.screen.set_music_layout(layout);
                 desk.music = Some(MusicView {
                     title: "Clair de lune".into(),
                     artist: "Claude Debussy".into(),
@@ -3248,9 +3240,7 @@ impl<S: Screen> Ui<S> {
             UiCommand::Music(n) => {
                 let path = n.as_ref().and_then(|n| n.cover.as_deref());
                 let cover = path.and_then(load_cover);
-                // The page's background: the same picture, small, blurred and dark.
-                self.screen
-                    .set_music_layout(2, path.and_then(blurred_cover));
+                self.screen.set_music_layout(2);
                 // A sender with no track information (a Mac's system sound): a title anyway.
                 let untitled = self.locale.borrow().text("music_untitled").to_string();
                 {
@@ -5387,20 +5377,6 @@ fn parse_ssid(info: &str) -> Option<String> {
 
 /// AirPlay's cover art, decoded here and not with `Image::load_from_path`: Slint caches images
 /// by path, and every cover is written to the same file. At most 320 px (the page shows 304).
-/// A picture small, blurred and dark: the music page's background (layout 2).
-fn blurred_cover(path: &std::path::Path) -> Option<Image> {
-    let img = image::open(path).ok()?.thumbnail(96, 96).to_rgba8();
-    let mut img = image::imageops::blur(&img, 6.0);
-    for p in img.pixels_mut() {
-        for c in 0..3 {
-            p[c] = (p[c] as f32 * 0.6) as u8;
-        }
-    }
-    let (w, h) = img.dimensions();
-    let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(img.as_raw(), w, h);
-    Some(Image::from_rgba8(buf))
-}
-
 fn load_cover(path: &std::path::Path) -> Option<Image> {
     let bytes = std::fs::read(path).ok()?;
     let img = image::load_from_memory(&bytes)

@@ -637,9 +637,9 @@ export component CompanionWindow inherits Window {
     // The spectrum on the music page (off: the picture larger instead).
     in property <bool> music-spectrum-shown: false;
     // Layouts of the music page: 0 the picture and the title centred under it, 1 the picture
-    // large, 2 (the one in use) over a blurred copy of the picture, 3 the title in the bar.
+    // large, 2 (the one in use; it had a blurred copy of the picture behind, dropped 13/11:
+    // muddy and cut against the stage), 3 the title in the bar.
     in property <int> music-layout: 2;
-    in property <image> music-cover-blur;
     in property <[float]> music-peaks: [];
     in property <string> music-title: "";
     in property <string> music-artist: "";
@@ -2910,25 +2910,6 @@ export component CompanionWindow inherits Window {
     // ---- Music: what is playing, large; the transport in the action band. Only while something
     // plays (AirPlay is not there yet: the data is a placeholder).
     if root.desk && root.desk-page == "music": Rectangle {
-        // Layout 2: the picture blurred and dark behind the column, its colour as the page's air.
-        if root.music-layout == 2 && root.music-cover-blur.width > 0: Rectangle {
-            x: Grid.stage-width;
-            width: root.width - Grid.stage-width;
-            height: root.height;
-            clip: true;
-            Image {
-                width: parent.width;
-                height: parent.height;
-                source: root.music-cover-blur;
-                image-fit: ImageFit.cover;
-                opacity: 0.55;
-            }
-            // The stage's edge melts into it.
-            Rectangle {
-                width: 96px;
-                background: @linear-gradient(90deg, Theme.bg 0%, Theme.bg.with-alpha(0) 100%);
-            }
-        }
         PageHeader {
             x: Grid.col-x;
             y: Grid.header-y;

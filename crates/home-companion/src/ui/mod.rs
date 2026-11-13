@@ -358,8 +358,8 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_wifi_level(&self, level: i32);
     /// The music page's spectrum: band levels and their peaks, 0..1, low bands first.
     fn set_music_spectrum(&self, bands: &[f32], peaks: &[f32]);
-    /// Trying layouts of the music page (0..3) and its blurred picture (layout 2).
-    fn set_music_layout(&self, layout: i32, blur: Option<Image>);
+    /// Trying layouts of the music page (0..3).
+    fn set_music_layout(&self, layout: i32);
     /// The compact home (the clock higher, four cards) or the normal one.
     fn set_home_compact(&self, on: bool);
     fn on_home_compact_changed(&self, f: impl Fn(bool) + 'static);
@@ -1247,9 +1247,8 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_music_bands(self, model!(bands.to_vec()));
                 $m::CompanionWindow::set_music_peaks(self, model!(peaks.to_vec()));
             }
-            fn set_music_layout(&self, layout: i32, blur: Option<Image>) {
+            fn set_music_layout(&self, layout: i32) {
                 $m::CompanionWindow::set_music_layout(self, layout);
-                $m::CompanionWindow::set_music_cover_blur(self, blur.unwrap_or_default());
             }
             fn set_home_compact(&self, on: bool) {
                 self.global::<$m::Grid>().set_compact(on);
