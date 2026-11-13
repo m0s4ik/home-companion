@@ -2023,7 +2023,10 @@ pub fn speech_hints(language: &str) -> Option<(&'static str, &'static str)> {
     match language.split(['-', '_']).next()? {
         "it" => Some((
             "Parla in italiano, con un accento italiano naturale.",
-            "Comandi vocali in italiano rivolti all'assistente di casa.",
+            // Not only what it is about: an order. With "Comandi vocali in italiano…" the mini
+            // model transcribed an Italian sentence in Spanish (3 times out of 3) and wrote the
+            // prompt itself on a false wake's noise; with this one, Italian and nothing (13/11).
+            "Trascrivi in italiano. Comandi per un assistente di casa in italiano.",
         )),
         _ => None,
     }
