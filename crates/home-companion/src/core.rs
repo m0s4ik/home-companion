@@ -3216,6 +3216,12 @@ impl Core {
                 let voice = self.next_voice_id;
                 self.next_voice_id += 1;
                 v.say(voice, &self.question_text, self.ha.is_connected());
+                // What may be said right after the answer, ready in the cache by then (else a
+                // yes's "Chiudo la tapparella." comes 1.5 s into its two seconds to take it back).
+                if self.ha.is_connected() {
+                    v.prepare(&self.yes_notice());
+                    v.prepare(&self.reflex_text("question_no", &[]));
+                }
                 self.asking_voice = Some(AskVoice {
                     id,
                     voice,
@@ -3303,6 +3309,14 @@ impl Core {
         }
     }
 
+    /// "Chiudo la tapparella?" → "Chiudo la tapparella.": what is about to happen after a yes.
+    fn yes_notice(&self) -> String {
+        format!(
+            "{}.",
+            self.question_text.trim().trim_end_matches('?').trim()
+        )
+    }
+
     /// A spoken yes was received: the success sound now (once for this question), the stop
     /// word listens until its commands run, and Home Assistant's words about it are swallowed.
     fn on_question_pending(&mut self, id: i64, until_ms: u64) {
@@ -3313,11 +3327,7 @@ impl Core {
         if self.dinged != Some(id) {
             self.dinged = Some(id);
             self.success_cue();
-            // "Chiudo la tapparella?" → "Chiudo la tapparella.": what is about to happen.
-            let said = format!(
-                "{}.",
-                self.question_text.trim().trim_end_matches('?').trim()
-            );
+            let said = self.yes_notice();
             self.notice(&said);
         }
         let with_ha = self.gate.is_none() && self.phase.in_conversation();

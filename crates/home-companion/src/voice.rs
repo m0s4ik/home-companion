@@ -55,6 +55,9 @@ pub struct VoiceReply {
 pub trait VoiceLink: Send {
     /// Asks for `text` said aloud; `online` = Home Assistant may be asked (else the cache only).
     fn say(&self, id: u64, text: &str, online: bool);
+    /// Puts `text` in the cache ahead of time (nothing is answered): a phrase that may be said
+    /// at once a moment later ("Chiudo la tapparella." after a yes) is not 1.5 s late then.
+    fn prepare(&self, _text: &str) {}
 }
 
 /// The reflex's answer is said aloud rather than its sound played: there is a sound to replace
@@ -273,6 +276,8 @@ struct Request {
     id: u64,
     text: String,
     online: bool,
+    /// Only into the cache: no reply.
+    prepare: bool,
 }
 
 /// The voice thread: requests are made one at a time, in order.
@@ -292,7 +297,9 @@ impl Voice {
                 let cache = Cache::new(cfg.state_dir.join("tts-cache"));
                 for r in rx {
                     let speech = make(&cfg, &cache, &r);
-                    reply(VoiceReply { id: r.id, speech });
+                    if !r.prepare {
+                        reply(VoiceReply { id: r.id, speech });
+                    }
                 }
             })?;
         Ok(Voice { tx })
@@ -305,6 +312,16 @@ impl VoiceLink for Voice {
             id,
             text: text.to_string(),
             online,
+            prepare: false,
+        });
+    }
+
+    fn prepare(&self, text: &str) {
+        let _ = self.tx.send(Request {
+            id: 0,
+            text: text.to_string(),
+            online: true,
+            prepare: true,
         });
     }
 }
