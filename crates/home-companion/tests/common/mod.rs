@@ -194,7 +194,7 @@ impl home_companion::reflex::ReflexLink for ScriptReflex {
             let _ = self.tx.lock().unwrap().send(e);
         };
         match r {
-            Request::Start(id) => {
+            Request::Start(id) | Request::StartAnswer(id) => {
                 st.id = id;
                 st.samples = 0;
                 st.partials_sent = 0;
