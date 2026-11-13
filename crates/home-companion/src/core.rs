@@ -408,6 +408,9 @@ struct AskVoice {
     stream: Option<audio::Stream>,
 }
 
+/// How long the answer's words may take after the transcript (see `on_transcript`).
+const AFTER_TRANSCRIPT: Duration = Duration::from_secs(20);
+
 /// How long the question's voice may take to come before listening starts without it.
 const ASK_VOICE_WAIT: Duration = Duration::from_millis(2500);
 
@@ -2515,6 +2518,13 @@ impl Core {
         }
         if self.phase == Phase::Listening {
             self.end_listening();
+        }
+        // Heard: the answer's words come within seconds (a web search included). An empty
+        // answer (the model said nothing) or a model that hangs sends nothing at all: the
+        // conversation ends then, not after the whole think timeout.
+        let after = Instant::now() + AFTER_TRANSCRIPT;
+        if self.think_deadline.is_none_or(|t| t > after) {
+            self.think_deadline = Some(after);
         }
         // An empty transcript is followed by an `error`: wait for it.
         self.ui(UiCommand::Heard(text));

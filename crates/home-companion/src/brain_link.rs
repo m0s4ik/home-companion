@@ -371,9 +371,16 @@ pub fn feed_ha_token(
         .name("brain-token".into())
         .spawn(move || {
             let mut told = None;
+            let mut last_exp = 0u64;
             loop {
                 let token = match auth.linked_tokens() {
-                    Ok(Some(t)) => Ok((t.access_token, t.expires_at)),
+                    Ok(Some(t)) => {
+                        if t.expires_at != last_exp {
+                            last_exp = t.expires_at;
+                            log::info!(event = "brain_token", expires_in_s = t.expires_at as i64 - now_secs() as i64; "brain: Home Assistant token for the next {} s", t.expires_at as i64 - now_secs() as i64);
+                        }
+                        Ok((t.access_token, t.expires_at))
+                    }
                     Ok(None) => auth.access_token().map(|t| (t, now_secs() + 900)),
                     Err(e) => Err(e),
                 };
@@ -394,7 +401,7 @@ pub fn feed_ha_token(
                     })
                     .is_some_and(|a| a.get("ok") == Some(&Value::Bool(true))),
                     Err(e) => {
-                        log::debug!("brain token: {e}");
+                        log::warn!(event = "brain_token"; "brain token: {e}");
                         false
                     }
                 };

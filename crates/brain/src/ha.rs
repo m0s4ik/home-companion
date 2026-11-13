@@ -95,7 +95,17 @@ impl Ha {
             .clone();
         match pushed {
             Some((t, exp)) if exp > now_secs() + 30 => Ok(t),
-            _ => read_secret(&self.cfg.token_file).ok_or_else(|| {
+            other => read_secret(&self.cfg.token_file).ok_or_else(|| {
+                log::warn!(
+                    event = "ha_token",
+                    pushed = other.is_some(),
+                    expires_in_s = other.map_or(-1, |(_, e)| e as i64 - now_secs() as i64);
+                    "no valid Home Assistant token: the body's {}",
+                    match other {
+                        Some((_, e)) => format!("expires in {} s", e as i64 - now_secs() as i64),
+                        None => "never came".into(),
+                    }
+                );
                 format!(
                     "no Home Assistant token (none from the body, none in {})",
                     self.cfg.token_file
@@ -473,7 +483,12 @@ pub fn entities_from(
                 members: attrs
                     .get("entity_id")
                     .and_then(Value::as_array)
-                    .map(|v| v.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                    .map(|v| {
+                        v.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
                     .unwrap_or_default(),
             })
         })

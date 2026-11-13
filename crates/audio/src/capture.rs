@@ -76,6 +76,58 @@ impl CaptureShared {
     }
 }
 
+/// Development only: with `HOME_COMPANION_INJECT_DIR` set, a 16 kHz WAV dropped there as
+/// `inject.wav` replaces the microphone, frame by frame at the card's pace, then the file is
+/// removed and the microphone comes back. It lets recorded voices drive the running body (the
+/// wake word, the reflexes, Home Assistant) for trials without a person in the room.
+struct Injector {
+    path: std::path::PathBuf,
+    pending: std::collections::VecDeque<i16>,
+    checked: Instant,
+}
+
+impl Injector {
+    fn from_env() -> Option<Injector> {
+        let dir = std::env::var_os("HOME_COMPANION_INJECT_DIR")?;
+        let path = std::path::PathBuf::from(dir).join("inject.wav");
+        log::warn!("capture: test injection on, from {}", path.display());
+        Some(Injector {
+            path,
+            pending: Default::default(),
+            checked: Instant::now(),
+        })
+    }
+
+    fn replace(&mut self, frame: &mut [i16]) {
+        if self.pending.is_empty() && self.checked.elapsed() >= Duration::from_millis(100) {
+            self.checked = Instant::now();
+            if self.path.exists() {
+                match crate::wav::read_mono_16k(&self.path, ChannelPick::Left) {
+                    Ok(v) => {
+                        log::info!(
+                            "capture: injecting {:.2} s from {}",
+                            v.len() as f64 / 16_000.0,
+                            self.path.display()
+                        );
+                        self.pending.extend(v);
+                    }
+                    Err(e) => log::warn!("capture: {}: {e}", self.path.display()),
+                }
+                let _ = std::fs::remove_file(&self.path);
+            }
+        }
+        if self.pending.is_empty() {
+            return;
+        }
+        for x in frame.iter_mut() {
+            *x = self.pending.pop_front().unwrap_or(0);
+        }
+        if self.pending.is_empty() {
+            log::info!("capture: injection over, the microphone again");
+        }
+    }
+}
+
 pub(crate) struct CapThreadCfg {
     pub pick: ChannelPick,
     pub agc: Option<Agc>,
@@ -159,11 +211,15 @@ fn capture_loop(
     let mut reported_dropped = 0u64;
     let mut last_drop_event = Instant::now() - Duration::from_secs(10);
     let mut last_overruns = 0u64;
+    let mut inject = Injector::from_env();
 
     while !stop.load(Ordering::Relaxed) {
         be.read(&mut buf)?;
         chunks.push(&buf, ch);
         while let Some(mut samples) = chunks.next_frame() {
+            if let Some(i) = inject.as_mut() {
+                i.replace(&mut samples);
+            }
             if let Some(agc) = cfg.agc.as_mut() {
                 agc.process(&mut samples)?;
             }
