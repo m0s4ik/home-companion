@@ -333,6 +333,20 @@ fn name_key(s: &str) -> String {
         .join(" ")
 }
 
+/// The words of a name, lowercase, without articles and prepositions (Italian and English).
+fn name_words(s: &str) -> Vec<String> {
+    const SKIP: &[&str] = &[
+        "di", "del", "della", "dello", "dei", "degli", "delle", "la", "il", "lo", "le", "gli", "l",
+        "d", "in", "nel", "nella", "nello", "sul", "sulla", "a", "al", "alla", "the", "of", "on",
+        "at",
+    ];
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty() && !SKIP.contains(w))
+        .map(str::to_string)
+        .collect()
+}
+
 /// The exposed entity a model meant: its exact id, or else the one whose name (with or without its
 /// device) reads like the id it made up ("light.strip_office_right" for "Strip Office Right"). The error says
 /// what to do instead, and that it is not a permission problem (models tend to say so).
@@ -352,6 +366,33 @@ pub fn resolve_entity<'a>(
             !key.is_empty() && (name_key(&e.name) == key || name_key(&e.full_name()) == key)
         })
         .collect();
+    // Else by words, in any order and without articles or prepositions, the room counting as
+    // one of the name's words: "tapparella di prova" is "Tapparella prova", "tapparella sinistra
+    // salone" is "Tapparella salone sinistra". Every asked word must belong to the device; among
+    // several, the ones whose own name is all in what was asked win.
+    let same = if same.is_empty() {
+        let asked_w = name_words(object);
+        let cands: Vec<&crate::ha::Entity> = exposed
+            .iter()
+            .filter(|e| domain.is_empty() || e.domain() == domain)
+            .filter(|e| {
+                let own = name_words(&format!("{} {} {}", e.name, e.device, e.area));
+                !asked_w.is_empty() && asked_w.iter().all(|w| own.contains(w))
+            })
+            .collect();
+        let exact: Vec<&crate::ha::Entity> = cands
+            .iter()
+            .copied()
+            .filter(|e| {
+                name_words(&e.name)
+                    .iter()
+                    .all(|w| asked_w.contains(w) || name_words(&e.area).contains(w))
+            })
+            .collect();
+        if exact.is_empty() { cands } else { exact }
+    } else {
+        same
+    };
     match same.as_slice() {
         [one] => Ok(one),
         [] => Err(format!(
@@ -2625,6 +2666,43 @@ mod tests {
         );
         let e = resolve_entity(&all, "light.kitchen").unwrap_err();
         assert!(e.contains("not a permission problem"), "{e}");
+        // By words, in any order, without "di", the room as a word of the name.
+        let mut blinds = vec![
+            ent("cover.prova", "Tapparella prova", ""),
+            ent("cover.ss", "Tapparella salone sinistra", ""),
+            ent("cover.sd", "Tapparella salone destra", ""),
+        ];
+        blinds[0].area = "Stanza di prova".into();
+        assert_eq!(
+            resolve_entity(&blinds, "tapparella di prova")
+                .unwrap()
+                .entity_id,
+            "cover.prova"
+        );
+        assert_eq!(
+            resolve_entity(&blinds, "cover.tapparella_di_prova")
+                .unwrap()
+                .entity_id,
+            "cover.prova"
+        );
+        assert_eq!(
+            resolve_entity(&blinds, "tapparella sinistra del salone")
+                .unwrap()
+                .entity_id,
+            "cover.ss"
+        );
+        assert_eq!(
+            resolve_entity(&blinds, "Tapparella prova")
+                .unwrap()
+                .entity_id,
+            "cover.prova"
+        );
+        let e = resolve_entity(&blinds, "tapparella salone").unwrap_err();
+        assert!(
+            e.contains("ambiguous") && e.contains("cover.ss") && e.contains("cover.sd"),
+            "{e}"
+        );
+        assert!(resolve_entity(&blinds, "tapparella cucina").is_err());
     }
 
     #[test]

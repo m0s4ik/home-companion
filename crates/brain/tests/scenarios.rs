@@ -12,10 +12,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use brain::agent::Brain;
-use brain::question::CONFIRM_DELAY_MS;
 use brain::clock::ManualClock;
 use brain::config::Config;
 use brain::control::Hub;
+use brain::question::CONFIRM_DELAY_MS;
 use common::*;
 use serde_json::{Value, json};
 
@@ -780,7 +780,10 @@ fn b27_undo_after_a_yes() {
     let r = s.control(json!({"cmd": "control.undo", "id": ev[1]["id"]}));
     assert_eq!(r["ok"], true, "{r}");
     let got = s.services();
-    assert!(got.len() == 1 && got[0].starts_with("scene.turn_on scene."), "{got:?}");
+    assert!(
+        got.len() == 1 && got[0].starts_with("scene.turn_on scene."),
+        "{got:?}"
+    );
 }
 
 #[test]
@@ -888,7 +891,11 @@ fn answered_outside_then_the_same_call(name: &str, yes: bool, via: &str) {
     s.expect(&[], &["confirm"]);
     s.answer(q, yes, via);
     if yes {
-        s.advance(if via == "voice_reflex" { CONFIRM_DELAY_MS } else { 0 });
+        s.advance(if via == "voice_reflex" {
+            CONFIRM_DELAY_MS
+        } else {
+            0
+        });
         s.expect(
             &["cover.close_cover cover.study"],
             &if via == "voice_reflex" {

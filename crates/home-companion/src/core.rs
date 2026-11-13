@@ -3230,7 +3230,9 @@ impl Core {
 
     /// The question's voice came: played, or (none) listening at once.
     fn on_ask_voice(&mut self, sp: Option<crate::voice::Speech>) {
-        let Some(a) = &mut self.asking_voice else { return };
+        let Some(a) = &mut self.asking_voice else {
+            return;
+        };
         let id = a.id;
         match sp {
             Some(sp) if a.stream.is_none() => {
@@ -3297,7 +3299,10 @@ impl Core {
             self.dinged = Some(id);
             self.success_cue();
             // "Chiudo la tapparella?" → "Chiudo la tapparella.": what is about to happen.
-            let said = format!("{}.", self.question_text.trim().trim_end_matches('?').trim());
+            let said = format!(
+                "{}.",
+                self.question_text.trim().trim_end_matches('?').trim()
+            );
             self.notice(&said);
         }
         let with_ha = self.gate.is_none() && self.phase.in_conversation();

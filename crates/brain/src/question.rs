@@ -245,7 +245,9 @@ mod tests {
         let mut a = q();
         assert_eq!(
             a.answer(true, Via::VoiceReflex, 2_000),
-            Effect::Pending { until_ms: 2_000 + CONFIRM_DELAY_MS }
+            Effect::Pending {
+                until_ms: 2_000 + CONFIRM_DELAY_MS
+            }
         );
         assert_eq!(a.answer(true, Via::VoiceHa, 2_100), Effect::Ignored);
         assert_eq!(a.deadline(), Some(2_000 + CONFIRM_DELAY_MS));
@@ -257,7 +259,10 @@ mod tests {
         b.answer(true, Via::VoiceHa, 2_000);
         assert!(b.confirm_due(2_000 + CONFIRM_DELAY_MS));
         assert_eq!(b.state, State::Executing { via: Via::VoiceHa });
-        assert_eq!(b.answer(false, Via::Screen, 2_001 + CONFIRM_DELAY_MS), Effect::Ignored);
+        assert_eq!(
+            b.answer(false, Via::Screen, 2_001 + CONFIRM_DELAY_MS),
+            Effect::Ignored
+        );
     }
 
     #[test]

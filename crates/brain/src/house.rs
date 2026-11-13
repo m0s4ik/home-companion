@@ -675,14 +675,23 @@ mod tests {
             a.entity.entity_id = format!("cover.x{i}");
             five.push(a);
         }
-        assert_eq!(question_text(&five, true), "Chiudo 5 tapparelle in Living room?");
-        assert_eq!(question_text(&five, false), "Close 5 blinds in Living room?");
+        assert_eq!(
+            question_text(&five, true),
+            "Chiudo 5 tapparelle in Living room?"
+        );
+        assert_eq!(
+            question_text(&five, false),
+            "Close 5 blinds in Living room?"
+        );
         let mut spread = five.clone();
         spread[4].entity.area = "Study".into();
         assert_eq!(question_text(&spread, true), "Chiudo 5 tapparelle?");
         let mut kinds = five.clone();
         kinds[4].entity.entity_id = "light.x".into();
-        assert_eq!(question_text(&kinds, true), "Chiudo 5 dispositivi in Living room?");
+        assert_eq!(
+            question_text(&kinds, true),
+            "Chiudo 5 dispositivi in Living room?"
+        );
         let mut mixed = two.clone();
         mixed[1].service = "open_cover".into();
         assert_eq!(question_text(&mixed, true), "Confermo 2 comandi?");
