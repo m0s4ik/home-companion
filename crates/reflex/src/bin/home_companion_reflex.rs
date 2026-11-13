@@ -149,8 +149,13 @@ fn run(model_dir: &str, grammar_path: &str, wavs: &[String]) -> Result<(), Strin
     let mut current: Option<u64> = None;
     let mut done = true;
     let mut samples = 0usize;
-    // Samples given to the recognizer since its creation (its word times count from there).
-    let mut fed = 0usize;
+    // The answers' recognizer, for an utterance that answers a Yes/No question (`Q`).
+    let mut answers =
+        vosk::Recognizer::with_grammar(&model, 16_000.0, &grammar.answer_vosk_json())?;
+    // Samples given to each recognizer since its creation (its word times count from there).
+    let mut fed = [0usize; 2];
+    // Which one decodes this utterance: 0 the whole grammar, 1 the answers.
+    let mut cur = 0usize;
     let mut offset = 0f32;
     // The last partial sent for this utterance.
     let mut partial = String::new();
@@ -161,10 +166,15 @@ fn run(model_dir: &str, grammar_path: &str, wavs: &[String]) -> Result<(), Strin
             Err(e) => return Err(format!("reading the body: {e}")),
         };
         match req {
-            Request::Start(id) => {
-                rec.reset();
+            Request::Start(id) | Request::StartAnswer(id) => {
+                cur = usize::from(matches!(req, Request::StartAnswer(_)));
+                if cur == 1 {
+                    answers.reset();
+                } else {
+                    rec.reset();
+                }
                 partial.clear();
-                offset = fed as f32 / 16_000.0;
+                offset = fed[cur] as f32 / 16_000.0;
                 current = Some(id);
                 done = false;
                 samples = 0;
@@ -174,11 +184,12 @@ fn run(model_dir: &str, grammar_path: &str, wavs: &[String]) -> Result<(), Strin
                     continue;
                 }
                 samples += s.len();
-                fed += s.len();
+                fed[cur] += s.len();
+                let r = if cur == 1 { &mut answers } else { &mut rec };
                 let t = Instant::now();
-                if rec.accept(&s) {
+                if r.accept(&s) {
                     let ms = t.elapsed().as_secs_f64() * 1000.0;
-                    let json = rec.result();
+                    let json = r.result();
                     done = send(
                         &mut out,
                         current.unwrap_or(0),
@@ -191,7 +202,7 @@ fn run(model_dir: &str, grammar_path: &str, wavs: &[String]) -> Result<(), Strin
                     partial.clear();
                 } else {
                     // ~11 us against ~450 us for the block's decoding (x86_64 bench): every block.
-                    let p: Partial = serde_json::from_str(&rec.partial()).unwrap_or_default();
+                    let p: Partial = serde_json::from_str(&r.partial()).unwrap_or_default();
                     if p.partial != partial {
                         partial = p.partial;
                         Reply::Partial {
@@ -207,7 +218,11 @@ fn run(model_dir: &str, grammar_path: &str, wavs: &[String]) -> Result<(), Strin
             Request::End(id) => {
                 if !done && current == Some(id) {
                     let t = Instant::now();
-                    let json = rec.final_result();
+                    let json = if cur == 1 {
+                        answers.final_result()
+                    } else {
+                        rec.final_result()
+                    };
                     let ms = t.elapsed().as_secs_f64() * 1000.0;
                     done = send(&mut out, id, false, &json, ms, samples, offset)?;
                     partial.clear();

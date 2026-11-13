@@ -1177,11 +1177,16 @@ impl Core {
         self.speaking_since = None;
         self.speaking_len = None;
         let id = self.next_id;
-        let gated = self
-            .d
-            .reflexes
-            .as_ref()
-            .is_some_and(|r| r.usable() && r.link.send(ReflexRequest::Start(id)));
+        let gated = self.d.reflexes.as_ref().is_some_and(|r| {
+            // The answer to a question: decoded against the answers only (a short "no" is
+            // lost against the whole grammar).
+            let start = if answering.is_some() {
+                ReflexRequest::StartAnswer(id)
+            } else {
+                ReflexRequest::Start(id)
+            };
+            r.usable() && r.link.send(start)
+        });
         if !self.ha_ready() && !gated {
             log::info!(event = "no_home_assistant", trigger = trigger.name(); "{} with no Home Assistant", trigger.name());
             self.cue("error");

@@ -328,7 +328,9 @@ fn partial(st: &mut GateState, ctx: &Ctx, text: &str, audio_s: f32) -> Option<Ve
     if !words.is_empty() {
         st.no_words = None;
     }
-    if fits(ctx.grammar, &words) {
+    // While a question waits, the partials come from the answers' grammar: they never release
+    // early (a "no no" is not the beginning of a phrase of the whole grammar, and is an answer).
+    if ctx.answering || fits(ctx.grammar, &words) {
         st.offending_since = None;
         return None;
     }
@@ -416,6 +418,15 @@ fn vosk_only(g: &Grammar, text: &str, words: &[Word], threshold: f32) -> (Decisi
 
 fn decide(st: &mut GateState, ctx: &Ctx, text: &str, words: &[Word]) -> Verdict {
     let speaking = !over(ctx.vad);
+    // Waiting for the answer to a question (the helper then decodes against the answers only):
+    // "no", "no no", "sì sì" are answers whatever the speech around them.
+    if ctx.answering
+        && let Some(c) = ctx.grammar.answer_of(text)
+        && words.iter().all(|w| w.conf >= ctx.threshold)
+    {
+        st.why = "an answer";
+        return Verdict::Act(c);
+    }
     match accept(ctx, text, words) {
         Decision::Accept(Command::Yes) if !ctx.answering => {
             st.why = "yes without a question";

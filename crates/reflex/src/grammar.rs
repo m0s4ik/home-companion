@@ -367,6 +367,36 @@ impl Grammar {
     }
 
     /// The rule: the whole text is one phrase, no `[unk]`, every word at least `threshold`.
+    /// The answers to a Yes/No question: the phrases of the `yes` and `no` commands.
+    fn answer_phrases(&self) -> impl Iterator<Item = (&str, &Command)> {
+        self.phrases
+            .iter()
+            .filter(|(_, c)| matches!(c, Command::Yes | Command::No))
+            .map(|(p, c)| (p.as_str(), c))
+    }
+
+    /// Vosk's grammar while a Yes/No question waits for its answer: only the answers plus
+    /// "[unk]". Against the whole grammar (thousands of phrases) a short "no" often comes out as
+    /// nothing at all; against these few it is heard (device trial 13/11).
+    pub fn answer_vosk_json(&self) -> String {
+        let mut list: Vec<&str> = self.answer_phrases().map(|(p, _)| p).collect();
+        list.push("[unk]");
+        serde_json::to_string(&list).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// An answer heard while a question waits: one answer phrase, possibly said more than once
+    /// ("no no", "sì sì"); anything else (other words, "[unk]", "no sì") is not an answer.
+    pub fn answer_of(&self, text: &str) -> Option<Command> {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        if words.is_empty() || words.contains(&"[unk]") {
+            return None;
+        }
+        self.answer_phrases().find_map(|(p, c)| {
+            let n = p.split_whitespace().count();
+            (words.len() % n == 0 && words.chunks(n).all(|ch| ch.join(" ") == p)).then(|| c.clone())
+        })
+    }
+
     pub fn decide(&self, text: &str, words: &[Word], threshold: f32) -> Decision {
         let text = text.trim();
         if text.is_empty() && words.is_empty() {
@@ -551,6 +581,26 @@ fn normalize(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn answers_to_a_question_also_said_twice() {
+        let g = Grammar::load(std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../characters/alfred/grammar/it.toml"
+        )))
+        .unwrap();
+        assert_eq!(g.answer_of("no"), Some(Command::No));
+        assert_eq!(g.answer_of("no no"), Some(Command::No));
+        assert_eq!(g.answer_of("sì"), Some(Command::Yes));
+        assert_eq!(g.answer_of("sì sì"), Some(Command::Yes));
+        assert_eq!(g.answer_of("no grazie"), Some(Command::No));
+        assert_eq!(g.answer_of("no sì"), None);
+        assert_eq!(g.answer_of("no [unk]"), None);
+        assert_eq!(g.answer_of(""), None);
+        let j: Vec<String> = serde_json::from_str(&g.answer_vosk_json()).unwrap();
+        assert!(j.contains(&"no".to_string()) && j.contains(&"sì".to_string()));
+        assert!(j.contains(&"[unk]".to_string()) && j.len() < 40, "{j:?}");
+    }
     use super::*;
 
     const IT: &str = r#"

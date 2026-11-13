@@ -28,6 +28,8 @@ use crate::grammar::Word;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Request {
     Start(u64),
+    /// An utterance that answers a Yes/No question: decoded against the answers only.
+    StartAnswer(u64),
     Audio(Vec<i16>),
     End(u64),
 }
@@ -36,6 +38,7 @@ impl Request {
     pub fn encode(&self) -> Vec<u8> {
         match self {
             Request::Start(id) => [&b"S"[..], &id.to_le_bytes()].concat(),
+            Request::StartAnswer(id) => [&b"Q"[..], &id.to_le_bytes()].concat(),
             Request::End(id) => [&b"E"[..], &id.to_le_bytes()].concat(),
             Request::Audio(s) => {
                 let mut v = Vec::with_capacity(5 + s.len() * 2);
@@ -59,13 +62,13 @@ impl Request {
         }
         let mut u64b = [0u8; 8];
         match tag[0] {
-            b'S' | b'E' => {
+            b'S' | b'E' | b'Q' => {
                 r.read_exact(&mut u64b)?;
                 let id = u64::from_le_bytes(u64b);
-                Ok(Some(if tag[0] == b'S' {
-                    Request::Start(id)
-                } else {
-                    Request::End(id)
+                Ok(Some(match tag[0] {
+                    b'S' => Request::Start(id),
+                    b'Q' => Request::StartAnswer(id),
+                    _ => Request::End(id),
                 }))
             }
             b'A' => {
@@ -146,6 +149,7 @@ mod tests {
     fn requests_round_trip() {
         let all = [
             Request::Start(7),
+            Request::StartAnswer(8),
             Request::Audio(vec![0, -1, 32767, -32768]),
             Request::End(7),
         ];
