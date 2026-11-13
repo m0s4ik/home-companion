@@ -35,6 +35,11 @@ pub struct DoneCard {
     since: Instant,
     /// Until when the Undo pop-up is up (None: not, or closed).
     popup_until: Option<Instant>,
+    /// It came while a question was being carried out (after its yes): its pop-up is that
+    /// question's window going on ("Doing it…" → "Closed"), not a new one.
+    pub from_ask: bool,
+    /// Cancel was touched while it was being carried out: undone as soon as it is here.
+    undo_now: bool,
 }
 
 /// After a tap on Yes or No, the card waits this long for the brain's `confirm_done` before it
@@ -42,7 +47,7 @@ pub struct DoneCard {
 pub const TAPPED_WAIT_S: f64 = 3.0;
 
 /// A house command waits for a yes (BrainMsg::Confirm). The brain's events are its only truth:
-/// it opens with `confirm`, blinks with `confirm_pending`, closes with `confirm_done`; the
+/// it opens with `confirm`, works with `confirm_pending`, closes with `confirm_done`; the
 /// safety nets (the brain died) close it at `expires_at` or [`TAPPED_WAIT_S`] after a tap.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AskCard {
@@ -58,6 +63,10 @@ pub struct AskCard {
     tapped: Option<f64>,
     /// A spoken yes was received: the commands run then (unix ms) unless a no comes first.
     pending_until_ms: Option<i64>,
+    /// Yes was touched: the commands run at once.
+    tapped_yes: bool,
+    /// Cancel was touched once it was too late for a no: what it does is undone when done.
+    undo_wanted: bool,
 }
 
 impl AskCard {
@@ -71,16 +80,44 @@ impl AskCard {
         }
     }
 
-    /// The spoken yes's second is over and the brain has not closed the question yet: its
-    /// commands are running.
-    pub fn executing(&self, now_ms: i64) -> bool {
-        self.pending_until_ms.is_some_and(|u| now_ms >= u)
+    /// A yes came (spoken, waiting for its seconds, or touched): the window says "Doing it…"
+    /// with Cancel only, until the brain closes the question and its "done" takes the window.
+    pub fn working(&self) -> bool {
+        self.tapped_yes || self.pending_until_ms.is_some()
     }
 
-    /// The Yes button blinks: a spoken yes waits for its second to pass.
-    pub fn blinking(&self, now_ms: i64) -> bool {
-        self.pending_until_ms.is_some_and(|u| now_ms < u)
+    /// The window's title while it works: the devices' names, one per line ([`POPUP_NAMES`]
+    /// at most, then `others`, "e altri {n}"), as the "done" that follows names them.
+    pub fn working_title(&self, others: &str) -> String {
+        if self.names.is_empty() {
+            return self.text.clone();
+        }
+        let mut names = self.names.clone();
+        if names.len() > POPUP_NAMES {
+            let rest = names.len() - (POPUP_NAMES - 1);
+            names.truncate(POPUP_NAMES - 1);
+            names.push(others.replace("{n}", &rest.to_string()));
+        }
+        names.join("\n")
     }
+
+    /// Cancel was touched too late for a no: the window waits for the "done" to undo it.
+    pub fn undo_wanted(&self) -> bool {
+        self.undo_wanted
+    }
+}
+
+/// What Cancel in the question's window does ([`HouseCards::cancel`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cancel {
+    /// The spoken yes is still in its seconds: a no to this question (nothing ran).
+    No(i64),
+    /// The commands have run (or are running): undo these as soon as their "done" comes.
+    Later,
+    /// The done is here: undo it now (the same as its Undo).
+    Undo,
+    /// Nothing to cancel.
+    Nothing,
 }
 
 /// How a question left the screen (for the core: UiEvent::QuestionClosed).
@@ -101,13 +138,27 @@ pub struct HouseCards {
     pub ask: Option<AskCard>,
     /// The last question that left the screen, until the screen tells the core.
     closed: Option<Closed>,
+    /// A question just closed after its yes (when, Cancel touched): a "done" that comes a
+    /// moment after its question closed still goes on in its window.
+    last_yes: Option<(Instant, bool)>,
 }
+
+/// How long after its question closed a "done" still belongs to it.
+const AFTER_YES: Duration = Duration::from_secs(3);
 
 impl HouseCards {
     /// A command went through: its card for [`DONE_CARD`], or into the card of the one just
     /// before (within [`GROUP`], both with or both without Undo): then its time starts again.
     /// True when it joined a group.
     pub fn changed(&mut self, id: i64, line: String, undo: bool, now: Instant) -> bool {
+        // Carried out after a yes: the question's window goes on with it.
+        let (from_ask, undo_now) = match self.ask.as_ref().filter(|a| a.working()) {
+            Some(a) => (true, a.undo_wanted),
+            None => self
+                .last_yes
+                .filter(|(at, _)| now.saturating_duration_since(*at) <= AFTER_YES)
+                .map_or((false, false), |(_, undo)| (true, undo)),
+        };
         if let Some(d) = self.done.as_mut() {
             if d.undo == undo
                 && d.ids.len() < GROUP_MAX
@@ -117,6 +168,8 @@ impl HouseCards {
                 d.lines.push(line);
                 d.last = now;
                 d.until = now + DONE_CARD;
+                d.from_ask |= from_ask;
+                d.undo_now |= undo_now;
                 if undo {
                     d.since = now;
                     d.popup_until = Some(now + UNDO_POPUP);
@@ -132,6 +185,8 @@ impl HouseCards {
             until: now + DONE_CARD,
             since: now,
             popup_until: undo.then_some(now + UNDO_POPUP),
+            from_ask,
+            undo_now,
         });
         false
     }
@@ -152,6 +207,49 @@ impl HouseCards {
         };
         let total = (until.1 - until.0).as_secs_f32().max(0.001);
         (until.1.saturating_duration_since(now).as_secs_f32() / total).clamp(0.0, 1.0)
+    }
+
+    /// The pop-up goes on from a question's window (same size and place, no new window).
+    pub fn popup_from_ask(&self) -> bool {
+        self.popup() && self.done.as_ref().is_some_and(|d| d.from_ask)
+    }
+
+    /// Cancel touched in the question's window, at `now_ms` (unix ms). Before the yes there is
+    /// no Cancel (No is there); within a spoken yes's seconds it is a no; after, an undo.
+    pub fn cancel(&mut self, now_ms: i64) -> Cancel {
+        let Some(a) = self.ask.as_mut() else {
+            return if self.popup_from_ask() {
+                Cancel::Undo
+            } else {
+                Cancel::Nothing
+            };
+        };
+        if !a.working() || a.undo_wanted {
+            return Cancel::Nothing;
+        }
+        match a.pending_until_ms {
+            Some(u) if !a.tapped_yes && a.tapped.is_none() && now_ms < u => {
+                // Should the no come too late (the brain ran it already), its done is undone.
+                a.tapped = Some(now_ms as f64 / 1000.0);
+                a.undo_wanted = true;
+                Cancel::No(a.id)
+            }
+            _ => {
+                a.undo_wanted = true;
+                Cancel::Later
+            }
+        }
+    }
+
+    /// A done that came with Cancel already touched: true once, the screen undoes it.
+    pub fn take_undo_now(&mut self) -> bool {
+        match self.done.as_mut() {
+            Some(d) if d.undo_now && d.undo => {
+                d.undo_now = false;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// The pop-up's OK (or a tap around it): the pop-up closes, the card stays.
@@ -194,13 +292,15 @@ impl HouseCards {
             expires_at,
             since: keep.as_ref().map_or(now_unix, |a| a.since),
             tapped: keep.as_ref().and_then(|a| a.tapped),
-            pending_until_ms: keep.and_then(|a| a.pending_until_ms),
+            pending_until_ms: keep.as_ref().and_then(|a| a.pending_until_ms),
+            tapped_yes: keep.as_ref().is_some_and(|a| a.tapped_yes),
+            undo_wanted: keep.is_some_and(|a| a.undo_wanted),
         });
         true
     }
 
-    /// A spoken yes to `id` was received (`confirm_pending`): the Yes button blinks until
-    /// `until_ms`. False when that question is not on screen.
+    /// A spoken yes to `id` was received (`confirm_pending`): the window works ("Doing it…",
+    /// Cancel = no) until `until_ms`. False when that question is not on screen.
     pub fn pending(&mut self, id: i64, until_ms: i64) -> bool {
         match self.ask.as_mut().filter(|a| a.id == id) {
             Some(a) => {
@@ -228,7 +328,9 @@ impl HouseCards {
             }
         }
         if self.ask.as_ref().is_some_and(|a| a.id == id) {
-            self.ask = None;
+            if let Some(a) = self.ask.take().filter(|a| yes == Some(true) && a.working()) {
+                self.last_yes = Some((now, a.undo_wanted));
+            }
             self.closed = Some(Closed {
                 id,
                 yes,
@@ -240,13 +342,14 @@ impl HouseCards {
     }
 
     /// Yes or No touched: the question's id, once (further taps are ignored). The card stays
-    /// until the brain says the question is over.
-    pub fn answer(&mut self, now_unix: f64) -> Option<i64> {
+    /// until the brain says the question is over (after a yes: "Doing it…").
+    pub fn answer(&mut self, now_unix: f64, yes: bool) -> Option<i64> {
         let a = self.ask.as_mut()?;
-        if a.tapped.is_some() {
+        if a.tapped.is_some() || a.working() {
             return None;
         }
         a.tapped = Some(now_unix);
+        a.tapped_yes = yes;
         Some(a.id)
     }
 
@@ -653,40 +756,101 @@ mod tests {
     fn a_tap_marks_the_card_until_the_brain_closes_it() {
         let t0 = Instant::now();
         let mut c = HouseCards::default();
-        assert_eq!(c.answer(1000.0), None, "nothing to answer");
+        assert_eq!(c.answer(1000.0, true), None, "nothing to answer");
         ask(&mut c, 42);
-        assert_eq!(c.answer(1001.0), Some(42));
-        assert_eq!(c.answer(1001.5), None, "one tap only");
+        assert_eq!(c.answer(1001.0, true), Some(42));
+        assert_eq!(c.answer(1001.5, false), None, "one tap only");
         assert!(c.ask.is_some(), "still on screen after the tap");
+        assert!(
+            c.ask.as_ref().unwrap().working(),
+            "a touched yes works at once"
+        );
         assert!(!c.tick(t0, 1003.9));
         assert!(c.confirm_done(42, Some(true), "screen", vec![], t0));
         assert!(c.ask.is_none());
         // No confirm_done: 3 s after the tap it goes by itself.
         ask(&mut c, 44);
         let _ = c.take_closed();
-        assert_eq!(c.answer(1010.0), Some(44));
+        assert_eq!(c.answer(1010.0, false), Some(44));
+        assert!(!c.ask.as_ref().unwrap().working(), "a no does not work");
         assert!(!c.tick(t0, 1012.9));
         assert!(c.tick(t0, 1013.0));
         assert_eq!(c.take_closed().map(|x| (x.id, x.yes)), Some((44, None)));
     }
 
-    /// C24: a spoken yes makes the Yes button blink until its time; confirm_done ends it.
+    /// A spoken yes makes the window work ("Doing it…", Cancel); the brain's replay keeps it;
+    /// a tap on the old Yes/No no longer answers.
     #[test]
-    fn pending_blinks_until_its_time() {
+    fn a_spoken_yes_works_until_the_brain_closes_it() {
         let t0 = Instant::now();
         let mut c = HouseCards::default();
         assert!(!c.pending(42, 5000), "no question on screen");
         ask(&mut c, 42);
-        assert!(!c.ask.as_ref().unwrap().blinking(1000));
+        assert!(!c.ask.as_ref().unwrap().working());
         assert!(!c.pending(41, 5000), "another question");
         assert!(c.pending(42, 5000));
-        let a = c.ask.clone().unwrap();
-        assert!(a.blinking(4999) && !a.blinking(5000));
-        // The brain's replay of the same question keeps the blink.
+        assert!(c.ask.as_ref().unwrap().working());
+        assert_eq!(c.answer(1001.0, false), None, "Yes/No are gone");
         ask(&mut c, 42);
-        assert!(c.ask.as_ref().unwrap().blinking(4000));
+        assert!(c.ask.as_ref().unwrap().working(), "the replay keeps it");
         assert!(c.confirm_done(42, Some(true), "voice_reflex", vec![], t0));
         assert!(c.ask.is_none());
+    }
+
+    /// One window from the yes on: Cancel within the spoken yes's seconds is a no; later it
+    /// undoes what is done as soon as it is here; the done goes on in the question's window.
+    #[test]
+    fn one_window_from_the_yes_to_the_done() {
+        let t0 = Instant::now();
+        let mut c = HouseCards::default();
+        assert_eq!(c.cancel(1000), Cancel::Nothing, "nothing on screen");
+        ask(&mut c, 42);
+        assert_eq!(c.cancel(1000), Cancel::Nothing, "no Cancel before the yes");
+        c.pending(42, 5000);
+        assert_eq!(c.cancel(4999), Cancel::No(42), "within the seconds: a no");
+        assert_eq!(c.cancel(4999), Cancel::Nothing, "once");
+
+        // The seconds are over: Cancel waits for the done, which is undone at once.
+        let mut c = HouseCards::default();
+        ask(&mut c, 43);
+        c.pending(43, 5000);
+        assert_eq!(c.cancel(5000), Cancel::Later);
+        assert_eq!(c.cancel(5001), Cancel::Nothing, "already asked");
+        assert!(!c.changed(7, "Tapparella: Ho chiuso".into(), true, t0));
+        assert!(c.done.as_ref().unwrap().from_ask);
+        assert!(c.take_undo_now());
+        assert!(!c.take_undo_now(), "once");
+
+        // A touched yes, the done, then Cancel: the done's own undo.
+        let mut c = HouseCards::default();
+        ask(&mut c, 44);
+        assert_eq!(c.answer(1000.0, true), Some(44));
+        c.changed(8, "Tapparella: Ho chiuso".into(), true, t0);
+        assert!(c.confirm_done(44, Some(true), "screen", vec![], t0));
+        assert!(c.popup_from_ask());
+        assert!(!c.take_undo_now());
+        assert_eq!(c.cancel(1001), Cancel::Undo);
+
+        // The done a moment after its question closed still goes on in its window.
+        let mut c = HouseCards::default();
+        ask(&mut c, 45);
+        c.pending(45, 5000);
+        assert_eq!(c.cancel(6000), Cancel::Later);
+        assert!(c.confirm_done(45, Some(true), "voice_reflex", vec![], t0));
+        c.changed(
+            9,
+            "Tapparella: Ho chiuso".into(),
+            true,
+            t0 + Duration::from_secs(1),
+        );
+        assert!(c.popup_from_ask());
+        assert!(c.take_undo_now());
+
+        // A light with no question: its own pop-up, as before.
+        let mut c = HouseCards::default();
+        c.changed(10, "Luce: spenta".into(), true, t0);
+        assert!(c.popup() && !c.popup_from_ask());
+        assert_eq!(c.cancel(1000), Cancel::Nothing);
     }
 
     /// C24: a new subscription forgets the question; the brain's replay brings it back.

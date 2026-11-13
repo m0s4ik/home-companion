@@ -741,13 +741,16 @@ export component CompanionWindow inherits Window {
     in property <string> ask-text: "";
     // The devices' names under the question (several), or "".
     in property <string> ask-names: "";
-    // A spoken yes in its confirming second: the Yes button blinks (No still wins).
-    in property <bool> ask-pending: false;
-    // The spoken yes's second is over: the commands are being run, nothing to touch any more.
-    in property <bool> ask-executing: false;
-    in property <bool> ask-pending-lit: false;
+    // A yes came (spoken or touched): the same window says "Doing it…" under the devices'
+    // names, Cancel only (gone once touched: `ask-cancelled`), until its done goes on in it.
+    in property <bool> ask-working: false;
+    in property <string> ask-working-title: "";
+    in property <bool> ask-cancelled: false;
     in property <float> ask-left: 1;
     callback ask-answered(bool);
+    callback ask-cancel();
+    // The done pop-up goes on from the question's window (its size and place, no new window).
+    in property <bool> done-from-ask: false;
     // Do not disturb: on, and its line ("Do not disturb · until 07:00").
     in property <bool> dnd: false;
     in property <string> dnd-line: "";
@@ -4084,7 +4087,7 @@ export component CompanionWindow inherits Window {
 
     // ---- The same command, undoable: the big pop-up first, over everything (Home Assistant's
     // view and a mirrored screen included), centred on the screen as the microphone's card.
-    if root.done-shown && root.done-popup && !root.starting: Dialog {
+    if root.done-shown && root.done-popup && !root.done-from-ask && !root.starting: Dialog {
         scrim: false;
         closable: true;
         box-width: 520px;
@@ -4129,20 +4132,38 @@ export component CompanionWindow inherits Window {
     // ---- A house command waits for a yes (covers, valves): the question, No and Yes, the time
     // left as a thin line. Over everything but the volume (Home Assistant's view and a mirrored
     // screen included: then centred on the screen); it wakes the screen.
-    if root.ask-shown: Dialog {
-        icon: Icons.help-circle-48;
-        title: root.ask-text;
-        text: root.ask-executing ? root.t.ask_executing : root.ask-names;
-        cancel: root.ask-executing ? "" : root.t.no;
-        confirm: root.ask-executing ? "" : root.t.yes;
-        spinning: root.ask-executing;
-        busy-bar: root.ask-executing;
-        confirm-blink: root.ask-pending;
-        confirm-lit: root.ask-pending-lit;
-        left: root.ask-left;
+    // After the yes the SAME window goes on: "Doing it…" with a turning icon and Cancel (a no
+    // within a spoken yes's seconds, else an undo as soon as it is done), then the done ("Closed",
+    // Cancel = Undo, its time left), then it closes. One window, one Cancel in one place.
+    property <bool> ask-done: !root.ask-shown && root.done-shown && root.done-popup && root.done-from-ask;
+    if (root.ask-shown || root.ask-done) && !root.starting: Dialog {
+        property <bool> asking: root.ask-shown && !root.ask-working;
+        scrim: self.asking;
+        closable: root.ask-done;
+        icon: root.ask-done ? Icons.check-circle-48 : root.ask-working ? Icons.refresh-44 : Icons.help-circle-48;
+        title: root.ask-done ? root.done-name : root.ask-working ? root.ask-working-title : root.ask-text;
+        text: root.ask-done ? root.done-state : root.ask-working ? root.t.ask_executing : root.ask-names;
+        text-gold: root.ask-done;
+        cancel: self.asking ? root.t.no : "";
+        confirm: self.asking ? root.t.yes
+            : root.ask-done ? (root.done-undo ? root.t.undo : "")
+            : root.ask-cancelled ? "" : root.t.undo;
+        confirm-icon: self.asking ? @image-url("") : Icons.undo-36;
+        spinning: root.ask-working && !root.ask-done;
+        busy-bar: root.ask-working && !root.ask-done;
+        left: root.ask-done ? root.done-left : self.asking ? root.ask-left : -1;
         centre-x: root.dialog-cx;
         answered(yes) => {
-            root.ask-answered(yes);
+            if (self.asking) {
+                root.ask-answered(yes);
+            } else {
+                root.ask-cancel();
+            }
+        }
+        closed => {
+            if (root.ask-done) {
+                root.done-ok-clicked();
+            }
         }
     }
 

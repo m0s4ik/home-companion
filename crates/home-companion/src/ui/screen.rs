@@ -422,8 +422,10 @@ pub struct Demo {
     pub usage_precise: bool,
     /// `--state house-done-group*`: four lights off by one sentence, one card.
     pub house_group: bool,
-    /// The Yes/No question with a spoken yes in its confirming second (the Yes button lit).
+    /// The question's window after a spoken yes: "Doing it…", Cancel only.
     pub house_pending: bool,
+    /// `--state house-done-asked`: the done going on in the question's window.
+    pub house_from_ask: bool,
     /// `--state mic-*`: the microphone off by the switch (line and tile); `mic_hud` = the
     /// switch's card, Some(on).
     pub mic_switch_off: bool,
@@ -435,7 +437,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 71] = [
+pub const DEMO_STATES: [&str; 72] = [
     "home",
     "cards",
     "cards-setup",
@@ -488,6 +490,7 @@ pub const DEMO_STATES: [&str; 71] = [
     "house-done-speaking",
     "house-ask",
     "house-ask-pending",
+    "house-done-asked",
     "dnd",
     "control-dnd",
     "mic-switch-off",
@@ -641,6 +644,11 @@ impl Demo {
             },
             "house-ask" => Demo {
                 house: 2,
+                ..home.clone()
+            },
+            "house-done-asked" => Demo {
+                house: 1,
+                house_from_ask: true,
                 ..home.clone()
             },
             "house-ask-mirror" => Demo {
@@ -1072,8 +1080,6 @@ pub struct Ui<S: Screen> {
     /// The Yes/No question open, as last told to the core (UiEvent::Question).
     asking: Cell<Option<i64>>,
     /// Its Yes button blinks (a spoken yes in its confirming second), as last drawn.
-    ask_blink: Cell<bool>,
-    ask_executing: Cell<bool>,
     /// The countdown's length last put on screen (it is set again when it moved enough).
     ask_left: Cell<f32>,
     /// Do not disturb (UiCommand::DoNotDisturb).
@@ -1362,8 +1368,6 @@ impl<S: Screen> Ui<S> {
             restart_timer: Timer::default(),
             house: RefCell::new(HouseCards::default()),
             asking: Cell::new(None),
-            ask_blink: Cell::new(false),
-            ask_executing: Cell::new(false),
             ask_left: Cell::new(0.0),
             dnd: Cell::new(Dnd::default()),
             this: RefCell::new(Weak::new()),
@@ -1576,12 +1580,24 @@ impl<S: Screen> Ui<S> {
         let ui = Rc::downgrade(self);
         self.screen.on_done_undo(move || {
             if let Some(ui) = ui.upgrade() {
-                // Newest first, as an undo goes: a later snapshot (a group's, taken after its
-                // lights went off) must not be put back over the earlier ones.
-                let ids = ui.house.borrow_mut().undo();
-                for id in ids.unwrap_or_default().into_iter().rev() {
-                    log::info!(event = "house_undo", id = id; "house: undo {id}");
-                    ui.brain_do(brain_link::undo(id));
+                ui.undo_done();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_ask_cancel(move || {
+            if let Some(ui) = ui.upgrade() {
+                let now_ms = (ui.now() * 1000.0) as i64;
+                let c = ui.house.borrow_mut().cancel(now_ms);
+                match c {
+                    house::Cancel::No(id) => {
+                        log::info!(event = "house_answer", id = id, yes = false; "house: cancel = no to {id}");
+                        ui.send(UiEvent::QuestionAnswer { id, yes: false });
+                    }
+                    house::Cancel::Later => {
+                        log::info!(event = "house_cancel"; "house: cancel, undone when done");
+                    }
+                    house::Cancel::Undo => ui.undo_done(),
+                    house::Cancel::Nothing => {}
                 }
                 ui.render_house();
             }
@@ -1598,10 +1614,11 @@ impl<S: Screen> Ui<S> {
         self.screen.on_ask_answered(move |yes| {
             if let Some(ui) = ui.upgrade() {
                 // The core sends it to the brain; the card stays until the brain closes it.
-                let id = ui.house.borrow_mut().answer(ui.now());
+                let id = ui.house.borrow_mut().answer(ui.now(), yes);
                 if let Some(id) = id {
                     log::info!(event = "house_answer", id = id, yes = yes; "house: {} to {id}", if yes { "yes" } else { "no" });
                     ui.send(UiEvent::QuestionAnswer { id, yes });
+                    ui.render_house();
                 }
             }
         });
@@ -2968,7 +2985,9 @@ impl<S: Screen> Ui<S> {
                     (x != k).then(|| x.to_string())
                 };
                 // One light, or (house-done-group) four switched off by one sentence.
-                let names: Vec<String> = if d.house_group {
+                let names: Vec<String> = if d.house_from_ask {
+                    vec![l.sample("house_blind").to_string()]
+                } else if d.house_group {
                     l.sample("house_lights")
                         .split(", ")
                         .map(str::to_string)
@@ -2979,7 +2998,11 @@ impl<S: Screen> Ui<S> {
                 let mut cards = house::HouseCards::default();
                 let t0 = Instant::now();
                 for (i, n) in names.iter().enumerate() {
-                    let line = house::done_line(n, Some("off"), "turn_off", &word);
+                    let line = if d.house_from_ask {
+                        house::done_line(n, Some("closed"), "close_cover", &word)
+                    } else {
+                        house::done_line(n, Some("off"), "turn_off", &word)
+                    };
                     cards.changed(i as i64, line, true, t0);
                 }
                 let card = cards.done.expect("a card");
@@ -2988,11 +3011,13 @@ impl<S: Screen> Ui<S> {
                 self.screen.set_done(true, &line, true);
                 self.screen.set_done_parts(&name, &state);
                 self.screen.set_done_popup(!d.house_card_only, 0.62);
+                self.screen.set_done_from_ask(d.house_from_ask);
             }
             2 => {
                 self.screen
                     .set_ask(true, l.sample("house_question"), "", 0.62);
-                self.screen.set_ask_pending(d.house_pending, true);
+                self.screen
+                    .set_ask_working(d.house_pending, l.sample("house_blind"), false);
             }
             _ => {}
         }
@@ -4978,6 +5003,11 @@ impl<S: Screen> Ui<S> {
                     self.send(UiEvent::HouseDone);
                     self.motion.borrow_mut().seq.done(now);
                 }
+                // Cancel was touched while it was being carried out: put it back now.
+                if self.house.borrow_mut().take_undo_now() {
+                    self.undo_done();
+                    return;
+                }
                 // The card is seen: a soft wake (not the screen asleep by "spegni lo schermo"
                 // just before, nor the night's, that the touch is for).
                 self.wake(WakeSource::Conversation);
@@ -5045,26 +5075,6 @@ impl<S: Screen> Ui<S> {
             let left = self.house.borrow().popup_left(Instant::now());
             self.screen.set_done_popup(true, left);
         }
-        let blink = self
-            .house
-            .borrow()
-            .ask
-            .as_ref()
-            .is_some_and(|a| a.blinking((now_unix * 1000.0) as i64));
-        if blink != self.ask_blink.get() {
-            self.ask_blink.set(blink);
-            self.screen.set_ask_pending(blink, false);
-        }
-        let executing = self
-            .house
-            .borrow()
-            .ask
-            .as_ref()
-            .is_some_and(|a| a.executing((now_unix * 1000.0) as i64));
-        if executing != self.ask_executing.get() {
-            self.ask_executing.set(executing);
-            self.screen.set_ask_executing(executing);
-        }
         let left = self.house.borrow().ask_left(now_unix);
         if (left - self.ask_left.get()).abs() >= 0.004 {
             self.ask_left.set(left);
@@ -5123,22 +5133,31 @@ impl<S: Screen> Ui<S> {
         self.refresh_home();
         let left = h.ask_left(self.now());
         self.ask_left.set(left);
-        let blink = h
-            .ask
-            .as_ref()
-            .is_some_and(|a| a.blinking((self.now() * 1000.0) as i64));
-        self.ask_blink.set(blink);
         match &h.ask {
-            Some(a) => self.screen.set_ask(true, &a.text, &a.names_line(), left),
-            None => self.screen.set_ask(false, "", "", 0.0),
+            Some(a) => {
+                self.screen.set_ask(true, &a.text, &a.names_line(), left);
+                let title = a.working_title(self.locale.borrow().text("house_others"));
+                self.screen
+                    .set_ask_working(a.working(), &title, a.undo_wanted());
+            }
+            None => {
+                self.screen.set_ask(false, "", "", 0.0);
+                self.screen.set_ask_working(false, "", false);
+            }
         }
-        self.screen.set_ask_pending(blink, false);
-        let executing = h
-            .ask
-            .as_ref()
-            .is_some_and(|a| a.executing((self.now() * 1000.0) as i64));
-        self.ask_executing.set(executing);
-        self.screen.set_ask_executing(executing);
+        self.screen.set_done_from_ask(h.popup_from_ask());
+    }
+
+    /// The done card's Undo (or Cancel in the question's window once it is done): newest first,
+    /// as an undo goes: a later snapshot (a group's, taken after its lights went off) must not
+    /// be put back over the earlier ones.
+    fn undo_done(&self) {
+        let ids = self.house.borrow_mut().undo();
+        for id in ids.unwrap_or_default().into_iter().rev() {
+            log::info!(event = "house_undo", id = id; "house: undo {id}");
+            self.brain_do(brain_link::undo(id));
+        }
+        self.render_house();
     }
 
     /// A touch at (x, y) is for a card of the house over Home Assistant's view (the Yes/No
