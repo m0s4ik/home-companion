@@ -246,6 +246,7 @@ export struct Words {
     find_again: string,
     yes: string,
     no: string,
+    ask_executing: string,
     what_short: string,
     what_title: string,
     what_intro: string,
@@ -742,6 +743,8 @@ export component CompanionWindow inherits Window {
     in property <string> ask-names: "";
     // A spoken yes in its confirming second: the Yes button blinks (No still wins).
     in property <bool> ask-pending: false;
+    // The spoken yes's second is over: the commands are being run, nothing to touch any more.
+    in property <bool> ask-executing: false;
     in property <bool> ask-pending-lit: false;
     in property <float> ask-left: 1;
     callback ask-answered(bool);
@@ -4129,9 +4132,11 @@ export component CompanionWindow inherits Window {
     if root.ask-shown: Dialog {
         icon: Icons.help-circle-48;
         title: root.ask-text;
-        text: root.ask-names;
-        cancel: root.t.no;
-        confirm: root.t.yes;
+        text: root.ask-executing ? root.t.ask_executing : root.ask-names;
+        cancel: root.ask-executing ? "" : root.t.no;
+        confirm: root.ask-executing ? "" : root.t.yes;
+        spinning: root.ask-executing;
+        busy-bar: root.ask-executing;
         confirm-blink: root.ask-pending;
         confirm-lit: root.ask-pending-lit;
         left: root.ask-left;

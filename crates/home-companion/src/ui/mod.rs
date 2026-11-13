@@ -348,6 +348,8 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// A spoken yes in its confirming second: the Yes button blinks (`still`: held lit, for a
     /// demo's screenshot).
     fn set_ask_pending(&self, on: bool, still: bool);
+    /// The spoken yes's second is over: "Doing it…", no buttons, until the brain's confirm_done.
+    fn set_ask_executing(&self, on: bool);
     /// Do not disturb: on, its line.
     fn set_dnd(&self, on: bool, line: &str);
     /// The Wi-Fi signal on every page header and in the control center: 0 not connected,
@@ -601,6 +603,7 @@ macro_rules! impl_screen {
                     find_again,
                     yes,
                     no,
+                    ask_executing,
                     what_short,
                     what_title,
                     what_intro,
@@ -1221,6 +1224,9 @@ macro_rules! impl_screen {
             }
             fn set_ask_left(&self, left: f32) {
                 $m::CompanionWindow::set_ask_left(self, left)
+            }
+            fn set_ask_executing(&self, on: bool) {
+                $m::CompanionWindow::set_ask_executing(self, on)
             }
             fn set_ask_pending(&self, on: bool, still: bool) {
                 $m::CompanionWindow::set_ask_pending(self, on && !still);

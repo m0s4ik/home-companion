@@ -386,6 +386,8 @@ reflex_timer_item_paused = "{name} {left}, paused"
 reflex_nothing_to_repeat = "I have nothing to repeat."
 reflex_dnd_on = "Do not disturb until {time}."
 reflex_dnd_off = "Do not disturb is off."
+question_no = "All right, I'll leave it."
+question_expired = "No answer: I'll leave it."
 # A reflex's answer said aloud: durations as words, not as the screen's "05:30".
 say_hour = "one hour"
 say_hours = "{n} hours"
@@ -411,6 +413,7 @@ house_failed = "{name}: not done"
 # The Yes/No card of a command that waits for an answer.
 yes = "Yes"
 no = "No"
+ask_executing = "Doing it…"
 # Do not disturb (the line over the clock, the control center's tile).
 dnd = "Do not disturb"
 cc_dnd = "Do not disturb"

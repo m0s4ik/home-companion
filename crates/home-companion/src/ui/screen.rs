@@ -1073,6 +1073,7 @@ pub struct Ui<S: Screen> {
     asking: Cell<Option<i64>>,
     /// Its Yes button blinks (a spoken yes in its confirming second), as last drawn.
     ask_blink: Cell<bool>,
+    ask_executing: Cell<bool>,
     /// The countdown's length last put on screen (it is set again when it moved enough).
     ask_left: Cell<f32>,
     /// Do not disturb (UiCommand::DoNotDisturb).
@@ -1362,6 +1363,7 @@ impl<S: Screen> Ui<S> {
             house: RefCell::new(HouseCards::default()),
             asking: Cell::new(None),
             ask_blink: Cell::new(false),
+            ask_executing: Cell::new(false),
             ask_left: Cell::new(0.0),
             dnd: Cell::new(Dnd::default()),
             this: RefCell::new(Weak::new()),
@@ -5053,6 +5055,16 @@ impl<S: Screen> Ui<S> {
             self.ask_blink.set(blink);
             self.screen.set_ask_pending(blink, false);
         }
+        let executing = self
+            .house
+            .borrow()
+            .ask
+            .as_ref()
+            .is_some_and(|a| a.executing((now_unix * 1000.0) as i64));
+        if executing != self.ask_executing.get() {
+            self.ask_executing.set(executing);
+            self.screen.set_ask_executing(executing);
+        }
         let left = self.house.borrow().ask_left(now_unix);
         if (left - self.ask_left.get()).abs() >= 0.004 {
             self.ask_left.set(left);
@@ -5090,8 +5102,8 @@ impl<S: Screen> Ui<S> {
                 });
             }
             self.asking.set(open);
-            if let Some(id) = open {
-                self.send(UiEvent::Question(id));
+            if let Some(a) = h.ask.as_ref() {
+                self.send(UiEvent::Question(a.id, a.text.clone()));
             }
         }
         match &h.done {
@@ -5121,6 +5133,12 @@ impl<S: Screen> Ui<S> {
             None => self.screen.set_ask(false, "", "", 0.0),
         }
         self.screen.set_ask_pending(blink, false);
+        let executing = h
+            .ask
+            .as_ref()
+            .is_some_and(|a| a.executing((self.now() * 1000.0) as i64));
+        self.ask_executing.set(executing);
+        self.screen.set_ask_executing(executing);
     }
 
     /// A touch at (x, y) is for a card of the house over Home Assistant's view (the Yes/No

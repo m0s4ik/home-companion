@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use brain::agent::Brain;
+use brain::question::CONFIRM_DELAY_MS;
 use brain::clock::ManualClock;
 use brain::config::Config;
 use brain::control::Hub;
@@ -159,7 +160,12 @@ impl S {
 
     /// Exactly these services and these events (by name) since the last look; the events back.
     fn expect(&mut self, services: &[&str], events: &[&str]) -> Vec<Value> {
-        let got = self.services();
+        let mut got = self.services();
+        // The Undo snapshot before a house command is the house module's business: a row that
+        // cares names it, the others look at the commands only.
+        if !services.iter().any(|x| x.starts_with("scene.create")) {
+            got.retain(|x| !x.starts_with("scene.create"));
+        }
         assert_eq!(got, services, "services");
         let ev = self.ev.drain();
         let names: Vec<&str> = ev.iter().map(|e| e["event"].as_str().unwrap()).collect();
@@ -263,8 +269,8 @@ fn b04_a_room_with_two_covers_one_question() {
         ],
         &["changed", "changed", "confirm_done"],
     );
-    assert_eq!(ev[0]["undo"], false);
-    assert_eq!(ev[1]["undo"], false);
+    assert_eq!(ev[0]["undo"], true);
+    assert_eq!(ev[1]["undo"], true);
     assert_eq!(
         ev[2],
         json!({"event": "confirm_done", "id": q, "yes": true, "via": "screen", "failed": []})
@@ -341,8 +347,8 @@ fn b09_a_voice_yes_waits_a_second() {
     let r = s.answer(q, true, "voice_reflex");
     assert_eq!(r["state"], "confirming", "{r}");
     let ev = s.expect(&[], &["confirm_pending"]);
-    assert_eq!(ev[0]["until_ms"], s.now() + 1000);
-    s.advance(999);
+    assert_eq!(ev[0]["until_ms"], s.now() + CONFIRM_DELAY_MS);
+    s.advance(CONFIRM_DELAY_MS - 1);
     s.expect(&[], &[]);
     s.advance(1);
     let ev = s.expect(
@@ -409,7 +415,7 @@ fn b13_a_yes_heard_by_home_assistant() {
     s.expect(&[], &["confirm"]);
     s.turn(8, "Sì.", Some(q));
     s.expect(&[], &["confirm_pending"]);
-    s.advance(1000);
+    s.advance(CONFIRM_DELAY_MS);
     let ev = s.expect(
         &["cover.close_cover cover.study"],
         &["changed", "confirm_done"],
@@ -462,7 +468,7 @@ fn b16_sentences_that_are_not_an_answer() {
     .enumerate()
     {
         s.turn(8 + i as u64, t, Some(q));
-        s.advance(1000);
+        s.advance(CONFIRM_DELAY_MS);
         s.expect(&[], &[]);
     }
     s.advance(30_001);
@@ -481,7 +487,7 @@ fn b17_the_model_calls_again_after_the_yes() {
     assert_eq!(r["state"], "confirming", "{r}");
     assert!(r["asked"].is_null());
     s.expect(&[], &[]);
-    s.advance(1000);
+    s.advance(CONFIRM_DELAY_MS);
     s.expect(
         &["cover.close_cover cover.study"],
         &["changed", "confirm_done"],
@@ -756,24 +762,25 @@ fn b26_a_body_that_reconnects_sees_the_question() {
     s.answer(q, true, "voice_reflex");
     let replay = s.subscribe();
     assert_eq!(names(&replay), ["confirm", "confirm_pending"]);
-    s.advance(1000);
+    s.advance(CONFIRM_DELAY_MS);
     let replay = s.subscribe();
     assert!(names(&replay).is_empty(), "{replay:?}");
 }
 
 #[test]
-fn b27_no_undo_after_a_yes() {
+fn b27_undo_after_a_yes() {
     let mut s = S::new("b27");
     let q = S::asked(&s.call("home_control", close("cover.study")));
     s.answer(q, true, "screen");
     let ev = s.expect(
-        &["cover.close_cover cover.study"],
+        &["scene.create", "cover.close_cover cover.study"],
         &["confirm", "changed", "confirm_done"],
     );
-    assert_eq!(ev[1]["undo"], false);
+    assert_eq!(ev[1]["undo"], true);
     let r = s.control(json!({"cmd": "control.undo", "id": ev[1]["id"]}));
-    assert_eq!(r["ok"], false, "{r}");
-    s.expect(&[], &[]);
+    assert_eq!(r["ok"], true, "{r}");
+    let got = s.services();
+    assert!(got.len() == 1 && got[0].starts_with("scene.turn_on scene."), "{got:?}");
 }
 
 #[test]
@@ -881,7 +888,7 @@ fn answered_outside_then_the_same_call(name: &str, yes: bool, via: &str) {
     s.expect(&[], &["confirm"]);
     s.answer(q, yes, via);
     if yes {
-        s.advance(if via == "voice_reflex" { 1000 } else { 0 });
+        s.advance(if via == "voice_reflex" { CONFIRM_DELAY_MS } else { 0 });
         s.expect(
             &["cover.close_cover cover.study"],
             &if via == "voice_reflex" {

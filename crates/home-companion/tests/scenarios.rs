@@ -52,7 +52,7 @@ fn cat(parts: Vec<Vec<Step>>) -> Vec<Step> {
 }
 
 fn question() -> UiEvent {
-    UiEvent::Question(42)
+    UiEvent::Question(42, "Chiudo la tapparella?".into())
 }
 
 /// The asking request: "chiudi la tapparella" (not a reflex: to Home Assistant), its

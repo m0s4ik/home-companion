@@ -71,6 +71,12 @@ impl AskCard {
         }
     }
 
+    /// The spoken yes's second is over and the brain has not closed the question yet: its
+    /// commands are running.
+    pub fn executing(&self, now_ms: i64) -> bool {
+        self.pending_until_ms.is_some_and(|u| now_ms >= u)
+    }
+
     /// The Yes button blinks: a spoken yes waits for its second to pass.
     pub fn blinking(&self, now_ms: i64) -> bool {
         self.pending_until_ms.is_some_and(|u| now_ms < u)

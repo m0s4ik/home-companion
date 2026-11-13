@@ -387,8 +387,31 @@ pub fn confirm_question(name: &str, service: &str, data: &Value, it: bool) -> St
     format!("{verb} {name}?")
 }
 
+/// What several devices of one kind are called, in the plural.
+fn kind_plural(e: &Entity, it: bool) -> &'static str {
+    let domain = e.entity_id.split('.').next().unwrap_or("");
+    match (domain, e.device_class.as_str(), it) {
+        ("cover", "curtain", true) => "tende",
+        ("cover", "curtain", false) => "curtains",
+        ("cover", "awning", true) => "tende da sole",
+        ("cover", "awning", false) => "awnings",
+        ("cover", _, true) => "tapparelle",
+        ("cover", _, false) => "blinds",
+        ("light", _, true) => "luci",
+        ("light", _, false) => "lights",
+        ("valve", _, true) => "valvole",
+        ("valve", _, false) => "valves",
+        ("switch", _, true) => "prese",
+        ("switch", _, false) => "switches",
+        ("fan", _, true) => "ventilatori",
+        ("fan", _, false) => "fans",
+        (_, _, true) => "dispositivi",
+        (_, _, false) => "devices",
+    }
+}
+
 /// The question for several actions: one service on up to three devices names them ("Chiudo
-/// A, B e C?"), on more counts them ("Chiudo 5 dispositivi?"); mixed services: "Confermo 3
+/// A, B e C?"), on more counts them by kind and room ("Chiudo 5 tapparelle in Salone?"); mixed services: "Confermo 3
 /// comandi?".
 pub fn question_text(actions: &[Action], it: bool) -> String {
     let Some(first) = actions.first() else {
@@ -415,8 +438,26 @@ pub fn question_text(actions: &[Action], it: bool) -> String {
                 if it { "e" } else { "and" }
             )
         }
-        many if it => format!("{} dispositivi", many.len()),
-        many => format!("{} devices", many.len()),
+        many => {
+            // "4 tapparelle in Salone": what they are (all the same kind) and where (all in one
+            // room), never just "4 dispositivi".
+            let kind = |a: &Action| kind_plural(&a.entity, it);
+            let noun = kind(first);
+            let noun = if actions.iter().all(|a| kind(a) == noun) {
+                noun
+            } else if it {
+                "dispositivi"
+            } else {
+                "devices"
+            };
+            let area = first.entity.area.trim();
+            let one_room = !area.is_empty() && actions.iter().all(|a| a.entity.area.trim() == area);
+            match (one_room, it) {
+                (true, true) => format!("{} {noun} in {area}", many.len()),
+                (true, false) => format!("{} {noun} in {area}", many.len()),
+                (false, _) => format!("{} {noun}", many.len()),
+            }
+        }
     };
     confirm_question(&who, &first.service, &first.data, it)
 }
@@ -634,8 +675,14 @@ mod tests {
             a.entity.entity_id = format!("cover.x{i}");
             five.push(a);
         }
-        assert_eq!(question_text(&five, true), "Chiudo 5 dispositivi?");
-        assert_eq!(question_text(&five, false), "Close 5 devices?");
+        assert_eq!(question_text(&five, true), "Chiudo 5 tapparelle in Living room?");
+        assert_eq!(question_text(&five, false), "Close 5 blinds in Living room?");
+        let mut spread = five.clone();
+        spread[4].entity.area = "Study".into();
+        assert_eq!(question_text(&spread, true), "Chiudo 5 tapparelle?");
+        let mut kinds = five.clone();
+        kinds[4].entity.entity_id = "light.x".into();
+        assert_eq!(question_text(&kinds, true), "Chiudo 5 dispositivi in Living room?");
         let mut mixed = two.clone();
         mixed[1].service = "open_cover".into();
         assert_eq!(question_text(&mixed, true), "Confermo 2 comandi?");

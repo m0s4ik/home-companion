@@ -15,8 +15,9 @@ use crate::house::Action;
 
 /// How long a question waits for an answer (ms).
 pub const ASK_MS: i64 = 30_000;
-/// How long a spoken yes waits before the command runs, so a "no" can still win (ms).
-pub const CONFIRM_DELAY_MS: i64 = 1_000;
+/// How long a spoken yes waits before the command runs, so a "no" can still win (ms): two
+/// seconds, a person needs about 1.4 s to see it and touch No (measured on the device).
+pub const CONFIRM_DELAY_MS: i64 = 2_000;
 
 /// What the model is told when the question is on the screen.
 pub const SAY_NOTHING: &str =
@@ -240,23 +241,23 @@ mod tests {
     }
 
     #[test]
-    fn a_spoken_yes_waits_a_second_and_a_no_wins() {
+    fn a_spoken_yes_waits_and_a_no_wins() {
         let mut a = q();
         assert_eq!(
             a.answer(true, Via::VoiceReflex, 2_000),
-            Effect::Pending { until_ms: 3_000 }
+            Effect::Pending { until_ms: 2_000 + CONFIRM_DELAY_MS }
         );
         assert_eq!(a.answer(true, Via::VoiceHa, 2_100), Effect::Ignored);
-        assert_eq!(a.deadline(), Some(3_000));
-        assert!(!a.confirm_due(2_999));
+        assert_eq!(a.deadline(), Some(2_000 + CONFIRM_DELAY_MS));
+        assert!(!a.confirm_due(2_000 + CONFIRM_DELAY_MS - 1));
         assert_eq!(a.answer(false, Via::Stop, 2_500), Effect::No);
         assert_eq!(a.state, State::No { via: Via::Stop });
         assert!(!a.confirm_due(5_000));
         let mut b = q();
         b.answer(true, Via::VoiceHa, 2_000);
-        assert!(b.confirm_due(3_000));
+        assert!(b.confirm_due(2_000 + CONFIRM_DELAY_MS));
         assert_eq!(b.state, State::Executing { via: Via::VoiceHa });
-        assert_eq!(b.answer(false, Via::Screen, 3_001), Effect::Ignored);
+        assert_eq!(b.answer(false, Via::Screen, 2_001 + CONFIRM_DELAY_MS), Effect::Ignored);
     }
 
     #[test]

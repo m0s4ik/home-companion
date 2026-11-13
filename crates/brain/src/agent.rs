@@ -782,7 +782,8 @@ impl Brain {
                         failed.push(name);
                         continue;
                     }
-                    if let Err(err) = self.run_control(ha, e, &a.service, &a.data, false) {
+                    // Undo as for any house command: a yes is not a reason to lose it.
+                    if let Err(err) = self.run_control(ha, e, &a.service, &a.data, true) {
                         log::warn!(event = "brain_house", entity = e.entity_id.as_str(); "{}: {err}", a.service);
                         failed.push(name);
                     }
@@ -905,7 +906,7 @@ impl Brain {
     }
 
     /// "Undo" on the screen for the `changed` event `id` (events.rs): the inverse service, for
-    /// 2 minutes after the command, only on a device that is still allowed at once.
+    /// 2 minutes after the command, on a device that is not "never" (a confirmed blind too).
     pub fn undo_control(&self, id: i64) -> Result<(), String> {
         let d = {
             let mut v = self.done_controls.lock().unwrap_or_else(|e| e.into_inner());
@@ -922,8 +923,10 @@ impl Brain {
             .into_iter()
             .find(|e| e.entity_id == d.entity_id)
             .ok_or_else(|| format!("{} is not exposed any more", d.entity_id))?;
-        if self.gate_of(&e) != Gate::Allow {
-            return Err("not allowed: this device cannot be undone without a yes".into());
+        // Undo is a touch on the screen, as deliberate as a touched Yes: fine for a device that
+        // needs a yes (a blind just closed), never for one that is never controlled by voice.
+        if self.gate_of(&e) == Gate::Never {
+            return Err("not allowed: this device is never controlled from here".into());
         }
         let ha = self.ha().ok_or("Home Assistant is not configured")?;
         if let Some(scene) = &d.scene {
@@ -1447,7 +1450,9 @@ impl Brain {
             });
             v.push(ToolSpec {
                 name: "home_control",
-                description: "Do something on a device: a service of its own domain (light: turn_on, \
+                description: "Do something on a device, at once (no need to call home_entities first: \
+                              entity_id may be the device's name as the user said it): a service of \
+                              its own domain (light: turn_on, \
                               turn_off, toggle with data brightness_pct; cover: open_cover, \
                               close_cover, stop_cover, set_cover_position with data position; climate: \
                               set_temperature with data temperature; media_player: media_pause, \

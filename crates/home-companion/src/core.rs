@@ -49,7 +49,7 @@ pub enum UiEvent {
     /// The brain's Yes/No question `id` is on the screen (BrainMsg::Confirm): when the character
     /// is still busy with the request that asked it, the microphone opens at once for the
     /// answer, where "sì" and "no" are reflexes.
-    Question(i64),
+    Question(i64, String),
     /// Yes or No touched on the question `id`: the core sends the answer to the brain.
     QuestionAnswer {
         id: i64,
@@ -399,6 +399,18 @@ struct VoiceWait {
     deadline: Instant,
 }
 
+/// The brain's question said aloud (its voice requested, then playing); the microphone opens
+/// for the answer when it has played, or at `deadline` if the voice never came.
+struct AskVoice {
+    id: i64,
+    voice: u64,
+    deadline: Instant,
+    stream: Option<audio::Stream>,
+}
+
+/// How long the question's voice may take to come before listening starts without it.
+const ASK_VOICE_WAIT: Duration = Duration::from_millis(2500);
+
 /// An utterance held back: buffered and fed to the reflex helper while the user speaks, the
 /// helper's events judged by [`reflex::verdict`]; then either done locally or sent to Home
 /// Assistant in one burst (and live after it while the user still speaks). Also without a
@@ -512,6 +524,9 @@ pub struct Core {
     answer_dropped: u64,
     /// The utterance held back for the reflexes.
     gate: Option<Gate>,
+    /// After a live release: our own end of speech, so Home Assistant gets `audio-stop` as soon
+    /// as the user is silent instead of waiting for its own (slower, "relaxed") detector.
+    live_vad: Option<Vad>,
     /// A reflex's answer is on screen until then.
     local_until: Option<Instant>,
     /// The reflex result, written next to the recording when it stops.
@@ -535,6 +550,13 @@ pub struct Core {
     dnd_until: Option<u64>,
     /// The brain's Yes/No question on the screen (UiEvent::Question).
     question: Option<i64>,
+    /// The open question's words ("Chiudo la tapparella?"), said aloud and echoed on a yes.
+    question_text: String,
+    /// The question being said aloud before the microphone opens for its answer.
+    asking_voice: Option<AskVoice>,
+    /// A short notice about the question ("Chiudo …", "Va bene, lascio stare") awaited from
+    /// the voice: played when it comes in time, in any phase but a ringing bell.
+    notice_wait: Option<(u64, Instant)>,
     /// A spoken yes to that question was received: its commands run then, unless a no comes
     /// first (the stop word listens meanwhile).
     confirming: Option<(i64, Instant)>,
@@ -729,6 +751,7 @@ impl Core {
             chunk_buf: Vec::with_capacity(640),
             answer_dropped: 0,
             gate: None,
+            live_vad: None,
             local_until: None,
             sidecar: None,
             quit: false,
@@ -742,6 +765,9 @@ impl Core {
             replay: None,
             dnd_until: None,
             question: None,
+            question_text: String::new(),
+            asking_voice: None,
+            notice_wait: None,
             confirming: None,
             dinged: None,
             run: None,
@@ -1182,6 +1208,7 @@ impl Core {
         }
         log::info!(event = "conversation_start", id = id, trigger = trigger.name(), reflexes = gated, answering = answering.unwrap_or(-1); "conversation {id} started ({}{})", trigger.name(), if gated { ", reflexes first" } else { "" });
         self.conv = Some(c);
+        self.live_vad = None;
         self.ui(UiCommand::Heard(String::new()));
         self.ui(UiCommand::Answer(String::new()));
         let ok = if gated {
@@ -1237,6 +1264,7 @@ impl Core {
 
     /// End of the user's speech (voice-stopped or transcript): stop streaming.
     fn end_listening(&mut self) {
+        self.live_vad = None;
         self.mic_idle();
         self.d.mic.request_reset();
         self.stop_recorder();
@@ -1446,6 +1474,19 @@ impl Core {
             self.wave.pop_back();
         }
         self.wave.push_front(level_to_bar(f.level.rms_dbfs));
+        let over = self.live_vad.as_mut().is_some_and(|v| {
+            v.push(&f.samples);
+            live_speech_over(v)
+        });
+        if over {
+            self.live_vad = None;
+            log::info!(event = "live_end"; "end of speech heard by the body: audio-stop to Home Assistant");
+            self.send(&Message::AudioStop { timestamp: None });
+            if let Some(c) = &mut self.conv {
+                c.audio_stop_sent = true;
+            }
+            self.end_listening();
+        }
     }
 
     // ---- reflexes -----------------------------------------------------------------------
@@ -1772,8 +1813,10 @@ impl Core {
             }
             self.end_listening();
         } else {
-            // Home Assistant listens on, live: its own end of speech ends it.
+            // Home Assistant listens on, live; our detector (it has heard everything so far)
+            // ends it at the user's silence, Home Assistant's own end of speech otherwise.
             self.listen_deadline = Some(Instant::now() + self.cfg.listen_timeout);
+            self.live_vad = Some(g.vad);
         }
     }
 
@@ -2081,6 +2124,27 @@ impl Core {
 
     /// The voice of a reflex's answer: played if still awaited, else (late) dropped.
     fn on_voice(&mut self, r: crate::voice::VoiceReply) {
+        if self.asking_voice.as_ref().is_some_and(|a| a.voice == r.id) {
+            self.on_ask_voice(r.speech);
+            return;
+        }
+        if let Some((id, until)) = self.notice_wait
+            && id == r.id
+        {
+            self.notice_wait = None;
+            if let Some(sp) = r.speech
+                && Instant::now() < until
+                && self.phase != Phase::Ringing
+            {
+                let s = self.d.player.open_stream(sp.format);
+                if let Err(e) = s.push(&sp.pcm) {
+                    log::warn!("question notice: {e}");
+                }
+                s.finish();
+                log::info!(event = "question_notice", seconds = sp.duration().as_secs_f64(); "question notice said aloud");
+            }
+            return;
+        }
         // The words of a timer that rang: said, then the bell.
         if let Some((id, until)) = self.ring_wait
             && id == r.id
@@ -2633,6 +2697,17 @@ impl Core {
 
     fn on_audio(&mut self, e: AudioEvent) {
         match e {
+            AudioEvent::Finished(id)
+                if self
+                    .asking_voice
+                    .as_ref()
+                    .and_then(|a| a.stream.as_ref())
+                    .is_some_and(|s| s.id() == id) =>
+            {
+                if let Some(q) = self.asking_voice.as_ref().map(|a| a.id) {
+                    self.listen_for_question(q);
+                }
+            }
             AudioEvent::Finished(id) => {
                 let is_answer = self
                     .conv
@@ -2864,7 +2939,7 @@ impl Core {
             },
             UiEvent::Stop => self.on_stop(),
             UiEvent::FalseWake => self.on_false_wake(),
-            UiEvent::Question(id) => self.on_question(id),
+            UiEvent::Question(id, text) => self.on_question(id, text),
             UiEvent::QuestionAnswer { id, yes } => self.on_question_answer(id, yes),
             UiEvent::QuestionPending(id, until_ms) => self.on_question_pending(id, until_ms),
             UiEvent::QuestionClosed { id, yes, via } => self.on_question_closed(id, yes, &via),
@@ -3073,12 +3148,13 @@ impl Core {
     /// that asked it (thinking, or saying it), the spoken question is dropped (the screen shows
     /// it) and the microphone opens at once for "sì" or "no": a new conversation answering
     /// `id`. Any other time (home, a bell, an announcement) only the pop-up.
-    fn on_question(&mut self, id: i64) {
+    fn on_question(&mut self, id: i64, text: String) {
         if self.question == Some(id) {
             // The brain's replay after a new subscription.
             return;
         }
         self.question = Some(id);
+        self.question_text = text;
         let asked_here = self
             .conv
             .as_ref()
@@ -3112,8 +3188,79 @@ impl Core {
                 self.close("question");
             }
         }
+        self.ask_aloud(id);
+    }
+
+    /// The question said aloud (the brain's own words, not the model's), then the microphone
+    /// opens for the answer. Without a voice (offline, do not disturb, no voice in time) the
+    /// microphone opens at once, the pop-up shows the question.
+    fn ask_aloud(&mut self, id: i64) {
+        let quiet = self.dnd(now_unix());
+        match &self.d.voice {
+            Some(v) if !quiet && !self.question_text.is_empty() => {
+                let voice = self.next_voice_id;
+                self.next_voice_id += 1;
+                v.say(voice, &self.question_text, self.ha.is_connected());
+                self.asking_voice = Some(AskVoice {
+                    id,
+                    voice,
+                    deadline: Instant::now() + ASK_VOICE_WAIT,
+                    stream: None,
+                });
+                self.speaking_text = self.question_text.clone();
+                self.set_phase(Phase::Speaking);
+                self.refresh_stop_listening();
+                log::info!(event = "question_ask", id = id; "question {id}: said aloud, then listening");
+            }
+            _ => self.listen_for_question(id),
+        }
+    }
+
+    /// The microphone opens for the answer to question `id`.
+    fn listen_for_question(&mut self, id: i64) {
+        self.asking_voice = None;
+        if self.question != Some(id) {
+            // Answered (touched) or closed while it was being said.
+            self.go_idle();
+            return;
+        }
         log::info!(event = "question_listen", id = id; "question {id}: listening for the answer now");
         self.start_conversation_for(Trigger::FollowUp, Some(id));
+    }
+
+    /// The question's voice came: played, or (none) listening at once.
+    fn on_ask_voice(&mut self, sp: Option<crate::voice::Speech>) {
+        let Some(a) = &mut self.asking_voice else { return };
+        let id = a.id;
+        match sp {
+            Some(sp) if a.stream.is_none() => {
+                let s = self.d.player.open_stream(sp.format);
+                if let Err(e) = s.push(&sp.pcm) {
+                    log::warn!("question voice: {e}");
+                }
+                s.finish();
+                self.speaking_since = Some(Instant::now());
+                self.speaking_len = Some(sp.duration());
+                // Fallback if the end of the stream is never reported.
+                a.deadline = Instant::now() + sp.duration() + Duration::from_secs(1);
+                a.stream = Some(s);
+            }
+            _ => self.listen_for_question(id),
+        }
+    }
+
+    /// A notice about the question said aloud ("Chiudo la tapparella.", "Va bene, lascio
+    /// stare."), never with do not disturb (the cues are enough there).
+    fn notice(&mut self, text: &str) {
+        if text.is_empty() || self.dnd(now_unix()) {
+            return;
+        }
+        if let Some(v) = &self.d.voice {
+            let id = self.next_voice_id;
+            self.next_voice_id += 1;
+            v.say(id, text, self.ha.is_connected());
+            self.notice_wait = Some((id, Instant::now() + Duration::from_secs(4)));
+        }
     }
 
     /// Yes or No touched: the answer goes to the brain; the conversation that waited for it
@@ -3149,6 +3296,9 @@ impl Core {
         if self.dinged != Some(id) {
             self.dinged = Some(id);
             self.success_cue();
+            // "Chiudo la tapparella?" → "Chiudo la tapparella.": what is about to happen.
+            let said = format!("{}.", self.question_text.trim().trim_end_matches('?').trim());
+            self.notice(&said);
         }
         let with_ha = self.gate.is_none() && self.phase.in_conversation();
         if let Some(c) = self.conv.as_mut().filter(|c| c.answering == Some(id)) {
@@ -3173,6 +3323,26 @@ impl Core {
         if self.dinged == Some(id) {
             self.dinged = None;
         }
+        if let Some(a) = self.asking_voice.take_if(|a| a.id == id) {
+            // Answered on the screen while it was being said.
+            if let Some(s) = a.stream {
+                s.abort();
+            }
+            if self.phase == Phase::Speaking {
+                self.go_idle();
+            }
+        }
+        match (yes, via) {
+            (Some(false), _) => {
+                let t = self.reflex_text("question_no", &[]);
+                self.notice(&t);
+            }
+            (None, "timeout") => {
+                let t = self.reflex_text("question_expired", &[]);
+                self.notice(&t);
+            }
+            _ => {}
+        }
         let held = self.gate.as_ref().is_some_and(|g| g.want.is_none());
         let Some(c) = self.conv.as_mut().filter(|c| c.answering == Some(id)) else {
             return;
@@ -3194,6 +3364,20 @@ impl Core {
     /// is a No; never otherwise (a question open on the screen stays).
     fn on_stop(&mut self) {
         log::info!(event = "stop", phase = self.phase.name(); "Stop pressed in {}", self.phase.name());
+        if let Some(a) = self.asking_voice.take() {
+            // "No" or "stop" over the question being said: a No.
+            log::info!(event = "question_answer", id = a.id, yes = false, via = "stop"; "question {}: no (stop over the question)", a.id);
+            if let Some(s) = a.stream {
+                s.abort();
+            }
+            self.brain_send(crate::brain_link::confirm_answer(
+                a.id,
+                false,
+                crate::brain_link::Via::Stop,
+            ));
+            self.go_idle();
+            return;
+        }
         let answering = self
             .conv
             .as_ref()
@@ -3547,6 +3731,18 @@ impl Core {
             self.flash_until = None;
             self.ui(UiCommand::View(self.phase));
         }
+        if let Some(q) = self
+            .asking_voice
+            .as_ref()
+            .filter(|a| now >= a.deadline)
+            .map(|a| a.id)
+        {
+            log::info!(event = "question_ask_late", id = q; "question {q}: its voice did not come or end in time: listening");
+            if let Some(s) = self.asking_voice.as_mut().and_then(|a| a.stream.take()) {
+                s.abort();
+            }
+            self.listen_for_question(q);
+        }
         if self.local_until.is_some_and(|t| now >= t) {
             self.local_until = None;
             if let Some(s) = self.replay.take() {
@@ -3754,6 +3950,15 @@ fn duration_parts(secs: f64) -> Vec<(&'static str, u64)> {
 /// The answer ends with a question that waits for one: "A che ora?" yes, a closing courtesy
 /// ("Sono le 18:32. Ha bisogno d'altro?") no — that one would open the microphone on whoever
 /// talks in the room.
+/// The live stream's end of speech: the reflexes' detector, with a longer silence than theirs
+/// (a pause inside a sentence, "metti una sveglia alle… sette", must not cut it).
+fn live_speech_over(v: &Vad) -> bool {
+    v.speech_ms() >= Vad::MIN_SPEECH_MS && v.silence_ms() >= LIVE_END_SILENCE_MS
+}
+
+/// See [`live_speech_over`].
+const LIVE_END_SILENCE_MS: u32 = 1_500;
+
 fn asks_for_answer(answer: &str) -> bool {
     let a = answer.trim_end();
     if !a.ends_with('?') {
