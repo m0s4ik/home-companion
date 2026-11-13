@@ -360,7 +360,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "audio"
-version = "0.2.0-rc1"
+version = "0.2.0"
 dependencies = [
  "alsa",
  "cpal",
@@ -531,7 +531,7 @@ dependencies = [
 
 [[package]]
 name = "brain"
-version = "0.2.0-rc1"
+version = "0.2.0"
 dependencies = [
  "libc",
  "log",
@@ -668,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "character"
-version = "0.2.0-rc1"
+version = "0.2.0"
 dependencies = [
  "png",
  "serde",
@@ -1801,7 +1801,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "home-companion"
-version = "0.2.0-rc1"
+version = "0.2.0"
 dependencies = [
  "alsa",
  "audio",
@@ -2659,7 +2659,7 @@ checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 
 [[package]]
 name = "locale"
-version = "0.2.0-rc1"
+version = "0.2.0"
 dependencies = [
  "character",
  "serde",
@@ -3827,7 +3827,7 @@ dependencies = [
 
 [[package]]
 name = "reflex"
-version = "0.2.0-rc1"
+version = "0.2.0"
 dependencies = [
  "libc",
  "serde",
@@ -4416,7 +4416,7 @@ dependencies = [
 
 [[package]]
 name = "spike-audio"
-version = "0.2.0-rc1"
+version = "0.2.0"
 dependencies = [
  "alsa",
  "clap",
@@ -4429,7 +4429,7 @@ dependencies = [
 
 [[package]]
 name = "spike-native"
-version = "0.2.0-rc1"
+version = "0.2.0"
 dependencies = [
  "cc",
  "hound",
@@ -4440,7 +4440,7 @@ dependencies = [
 
 [[package]]
 name = "spike-ui"
-version = "0.2.0-rc1"
+version = "0.2.0"
 dependencies = [
  "character",
  "fontique",
@@ -5209,7 +5209,7 @@ dependencies = [
 
 [[package]]
 name = "wakeword"
-version = "0.2.0-rc1"
+version = "0.2.0"
 dependencies = [
  "cc",
  "hound",
@@ -5472,7 +5472,7 @@ dependencies = [
 
 [[package]]
 name = "webview-fake"
-version = "0.2.0-rc1"
+version = "0.2.0"
 dependencies = [
  "drm",
  "gbm",
@@ -5482,7 +5482,7 @@ dependencies = [
 
 [[package]]
 name = "webview-proto"
-version = "0.2.0-rc1"
+version = "0.2.0"
 dependencies = [
  "libc",
  "thiserror 2.0.21",
@@ -5490,7 +5490,7 @@ dependencies = [
 
 [[package]]
 name = "webview-viewer"
-version = "0.2.0-rc1"
+version = "0.2.0"
 dependencies = [
  "drm",
  "gbm",
@@ -6041,7 +6041,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "wyoming"
-version = "0.2.0-rc1"
+version = "0.2.0"
 dependencies = [
  "hound",
  "log",

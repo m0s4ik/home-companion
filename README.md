@@ -10,7 +10,7 @@ The first device is the Lenovo ThinkSmart View (2 GB, a phone-class Snapdragon) 
 [thinksmart-view-debian](https://github.com/m0s4ik/thinksmart-view-debian); the first character is **Alfred**, an
 elderly butler.
 
-<p align="center"><img src="docs/images/device-home.png" width="760" alt="A ThinkSmart View showing Alfred's home screen: the clock, the date and the weather, a reminder, a timer and AirPlay music, the HA, Talk and More buttons"></p>
+<p align="center"><img src="docs/images/device-home.png" width="760" alt="A ThinkSmart View showing Alfred's home screen: the clock, the date and the weather, a reminder, a timer and AirPlay music, the gramophone at Alfred's feet, the HA, Talk and More buttons"></p>
 
 [<img src="https://img.shields.io/github/v/release/m0s4ik/home-companion?include_prereleases&logo=github&label=Release">](https://github.com/m0s4ik/home-companion/releases)
 [<img src="https://img.shields.io/badge/Home%20Assistant-2026.11-41BDF5?logo=homeassistant&logoColor=white">](https://www.home-assistant.io)
@@ -40,6 +40,19 @@ memories, reminders, the shopping list, timers and alarms, and the house **with 
 only after a "yes"; locks, alarms, doors and gates never by voice).
 
 Your scripts exposed to Assist work as tools, and your automations' sentence triggers still run first (Home Assistant checks them before the AI agent, even with "prefer local intents" off, whenever the request comes through the voice pipeline; only the answer to a follow-up question goes straight to the agent).
+
+### 💡 The house, with a safety net
+
+"Turn off the kitchen light", "close the living room blind to 30%": the AI uses the device's house tool, which
+finds the device by its words and checks it first. Lights and switches act at once, with a card and **Undo** that puts
+back what changed (a whole room at once). Covers and valves **ask first**, out loud and on the screen: answer yes
+or no by voice or with a tap; after a spoken yes you have two seconds to take it back, and the same window then
+says what was done, with Undo. Locks, alarms, doors and gates are never moved by voice.
+
+<p align="center">
+<img src="docs/images/house-ask.png" width="400" alt="Living room blind: close it? No and Yes, and the time left to answer">
+<img src="docs/images/house-done-asked.png" width="400" alt="The same window after the yes: Living room blind, Closed, with Undo and its time">
+</p>
 
 ### 🏠 The home screen
 
@@ -110,8 +123,8 @@ goes quiet while Alfred listens. **Screen mirroring** uses the hardware video de
 controls stay at the sides; sideways, the picture fills the screen and the controls come with a tap.
 
 <p align="center">
-<img src="docs/images/airplay.png" width="400" alt="An iPhone mirrored over AirPlay, Alfred on the left, the time and the controls on the right">
-<img src="docs/images/music.png" width="400" alt="AirPlay music: the cover, the title, the artist and the album, previous, pause and next">
+<img src="docs/images/airplay.png" width="400" alt="A phone mirrored over AirPlay: the home button and Alfred on the left, the phone in the middle, the time, the controls and the volume on the right">
+<img src="docs/images/music.png" width="400" alt="AirPlay music: the cover, the title and the artist under it, the bar with previous, pause and next, the gramophone at Alfred's feet">
 </p>
 
 ### 🔗 Set up from the screen
@@ -122,7 +135,7 @@ over MCP, Alfred's agent under your AI and his voice pipeline. Nothing to type, 
 
 <p align="center">
 <img src="docs/images/setup-qr.png" width="400" alt="Let's link Home Assistant: a QR code and three steps, scan, allow, done">
-<img src="docs/images/setup-done.png" width="400" alt="All set: Alfred is set up, every row green: listening and voice, tools, AI, character, speech and voice">
+<img src="docs/images/setup-done.png" width="400" alt="The Home Assistant page once linked: the AI, speech-to-text, text-to-speech and voice in use, the AI's cost today, Check and repair, Unlink">
 </p>
 
 ### 🪶 Light
