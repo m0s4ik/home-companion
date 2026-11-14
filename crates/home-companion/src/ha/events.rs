@@ -18,12 +18,16 @@
 //! ```
 //!
 //! `home_companion_card_dismiss` with `id` takes a card away.
+//!
+//! `home_companion_screen` with `state: "off"` puts the screen to sleep, `state: "on"` wakes it
+//! (e.g. from a presence sensor); `device` works as for cards.
 
 use serde_json::Value;
 
 /// The event types the body subscribes to.
 pub const CARD_EVENT: &str = "home_companion_card";
 pub const DISMISS_EVENT: &str = "home_companion_card_dismiss";
+pub const SCREEN_EVENT: &str = "home_companion_screen";
 
 /// A card from Home Assistant.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -91,6 +95,27 @@ pub fn parse(msg: &Value, device: &str) -> Option<CardEvent> {
     }
 }
 
+/// A `home_companion_screen` event for this device: `Some(true)` wake, `Some(false)` sleep.
+/// None: another event, another device, or a `state` that is not "on" or "off".
+pub fn parse_screen(msg: &Value, device: &str) -> Option<bool> {
+    let ev = msg.get("event")?;
+    if ev.get("event_type")?.as_str()? != SCREEN_EVENT {
+        return None;
+    }
+    let data = ev.get("data")?;
+    let s = |k: &str| data.get(k).and_then(Value::as_str).map(str::trim);
+    if let Some(d) = s("device").filter(|d| !d.is_empty())
+        && !d.eq_ignore_ascii_case(device)
+    {
+        return None;
+    }
+    match s("state")?.to_ascii_lowercase().as_str() {
+        "on" => Some(true),
+        "off" => Some(false),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +172,38 @@ mod tests {
             panic!()
         };
         assert_eq!((c.icon, c.seconds), (None, None));
+    }
+
+    #[test]
+    fn screen_on_off_for_this_device() {
+        let m = |d: Value| event(SCREEN_EVENT, d);
+        assert_eq!(
+            parse_screen(&m(json!({"state": "off"})), "Alfred"),
+            Some(false)
+        );
+        assert_eq!(
+            parse_screen(&m(json!({"state": " ON "})), "Alfred"),
+            Some(true)
+        );
+        assert_eq!(
+            parse_screen(&m(json!({"state": "on", "device": "alfred"})), "Alfred"),
+            Some(true)
+        );
+        assert_eq!(
+            parse_screen(&m(json!({"state": "on", "device": "Kitchen"})), "Alfred"),
+            None
+        );
+        assert_eq!(parse_screen(&m(json!({"state": "dim"})), "Alfred"), None);
+        assert_eq!(parse_screen(&m(json!({})), "Alfred"), None);
+        assert_eq!(
+            parse_screen(&event(CARD_EVENT, json!({"state": "on"})), "Alfred"),
+            None
+        );
+        // A screen event is not a card.
+        assert_eq!(
+            parse(&m(json!({"state": "on", "text": "x"})), "Alfred"),
+            None
+        );
     }
 
     #[test]

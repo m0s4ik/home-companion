@@ -53,6 +53,8 @@ pub enum HubCmd {
 #[derive(Debug, Clone, PartialEq)]
 pub enum HubMsg {
     Card(CardEvent),
+    /// Home Assistant asks the screen to wake (true) or sleep (false).
+    Screen(bool),
     /// The lists and calendars that exist (the choosing page).
     Entities(Entities),
     /// The lists shown now, in order, with their names (a list left out disappears).
@@ -99,6 +101,11 @@ pub fn card_subscriptions(first: u64) -> [String; 2] {
         .collect::<Vec<_>>()
         .try_into()
         .expect("two event types")
+}
+
+/// The `subscribe_events` message for the screen event.
+pub fn screen_subscription(id: u64) -> String {
+    json!({"id": id, "type": "subscribe_events", "event_type": events::SCREEN_EVENT}).to_string()
 }
 
 /// The entities of an `event` message of the entities subscription (`{"event": {"result": …}}`,
@@ -287,10 +294,16 @@ fn session(
     let entities_id = take_id();
     let first_card_id = take_id();
     let _second_card_id = take_id();
+    let screen_id = take_id();
     let initial = [json!({"id": entities_id, "type": "render_template",
                           "template": ENTITIES_TEMPLATE, "report_errors": true})
     .to_string()];
-    for m in initial.iter().chain(&card_subscriptions(first_card_id)) {
+    let screen_sub = [screen_subscription(screen_id)];
+    for m in initial
+        .iter()
+        .chain(&card_subscriptions(first_card_id))
+        .chain(&screen_sub)
+    {
         ws.send_text(m).map_err(lost)?;
     }
     let mut known: Option<Entities> = None;
@@ -396,6 +409,12 @@ fn session(
                             })
                             .is_err()
                     {
+                        ws.close();
+                        return Ok(());
+                    }
+                } else if is_event && let Some(on) = events::parse_screen(&v, &cfg.device) {
+                    log::info!(event = "ha_screen", on; "screen from Home Assistant: {}", if on { "on" } else { "off" });
+                    if tx.send(HubMsg::Screen(on)).is_err() {
                         ws.close();
                         return Ok(());
                     }
@@ -620,6 +639,8 @@ mod tests {
         assert_eq!(c1["event_type"], "home_companion_card");
         let c2 = read_frame(&mut s, &mut buf);
         assert_eq!(c2["event_type"], "home_companion_card_dismiss");
+        let c3 = read_frame(&mut s, &mut buf);
+        assert_eq!(c3["event_type"], "home_companion_screen");
         // Home Assistant tells what exists: every todo list is subscribed (nothing chosen).
         send(
             &mut s,
@@ -679,6 +700,18 @@ mod tests {
                 ..Default::default()
             }))
         );
+        // The screen is asked to sleep, and to wake.
+        for (state, want) in [("off", false), ("on", true)] {
+            send(
+                &mut s,
+                &json!({"id": c3["id"], "type": "event", "event": {
+                    "event_type": "home_companion_screen", "data": {"state": state}}}),
+            );
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+                HubMsg::Screen(want)
+            );
+        }
         // A tick on the screen.
         tx.send(HubCmd::Done {
             list: "todo.spesa".into(),

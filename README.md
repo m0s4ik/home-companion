@@ -212,6 +212,32 @@ event_data:
 The card plays the soft reminder sound by day and goes away with its OK. `home_companion_card_dismiss` with an `id`
 takes a card away.
 
+The screen can be put to sleep and woken the same way, for example from a presence sensor:
+
+```yaml
+automation:
+  - alias: Kitchen display follows the room
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.kitchen_presence
+        to: "off"
+        for: "00:05:00"
+        id: empty
+      - trigger: state
+        entity_id: binary_sensor.kitchen_presence
+        to: "on"
+        id: present
+    actions:
+      - action: event
+        event: home_companion_screen
+        event_data:
+          state: "{{ \"off\" if trigger.id == \"empty\" else \"on\" }}"
+          device: Alfred   # optional, as for cards
+```
+
+`state: "off"` does what "screen off" does by voice (the backlight goes dark); `state: "on"` wakes it like a touch.
+Touching the screen or moving in front of it still wakes it, and the screen's own idle timeout still applies.
+
 ## How it works
 
 ```
