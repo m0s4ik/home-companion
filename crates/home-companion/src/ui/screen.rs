@@ -3287,6 +3287,18 @@ impl<S: Screen> Ui<S> {
             UiCommand::ScreenOff => self.screen_off(),
             UiCommand::DoNotDisturb(until) => self.set_dnd(until),
             UiCommand::Announcing(on) => self.screen.set_announcing(on),
+            UiCommand::Conversation {
+                state,
+                trigger,
+                handled_by,
+            } => {
+                if let Some(tx) = self.hub_tx.borrow().as_ref() {
+                    let _ = tx.send(HubCmd::Fire {
+                        event_type: crate::ha::events::CONVERSATION_EVENT.into(),
+                        data: crate::ha::events::conversation_data(state, trigger, handled_by),
+                    });
+                }
+            }
             UiCommand::Suspending => {
                 self.screen.set_settings_open(false);
                 self.motion.borrow_mut().awake.sleep(Instant::now());
