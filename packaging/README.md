@@ -183,8 +183,8 @@ Tools for Home Assistant's own AI: the conversation agent is an agent
 of whatever AI integration the user set up in Home Assistant (Google Gemini, OpenAI, Anthropic…, its key stays there);
 `home-companion-brain` serves it the device's tools over MCP (Home Assistant's built-in MCP client): memory, reminders, timers and
 alarms on the device, the shopping list, the house with gates. Long-term memory stays on the device
-(`/var/lib/home-companion-brain`: `brain.db`, `profile.md`, `notes.md`; the two Markdown blocks can be edited by hand); the memory
-jobs think through Home Assistant's `ai_task`. No API key on the device. (The earlier way, a model called directly with
+(`/var/lib/home-companion-brain/brain.db`; the `profile.md`/`notes.md` blocks of 0.2 became facts at the first start of 0.3 and
+were renamed `*.md.migrated`); the memory jobs think through Home Assistant's `ai_task`. No API key on the device. (The earlier way, a model called directly with
 a key on the device and a Wyoming `handle` service, is kept on the branch `standby/brain-direct-llm`.)
 
 | Path | What |
@@ -205,13 +205,14 @@ switches named like them) are never controlled by voice; other covers and valves
 heard. Home Assistant reads the tool list at setup and every 30 minutes: reload the MCP integration after an update.
 
 The body's control socket (`control_socket`, `/run/home-companion-brain/brain.sock`): the "Ricordi" page (what the brain knows,
-each fact deletable, "Dimentica tutto") and the reminder cards. The unit's `RuntimeDirectory` is group `home-companion-brain`, so
+each fact deletable; what it heard once, Right / Wrong; "Dimentica tutto"), the reminder cards, and what the agent always
+knows (`memory.context`), which the body writes into Home Assistant as `sensor.<name>_memory` (see the README's memory section). The unit's `RuntimeDirectory` is group `home-companion-brain`, so
 the body's user is in that group (install.sh). Without the brain (no socket) the page
 says the brain is not active and the Altro tile is hidden.
 
 Nightly tidy-up (`[memory] consolidate_at`, "03:30"; "" = off): with Home Assistant's AI task the brain merges facts that say the
-same thing, updates changed ones, retires the past ones (an appointment last week) and shortens the two blocks within
-their limits, in one transaction; skipped while a conversation is open or ended less than 10 minutes ago; after a
+same thing, updates changed ones and retires the past ones, in one transaction (no model call when no fact changed
+since the last run); skipped while a conversation is open or ended less than 10 minutes ago; after a
 suspend it runs at the next wake-up within 6 hours, else that night is skipped. The result (counts only) is on the
 "Ricordi" page and in the journal (`event=brain_tidy`).
 

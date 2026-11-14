@@ -114,8 +114,21 @@ a red "Microphone off" over the clock, and the control centre's tile says who sw
 ### 🧠 Memories, reminders and lists
 
 What you tell Alfred to remember ("remember that the boiler is in the cellar") is kept **on the device** and tidied
-at night; More → Memories shows all of it, one tap forgets a memory, another forgets everything. Conversations are
-kept on the screen too, if you want them (Settings → Keep conversations).
+at night; "forget that…" or one tap on More → Memories forgets a memory, another tap forgets everything. Alfred keeps
+only standing facts said by you (never what was done today, nor dates), and a name he heard only once waits under
+"To confirm" until you tap Right. Conversations are kept on the screen too, if you want them (Settings → Keep
+conversations).
+
+So that the assistant knows these facts at every conversation, Alfred writes them (at most 1500 characters) into Home
+Assistant as the state `sensor.alfred_memory`, which his agent's instructions read. Like any state, every Home
+Assistant user can see it and its history is kept for the recorder's purge period (add it to `recorder: exclude:` to
+avoid that). If you edited the agent's instructions yourself, add these lines at the end:
+
+```
+What you know about this home and the people in it:
+{{ state_attr('sensor.alfred_memory', 'text') or 'Nothing yet.' }}
+People registered in Home Assistant: {{ states.person | map(attribute='name') | join(', ') or 'none' }}
+```
 
 Lists and calendars are Home Assistant's: "add milk to the shopping list" writes to a `todo.*` list (Home
 Assistant's own, Bring!, ...), and the home's next card reads your `calendar.*` calendars. Home Assistant page →

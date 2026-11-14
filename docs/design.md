@@ -89,10 +89,19 @@ A small Rust process on the device (`crates/brain`, its own user and systemd uni
 the shopping list, and the house **with safety gates** (locks, alarms, door, gate and garage covers never by voice;
 other covers and valves only after a spoken yes the satellite heard).
 
-- **Memory stays on the device**: SQLite with FTS5 (no embeddings) in the brain's state directory, plus a profile
-  and notes as Markdown blocks. Extraction at the end of a conversation and a nightly tidy-up think through Home
-  Assistant's `ai_task`; without one they are skipped. "Forget all" on the screen deletes what the brain knows and
-  keeps the reminders.
+- **Memory is kept on the device, one store of facts**: SQLite with FTS5 (no embeddings) in the brain's state
+  directory. A fact is *active* (the agent knows it), a *candidate* (heard once: shown on the screen under "To
+  confirm", not told to the agent) or *rejected* (deleted by the user, kept a while so it is not learned again).
+  What may be kept is decided in code (`crates/brain/src/collect.rs`): a short standing sentence, no dates, resting
+  on the user's own words, not a chronicle of commands; a person's name stays a candidate unless the user said
+  "remember that…", confirmed it on the screen, said it again on another day, or it is a person registered in Home
+  Assistant. Conversations made only of commands never reach a model. Extraction at the end of a conversation and a
+  nightly tidy-up think through Home Assistant's `ai_task`; without one they are skipped. "Forget all" on the screen
+  deletes what the brain knows and keeps the reminders.
+- **What the agent always knows**: the active facts as a short list (at most `[memory] context_max_chars`, 1500
+  characters), which the body writes into Home Assistant as the state `sensor.<name>_memory` (attribute `text`); the
+  agent's instructions read it as a template at every conversation, with the names of the people registered in Home
+  Assistant. The rest, and past conversations, the agent finds with `recall`.
 - **Reminders**: a card on the screen first, then Home Assistant speaks it on the device if nobody touched it;
   never by voice in the quiet hours. Late ones say so; missed ones become one card.
 - The body talks to the brain over a Unix control socket (`crates/home-companion/src/brain_link.rs`): what the
@@ -277,8 +286,11 @@ The body runs **UxPlay** as a child process (patched, `tools/airplay/`) and stay
 - The Conversations page keeps the **text** of the exchanges on the device (`<state_dir>/conversations.json`,
   readable by the `home-companion` user only, the last 7 days or 50 exchanges, can be switched off and cleared); it
   never leaves the device and audio is never kept.
-- The brain's memory stays on the device; the pieces relevant to a request go to Home Assistant's agent through its
-  tools.
+- The brain's memory is kept on the device. The stable facts (active, at most 1500 characters) go to Home Assistant as
+  a state, and from there to the agent's model at every conversation: every Home Assistant user and integration can
+  read that state, and Home Assistant's history keeps it for its purge period (`recorder: exclude:` the entity to
+  avoid that). Candidates and past conversations stay on the device; their pieces reach the agent only through its
+  `recall` tool.
 
 ## 12. Testing
 
