@@ -257,7 +257,7 @@ To change the Wi-Fi later: `nmcli device wifi connect "<ssid>" password "<passwo
 
 ## Languages
 
-Italian, English and Dutch, complete: the screen (`locales/`), the reflexes' grammar
+Italian, English, Dutch and German, complete: the screen (`locales/`), the reflexes' grammar
 (`characters/alfred/grammar/`) and the speech model the installer downloads. With any other language set in Home
 Assistant, the device still works (Home Assistant answers in its language) without the local reflexes.
 

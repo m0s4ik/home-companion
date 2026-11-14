@@ -29,12 +29,13 @@ fn whole(durations: &[(String, u64)]) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// The slots of a language ("it", "en", "nl"); None for a language without reflexes.
+/// The slots of a language ("it", "en", "nl", "de"); None for a language without reflexes.
 pub fn for_language(code: &str) -> Option<Slots> {
     match code {
         "it" => Some(italian()),
         "en" => Some(english()),
         "nl" => Some(dutch()),
+        "de" => Some(german()),
         _ => None,
     }
 }
@@ -549,6 +550,222 @@ fn dutch() -> Slots {
     }
 }
 
+// ---- German -------------------------------------------------------------------------------
+
+const DE_UNITS: [&str; 20] = [
+    "null",
+    "eins",
+    "zwei",
+    "drei",
+    "vier",
+    "fünf",
+    "sechs",
+    "sieben",
+    "acht",
+    "neun",
+    "zehn",
+    "elf",
+    "zwölf",
+    "dreizehn",
+    "vierzehn",
+    "fünfzehn",
+    "sechzehn",
+    "siebzehn",
+    "achtzehn",
+    "neunzehn",
+];
+
+const DE_TENS: [&str; 10] = [
+    "", "", "zwanzig", "dreißig", "vierzig", "fünfzig", "sechzig", "siebzig", "achtzig", "neunzig",
+];
+
+/// 0..=100 in German words as Vosk writes them ("einundzwanzig", "dreißig", "hundert").
+pub fn de_number(n: u32) -> String {
+    match n {
+        0..=19 => DE_UNITS[n as usize].to_string(),
+        100 => "hundert".to_string(),
+        20..=99 => {
+            let tens = DE_TENS[(n / 10) as usize];
+            match n % 10 {
+                0 => tens.to_string(),
+                1 => format!("einund{tens}"),
+                u => format!("{}und{tens}", DE_UNITS[u as usize]),
+            }
+        }
+        _ => n.to_string(),
+    }
+}
+
+/// The hour of a clock time: "ein" before "uhr" ("um ein uhr"), "eins" everywhere else
+/// ("um halb eins", "um eins").
+fn de_hour(h: u32, before_uhr: bool) -> String {
+    match (h, before_uhr) {
+        (1, true) => "ein".to_string(),
+        _ => de_number(h),
+    }
+}
+
+fn german() -> Slots {
+    let w = de_number;
+    let mut d: Vec<(String, u64)> = Vec::new();
+    // Seconds.
+    for n in 2..=59 {
+        d.push((format!("{} sekunden", w(n)), n as u64));
+    }
+    // Minutes, a minute and a half, "zweieinhalb minuten", a few "N minuten und S sekunden".
+    d.push(("eine minute".into(), 60));
+    d.push(("anderthalb minuten".into(), 90));
+    d.push(("eineinhalb minuten".into(), 90));
+    for n in 2..=59 {
+        d.push((format!("{} minuten", w(n)), n as u64 * 60));
+    }
+    for n in 2..=9 {
+        d.push((format!("{}einhalb minuten", w(n)), n as u64 * 60 + 30));
+    }
+    for s in [10u32, 15, 20, 30, 40, 45, 50] {
+        d.push((format!("eine minute und {} sekunden", w(s)), 60 + s as u64));
+        for n in 2..=9 {
+            d.push((
+                format!("{} minuten und {} sekunden", w(n), w(s)),
+                n as u64 * 60 + s as u64,
+            ));
+        }
+    }
+    // Hours and their parts.
+    d.push(("eine halbe stunde".into(), 1800));
+    d.push(("eine viertelstunde".into(), 900));
+    d.push(("eine dreiviertelstunde".into(), 2700));
+    d.push(("eine stunde".into(), 3600));
+    d.push(("anderthalb stunden".into(), 5400));
+    d.push(("eineinhalb stunden".into(), 5400));
+    d.push(("eine stunde und eine minute".into(), 3660));
+    for m in 2..=59 {
+        d.push((
+            format!("eine stunde und {} minuten", w(m)),
+            3600 + m as u64 * 60,
+        ));
+    }
+    for h in 2..=12 {
+        d.push((format!("{} stunden", w(h)), h as u64 * 3600));
+    }
+    for h in 2..=11 {
+        d.push((format!("{}einhalb stunden", w(h)), h as u64 * 3600 + 1800));
+    }
+    for h in 2..=3 {
+        for m in [5u32, 10, 15, 20, 25, 30, 40, 45, 50] {
+            d.push((
+                format!("{} stunden und {} minuten", w(h), w(m)),
+                h as u64 * 3600 + m as u64 * 60,
+            ));
+        }
+    }
+
+    // Times of day, with the preposition "um".
+    let mut t: Vec<(String, (u8, u8))> = Vec::new();
+    let mut add = |s: String, minutes: i32| {
+        let m = minutes.rem_euclid(24 * 60) as u32;
+        t.push((s, ((m / 60) as u8, (m % 60) as u8)));
+    };
+    // The 24-hour clock past noon, and midnight: "um neunzehn uhr dreißig", "um null uhr zehn".
+    for h in (13..=23u32).chain([0u32]) {
+        let hw = w(h);
+        add(format!("um {hw} uhr"), h as i32 * 60);
+        if h != 0 {
+            add(format!("um {hw}"), h as i32 * 60);
+        }
+        for m in 1..=59u32 {
+            add(format!("um {hw} uhr {}", w(m)), (h * 60 + m) as i32);
+            if m < 10 {
+                add(format!("um {hw} uhr null {}", w(m)), (h * 60 + m) as i32);
+            }
+        }
+    }
+    // The 12-hour clock: the named hour, an offset in minutes from it, and the part of the day.
+    // "um halb sieben" is 6:30 (half an hour before the named hour); bare, the morning hour is
+    // meant, and twelve is noon.
+    for h12 in 1..=12u32 {
+        let hu = de_hour(h12, true);
+        let hs = de_hour(h12, false);
+        // (phrase, offset in minutes, whether the parts of the day are generated for it)
+        let mut forms: Vec<(String, i32, bool)> = vec![
+            (format!("{hu} uhr"), 0, true),
+            (hs.clone(), 0, true),
+            (format!("halb {hs}"), -30, true),
+            (format!("viertel nach {hs}"), 15, true),
+            (format!("viertel vor {hs}"), -15, true),
+            (format!("dreiviertel {hs}"), -15, true),
+            (format!("fünf nach {hs}"), 5, true),
+            (format!("zehn nach {hs}"), 10, true),
+            (format!("zwanzig nach {hs}"), 20, true),
+            (format!("fünf vor {hs}"), -5, true),
+            (format!("zehn vor {hs}"), -10, true),
+            (format!("zwanzig vor {hs}"), -20, true),
+            (format!("fünf vor halb {hs}"), -35, true),
+            (format!("fünf nach halb {hs}"), -25, true),
+        ];
+        for m in 1..=59u32 {
+            forms.push((format!("{hu} uhr {}", w(m)), m as i32, m % 5 == 0));
+            if m < 10 {
+                forms.push((format!("{hu} uhr null {}", w(m)), m as i32, false));
+            }
+        }
+        // The 24-hour hour of the named hour for each part of the day (None: not meant).
+        let at = |part: &str| -> Option<u32> {
+            match part {
+                "" => Some(h12),
+                " morgens" | " früh" | " vormittags" => (h12 != 12).then_some(h12),
+                " mittags" => match h12 {
+                    12 => Some(12),
+                    1 => Some(13),
+                    _ => None,
+                },
+                " nachmittags" => (1..=6).contains(&h12).then_some(h12 + 12),
+                " abends" => (4..=11).contains(&h12).then_some(h12 + 12),
+                " nachts" => match h12 {
+                    12 => Some(24),
+                    1..=5 => Some(h12),
+                    9..=11 => Some(h12 + 12),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        for (phrase, offset, parted) in forms {
+            for part in [
+                "",
+                " morgens",
+                " früh",
+                " vormittags",
+                " mittags",
+                " nachmittags",
+                " abends",
+                " nachts",
+            ] {
+                if !part.is_empty() && !parted {
+                    continue;
+                }
+                let Some(hour) = at(part) else { continue };
+                add(format!("um {phrase}{part}"), hour as i32 * 60 + offset);
+            }
+        }
+    }
+    // Midnight and noon.
+    add("um mitternacht".into(), 0);
+    add("um mittag".into(), 12 * 60);
+
+    let mut p: Vec<(String, u8)> = Vec::new();
+    for n in 0..=100u32 {
+        p.push((format!("{} prozent", w(n)), n as u8));
+        p.push((w(n), n as u8));
+    }
+    Slots {
+        whole_durations: whole(&d),
+        durations: d,
+        times: t,
+        percents: p,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -742,8 +959,76 @@ mod tests {
     }
 
     #[test]
+    fn german_numbers() {
+        assert_eq!(de_number(0), "null");
+        assert_eq!(de_number(1), "eins");
+        assert_eq!(de_number(12), "zwölf");
+        assert_eq!(de_number(21), "einundzwanzig");
+        assert_eq!(de_number(30), "dreißig");
+        assert_eq!(de_number(47), "siebenundvierzig");
+        assert_eq!(de_number(59), "neunundfünfzig");
+        assert_eq!(de_number(100), "hundert");
+    }
+
+    #[test]
+    fn german_durations() {
+        let s = german();
+        let d = |x| value(&s.durations, x);
+        assert_eq!(d("zehn minuten"), Some(600));
+        assert_eq!(d("eine minute"), Some(60));
+        assert_eq!(d("anderthalb minuten"), Some(90));
+        assert_eq!(d("zweieinhalb minuten"), Some(150));
+        assert_eq!(d("dreißig sekunden"), Some(30));
+        assert_eq!(d("drei minuten und dreißig sekunden"), Some(210));
+        assert_eq!(d("eine halbe stunde"), Some(1800));
+        assert_eq!(d("eine viertelstunde"), Some(900));
+        assert_eq!(d("eine stunde"), Some(3600));
+        assert_eq!(d("eine stunde und zwanzig minuten"), Some(4800));
+        assert_eq!(d("zwei stunden und dreißig minuten"), Some(9000));
+        assert_eq!(d("eins minuten"), None);
+    }
+
+    #[test]
+    fn german_times() {
+        let s = german();
+        let t = |x| value(&s.times, x);
+        assert_eq!(t("um sieben uhr"), Some((7, 0)));
+        assert_eq!(t("um sieben uhr dreißig"), Some((7, 30)));
+        assert_eq!(t("um sieben uhr null fünf"), Some((7, 5)));
+        assert_eq!(t("um ein uhr"), Some((1, 0)));
+        assert_eq!(t("um halb sieben"), Some((6, 30)));
+        assert_eq!(t("um viertel nach sieben"), Some((7, 15)));
+        assert_eq!(t("um viertel vor acht"), Some((7, 45)));
+        assert_eq!(t("um fünf vor halb acht"), Some((7, 25)));
+        assert_eq!(t("um fünf nach halb acht"), Some((7, 35)));
+        assert_eq!(t("um sieben uhr abends"), Some((19, 0)));
+        assert_eq!(t("um halb sieben abends"), Some((18, 30)));
+        assert_eq!(t("um drei uhr nachmittags"), Some((15, 0)));
+        assert_eq!(t("um zwölf uhr mittags"), Some((12, 0)));
+        assert_eq!(t("um halb eins mittags"), Some((12, 30)));
+        assert_eq!(t("um zwölf uhr nachts"), Some((0, 0)));
+        assert_eq!(t("um drei uhr nachts"), Some((3, 0)));
+        assert_eq!(t("um elf uhr nachts"), Some((23, 0)));
+        assert_eq!(t("um neunzehn uhr dreißig"), Some((19, 30)));
+        assert_eq!(t("um null uhr zehn"), Some((0, 10)));
+        assert_eq!(t("um mitternacht"), Some((0, 0)));
+        assert_eq!(t("um mittag"), Some((12, 0)));
+        assert_eq!(t("um acht uhr morgens"), Some((8, 0)));
+        assert_eq!(t("um zwölf uhr morgens"), None);
+    }
+
+    #[test]
+    fn german_percents() {
+        let s = german();
+        assert_eq!(value(&s.percents, "fünfzig prozent"), Some(50));
+        assert_eq!(value(&s.percents, "fünfzig"), Some(50));
+        assert_eq!(value(&s.percents, "hundert prozent"), Some(100));
+        assert_eq!(value(&s.percents, "null"), Some(0));
+    }
+
+    #[test]
     fn no_spoken_form_twice() {
-        for code in ["it", "en", "nl"] {
+        for code in ["it", "en", "nl", "de"] {
             let s = for_language(code).unwrap();
             for list in [
                 s.durations.iter().map(|(k, _)| k).collect::<Vec<_>>(),
@@ -1037,7 +1322,7 @@ mod tests {
         assert!(for_language("it").is_some());
         assert!(for_language("en").is_some());
         assert!(for_language("fr").is_none());
-        assert!(for_language("de").is_none());
+        assert!(for_language("es").is_none());
         assert!(for_language("").is_none());
 
         let s = english();
