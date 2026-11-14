@@ -45,7 +45,6 @@ impl SlidingWindow {
         }
     }
 
-    /// The mean probability of the last near miss (0..1), once.
     /// A new cutoff from the next probability on (Settings → the wake word's sensitivity): the
     /// probabilities in the window and the cool-off stay; a near miss being followed is dropped.
     pub fn set_cutoff(&mut self, cutoff: f32) {
@@ -57,6 +56,7 @@ impl SlidingWindow {
         self.near = None;
     }
 
+    /// The mean probability of the last near miss (0..1), once.
     pub fn take_near(&mut self) -> Option<f32> {
         self.near.take()
     }
