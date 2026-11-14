@@ -531,6 +531,10 @@ struct Conn {
     out: VecDeque<Message>,
     stuck_since: Option<Instant>,
     freezer: system::Freezer,
+    /// The helper can stop its web process alone (`pause`, protocol version 2): used instead of
+    /// the freezer, so the page's WebSocket to Home Assistant stays open while it is hidden.
+    pausable: bool,
+    paused: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -918,7 +922,7 @@ impl<S: Screen> Casa<S> {
         }
         self.refresh_language();
         let now = Instant::now();
-        let hidden_for = {
+        let (hidden_for, was_paused) = {
             let mut i = self.inner.borrow_mut();
             i.visible = true;
             i.show_at = Some(now);
@@ -928,16 +932,22 @@ impl<S: Screen> Casa<S> {
             i.drag = None;
             i.controls.poke(now);
             i.governor.boost();
+            let mut was_paused = false;
             if let Some(c) = &mut i.conn {
                 c.freezer.thaw();
+                was_paused = std::mem::take(&mut c.paused);
             }
-            now.duration_since(i.hidden_since)
+            (now.duration_since(i.hidden_since), was_paused)
         };
         VISIBLE.store(true, Ordering::Relaxed);
         log::info!(
             event = "casa_show", hidden_s = hidden_for.as_secs_f64();
             "casa: shown (hidden for {:.0} s)", hidden_for.as_secs_f64()
         );
+        if was_paused {
+            // `show` resumes the web process too; said first, explicitly.
+            self.send(Message::Resume);
+        }
         self.send(Message::Show);
         self.load_page();
         // A page that failed while hidden (its 90 s ran out before anyone looked, the dashboard
@@ -1141,6 +1151,8 @@ impl<S: Screen> Casa<S> {
                 out: VecDeque::new(),
                 stuck_since: None,
                 freezer,
+                pausable: hello.version >= 2,
+                paused: false,
             });
             i.page_loaded = self.cfg.preload;
             i.warming = (self.cfg.preload && !i.visible).then(Instant::now);
@@ -1249,7 +1261,7 @@ impl<S: Screen> Casa<S> {
             if c.out.is_empty() {
                 c.stuck_since = None;
             } else if c.freezer.frozen() {
-                // We froze it: it cannot read, it is not hung.
+                // We froze it: it cannot read, it is not hung. (A paused helper still reads.)
                 c.stuck_since = Some(Instant::now());
             } else if c
                 .stuck_since
@@ -2037,14 +2049,21 @@ impl<S: Screen> Casa<S> {
         // never finishes.
         let settled = (i.status != Status::Loading && i.warming.is_none())
             || hidden >= 3.0 * self.cfg.freeze_after_seconds;
-        if let Some(c) = i.conn.as_mut()
-            && hidden >= self.cfg.freeze_after_seconds
-            && settled
-            && c.freezer.usable()
-            && !c.freezer.frozen()
-            && c.out.is_empty()
-            && c.freezer.freeze()
-        {
+        let Some(c) = i.conn.as_mut() else { return };
+        if hidden < self.cfg.freeze_after_seconds || !settled || !c.out.is_empty() {
+            return;
+        }
+        if c.pausable {
+            // Only the web process stops: the network process keeps the page's WebSocket to Home
+            // Assistant open (it answers HA's pings), so the dashboard is there at once when shown.
+            // A frozen cgroup lost it: "Connection lost" and the whole dashboard drawn again.
+            if !c.paused {
+                c.paused = true;
+                drop(i);
+                self.send(Message::Pause);
+                log::info!(event = "casa_paused", hidden_s = hidden as f64; "web view: web process paused after {hidden:.0} s hidden");
+            }
+        } else if c.freezer.usable() && !c.freezer.frozen() && c.freezer.freeze() {
             log::info!(event = "casa_frozen", hidden_s = hidden as f64; "web view: helper frozen after {hidden:.0} s hidden");
         }
     }

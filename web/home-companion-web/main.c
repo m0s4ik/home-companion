@@ -19,7 +19,9 @@
 #include <fcntl.h>
 #include <gio/gunixinputstream.h>
 #include <glib-unix.h>
+#include <dirent.h>
 #include <math.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -76,6 +78,7 @@ typedef struct {
     GHashTable *touches;   // touch id -> TouchPoint
     WebKitOptionMenu *menu;
     guint32 menu_id;
+    GArray *paused;        // pids of the web processes stopped by "pause" (pid_t)
     enum hcw_load_state load_state;
     guint32 progress_milli;
     char *error_message;
@@ -265,7 +268,9 @@ static char *js_string(const char *text)
 
 // Runs in the "hc" script world (not visible to the page's own scripts) at document start on the Home
 // Assistant origin: puts the token in localStorage if the frontend has none (first start, or after it
-// logged out) and sets the theme.
+// logged out), sets the theme, and keeps the connection while the view is hidden: the frontend closes it
+// after 5 minutes hidden ("Automatically close connection" in the HA profile, on by default), and shown
+// again it said "Connection lost" and drew the whole dashboard again.
 static char *login_script(const char *origin)
 {
     char *js_origin = js_string(origin);
@@ -283,6 +288,7 @@ static char *login_script(const char *origin)
                                    "    if (token && !localStorage.getItem('hassTokens'))\n"
                                    "      localStorage.setItem('hassTokens', token);\n"
                                    "    if (theme) localStorage.setItem('selectedTheme', theme);\n"
+                                   "    localStorage.setItem('suspendWhenHidden', 'false');\n"
                                    "  } catch (e) {}\n"
                                    "})();\n",
                                    js_origin, js_token, js_theme);
@@ -577,9 +583,96 @@ static void on_web_process_terminated(WebKitWebView *web_view, WebKitWebProcessT
 
 // ------------------------------------------------------------------------------------------- control
 
+// The web processes (WPEWebProcess) started by this helper: its descendants with that name (they run
+// under bwrap, so not direct children).
+static GArray *web_processes(void)
+{
+    GArray *pid = g_array_new(FALSE, FALSE, sizeof(pid_t)), *ppid = g_array_new(FALSE, FALSE, sizeof(pid_t));
+    GPtrArray *comm = g_ptr_array_new_with_free_func(g_free);
+    DIR *d = opendir("/proc");
+    struct dirent *e;
+    while (d && (e = readdir(d))) {
+        char *end;
+        long p = strtol(e->d_name, &end, 10);
+        if (*end || p <= 0)
+            continue;
+        char path[64], line[512];
+        snprintf(path, sizeof path, "/proc/%ld/stat", p);
+        FILE *f = fopen(path, "r");
+        if (!f)
+            continue;
+        size_t n = fread(line, 1, sizeof line - 1, f);
+        fclose(f);
+        line[n] = 0;
+        // "pid (comm) state ppid ...": comm may hold spaces and parentheses, so take the last ')'.
+        char *open = strchr(line, '('), *close = strrchr(line, ')');
+        if (!open || !close || close < open)
+            continue;
+        pid_t pp = (pid_t)strtol(close + 2 + 2, NULL, 10); // ") S <ppid>"
+        pid_t pv = (pid_t)p;
+        g_array_append_val(pid, pv);
+        g_array_append_val(ppid, pp);
+        g_ptr_array_add(comm, g_strndup(open + 1, (gsize)(close - open - 1)));
+    }
+    if (d)
+        closedir(d);
+    // Walk down from this helper: a process is ours if its parent is.
+    GHashTable *ours = g_hash_table_new(NULL, NULL);
+    g_hash_table_add(ours, GINT_TO_POINTER(getpid()));
+    for (gboolean grew = TRUE; grew;) {
+        grew = FALSE;
+        for (guint i = 0; i < pid->len; i++) {
+            gpointer me = GINT_TO_POINTER(g_array_index(pid, pid_t, i));
+            if (!g_hash_table_contains(ours, me)
+                && g_hash_table_contains(ours, GINT_TO_POINTER(g_array_index(ppid, pid_t, i)))) {
+                g_hash_table_add(ours, me);
+                grew = TRUE;
+            }
+        }
+    }
+    GArray *web = g_array_new(FALSE, FALSE, sizeof(pid_t));
+    for (guint i = 0; i < pid->len; i++)
+        if (g_hash_table_contains(ours, GINT_TO_POINTER(g_array_index(pid, pid_t, i)))
+            && g_strcmp0(g_ptr_array_index(comm, i), "WPEWebProcess") == 0)
+            g_array_append_val(web, g_array_index(pid, pid_t, i));
+    g_hash_table_destroy(ours);
+    g_array_free(pid, TRUE);
+    g_array_free(ppid, TRUE);
+    g_ptr_array_free(comm, TRUE);
+    return web;
+}
+
+// "pause": the web process is stopped (SIGSTOP) while the view is hidden for long, the network process is
+// not, so the page's WebSocket to Home Assistant stays open (the network process answers its pings) and
+// the dashboard is there at once when shown. Freezing the whole cgroup closed it: Home Assistant drops a
+// client that does not answer its pings, and the frontend said "Connection lost" and drew everything again.
+static void pause_web(gboolean pause)
+{
+    if (pause) {
+        if (app.paused->len)
+            return;
+        GArray *web = web_processes();
+        for (guint i = 0; i < web->len; i++) {
+            pid_t p = g_array_index(web, pid_t, i);
+            if (kill(p, SIGSTOP) == 0)
+                g_array_append_val(app.paused, p);
+            else
+                say("pause: web process %d: %s", (int)p, g_strerror(errno));
+        }
+        g_array_free(web, TRUE);
+        say("paused (%u web process(es) stopped)", app.paused->len);
+    } else if (app.paused->len) {
+        for (guint i = 0; i < app.paused->len; i++)
+            kill(g_array_index(app.paused, pid_t, i), SIGCONT);
+        say("resumed (%u web process(es))", app.paused->len);
+        g_array_set_size(app.paused, 0);
+    }
+}
+
 static void set_visible(gboolean visible)
 {
     if (visible) {
+        pause_web(FALSE);
         wpe_view_set_visible(WPE_VIEW(app.view), TRUE);
         wpe_view_focus_in(WPE_VIEW(app.view));
         say("shown");
@@ -904,6 +997,12 @@ static void on_body_message(const void *buf, size_t len)
     case HCW_HIDE:
         set_visible(FALSE);
         break;
+    case HCW_PAUSE:
+        pause_web(TRUE);
+        break;
+    case HCW_RESUME:
+        pause_web(FALSE);
+        break;
     case HCW_TOUCH: {
         const struct hcw_touch *m = BODY_MSG(struct hcw_touch);
         if (m)
@@ -989,6 +1088,7 @@ static void body_disconnect(const char *why)
     if (!body_connected())
         return;
     say("body disconnected (%s)", why);
+    pause_web(FALSE); // a body that went away never says "resume"
     if (app.conn_source)
         g_source_remove(app.conn_source);
     app.conn_source = 0;
@@ -1295,6 +1395,7 @@ int main(int argc, char **argv)
 
     app.sent = g_hash_table_new(g_direct_hash, g_direct_equal);
     app.body_held = g_hash_table_new(g_direct_hash, g_direct_equal);
+    app.paused = g_array_new(FALSE, FALSE, sizeof(pid_t));
     app.touches = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
     app.loop = g_main_loop_new(NULL, FALSE);
     g_unix_signal_add(SIGINT, on_signal, NULL);

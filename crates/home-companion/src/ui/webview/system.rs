@@ -13,7 +13,9 @@
 //!   hidden the helper's whole cgroup (helper, web and network processes) is frozen, and
 //!   thawed before the view is shown again. The cgroup is the one of the process at the other
 //!   end of the socket, and only if its name says it is the helper's own (`*home-companion-web*`): never
-//!   the body's own cgroup or a login session's.
+//!   the body's own cgroup or a login session's. A helper of protocol version 2 is not frozen: it
+//!   stops only its web process (`pause`), so the page's WebSocket to Home Assistant stays open;
+//!   the freezer is left for older helpers.
 
 use std::path::{Path, PathBuf};
 

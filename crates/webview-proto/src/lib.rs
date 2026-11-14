@@ -17,7 +17,8 @@ pub use socket::{
 };
 
 /// Protocol version, sent in `hello` by both sides.
-pub const VERSION: u32 = 1;
+/// 2: `pause` and `resume`.
+pub const VERSION: u32 = 2;
 /// Header size: type (u16), flags (u16), length of the whole message (u32).
 pub const HEADER_SIZE: usize = 8;
 /// Largest message, header included.
@@ -58,6 +59,8 @@ pub mod kind {
     pub const CONFIRM: u16 = 15;
     pub const CONFIRM_RESULT: u16 = 16;
     pub const GUARD: u16 = 17;
+    pub const PAUSE: u16 = 18;
+    pub const RESUME: u16 = 19;
 }
 
 /// Payload sizes of the fixed messages (header excluded).
@@ -241,6 +244,11 @@ pub enum Message {
     Guard {
         paths: Vec<String>,
     },
+    /// body → helper (version 2): stop the web process while the view stays hidden; the network
+    /// process runs on, so the page's connections stay open.
+    Pause,
+    /// body → helper (version 2): let it run again (`show` and the body going away do too).
+    Resume,
 }
 
 /// `confirm.kind`: a guarded (heavy) view.
@@ -361,6 +369,8 @@ impl Message {
             Message::Confirm(_) => CONFIRM,
             Message::ConfirmResult { .. } => CONFIRM_RESULT,
             Message::Guard { .. } => GUARD,
+            Message::Pause => PAUSE,
+            Message::Resume => RESUME,
         }
     }
 
@@ -414,7 +424,12 @@ impl Message {
                 w.u64(p.seq);
                 w.u64(p.time_ns);
             }
-            Message::Show | Message::Hide | Message::Reload | Message::Back => {}
+            Message::Show
+            | Message::Hide
+            | Message::Reload
+            | Message::Back
+            | Message::Pause
+            | Message::Resume => {}
             Message::Touch(t) => {
                 w.u32(t.kind as u32);
                 w.i32(t.id);
@@ -678,6 +693,8 @@ impl Message {
                 }
                 Message::Guard { paths }
             }
+            kind::PAUSE => Message::Pause,
+            kind::RESUME => Message::Resume,
             other => return Err(Error::UnknownType(other)),
         };
         if nfds != msg.fd_count() {
@@ -795,6 +812,8 @@ mod tests {
                 paths: vec!["/dashboard-3d".into(), String::new(), "/x".into()],
             },
             Message::Guard { paths: vec![] },
+            Message::Pause,
+            Message::Resume,
         ]
     }
 
