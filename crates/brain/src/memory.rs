@@ -110,9 +110,10 @@ pub enum FactOp {
     Delete {
         id: i64,
     },
-    /// A candidate heard again.
+    /// A candidate heard again: the user's words that say it.
     Confirm {
         id: i64,
+        quote: String,
     },
 }
 
@@ -307,8 +308,10 @@ impl Memory {
                 }
                 Legacy::Candidate => {
                     tx.execute(
-                        "UPDATE facts SET status = 'candidate', origin = 'legacy', seen_day = ?2 WHERE id = ?1",
-                        params![id, day(created)],
+                        // The days to confirm it start now, not when it was first written.
+                        "UPDATE facts SET status = 'candidate', origin = 'legacy', seen_day = ?2, updated = ?3
+                         WHERE id = ?1",
+                        params![id, day(created), at],
                     )?;
                     candidates += 1;
                     texts.push(text);
@@ -316,6 +319,8 @@ impl Memory {
             }
         }
         // Only the user by hand or a deliberate tool call ever wrote the blocks: their lines
+        // (the files are renamed once the transaction is committed).
+        let mut blocks = Vec::new();
         // are the user's own facts.
         for (name, kind) in [("profile", Kind::Person), ("notes", Kind::House)] {
             let path = self.dir.join(format!("{name}.md"));
@@ -335,10 +340,13 @@ impl Memory {
                 texts.push(line.to_string());
                 imported += 1;
             }
-            let _ = std::fs::rename(&path, self.dir.join(format!("{name}.md.migrated")));
+            blocks.push((path, self.dir.join(format!("{name}.md.migrated"))));
         }
         tx.execute_batch("PRAGMA user_version = 1")?;
         tx.commit()?;
+        for (from, to) in blocks {
+            let _ = std::fs::rename(from, to);
+        }
         self.bump_rev()?;
         log::info!(event = "brain_memory", dropped = dropped, candidates = candidates, imported = imported;
             "memory version 1: {dropped} dated facts dropped, {candidates} to confirm, {imported} from the blocks");
@@ -532,10 +540,12 @@ impl Memory {
                 .map(|r| (r.0, r.4))
         };
         if let Some((id, _)) = alive("active") {
+            // Said plainly now: the user's sentence replaces the older one.
             self.db.execute(
                 "UPDATE facts SET updated = ?2, seen_day = ?3,
-                 origin = CASE WHEN ?4 THEN 'explicit' ELSE origin END WHERE id = ?1",
-                params![id, at, today, explicit],
+                 origin = CASE WHEN ?4 THEN 'explicit' ELSE origin END,
+                 text = CASE WHEN ?4 THEN ?5 ELSE text END WHERE id = ?1",
+                params![id, at, today, explicit, f.text.trim()],
             )?;
             self.bump_rev()?;
             return Ok(Added::Same(id));
@@ -1026,8 +1036,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// A version 0 database (before 0.3) with the device's eight facts of 14/11 (the name
-    /// replaced), as the snapshot has them.
+    /// A version 0 database (before 0.3) with the device's eight facts of 14/11 (the name, the
+    /// rooms and the shopping items replaced), written 60 days ago.
     fn legacy_db(d: &Path) {
         std::fs::create_dir_all(d).unwrap();
         let db = Connection::open(d.join("brain.db")).unwrap();
@@ -1056,7 +1066,7 @@ mod tests {
             ),
             (
                 5,
-                "La lista della spesa dell'utente ora include latte, pane, gorgonzola e rotoloni.",
+                "La lista della spesa dell'utente ora include pane, farina, latte e mele.",
                 "house",
                 None,
             ),
@@ -1081,8 +1091,8 @@ mod tests {
         ];
         for (id, text, kind, invalid) in rows {
             db.execute(
-                "INSERT INTO facts(id, text, kind, importance, created, invalid) VALUES (?1, ?2, ?3, 5, 1794222247, ?4)",
-                params![id, text, kind, invalid],
+                "INSERT INTO facts(id, text, kind, importance, created, invalid) VALUES (?1, ?2, ?3, 5, ?5, ?4)",
+                params![id, text, kind, invalid, now() - 60 * 86400],
             )
             .unwrap();
         }
@@ -1113,6 +1123,8 @@ mod tests {
         assert_eq!(m.context(1500).unwrap(), (String::new(), 0, 0));
         assert_eq!(m.count_facts(), 0);
         assert_eq!(m.list_candidates(20).unwrap().len(), 2);
+        // M4: the 30 days start at the upgrade (the facts were written 60 days ago).
+        assert_eq!(m.expire(now(), 30, 200).unwrap(), 0);
         // Candidates are not recalled.
         assert!(m.recall("Mario", 5, false).unwrap().is_empty());
         drop(m);
@@ -1195,6 +1207,25 @@ mod tests {
             panic!()
         };
         assert_eq!(status_of(&m, again).0, "active");
+        // S5: said plainly again, in more words: the new sentence replaces the old one.
+        let richer = new(
+            "La vicina di casa si chiama Greta Bianchi",
+            Kind::Person,
+            "active",
+            "explicit",
+        );
+        assert_eq!(
+            m.add_checked(&richer, true, t0).unwrap(),
+            Added::Same(again)
+        );
+        let text: String =
+            m.db.query_row(
+                "SELECT text FROM facts WHERE id = ?1",
+                params![again],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(text, "La vicina di casa si chiama Greta Bianchi");
         let _ = std::fs::remove_dir_all(&d);
     }
 

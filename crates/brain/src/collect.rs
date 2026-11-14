@@ -260,13 +260,36 @@ fn names_one(text: &str, names: &[String]) -> bool {
     })
 }
 
-/// The names in facts about people already known (their capitalized words, common words aside).
-pub fn known_names<'a>(texts: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+/// The names in facts about people the user vouched for (the caller passes only those): their
+/// capitalized words, common words aside. A sentence's first word is capitalized anyway
+/// ("Abita a…"): it counts only when it is capitalized somewhere else too.
+pub fn known_names<'a>(texts: impl IntoIterator<Item = &'a str> + Clone) -> Vec<String> {
+    let capitalized =
+        |w: &&str| w.chars().count() >= 3 && w.chars().next().is_some_and(char::is_uppercase);
+    let words = |t: &'a str| {
+        t.split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<&'a str>>()
+    };
+    // Capitalized words not at the start of their sentence.
+    let inner: Vec<String> = texts
+        .clone()
+        .into_iter()
+        .flat_map(|t| words(t).into_iter().skip(1).filter(capitalized))
+        .map(str::to_lowercase)
+        .collect();
     let mut v: Vec<String> = texts
         .into_iter()
-        .flat_map(|t| t.split(|c: char| !c.is_alphanumeric()))
-        .filter(|w| w.chars().count() >= 3 && w.chars().next().is_some_and(char::is_uppercase))
-        .map(str::to_lowercase)
+        .flat_map(|t| {
+            words(t)
+                .into_iter()
+                .enumerate()
+                .filter(|(_, w)| capitalized(w))
+                .map(|(i, w)| (i, w.to_lowercase()))
+                .collect::<Vec<_>>()
+        })
+        .filter(|(i, w)| *i > 0 || inner.contains(w))
+        .map(|(_, w)| w)
         .filter(|w| !crate::memory::STOP.contains(&w.as_str()) && !COMMON.contains(&w.as_str()))
         .filter(|w| !["the", "il", "lo", "la", "le", "gli", "de", "het"].contains(&w.as_str()))
         .collect();
@@ -302,10 +325,36 @@ pub fn gate(
     if chronicle_words(text) {
         return Verdict::Reject("chronicle");
     }
-    if kind == Kind::Person && !names_one(text, residents) && !names_one(text, known) {
+    // About a person's name: by the kind, or by the words (the kind is only the model's label).
+    let personal = kind == Kind::Person || introduces_name(text);
+    if personal && !names_one(text, residents) && !names_one(text, known) {
         return Verdict::Candidate;
     }
     Verdict::Active
+}
+
+/// The sentence gives someone's name ("si chiama", "my name is", "heet"…), whatever its kind.
+pub fn introduces_name(text: &str) -> bool {
+    let t = format!(" {} ", normalize(text));
+    [
+        " si chiama ",
+        " mi chiamo ",
+        " chiamano ",
+        " nome è ",
+        " is called ",
+        " is named ",
+        " name is ",
+        " heet ",
+        " naam is ",
+        " noemen ",
+    ]
+    .iter()
+    .any(|w| t.contains(w))
+}
+
+/// A tool that acts (the house, timers, lists, reminders, the screen).
+pub fn is_action_tool(name: &str) -> bool {
+    ACTION_TOOLS.contains(&name)
 }
 
 /// At most `max` new facts from one conversation: the most important ones (ties: the first
@@ -327,25 +376,22 @@ pub fn asks_to_remember(text: &str) -> bool {
     ASK_REMEMBER.iter().any(|w| t.contains(w))
 }
 
-/// A conversation worth the model's time at its end: one exchange asks to remember something,
-/// or used no tool that acts and has a sentence of four words or more (a chat, where something
-/// lasting may have been said). Commands only ("close the blind"): no.
+/// A conversation worth the model's time at its end: one exchange used no tool that acts and
+/// asks to remember something or has a sentence of four words or more (a chat, where something
+/// lasting may have been said). Commands only ("close the blind", "ricordati di…" served by
+/// schedule): no.
 pub fn worth_extracting(ex: &[Exchange]) -> bool {
     ex.iter().any(|e| {
-        if asks_to_remember(&e.user) {
-            return true;
-        }
         let acted = e
             .tools
             .split(',')
             .map(str::trim)
             .any(|t| ACTION_TOOLS.contains(&t));
-        !acted
-            && normalize(&e.user)
-                .split(' ')
-                .filter(|w| !w.is_empty())
-                .count()
-                >= 4
+        let words = normalize(&e.user)
+            .split(' ')
+            .filter(|w| !w.is_empty())
+            .count();
+        !acted && (asks_to_remember(&e.user) || words >= 4)
     })
 }
 
@@ -485,6 +531,14 @@ mod tests {
             quote: Some("mi chiamo mario"),
         };
         assert_eq!(gate(&p, &u, &[], &[]), Verdict::Candidate);
+        // M1: a name is a name whatever the model labels it.
+        for kind in ["house", "other", "preference"] {
+            assert_eq!(
+                gate(&Proposed { kind, ..p.clone() }, &u, &[], &[]),
+                Verdict::Candidate,
+                "{kind}"
+            );
+        }
         assert_eq!(gate(&p, &u, &user(&["Mario"]), &[]), Verdict::Active);
         assert_eq!(gate(&p, &u, &user(&["Mario Rossi"]), &[]), Verdict::Active);
         assert_eq!(gate(&p, &u, &[], &user(&["mario"])), Verdict::Active);
@@ -560,13 +614,19 @@ mod tests {
         )]));
         assert!(worth_extracting(&[
             ex("chiudi la tapparella", "home_control"),
-            ex("ricordati che il gatto si chiama Neve", "home_control"),
+            ex("ricordati che il gatto si chiama Neve", "remember"),
         ]));
         assert!(worth_extracting(&[ex(
             "sai che domenica viene mia sorella",
             ""
         )]));
         assert!(!worth_extracting(&[ex("grazie", "")]));
+        assert!(worth_extracting(&[ex("ricordati", "")]));
+        // A reminder served by schedule is not a fact to remember.
+        assert!(!worth_extracting(&[ex(
+            "ricordati di chiamare il medico domani",
+            "schedule"
+        )]));
         assert!(!worth_extracting(&[ex(
             "metti un timer di dieci minuti",
             "timer,home_entities"
@@ -592,5 +652,21 @@ mod tests {
             known_names(["Mia moglie si chiama Giulia", "Il cane di Luca"]),
             vec!["giulia".to_string(), "luca".to_string()]
         );
+        // S2: a sentence's first word is not a name by itself, a place is not vouched for twice.
+        assert_eq!(
+            known_names(["Marco lavora a Milano"]),
+            vec!["milano".to_string()]
+        );
+        assert_eq!(
+            known_names(["Marco lavora a Milano", "La moglie di Marco è Giulia"]),
+            vec![
+                "giulia".to_string(),
+                "marco".to_string(),
+                "milano".to_string()
+            ]
+        );
+        assert!(introduces_name("My name is Marco"));
+        assert!(introduces_name("De buurvrouw heet Greta"));
+        assert!(!introduces_name("Marco beve il caffè amaro"));
     }
 }

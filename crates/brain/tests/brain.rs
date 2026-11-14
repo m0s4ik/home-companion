@@ -756,6 +756,19 @@ fn t1_remember_and_forget_by_voice() {
         json!({"text": "La vicina si chiama Greta", "kind": "person"}),
     );
     assert!(r.as_str().unwrap().contains("to be confirmed"), "{r}");
+    // M1: a name without a kind (or labelled otherwise) is still a name.
+    let (r, _) = tool(
+        &b,
+        "remember",
+        json!({"text": "L'utente si chiama Mario R."}),
+    );
+    assert!(r.as_str().unwrap().contains("to be confirmed"), "{r}");
+    let (r, _) = tool(
+        &b,
+        "remember",
+        json!({"text": "Il postino si chiama Gino", "kind": "house"}),
+    );
+    assert!(r.as_str().unwrap().contains("to be confirmed"), "{r}");
     let list = b.memory_list();
     let greta = list["facts"]
         .as_array()
@@ -786,7 +799,6 @@ fn t1_remember_and_forget_by_voice() {
     );
     assert!(r.as_str().unwrap().starts_with("not stored"), "{r}");
     // forget: only when the user says so.
-    b.add_fact("L'utente si chiama Mario R.");
     b.turn(3, "che ore sono", None);
     let (r, err) = tool(&b, "forget", json!({"query": "mi chiamo Mario"}));
     assert!(
@@ -798,6 +810,20 @@ fn t1_remember_and_forget_by_voice() {
     assert!(!err, "{r}");
     assert!(r["forgotten"].as_str().unwrap().contains("Mario"));
     assert!(b.facts("Mario").is_empty());
+    assert!(
+        !b.memory_list()["facts"].to_string().contains("Mario"),
+        "the candidate is gone too"
+    );
+    // S1: one word in common is not enough to forget something.
+    b.turn(5, "dimentica che mi chiamo Luigi", None);
+    let (r, err) = tool(&b, "forget", json!({"query": "mi chiamo Luigi"}));
+    assert!(err, "{r}");
+    assert!(
+        b.memory_context()["text"]
+            .as_str()
+            .unwrap()
+            .contains("Neve")
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -838,7 +864,7 @@ fn x1_what_reaches_the_model_and_what_stays() {
     b.close_sessions();
     let asked = f.asked.lock().unwrap();
     assert!(
-        asked[1].contains("explicitly asked to remember"),
+        asked[1].contains("If that asks to remember a lasting fact"),
         "{asked:?}"
     );
     assert!(asked[1].contains("Only the lines marked"));
@@ -848,6 +874,80 @@ fn x1_what_reaches_the_model_and_what_stays() {
             .as_str()
             .unwrap()
             .contains("Fido")
+    );
+    // A candidate (the model's own idea during a command).
+    b.turn(4, "chiudi la tapparella", None);
+    let _ = tool(
+        &b,
+        "remember",
+        json!({"text": "La vicina si chiama Greta", "kind": "person"}),
+    );
+    b.turn_end(4, "Fatto.");
+    b.close_sessions();
+    let list = b.memory_list();
+    let id_of = |l: &Value, w: &str| {
+        l["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["text"].as_str().unwrap().contains(w))
+            .map(|f| f["id"].as_i64().unwrap())
+    };
+    let greta = id_of(&list, "Greta").unwrap();
+    let fido = id_of(&list, "Fido").unwrap();
+    // M2: confirm without the user's words about it; M3: a new name by update, a delete of
+    // an id the model was not shown.
+    f.ai.lock().unwrap().push(format!(
+        "{{\"summary\": \"s\", \"ops\": [\
+          {{\"op\": \"confirm\", \"id\": {greta}, \"quote\": \"il cane ha freddo\"}},\
+          {{\"op\": \"update\", \"id\": {fido}, \"text\": \"Il cane si chiama Bobby\", \"quote\": \"il cane ha freddo\"}},\
+          {{\"op\": \"delete\", \"id\": 9999}}]}}"
+    ));
+    b.turn(5, "oggi il cane ha freddo fuori, vero?", None);
+    b.turn_end(5, "Sì, fa freddo.");
+    b.close_sessions();
+    assert_eq!(f.asked.lock().unwrap().len(), 3);
+    let list = b.memory_list();
+    let row = |id: i64| {
+        list["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["id"] == id)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(row(greta)["status"], "candidate");
+    assert_eq!(row(fido)["text"], "Il cane si chiama Fido");
+    // M5: "ricordati di…" served by schedule is a reminder: no fact, not even the model.
+    b.turn(6, "ricordati di chiamare il medico domani", None);
+    let _ = tool(
+        &b,
+        "schedule",
+        json!({"when": "x", "text": "chiamare il medico"}),
+    );
+    b.turn_end(6, "Va bene.");
+    b.close_sessions();
+    assert_eq!(f.asked.lock().unwrap().len(), 3, "commands only: no model");
+    assert!(!b.memory_list()["facts"].to_string().contains("medico"));
+    // S6: said plainly, a standing fact about the shopping list is not a chronicle.
+    f.ai.lock().unwrap().push(
+        "{\"summary\": \"s\", \"ops\": [{\"op\": \"add\", \"text\": \"La lista della spesa la tiene Giulia\", \
+          \"kind\": \"routine\", \"quote\": \"la lista della spesa la tiene Giulia\"}]}"
+            .into(),
+    );
+    b.turn(
+        7,
+        "ricordati che la lista della spesa la tiene Giulia",
+        None,
+    );
+    b.turn_end(7, "Certo.");
+    b.close_sessions();
+    assert!(
+        b.memory_context()["text"]
+            .as_str()
+            .unwrap()
+            .contains("Giulia")
     );
     let _ = std::fs::remove_dir_all(dir);
 }

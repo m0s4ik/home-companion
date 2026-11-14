@@ -75,6 +75,15 @@ pub struct Brain {
     residents: Mutex<Option<(Instant, Vec<String>)>>,
 }
 
+/// A fact the end-of-conversation model was shown (known or to confirm): the only ids its
+/// update, delete and confirm may touch.
+struct Shown {
+    id: i64,
+    text: String,
+    kind: String,
+    candidate: bool,
+}
+
 /// One turn of the body's conversation (`turn` … `turn.end`).
 #[derive(Debug, Clone)]
 struct Turn {
@@ -628,7 +637,10 @@ pub fn parse_ops(v: &Value) -> Vec<FactOp> {
                     quote: st("quote"),
                 }),
                 "delete" => Some(FactOp::Delete { id: id? }),
-                "confirm" => Some(FactOp::Confirm { id: id? }),
+                "confirm" => Some(FactOp::Confirm {
+                    id: id?,
+                    quote: st("quote"),
+                }),
                 _ => None,
             }
         })
@@ -1181,14 +1193,17 @@ impl Brain {
         v
     }
 
-    /// The names in the facts about people already known (active).
+    /// The names in the facts about people the user vouched for (said "remember that…" or
+    /// confirmed on the screen).
     fn known_names(&self) -> Vec<String> {
         let rows = self.mem().list_context().unwrap_or_default();
-        collect::known_names(
-            rows.iter()
-                .filter(|f| Kind::of(&f.kind) == Kind::Person)
-                .map(|f| f.text.as_str()),
-        )
+        let texts: Vec<&str> = rows
+            .iter()
+            .filter(|f| Kind::of(&f.kind) == Kind::Person)
+            .filter(|f| matches!(f.origin.as_str(), "explicit" | "screen"))
+            .map(|f| f.text.as_str())
+            .collect();
+        collect::known_names(texts.iter().copied())
     }
 
     /// The `remember` tool. Asked by the user ("remember that…"): active, as said. On the
@@ -1199,7 +1214,13 @@ impl Brain {
         if text.is_empty() {
             return Err("text: the fact to remember".into());
         }
-        let kind_s = args.get("kind").and_then(Value::as_str).unwrap_or("other");
+        // No kind, or an unknown one, on the model's own initiative: judged as about a person
+        // (the strict side).
+        let kind_s = args
+            .get("kind")
+            .and_then(Value::as_str)
+            .filter(|k| Kind::parse(k).is_some())
+            .unwrap_or("person");
         let given = args.get("importance").and_then(Value::as_i64).unwrap_or(6);
         let explicit = self.asked(collect::ASK_REMEMBER);
         let at = now();
@@ -1207,15 +1228,10 @@ impl Brain {
             ("active", "explicit", given.max(8))
         } else {
             let said: Vec<String> = self.open_turn().map(|t| t.text).into_iter().collect();
-            let kind = if Kind::parse(kind_s).is_some() {
-                kind_s
-            } else {
-                "other"
-            };
             let v = collect::gate(
                 &Proposed {
                     text,
-                    kind,
+                    kind: kind_s,
                     quote: None,
                 },
                 &said,
@@ -1264,10 +1280,12 @@ impl Brain {
             .map(|f| (collect::overlap(query, &f.text), f))
             .collect();
         scored.sort_by_key(|(n, _)| std::cmp::Reverse(*n));
+        // Clearly meant: the same fact, or two of the query's words or more and more than any
+        // other hit.
         let pick = match scored.as_slice() {
-            [(_, one)] => Some(*one),
             [(_, first), ..] if collect::similar(query, &first.text) => Some(*first),
-            [(a, first), (b, _), ..] if a > b && *a > 0 => Some(*first),
+            [(a, first)] if *a >= 2 => Some(*first),
+            [(a, first), (b, _), ..] if *a >= 2 && a > b => Some(*first),
             _ => None,
         };
         let Some(f) = pick else {
@@ -1506,7 +1524,23 @@ impl Brain {
             match self.extract(&ex, &known, &candidates, &residents, explicit.as_deref()) {
                 Ok((summary, ops)) => {
                     let user: Vec<String> = ex.iter().map(|e| e.user.clone()).collect();
-                    let n = self.apply_ops(&ops, &user, &residents, explicit.as_deref(), id);
+                    let mut shown: Vec<Shown> = known
+                        .iter()
+                        .map(|f| Shown {
+                            id: f.id,
+                            text: f.text.clone(),
+                            kind: f.kind.clone(),
+                            candidate: false,
+                        })
+                        .collect();
+                    shown.extend(candidates.iter().map(|f| Shown {
+                        id: f.id,
+                        text: f.text.clone(),
+                        kind: f.kind.clone(),
+                        candidate: true,
+                    }));
+                    let n =
+                        self.apply_ops(&ops, &user, &residents, explicit.as_deref(), &shown, id);
                     let m = self.mem();
                     let _ = m.close_session(id, &summary);
                     let _ = m.del_meta(&explicit_key);
@@ -1542,8 +1576,11 @@ impl Brain {
         user: &[String],
         residents: &[String],
         explicit: Option<&str>,
+        shown: &[Shown],
         session: i64,
     ) -> usize {
+        // update / delete / confirm: only on the facts the model was shown.
+        let shown_fact = |id: &i64| shown.iter().find(|f| f.id == *id);
         let known = self.known_names();
         let explicit_said: Vec<String> = explicit.map(str::to_string).into_iter().collect();
         let is_explicit =
@@ -1574,8 +1611,12 @@ impl Brain {
                     residents,
                     &known,
                 );
+                // The user's explicit sentence: a name is theirs, and a sentence about the
+                // shopping list is a standing fact, not today's chronicle.
                 let v = match v {
-                    Verdict::Candidate if is_explicit(quote) => Verdict::Active,
+                    Verdict::Candidate | Verdict::Reject("chronicle") if is_explicit(quote) => {
+                        Verdict::Active
+                    }
                     v => v,
                 };
                 (*imp, v)
@@ -1629,11 +1670,18 @@ impl Brain {
             n += match o {
                 FactOp::Add { .. } => 0,
                 FactOp::Update { id, text, quote } => {
-                    // Gate rules 2-5: shape, no year, the user's words, no chronicle.
+                    let Some(f) = shown_fact(id) else {
+                        rejected += 1;
+                        reasons.push("not shown");
+                        continue;
+                    };
+                    // The gate with the fact's own kind: a name in the new text needs the
+                    // same proof as a new fact, else the update is refused.
+                    let kind = Kind::of(&f.kind).name();
                     match collect::gate(
                         &Proposed {
                             text,
-                            kind: "other",
+                            kind,
                             quote: Some(quote),
                         },
                         user,
@@ -1645,12 +1693,35 @@ impl Brain {
                             reasons.push(why);
                             0
                         }
-                        _ => m.update_fact(*id, text).unwrap_or(0),
+                        Verdict::Candidate => {
+                            rejected += 1;
+                            reasons.push("name");
+                            0
+                        }
+                        Verdict::Active => m.update_fact(*id, text).unwrap_or(0),
                     }
                 }
-                FactOp::Delete { id } => m.invalidate(*id).unwrap_or(0),
-                FactOp::Confirm { id } => {
-                    usize::from(m.confirm_candidate(*id, today).unwrap_or(false))
+                FactOp::Delete { id } if shown_fact(id).is_some() => m.invalidate(*id).unwrap_or(0),
+                FactOp::Confirm { id, quote } => match shown_fact(id) {
+                    // Heard again: the user's own words, about that fact.
+                    Some(f)
+                        if f.candidate
+                            && collect::quote_in(quote, user)
+                            && (collect::overlap(quote, &f.text) >= 2
+                                || collect::similar(quote, &f.text)) =>
+                    {
+                        usize::from(m.confirm_candidate(*id, today).unwrap_or(false))
+                    }
+                    _ => {
+                        rejected += 1;
+                        reasons.push("no evidence");
+                        0
+                    }
+                },
+                FactOp::Delete { .. } => {
+                    rejected += 1;
+                    reasons.push("not shown");
+                    0
                 }
             };
         }
@@ -1686,7 +1757,8 @@ impl Brain {
         let explicit = explicit
             .map(|s| {
                 format!(
-                    "The user explicitly asked to remember: \"{s}\". Store that (kind as fits).\n"
+                    "The user said: \"{s}\". If that asks to remember a lasting fact, store it (kind as fits); \
+                     if it is a reminder, a question or a command, store nothing.\n"
                 )
             })
             .unwrap_or_default();
@@ -1707,7 +1779,7 @@ impl Brain {
              Return {{\"summary\": \"one or two sentences, in the conversation's language\", \"ops\": [...]}}.\n\
              ops, usually none:\n\
              {{\"op\":\"add\",\"text\":\"one short self-contained sentence in the conversation's language\",\"kind\":\"person|preference|routine|house\",\"quote\":\"the user's exact words it rests on\",\"importance\":1-10}}\n\
-             {{\"op\":\"confirm\",\"id\":N}}  when the user says again something from the not-yet-confirmed list\n\
+             {{\"op\":\"confirm\",\"id\":N,\"quote\":\"the user's exact words\"}}  when the user says again something from the not-yet-confirmed list\n\
              {{\"op\":\"update\",\"id\":N,\"text\":\"...\",\"quote\":\"...\"}}  when a known fact changed\n\
              {{\"op\":\"delete\",\"id\":N}}  when the user says a known fact is false\n\n\
              Add a fact only if it will still be true and useful in a month: who lives here and how they relate, names of \
@@ -2014,7 +2086,12 @@ impl Brain {
         }
         // "Remember that…" and the agent did not call remember: the end of the conversation
         // stores it.
-        if collect::asks_to_remember(&turn.text) && !turn.tools.contains(&"remember") {
+        // Only when nothing else served the request: "ricordati di spegnere il forno" with
+        // schedule is a reminder, not a fact.
+        if collect::asks_to_remember(&turn.text)
+            && !turn.tools.contains(&"remember")
+            && !turn.tools.iter().any(|t| collect::is_action_tool(t))
+        {
             let said: String = turn.text.chars().take(300).collect();
             let _ = m.set_meta(&format!("explicit_{session}"), &said);
         }
@@ -3157,7 +3234,13 @@ mod tests {
             }
         );
         assert_eq!(ops[1], FactOp::Delete { id: 3 });
-        assert_eq!(ops[2], FactOp::Confirm { id: 4 });
+        assert_eq!(
+            ops[2],
+            FactOp::Confirm {
+                id: 4,
+                quote: String::new()
+            }
+        );
     }
 
     #[test]
