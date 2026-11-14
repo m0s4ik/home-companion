@@ -363,6 +363,9 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// The compact home (the clock higher, four cards) or the normal one.
     fn set_home_compact(&self, on: bool);
     fn on_home_compact_changed(&self, f: impl Fn(bool) + 'static);
+    /// Settings → how readily the character answers to his wake word (-1 less, 0, 1 more).
+    fn set_wake_step(&self, step: i32);
+    fn on_wake_step_changed(&self, f: impl Fn(i32) + 'static);
     /// The cloud services' use: the Home Assistant page's row ("" hides it) and its page.
     fn set_usage(&self, v: &UsageView);
     /// The microphone off: on, its line over the clock.
@@ -551,6 +554,10 @@ macro_rules! impl_screen {
                     false_wake,
                     home_compact_off,
                     home_compact_on,
+                    wake_sensitivity,
+                    wake_less,
+                    wake_normal,
+                    wake_more,
                     setup_title,
                     setup_subtitle,
                     setup_step1,
@@ -1256,6 +1263,12 @@ macro_rules! impl_screen {
             }
             fn on_home_compact_changed(&self, f: impl Fn(bool) + 'static) {
                 $m::CompanionWindow::on_home_compact_changed(self, f)
+            }
+            fn set_wake_step(&self, step: i32) {
+                $m::CompanionWindow::set_wake_step(self, step);
+            }
+            fn on_wake_step_changed(&self, f: impl Fn(i32) + 'static) {
+                $m::CompanionWindow::on_wake_step_changed(self, f)
             }
             fn set_usage(&self, v: &UsageView) {
                 $m::CompanionWindow::set_usage_label(self, v.label.as_str().into());

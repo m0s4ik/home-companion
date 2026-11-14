@@ -33,7 +33,7 @@ use crate::core::{CoreEvent, MirrorInfo, Phase, UiCommand, UiEvent};
 use crate::ha::hub::{HubCmd, HubMsg};
 use crate::ha::weather::Weather;
 use crate::history::History;
-use crate::settings::Settings;
+use crate::settings::{Settings, WakeSensitivity};
 use crate::timers::{TimerView, now_unix};
 use serde_json::json;
 
@@ -1450,6 +1450,12 @@ impl<S: Screen> Ui<S> {
 
     fn wire(self: &Rc<Self>) {
         self.screen.set_home_compact(self.home_compact.get());
+        let sensitivity = self
+            .settings
+            .as_ref()
+            .map(Settings::wake_sensitivity)
+            .unwrap_or_default();
+        self.screen.set_wake_step(sensitivity.step());
         let ui = Rc::downgrade(self);
         self.screen.on_state_changed(move |app, s| {
             let Some(ui) = ui.upgrade() else { return };
@@ -1890,6 +1896,15 @@ impl<S: Screen> Ui<S> {
                     s.save_keep_conversations(keep);
                 }
                 ui.refresh_desk();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_wake_step_changed(move |step| {
+            if let Some(ui) = ui.upgrade() {
+                let s = WakeSensitivity::from_step(step);
+                ui.screen.set_wake_step(s.step());
+                // The core saves it and has the wake word thread apply it.
+                ui.send(UiEvent::WakeSensitivity(s));
             }
         });
         let ui = Rc::downgrade(self);
@@ -5510,6 +5525,31 @@ mod tests {
         assert!(!s.setup_later());
         assert_eq!(s.ha_url().as_deref(), Some("http://192.0.2.11:8123"));
         ui.restart_timer.stop();
+        // Settings → how readily he answers to his name: normal at first, one step at a time,
+        // never past the ends; each step told to the core (which saves it and applies it).
+        assert_eq!(w.get_wake_step(), 0);
+        let _ = rx.try_iter().count();
+        w.invoke_wake_step_changed(1);
+        assert_eq!(w.get_wake_step(), 1);
+        w.invoke_wake_step_changed(5);
+        assert_eq!(w.get_wake_step(), 1, "clamped");
+        w.invoke_wake_step_changed(-1);
+        assert_eq!(w.get_wake_step(), -1);
+        let sent: Vec<WakeSensitivity> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                CoreEvent::Ui(UiEvent::WakeSensitivity(s)) => Some(s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                WakeSensitivity::More,
+                WakeSensitivity::More,
+                WakeSensitivity::Less
+            ]
+        );
         drop(ui);
         let _ = std::fs::remove_dir_all(&dir);
     }

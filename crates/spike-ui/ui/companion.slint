@@ -191,6 +191,10 @@ export struct Words {
     false_wake: string,
     home_compact_off: string,
     home_compact_on: string,
+    wake_sensitivity: string,
+    wake_less: string,
+    wake_normal: string,
+    wake_more: string,
     setup_title: string,
     setup_subtitle: string,
     setup_step1: string,
@@ -713,6 +717,8 @@ export component CompanionWindow inherits Window {
     in property <bool> night-on: true;
     // Settings → Screen → "Home compatta" (the clock higher, four cards; Grid.compact).
     in property <bool> home-compact: false;
+    // Settings → how readily the character answers to his wake word: -1 less, 0 normal, 1 more.
+    in property <int> wake-step: 0;
     in property <int> night-start: 23;
     in property <int> night-end: 7;
     // Setup: what the body sees (Wi-Fi, where Home Assistant is).
@@ -822,6 +828,7 @@ export component CompanionWindow inherits Window {
     callback save-chat-toggled(bool);
     callback night-changed(bool, int, int);
     callback home-compact-changed(bool);
+    callback wake-step-changed(int);
     callback setup-later();
     // The first start: search Home Assistant again; one picked (its address).
     callback find-search();
@@ -2168,7 +2175,7 @@ export component CompanionWindow inherits Window {
                     text: root.character-name.to-uppercase();
                 }
                 Group {
-                    height: 3 * 76px;
+                    height: 4 * 76px;
                     Row {
                         y: 152px;
                         width: parent.width;
@@ -2202,6 +2209,24 @@ export component CompanionWindow inherits Window {
                         on: root.save-chat;
                         toggled(v) => {
                             root.save-chat-toggled(v);
+                        }
+                    }
+                    // How readily he answers to his name: a step around the wake word's cutoff.
+                    Row {
+                        y: 228px;
+                        width: parent.width;
+                        kind: "";
+                        icon: Icons.microphone-32;
+                        label: root.t.wake-sensitivity;
+                    }
+                    Stepper {
+                        x: parent.width - 16px - self.width;
+                        y: 228px + 6px;
+                        value-width: 200px;
+                        font-size: 28px;
+                        value: root.wake-step < 0 ? root.t.wake-less : root.wake-step > 0 ? root.t.wake-more : root.t.wake-normal;
+                        step(d) => {
+                            root.wake-step-changed(max(-1, min(1, root.wake-step + d)));
                         }
                     }
                 }
