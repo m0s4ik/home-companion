@@ -4093,7 +4093,7 @@ mod tests {
         assert!(it.contains("home_control") && !it.contains("<!--"));
         assert!(agent_prompt(&dir, "xx", "Alfred").contains("Tools:"));
         // P3: the memory state of the character, and Home Assistant's people.
-        for l in ["en", "it", "nl"] {
+        for l in ["en", "it", "nl", "de"] {
             let p = agent_prompt(&dir, l, "Alfred");
             assert!(
                 p.contains("{{ state_attr('sensor.alfred_memory', 'text') or '"),
@@ -4110,7 +4110,7 @@ mod tests {
         assert!(
             nl.contains("Hulpmiddelen:") && nl.contains("home_control") && !nl.contains("<!--")
         );
-        let de = agent_prompt(&dir, "de");
+        let de = agent_prompt(&dir, "de", "Alfred");
         assert!(de.starts_with("Du bist Alfred"), "{de}");
         assert!(de.contains("Werkzeuge:") && de.contains("home_control") && !de.contains("<!--"));
     }

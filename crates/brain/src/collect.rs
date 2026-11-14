@@ -85,6 +85,10 @@ pub const ASK_REMEMBER: &[&str] = &[
     "keep in mind",
     "onthoud",
     "vergeet niet dat",
+    "merk dir",
+    "merke dir",
+    "denk daran dass",
+    "vergiss nicht dass",
 ];
 
 /// … to forget something or to say it is wrong.
@@ -99,6 +103,10 @@ pub const ASK_FORGET: &[&str] = &[
     "not true",
     "vergeet",
     "klopt niet",
+    "vergiss",
+    "stimmt nicht",
+    "falsch",
+    "ich heiße nicht",
 ];
 
 /// The tools that act (the house, timers, lists, reminders, the screen): a conversation made
@@ -127,7 +135,8 @@ const COMMON: &[&str] = &[
     "mia", "mio", "miei", "mie", "suo", "sua", "suoi", "sue", "nostra", "nostro", "questa",
     "questo", "anche", "sempre", "utente", "user", "his", "her", "our", "their", "this", "that",
     "has", "have", "with", "always", "mijn", "zijn", "haar", "onze", "het", "een", "van", "die",
-    "dat", "heeft", "altijd",
+    "dat", "heeft", "altijd", "mein", "meine", "sein", "seine", "ihr", "ihre", "unser", "unsere",
+    "der", "die", "das", "ein", "eine", "hat", "immer", "nutzer", "benutzer",
 ];
 
 /// Lower case, letters and digits kept (accents too), every other run → one space.
@@ -179,6 +188,7 @@ pub fn chronicle_words(text: &str) -> bool {
         " lista della spesa ",
         " shopping list ",
         " boodschappenlijst ",
+        " einkaufsliste ",
     ]
     .iter()
     .any(|w| t.contains(w))
@@ -193,6 +203,8 @@ pub fn chronicle_words(text: &str) -> bool {
         "promemoria",
         "reminder",
         "herinnering",
+        "rollladen",
+        "erinnerung",
     ];
     let past = [
         " ha aggiunto ",
@@ -206,6 +218,10 @@ pub fn chronicle_words(text: &str) -> bool {
         "toegevoegd",
         "gevraagd",
         "bevestigd",
+        "hinzugefügt",
+        "gefragt",
+        "bestätigt",
+        "verschoben",
     ];
     things.iter().any(|w| t.contains(w)) && past.iter().any(|w| t.contains(w))
 }
@@ -347,6 +363,10 @@ pub fn introduces_name(text: &str) -> bool {
         " heet ",
         " naam is ",
         " noemen ",
+        " heißt ",
+        " heiße ",
+        " name ist ",
+        " nennen ",
     ]
     .iter()
     .any(|w| t.contains(w))
@@ -409,6 +429,26 @@ pub fn plain_summary(ex: &[Exchange]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn german_words() {
+        assert!(asks_to_remember(
+            "Alfred, merk dir, dass der Kater Felix heißt"
+        ));
+        assert!(!asks_to_remember(
+            "Erinnere mich in zehn Minuten an den Ofen"
+        ));
+        assert!(
+            ASK_FORGET
+                .iter()
+                .any(|w| "vergiss das mit dem kater".contains(w))
+        );
+        assert!(chronicle_words("Die Einkaufsliste enthält Milch und Brot."));
+        assert!(chronicle_words(
+            "Der Nutzer hat den Rollladen im Wohnzimmer verschoben."
+        ));
+        assert!(!chronicle_words("Der Kater heißt Felix."));
+    }
 
     fn ex(user: &str, tools: &str) -> Exchange {
         Exchange {
@@ -667,6 +707,8 @@ mod tests {
         );
         assert!(introduces_name("My name is Marco"));
         assert!(introduces_name("De buurvrouw heet Greta"));
+        assert!(introduces_name("Die Nachbarin heißt Greta"));
+        assert!(introduces_name("Mein Name ist Paul"));
         assert!(!introduces_name("Marco beve il caffè amaro"));
     }
 }
