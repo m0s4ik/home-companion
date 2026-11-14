@@ -47,6 +47,8 @@ pub enum HubCmd {
     Done { list: String, uid: String },
     /// The user's choice of lists (empty = all of them).
     SetLists(Vec<String>),
+    /// An event for Home Assistant's bus (`fire_event`, needs an admin user); `device` is added.
+    Fire { event_type: String, data: Value },
 }
 
 /// What the screen gets.
@@ -99,6 +101,13 @@ pub fn card_subscriptions(first: u64) -> [String; 2] {
         .collect::<Vec<_>>()
         .try_into()
         .expect("two event types")
+}
+
+/// The `fire_event` message: `data` with this device's name as `device`.
+pub fn fire_message(id: u64, event_type: &str, device: &str, data: &Value) -> Value {
+    let mut d = data.clone();
+    d["device"] = device.into();
+    json!({"id": id, "type": "fire_event", "event_type": event_type, "event_data": d})
 }
 
 /// The entities of an `event` message of the entities subscription (`{"event": {"result": …}}`,
@@ -325,6 +334,11 @@ fn session(
         return Ok(());
     }
     log::info!(event = "ha_hub"; "cards and lists: connected to Home Assistant");
+    // A command (an event to fire) waits at most this long for the next read to end.
+    ws.set_read_timeout(Duration::from_millis(100))
+        .map_err(lost)?;
+    let mut fire_ids: Vec<u64> = Vec::new();
+    let mut fire_refused = false;
     let mut last_rx = Instant::now();
     let mut last_ping = Instant::now();
     loop {
@@ -339,6 +353,15 @@ fn session(
                     ws.send_text(&tick_message(take_id(), &list, &uid).to_string())
                         .map_err(lost)?;
                     log::info!(event = "ha_shopping"; "item ticked on the screen");
+                }
+                Ok(HubCmd::Fire { event_type, data }) => {
+                    let id = take_id();
+                    fire_ids.push(id);
+                    if fire_ids.len() > 16 {
+                        fire_ids.remove(0);
+                    }
+                    ws.send_text(&fire_message(id, &event_type, &cfg.device, &data).to_string())
+                        .map_err(lost)?;
                 }
                 Ok(HubCmd::SetLists(l)) => {
                     if *chosen != l {
@@ -363,7 +386,13 @@ fn session(
                 let is_event = v.get("type").and_then(Value::as_str) == Some("event");
                 let failed = v.get("type").and_then(Value::as_str) == Some("result")
                     && v.get("success").and_then(Value::as_bool) == Some(false);
-                if failed {
+                if failed && id.is_some_and(|i| fire_ids.contains(&i)) {
+                    // Firing an event needs an admin user: said once, the conversation never waits.
+                    if !fire_refused {
+                        fire_refused = true;
+                        log::warn!(event = "ha_fire_refused"; "Home Assistant refused an event ({}): the QR link's user must be an administrator", v.pointer("/error/message").and_then(Value::as_str).unwrap_or("refused"));
+                    }
+                } else if failed {
                     let why = v
                         .pointer("/error/message")
                         .and_then(Value::as_str)
@@ -679,6 +708,31 @@ mod tests {
                 ..Default::default()
             }))
         );
+        // An event for Home Assistant's bus, with this device's name; a refusal is not fatal.
+        tx.send(HubCmd::Fire {
+            event_type: "home_companion_conversation".into(),
+            data: json!({"state": "started", "trigger": "wake"}),
+        })
+        .unwrap();
+        let fire = read_frame(&mut s, &mut buf);
+        assert_eq!(fire["type"], "fire_event");
+        assert_eq!(fire["event_type"], "home_companion_conversation");
+        assert_eq!(
+            fire["event_data"],
+            json!({"state": "started", "trigger": "wake", "device": "Alfred"})
+        );
+        send(
+            &mut s,
+            &json!({"id": fire["id"], "type": "result", "success": false,
+                    "error": {"code": "unauthorized", "message": "Unauthorized"}}),
+        );
+        tx.send(HubCmd::Fire {
+            event_type: "home_companion_conversation".into(),
+            data: json!({"state": "ended", "trigger": "wake", "handled_by": "reflex"}),
+        })
+        .unwrap();
+        let fire2 = read_frame(&mut s, &mut buf);
+        assert_eq!(fire2["event_data"]["handled_by"], "reflex");
         // A tick on the screen.
         tx.send(HubCmd::Done {
             list: "todo.spesa".into(),

@@ -212,6 +212,51 @@ event_data:
 The card plays the soft reminder sound by day and goes away with its OK. `home_companion_card_dismiss` with an `id`
 takes a card away.
 
+The body fires an event too, `home_companion_conversation`, when a conversation starts and when it ends, so an
+automation can make room for the voice (lower a speaker, dim a light, pause a TV):
+
+```yaml
+event_type: home_companion_conversation
+event_data:
+  device: Alfred          # the character's name
+  state: started          # started | ended
+  trigger: wake           # wake | talk (a touch) | follow_up (Alfred asked a question)
+  handled_by: reflex      # only on "ended": reflex | home_assistant | none
+```
+
+`started` comes as soon as the wake word (or the touch) opens the microphone, before anything is sent to Home Assistant,
+so it is there for reflexes too. Announcements do not fire it. Firing an event needs an administrator user (the one of
+the QR link normally is); if Home Assistant refuses, one line in the log says so and the conversation goes on.
+
+```yaml
+automation:
+  - alias: Lower the kitchen speaker while Alfred listens
+    mode: single
+    triggers:
+      - trigger: event
+        event_type: home_companion_conversation
+        event_data: {state: started, device: Alfred}
+    conditions:
+      - condition: state
+        entity_id: media_player.kitchen
+        state: "playing"
+    actions:
+      - variables:
+          before: "{{ state_attr('media_player.kitchen', 'volume_level') }}"
+      - action: media_player.volume_set
+        target: {entity_id: media_player.kitchen}
+        data: {volume_level: 0.15}
+      - wait_for_trigger:
+          - trigger: event
+            event_type: home_companion_conversation
+            event_data: {state: ended, device: Alfred}
+        timeout: "00:01:00"
+        continue_on_timeout: true
+      - action: media_player.volume_set
+        target: {entity_id: media_player.kitchen}
+        data: {volume_level: "{{ before }}"}
+```
+
 ## How it works
 
 ```

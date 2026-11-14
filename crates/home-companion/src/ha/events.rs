@@ -18,12 +18,17 @@
 //! ```
 //!
 //! `home_companion_card_dismiss` with `id` takes a card away.
+//!
+//! The body fires one event too: `home_companion_conversation`, when a conversation starts and ends
+//! (see [`conversation_data`]).
 
 use serde_json::Value;
 
 /// The event types the body subscribes to.
 pub const CARD_EVENT: &str = "home_companion_card";
 pub const DISMISS_EVENT: &str = "home_companion_card_dismiss";
+/// The event type the body fires when a conversation starts and ends.
+pub const CONVERSATION_EVENT: &str = "home_companion_conversation";
 
 /// A card from Home Assistant.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -91,6 +96,29 @@ pub fn parse(msg: &Value, device: &str) -> Option<CardEvent> {
     }
 }
 
+/// Who dealt with a conversation, from its outcome: "reflex" (the body itself), "home_assistant"
+/// (speech went there or an answer came back) or "none" (stopped or nothing said).
+pub fn handled_by(outcome: &str, audio_seconds_sent: f64, answer: &str) -> &'static str {
+    if outcome == "reflex" {
+        "reflex"
+    } else if audio_seconds_sent > 0.0 || !answer.is_empty() {
+        "home_assistant"
+    } else {
+        "none"
+    }
+}
+
+/// The data of `home_companion_conversation` (the hub adds `device`): `state` is "started" or
+/// "ended", `trigger` what started it ("wake", "talk" = a touch, "follow_up"), `handled_by` only
+/// on "ended".
+pub fn conversation_data(state: &str, trigger: &str, handled_by: Option<&str>) -> Value {
+    let mut d = serde_json::json!({"state": state, "trigger": trigger});
+    if let Some(h) = handled_by {
+        d["handled_by"] = h.into();
+    }
+    d
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +175,29 @@ mod tests {
             panic!()
         };
         assert_eq!((c.icon, c.seconds), (None, None));
+    }
+
+    #[test]
+    fn conversation_event_data() {
+        assert_eq!(
+            conversation_data("started", "wake", None),
+            json!({"state": "started", "trigger": "wake"})
+        );
+        assert_eq!(
+            conversation_data("ended", "talk", Some("reflex")),
+            json!({"state": "ended", "trigger": "talk", "handled_by": "reflex"})
+        );
+    }
+
+    #[test]
+    fn who_handled_the_conversation() {
+        assert_eq!(handled_by("reflex", 0.0, ""), "reflex");
+        assert_eq!(handled_by("played", 2.4, "Done."), "home_assistant");
+        // Stopped after the speech went to Home Assistant, or with its answer in.
+        assert_eq!(handled_by("stopped", 1.0, ""), "home_assistant");
+        assert_eq!(handled_by("stopped", 0.0, "Ok"), "home_assistant");
+        assert_eq!(handled_by("no speech", 0.0, ""), "none");
+        assert_eq!(handled_by("stopped", 0.0, ""), "none");
     }
 
     #[test]

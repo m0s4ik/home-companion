@@ -214,6 +214,12 @@ pub enum UiCommand {
     Announcing(bool),
     /// "Stop" or "basta" over a due reminder: its OK.
     NoticeStop,
+    /// A conversation started or ended: Home Assistant is told (`home_companion_conversation`).
+    Conversation {
+        state: &'static str,
+        trigger: &'static str,
+        handled_by: Option<&'static str>,
+    },
     /// What AirPlay plays (None: nothing); `playing` false while paused or muted here.
     Music(Option<crate::airplay::NowPlaying>),
     /// The music page's spectrum: band levels and peaks, 0..1.
@@ -928,6 +934,24 @@ impl Core {
         let _ = self.d.ui.send(c);
     }
 
+    /// `home_companion_conversation` for Home Assistant's bus (an automation may duck a speaker, dim
+    /// a light…). Not for announcements: nothing listens then. A channel send: the conversation
+    /// never waits for Home Assistant.
+    fn tell_home_assistant(
+        &self,
+        state: &'static str,
+        trigger: Trigger,
+        handled_by: Option<&'static str>,
+    ) {
+        if trigger != Trigger::Announcement {
+            self.ui(UiCommand::Conversation {
+                state,
+                trigger: trigger.name(),
+                handled_by,
+            });
+        }
+    }
+
     fn set_phase(&mut self, p: Phase) {
         if p == Phase::Error {
             self.error_until = Some(Instant::now() + self.cfg.error_show);
@@ -1036,6 +1060,8 @@ impl Core {
                 s.abort();
             }
             let r = c.log(outcome);
+            let by = crate::ha::events::handled_by(outcome, r.audio_seconds_sent, &r.answer);
+            self.tell_home_assistant("ended", c.trigger, Some(by));
             // Home Assistant's services worked on it (speech sent or an answer back).
             if r.audio_seconds_sent > 0.0 || !r.answer.is_empty() {
                 if let Some(u) = &mut self.usage {
@@ -1252,6 +1278,7 @@ impl Core {
         }
         log::info!(event = "conversation_start", id = id, trigger = trigger.name(), reflexes = gated, answering = answering.unwrap_or(-1); "conversation {id} started ({}{})", trigger.name(), if gated { ", reflexes first" } else { "" });
         self.conv = Some(c);
+        self.tell_home_assistant("started", trigger, None);
         self.live_vad = None;
         self.ui(UiCommand::Heard(String::new()));
         self.ui(UiCommand::Answer(String::new()));
