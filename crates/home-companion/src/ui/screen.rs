@@ -26,7 +26,9 @@ use super::house::{self, Dnd, HouseCards};
 use super::light::{Auto, Curve};
 use super::lists::{self, Choice, ShopList};
 use super::next;
-use super::{AlarmLineView, MemoriesView, MusicView, Screen, SettingsView, TimerLineView};
+use super::{
+    AlarmLineView, MemoriesView, MemoryLine, MusicView, Screen, SettingsView, TimerLineView,
+};
 use crate::alarms::Alarm;
 use crate::brain_link::{self, BrainLink, BrainMsg, Upcoming};
 use crate::core::{CoreEvent, MirrorInfo, Phase, UiCommand, UiEvent};
@@ -145,6 +147,53 @@ fn qr_image(text: &str) -> Option<Image> {
 /// A word of the locale with `{name}` filled in.
 fn word(t: &Locale, key: &str, name: &str) -> String {
     t.text(key).replace("{name}", name)
+}
+
+/// The brain's `memory.list` as the "Ricordi" page shows it: what Alfred knows (in the order the
+/// assistant reads it; past `shown` dimmed), what is to confirm, and how many known facts the
+/// assistant finds only when asked.
+fn memory_lines(
+    a: &serde_json::Value,
+    date: impl Fn(i64) -> String,
+) -> (Vec<MemoryLine>, Vec<MemoryLine>, usize) {
+    let shown = a["shown"].as_u64().map_or(usize::MAX, |n| n as usize);
+    let (mut facts, mut confirm) = (Vec::new(), Vec::new());
+    for f in a["facts"].as_array().into_iter().flatten() {
+        let line = MemoryLine {
+            id: f["id"].as_i64().unwrap_or(0),
+            text: f["text"].as_str().unwrap_or("").to_string(),
+            date: date(f["updated"].as_i64().unwrap_or(0)),
+            dim: false,
+        };
+        if f["status"] == "candidate" {
+            confirm.push(line);
+        } else {
+            facts.push(MemoryLine {
+                dim: facts.len() >= shown,
+                ..line
+            });
+        }
+    }
+    let over = facts.len().saturating_sub(shown);
+    (facts, confirm, over)
+}
+
+/// The note under the known facts: how many the assistant finds only when asked ("" = none).
+fn more_line(l: &Locale, over: usize) -> String {
+    match over {
+        0 => String::new(),
+        1 => l.text("memories_more_one").to_string(),
+        n => l.text("memories_more").replace("{n}", &n.to_string()),
+    }
+}
+
+/// "Right" (`yes`) or "Wrong"/delete on a fact of the "Ricordi" page, for the brain.
+fn memory_answer(id: i64, yes: bool) -> serde_json::Value {
+    if yes {
+        json!({"cmd": "memory.confirm", "id": id})
+    } else {
+        json!({"cmd": "memory.delete", "id": id})
+    }
 }
 
 /// The use of the AI in words: the Home Assistant page's row (today only) and the use page
@@ -1513,7 +1562,13 @@ impl<S: Screen> Ui<S> {
         let ui = Rc::downgrade(self);
         self.screen.on_memory_delete(move |id| {
             if let Some(ui) = ui.upgrade() {
-                ui.brain_do(json!({"cmd": "memory.delete", "id": id}));
+                ui.brain_do(memory_answer(id, false));
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_memory_confirm(move |id| {
+            if let Some(ui) = ui.upgrade() {
+                ui.brain_do(memory_answer(id, true));
             }
         });
         let ui = Rc::downgrade(self);
@@ -2792,12 +2847,28 @@ impl<S: Screen> Ui<S> {
                         .replace("{updated}", "1")
                         .replace("{retired}", "1")
                 ),
-                profile: l.sample("memory_profile").replace('|', "\n"),
-                notes: l.sample("memory_notes").into(),
+                sent: word(&l, "memories_sent", &self.character.name),
+                more: more_line(&l, 1),
                 facts: vec![
-                    (2, l.sample("memory_fact1").into(), "4 nov".into()),
-                    (1, l.sample("memory_fact2").into(), "2 nov".into()),
+                    MemoryLine {
+                        id: 2,
+                        text: l.sample("memory_fact2").into(),
+                        date: "4 nov".into(),
+                        dim: false,
+                    },
+                    MemoryLine {
+                        id: 1,
+                        text: l.sample("memory_fact1").into(),
+                        date: "2 nov".into(),
+                        dim: true,
+                    },
                 ],
+                confirm: vec![MemoryLine {
+                    id: 3,
+                    text: l.sample("memory_fact3").into(),
+                    date: "13 nov".into(),
+                    dim: false,
+                }],
                 jobs: vec![(
                     3,
                     format!("{} 18:00", w("today")),
@@ -4795,20 +4866,15 @@ impl<S: Screen> Ui<S> {
                             mv.status = lines.join(" · ");
                         }
                         "memory.list" => {
-                            mv.profile = a["profile"].as_str().unwrap_or("").trim().to_string();
-                            mv.notes = a["notes"].as_str().unwrap_or("").trim().to_string();
-                            mv.facts = a["facts"]
-                                .as_array()
-                                .into_iter()
-                                .flatten()
-                                .map(|f| {
-                                    (
-                                        f["id"].as_i64().unwrap_or(0),
-                                        f["text"].as_str().unwrap_or("").to_string(),
-                                        short_date(&l, f["updated"].as_i64().unwrap_or(0)),
-                                    )
-                                })
-                                .collect();
+                            let (facts, confirm, over) = memory_lines(&a, |ts| short_date(&l, ts));
+                            mv.sent = if facts.is_empty() {
+                                String::new()
+                            } else {
+                                word(&l, "memories_sent", &name)
+                            };
+                            mv.more = more_line(&l, over);
+                            mv.facts = facts;
+                            mv.confirm = confirm;
                         }
                         "jobs.list" => {
                             let mut up: Vec<(i64, String)> = a["jobs"]
@@ -5409,6 +5475,34 @@ fn load_cover(path: &std::path::Path) -> Option<Image> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn u1_the_memories_page_reads_the_brain() {
+        let a = serde_json::json!({"ok": true, "shown": 1, "profile": "", "notes": "", "facts": [
+            {"id": 1, "text": "Il gatto si chiama Neve", "updated": 10, "status": "active"},
+            {"id": 2, "text": "La caldaia è in cantina", "updated": 20, "status": "active"},
+            {"id": 3, "text": "La vicina si chiama Greta", "updated": 30, "status": "candidate"}
+        ]});
+        let (facts, confirm, over) = super::memory_lines(&a, |t| t.to_string());
+        assert_eq!(
+            facts.iter().map(|f| (f.id, f.dim)).collect::<Vec<_>>(),
+            vec![(1, false), (2, true)]
+        );
+        assert_eq!(confirm.len(), 1);
+        assert_eq!((confirm[0].id, confirm[0].date.as_str()), (3, "30"));
+        assert_eq!(over, 1);
+        // An older brain (no shown, no status): every fact known, none dimmed.
+        let old = serde_json::json!({"facts": [{"id": 1, "text": "x", "updated": 1}]});
+        let (facts, confirm, over) = super::memory_lines(&old, |t| t.to_string());
+        assert_eq!(
+            (facts.len(), confirm.len(), over, facts[0].dim),
+            (1, 0, 0, false)
+        );
+        // Right confirms, Wrong rejects.
+        assert_eq!(super::memory_answer(3, true)["cmd"], "memory.confirm");
+        assert_eq!(super::memory_answer(3, false)["cmd"], "memory.delete");
+        assert_eq!(super::memory_answer(3, false)["id"], 3);
+    }
+
     use super::*;
     use crate::ha::discover::{Found, Outcome};
 

@@ -317,6 +317,8 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// The shopping list: configured, open items (uid, text), the tile's line.
     fn set_shopping(&self, on: bool, items: &[(String, String)], tile: &str);
     fn on_memory_delete(&self, f: impl Fn(i64) + 'static);
+    /// "Right" on a fact to confirm.
+    fn on_memory_confirm(&self, f: impl Fn(i64) + 'static);
     fn on_memories_forget(&self, f: impl Fn() + 'static);
     fn on_job_cancel(&self, f: impl Fn(i64) + 'static);
     fn on_shop_done(&self, f: impl Fn(String) + 'static);
@@ -382,6 +384,17 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn on_ask_cancel(&self, f: impl Fn() + 'static);
 }
 
+/// A fact on the "Ricordi" page.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MemoryLine {
+    pub id: i64,
+    pub text: String,
+    /// The day it was last written ("4 nov").
+    pub date: String,
+    /// Not in what the assistant reads at every conversation (over the budget).
+    pub dim: bool,
+}
+
 /// What the "Ricordi" page shows.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MemoriesView {
@@ -390,9 +403,14 @@ pub struct MemoriesView {
     /// The "Promemoria" tile in Altro: how many are coming, or none.
     pub reminders_tile: String,
     pub status: String,
-    pub profile: String,
-    pub notes: String,
-    pub facts: Vec<(i64, String, String)>,
+    /// The line on what reaches the assistant, and the note on the facts over the budget ("" =
+    /// none).
+    pub sent: String,
+    pub more: String,
+    /// What Alfred knows, in the order the assistant reads it.
+    pub facts: Vec<MemoryLine>,
+    /// What was heard once, to confirm on the screen.
+    pub confirm: Vec<MemoryLine>,
     pub jobs: Vec<(i64, String, String)>,
     /// Calendar events of today and tomorrow: (when, what), after the reminders.
     pub events: Vec<(String, String)>,
@@ -570,8 +588,9 @@ macro_rules! impl_screen {
                     memories,
                     memories_row,
                     memories_about,
-                    memories_notes,
-                    memories_facts,
+                    memories_confirm,
+                    memories_right,
+                    memories_wrong,
                     memories_empty,
                     reminders_section,
                     reminders,
@@ -1062,18 +1081,20 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_tile_memories(self, m.tile.as_str().into());
                 $m::CompanionWindow::set_tile_reminders(self, m.reminders_tile.as_str().into());
                 $m::CompanionWindow::set_memories_status(self, m.status.as_str().into());
-                $m::CompanionWindow::set_memories_profile(self, m.profile.as_str().into());
-                $m::CompanionWindow::set_memories_notes(self, m.notes.as_str().into());
-                let f: Vec<$m::MemoryRow> = m
-                    .facts
-                    .iter()
-                    .map(|(id, t, d)| $m::MemoryRow {
-                        id: *id as i32,
-                        text: t.into(),
-                        date: d.into(),
-                    })
-                    .collect();
-                $m::CompanionWindow::set_memory_rows(self, model!(f));
+                $m::CompanionWindow::set_memories_sent(self, m.sent.as_str().into());
+                $m::CompanionWindow::set_memories_more(self, m.more.as_str().into());
+                let rows = |v: &[MemoryLine]| -> Vec<$m::MemoryRow> {
+                    v.iter()
+                        .map(|f| $m::MemoryRow {
+                            id: f.id as i32,
+                            text: f.text.as_str().into(),
+                            date: f.date.as_str().into(),
+                            dim: f.dim,
+                        })
+                        .collect()
+                };
+                $m::CompanionWindow::set_memory_rows(self, model!(rows(&m.facts)));
+                $m::CompanionWindow::set_confirm_rows(self, model!(rows(&m.confirm)));
                 let j: Vec<$m::JobRow> = m
                     .jobs
                     .iter()
@@ -1110,6 +1131,9 @@ macro_rules! impl_screen {
             }
             fn on_memory_delete(&self, f: impl Fn(i64) + 'static) {
                 $m::CompanionWindow::on_memory_delete(self, move |id| f(id as i64))
+            }
+            fn on_memory_confirm(&self, f: impl Fn(i64) + 'static) {
+                $m::CompanionWindow::on_memory_confirm(self, move |id| f(id as i64))
             }
             fn on_memories_forget(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_memories_forget(self, f)

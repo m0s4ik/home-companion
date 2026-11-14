@@ -82,11 +82,14 @@ export struct ChatRow {
     text: string,
 }
 
-// A fact Alfred remembers ("Ricordi"): its text and the day it was written ("5 nov").
+// A fact Alfred remembers ("Ricordi"): its text and the day it was written ("5 nov"); dim =
+// known but not in what the assistant reads at every conversation (over the budget: found only
+// when asked).
 export struct MemoryRow {
     id: int,
     text: string,
     date: string,
+    dim: bool,
 }
 
 // A reminder still to come ("Ricordi"): "domani 18:00", what.
@@ -207,8 +210,9 @@ export struct Words {
     memories: string,
     memories_row: string,
     memories_about: string,
-    memories_notes: string,
-    memories_facts: string,
+    memories_confirm: string,
+    memories_right: string,
+    memories_wrong: string,
     memories_empty: string,
     reminders_section: string,
     reminders: string,
@@ -322,6 +326,8 @@ component HaCheck inherits Rectangle {
 component DeletableRow inherits Rectangle {
     in property <string> text;
     in property <string> detail;
+    // Shown fainter (a fact the assistant finds only when asked).
+    in property <bool> dim: false;
     in property <string> ask: "Delete?";
     callback delete();
     property <bool> asking: false;
@@ -342,7 +348,7 @@ component DeletableRow inherits Rectangle {
         y: 14px + title.preferred-height + 4px;
         text: root.detail;
         font-size: 20px;
-        color: Theme.text-3;
+        color: root.dim ? Theme.text-3.with-alpha(0.5) : Theme.text-3;
     }
     if !root.asking: GlyphButton {
         x: parent.width - 8px - 64px;
@@ -360,6 +366,54 @@ component DeletableRow inherits Rectangle {
         clicked => {
             root.asking = false;
             root.delete();
+        }
+    }
+}
+
+// A fact heard once ("Ricordi" → To confirm): its text and day, Right / Wrong on the right.
+component ConfirmRow inherits Rectangle {
+    in property <string> text;
+    in property <string> detail;
+    in property <string> right: "Right";
+    in property <string> wrong: "Wrong";
+    callback confirm();
+    callback reject();
+    height: max(88px, title.preferred-height + (root.detail != "" ? 30px : 0px) + 28px);
+    border-radius: 16px;
+    background: Theme.surface;
+    title := Text {
+        x: 24px;
+        y: 14px;
+        width: right-button.x - 24px - 16px;
+        text: root.text;
+        font-size: 24px;
+        color: Theme.text;
+        wrap: word-wrap;
+    }
+    if root.detail != "": Text {
+        x: 24px;
+        y: 14px + title.preferred-height + 4px;
+        text: root.detail;
+        font-size: 20px;
+        color: Theme.text-3;
+    }
+    wrong-button := PillButton {
+        x: parent.width - 12px - self.width;
+        y: (parent.height - self.height) / 2;
+        width: 136px;
+        label: root.wrong;
+        clicked => {
+            root.reject();
+        }
+    }
+    right-button := PillButton {
+        x: wrong-button.x - 12px - self.width;
+        y: wrong-button.y;
+        width: 136px;
+        primary: true;
+        label: root.right;
+        clicked => {
+            root.confirm();
         }
     }
 }
@@ -524,7 +578,9 @@ export component CompanionWindow inherits Window {
         error-hint: "Say it again? Just say \"Okay Alfred\"",
         alarm: "Alarm",
         memories: "Memories", memories-row: "Alfred's memories",
-        memories-about: "WHAT I KNOW ABOUT YOU", memories-notes: "NOTES", memories-facts: "MEMORIES",
+        memories-about: "WHAT I KNOW",
+        memories-confirm: "TO CONFIRM",
+        memories-right: "Right", memories-wrong: "Wrong",
         memories-empty: "Nothing yet: say \"Okay Alfred, remember that…\".",
         reminders-section: "REMINDERS", reminders: "Reminders",
         reminders-empty: "No reminders coming: say \"Okay Alfred, remind me…\".",
@@ -671,9 +727,12 @@ export component CompanionWindow inherits Window {
     // Memories (home-companion-brain): present = its control socket answers (the tile, the row).
     in property <bool> brain-present: false;
     in property <string> memories-status: "";
-    in property <string> memories-profile: "";
-    in property <string> memories-notes: "";
+    // The line on what reaches the assistant, the note on the facts over the budget ("" = none).
+    in property <string> memories-sent: "";
+    in property <string> memories-more: "";
+    // What Alfred knows, in the order the assistant reads it; what was heard once, to confirm.
     in property <[MemoryRow]> memory-rows: [];
+    in property <[MemoryRow]> confirm-rows: [];
     in property <[JobRow]> job-rows: [];
     // The shopping list (`[lists] shopping`): on = configured; its open items.
     in property <bool> shopping-on: false;
@@ -843,8 +902,10 @@ export component CompanionWindow inherits Window {
     // A choice of the Home Assistant page opened (its kind), one picked (its id).
     callback ha-pick(string);
     callback ha-picked(string);
-    // Memories: delete one fact, forget everything (confirmed), cancel a reminder.
+    // Memories: delete one fact ("Wrong" too), confirm one ("Right"), forget everything
+    // (confirmed), cancel a reminder.
     callback memory-delete(int);
+    callback memory-confirm(int);
     callback memories-forget();
     callback job-cancel(int);
     // The shopping list: an item bought (ticked).
@@ -2584,8 +2645,8 @@ export component CompanionWindow inherits Window {
         }
     }
 
-    // ---- Memories (home-companion-brain): reminders still to come, what Alfred knows about the user, his
-    // notes and the facts he remembers, each deletable; "Dimentica tutto" in the action band.
+    // ---- Memories (home-companion-brain): what Alfred heard once, to confirm (Right / Wrong), then what he
+    // knows (in the order the assistant reads it, each deletable); "Dimentica tutto" in the action band.
     if root.desk && root.desk-page == "memories": Rectangle {
         PageHeader {
             x: Grid.col-x;
@@ -2611,53 +2672,46 @@ export component CompanionWindow inherits Window {
                     color: Theme.text-3;
                     wrap: word-wrap;
                 }
-                if root.memories-profile != "": SectionTitle {
-                    text: root.t.memories-about;
+                if root.confirm-rows.length > 0: SectionTitle {
+                    text: root.t.memories-confirm;
                 }
-                if root.memories-profile != "": Rectangle {
-                    height: profile-text.preferred-height + 28px;
-                    border-radius: 16px;
-                    background: Theme.surface;
-                    profile-text := Text {
-                        x: 24px;
-                        y: 14px;
-                        width: parent.width - 48px;
-                        text: root.memories-profile;
-                        font-size: 22px;
-                        color: Theme.text-2;
-                        wrap: word-wrap;
+                for m in root.confirm-rows: ConfirmRow {
+                    text: m.text;
+                    detail: m.date;
+                    right: root.t.memories-right;
+                    wrong: root.t.memories-wrong;
+                    confirm => {
+                        root.memory-confirm(m.id);
                     }
-                }
-                if root.memories-notes != "": SectionTitle {
-                    text: root.t.memories-notes;
-                }
-                if root.memories-notes != "": Rectangle {
-                    height: notes-text.preferred-height + 28px;
-                    border-radius: 16px;
-                    background: Theme.surface;
-                    notes-text := Text {
-                        x: 24px;
-                        y: 14px;
-                        width: parent.width - 48px;
-                        text: root.memories-notes;
-                        font-size: 22px;
-                        color: Theme.text-2;
-                        wrap: word-wrap;
+                    reject => {
+                        root.memory-delete(m.id);
                     }
                 }
                 if root.memory-rows.length > 0: SectionTitle {
-                    text: root.t.memories-facts;
+                    text: root.t.memories-about;
+                }
+                if root.memory-rows.length > 0 && root.memories-sent != "": Text {
+                    text: root.memories-sent;
+                    font-size: 20px;
+                    color: Theme.text-3;
+                    wrap: word-wrap;
                 }
                 for m in root.memory-rows: DeletableRow {
                     text: m.text;
                     detail: m.date;
+                    dim: m.dim;
                     ask: root.t.delete-question;
                     delete => {
                         root.memory-delete(m.id);
                     }
                 }
-                if root.brain-present && root.memory-rows.length == 0 && root.memories-profile == ""
-                    && root.memories-notes == "": Text {
+                if root.memory-rows.length > 0 && root.memories-more != "": Text {
+                    text: root.memories-more;
+                    font-size: 20px;
+                    color: Theme.text-3;
+                    wrap: word-wrap;
+                }
+                if root.brain-present && root.memory-rows.length == 0 && root.confirm-rows.length == 0: Text {
                     height: 120px;
                     text: root.t.memories-empty;
                     font-size: 24px;
@@ -2688,8 +2742,7 @@ export component CompanionWindow inherits Window {
             y: Grid.band-y;
             icon: Icons.delete-48;
             label: root.t.forget-all;
-            enabled: root.brain-present && (root.memory-rows.length > 0 || root.memories-profile != ""
-                || root.memories-notes != "");
+            enabled: root.brain-present && (root.memory-rows.length > 0 || root.confirm-rows.length > 0);
             clicked => {
                 root.dialog = "forget";
             }
