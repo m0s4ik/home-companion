@@ -71,6 +71,9 @@ pub struct Detector {
     h: NonNull<ffi::MwwHandle>,
     name: String,
     rules: Rules,
+    /// The cutoff it was made with (the configuration's or the manifest's) and the one in use.
+    base_cutoff: f32,
+    cutoff: f32,
     arena_size: usize,
     arena_used: usize,
     stride: usize,
@@ -189,6 +192,8 @@ impl Detector {
                 SlidingWindow::new(cutoff, window, cooloff),
                 duration_to_samples(cfg.refractory),
             ),
+            base_cutoff: cutoff,
+            cutoff,
             arena_size: size,
             arena_used,
             stride,
@@ -273,6 +278,23 @@ impl Detector {
         }
         self.rules.reset();
         self.last_prob = 0;
+    }
+
+    /// The cutoff it was made with: the configuration's, else the manifest's.
+    pub fn base_cutoff(&self) -> f32 {
+        self.base_cutoff
+    }
+
+    /// The cutoff in use.
+    pub fn cutoff(&self) -> f32 {
+        self.cutoff
+    }
+
+    /// Changes the cutoff (0..=1) from the next invocation on, keeping the model's state.
+    pub fn set_cutoff(&mut self, cutoff: f32) {
+        let cutoff = cutoff.clamp(0.0, 1.0);
+        self.rules.window.set_cutoff(cutoff);
+        self.cutoff = cutoff;
     }
 
     pub fn arena_used(&self) -> usize {

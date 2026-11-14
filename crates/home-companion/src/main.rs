@@ -303,6 +303,12 @@ fn go<S: Screen>(
     let (core_tx, core_rx) = mpsc::channel::<CoreEvent>();
     let (ui_tx, ui_rx) = mpsc::channel();
     let mic = Arc::new(MicControl::default());
+    // The wake word's sensitivity chosen in Settings: applied by the wake word thread on its
+    // first frame, around the cutoff the detector is made with.
+    let sensitivity = settings.wake_sensitivity();
+    if sensitivity != home_companion::settings::WakeSensitivity::Normal {
+        mic.set_wake_sensitivity(sensitivity);
+    }
 
     // Touch (device only).
     let touch = if matches!(prepared.kind, Kind::Gpu | Kind::Software) && !cfg.ui.touch.is_empty() {

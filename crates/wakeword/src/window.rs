@@ -46,6 +46,17 @@ impl SlidingWindow {
     }
 
     /// The mean probability of the last near miss (0..1), once.
+    /// A new cutoff from the next probability on (Settings → the wake word's sensitivity): the
+    /// probabilities in the window and the cool-off stay; a near miss being followed is dropped.
+    pub fn set_cutoff(&mut self, cutoff: f32) {
+        let size = self.probs.len() as u32;
+        let cutoff_u8 = (cutoff * 255.0).round().clamp(0.0, 255.0) as u32;
+        self.threshold = cutoff_u8 * size;
+        self.near_floor = cutoff_u8 * size * 7 / 10;
+        self.peak = 0;
+        self.near = None;
+    }
+
     pub fn take_near(&mut self) -> Option<f32> {
         self.near.take()
     }
@@ -170,6 +181,23 @@ mod tests {
             assert!(!w.push(255)); // the 200 is still inside the window
         }
         assert!(w.push(255)); // 200 dropped out: 1275
+    }
+
+    #[test]
+    fn a_new_cutoff_applies_to_the_next_value() {
+        // 0.96 x 5: 245 * 5 = 1225; five values of 240 (1200) are a near miss only.
+        let mut w = SlidingWindow::new(0.96, 5, 0);
+        for _ in 0..5 {
+            assert!(!w.push(240));
+        }
+        // 0.92 x 5: 235 * 5 = 1175: the same values now detect, without refilling the window.
+        w.set_cutoff(0.92);
+        assert!(w.push(240));
+        // Back up: 0.98 x 5 = 250 * 5 = 1250, and 240s stay under it.
+        w.set_cutoff(0.98);
+        for _ in 0..5 {
+            assert!(!w.push(240));
+        }
     }
 
     #[test]

@@ -134,7 +134,9 @@ its ring and the gold fill) and No stays a target that wins.
   only (Wyoming cannot tell Home Assistant). Alarms are the body's (`crates/home-companion/src/alarms.rs`,
   `<state_dir>/alarms.json`) and ring like a timer.
 - **Settings** (grouped rows, scrolling): the character's group ({name}'s memories, Language → its page, Keep
-  conversations), DEVICE (Volume, Screen → night mode on/off, from, to; About, with the version; **Suspend {name}** →
+  conversations, "Answers to his name" with − and +: Less often · Normal · More often, a step around the wake word's
+  cutoff — the configuration's `wake_word.cutoff`, else the model's — of +0.02 or −0.04, applied at once and kept in
+  settings.toml; the log's near misses tell which one a voice needs), DEVICE (Volume, Screen → night mode on/off, from, to; About, with the version; **Suspend {name}** →
   "Suspend {name}?" / "{name} won't listen or play until you press Vol+ or Vol–. A running timer wakes him by
   itself." Cancel · **Suspend**). Reached from More, or a double tap on the mouth.
 - **Home Assistant** (the tile in More, the setup card, the control centre): linked, one row per check of the setup

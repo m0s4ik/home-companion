@@ -20,7 +20,7 @@ use crate::alarms::{Alarm, Alarms};
 use crate::conversation::{AnswerPolicy, Conversation, Record, Swallow, Trigger};
 use crate::cues::Cues;
 use crate::reflex::{ReflexEvent, Reflexes};
-use crate::settings::Settings;
+use crate::settings::{Settings, WakeSensitivity};
 use crate::timers::{TimerView, Timers, now_unix};
 use crate::volume::{Volume, VolumeRequest};
 use reflex::Command as Reflex;
@@ -71,6 +71,9 @@ pub enum UiEvent {
     Screenshot,
     /// Settings → Suspend, confirmed: the whole device to sleep (suspend.rs).
     Suspend,
+    /// Settings → how readily the character answers to his wake word: saved, and applied by the
+    /// wake word thread before its next frame.
+    WakeSensitivity(WakeSensitivity),
     /// Timer e sveglie: a new timer of this many seconds (a local one).
     /// Seconds and what it is for, when said.
     TimerStart(u64, Option<String>),
@@ -265,6 +268,8 @@ pub struct MicControl {
     reset: AtomicBool,
     /// The stop word detector runs too (the character thinks, speaks, rings or announces).
     stop: AtomicBool,
+    /// A wake word sensitivity to apply before the next frame (0: none; 1 + the stepper's -1..=1).
+    sensitivity: AtomicU8,
 }
 
 impl MicControl {
@@ -295,6 +300,19 @@ impl MicControl {
 
     pub fn stop_listening(&self) -> bool {
         self.stop.load(Ordering::Acquire)
+    }
+
+    /// Asks the wake word thread to apply this sensitivity before the next frame.
+    pub fn set_wake_sensitivity(&self, s: WakeSensitivity) {
+        self.sensitivity
+            .store((s.step() + 2) as u8, Ordering::Release);
+    }
+
+    pub fn take_wake_sensitivity(&self) -> Option<WakeSensitivity> {
+        match self.sensitivity.swap(0, Ordering::AcqRel) {
+            0 => None,
+            v => Some(WakeSensitivity::from_step(v as i32 - 2)),
+        }
     }
 }
 
@@ -3003,6 +3021,12 @@ impl Core {
             }
             UiEvent::HomeAssistant => log::info!("Home Assistant button: dashboards are M6"),
             UiEvent::Suspend => self.suspend(),
+            UiEvent::WakeSensitivity(s) => {
+                if let Some(st) = &self.d.settings {
+                    st.save_wake_sensitivity(s);
+                }
+                self.d.mic.set_wake_sensitivity(s);
+            }
             UiEvent::ControlTile(k) => self.on_control_tile(&k),
             UiEvent::MusicToggle => self.on_music_toggle(),
             UiEvent::MusicNext => self.music_remote(crate::airplay::Remote::Next),
@@ -4256,6 +4280,16 @@ mod tests {
         m.request_reset();
         assert!(m.take_reset());
         assert!(!m.take_reset());
+        assert_eq!(m.take_wake_sensitivity(), None);
+        for s in [
+            WakeSensitivity::Less,
+            WakeSensitivity::Normal,
+            WakeSensitivity::More,
+        ] {
+            m.set_wake_sensitivity(s);
+            assert_eq!(m.take_wake_sensitivity(), Some(s));
+            assert_eq!(m.take_wake_sensitivity(), None, "taken once");
+        }
     }
 
     #[test]

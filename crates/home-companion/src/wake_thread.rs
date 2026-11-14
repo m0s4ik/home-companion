@@ -41,6 +41,17 @@ pub fn spawn(
                         d.reset();
                     }
                 }
+                // Settings → the wake word's sensitivity: a step around the detector's own cutoff.
+                if let Some(s) = mic.take_wake_sensitivity()
+                    && let Some(d) = &mut detector
+                {
+                    let (was, cutoff) = (d.cutoff(), s.cutoff(d.base_cutoff()));
+                    d.set_cutoff(cutoff);
+                    log::info!(
+                        event = "wake_sensitivity", sensitivity = s.key(), cutoff = cutoff as f64;
+                        "wake word {}: {} sensitivity, cutoff {was:.2} -> {cutoff:.2}", d.name(), s.key()
+                    );
+                }
                 // The stop words: only while the core asks for them, from a clean state each time;
                 // any of them stops.
                 let stop_on = mic.stop_listening() && mic.mode() == MicMode::Wake;
