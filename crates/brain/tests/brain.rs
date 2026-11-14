@@ -816,7 +816,7 @@ fn x1_what_reaches_the_model_and_what_stays() {
         "{\"summary\": \"s\", \"ops\": [\
           {\"op\": \"add\", \"text\": \"La lista della spesa ora include i rotoloni\", \"kind\": \"house\", \"quote\": \"aggiungi i rotoloni\"},\
           {\"op\": \"add\", \"text\": \"Il 14 novembre 2026 l'utente ha chiuso la tapparella\", \"kind\": \"house\", \"quote\": \"aggiungi i rotoloni\"},\
-          {\"op\": \"add\", \"text\": \"È stato risolto l'errore delle luci dello studio\", \"kind\": \"house\", \"quote\": \"risolto l'errore delle luci\"}]}"
+          {\"op\": \"add\", \"text\": \"È stato risolto l'errore delle luci della cucina\", \"kind\": \"house\", \"quote\": \"risolto l'errore delle luci\"}]}"
             .into(),
     );
     std::thread::sleep(std::time::Duration::from_millis(1100));

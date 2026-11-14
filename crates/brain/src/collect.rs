@@ -403,9 +403,9 @@ mod tests {
     fn g3_gate_on_the_device_snapshot() {
         // The eight facts of the device (14/11), proposed again as `add`; the name replaced.
         let u = user(&[
-            "accendi la lampada dello studio",
+            "accendi la lampada della cucina",
             "aggiungi i rotoloni alla spesa",
-            "chiudi la tapparella sinistra del salone",
+            "chiudi la tapparella del soggiorno",
             "mi chiamo Mario",
             "ricordami di controllare il forno",
         ]);
@@ -423,16 +423,16 @@ mod tests {
         };
         assert_eq!(
             g(
-                "Il 2026-11-08 l'utente ha segnalato un problema di permessi con la lampada dello studio.",
+                "Il 2026-11-08 l'utente ha segnalato un problema di permessi con la lampada della cucina.",
                 "house",
-                "la lampada dello studio"
+                "la lampada della cucina"
             ),
             Verdict::Reject("dated")
         );
         // Built on the assistant's answer: no quote of the user.
         assert_eq!(
             g(
-                "È stato risolto l'errore di sincronizzazione delle luci dello studio.",
+                "È stato risolto l'errore di sincronizzazione delle luci della cucina.",
                 "house",
                 "risolto l'errore di sincronizzazione"
             ),
@@ -442,7 +442,7 @@ mod tests {
             g(
                 "Il 9 novembre 2026 l'utente ha confermato la chiusura della tapparella sinistra.",
                 "house",
-                "chiudi la tapparella sinistra"
+                "chiudi la tapparella del soggiorno"
             ),
             Verdict::Reject("dated")
         );
@@ -474,7 +474,7 @@ mod tests {
             g(
                 "L'utente ha spostato la tapparella al 10%.",
                 "house",
-                "chiudi la tapparella sinistra"
+                "chiudi la tapparella del soggiorno"
             ),
             Verdict::Reject("chronicle")
         );
@@ -555,7 +555,7 @@ mod tests {
     #[test]
     fn w1_which_conversations_reach_the_model() {
         assert!(!worth_extracting(&[ex(
-            "chiudi la tapparella del salone",
+            "chiudi la tapparella del soggiorno",
             "home_control"
         )]));
         assert!(worth_extracting(&[

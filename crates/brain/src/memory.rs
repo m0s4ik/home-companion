@@ -1037,20 +1037,20 @@ mod tests {
         let rows: [(i64, &str, &str, Option<i64>); 8] = [
             (
                 1,
-                "Il 2026-11-08 l'utente ha segnalato un problema di permessi con la lampada dello studio, che ha ripreso a funzionare regolarmente il 2026-11-09.",
+                "Il 2026-11-08 l'utente ha segnalato un problema di permessi con la lampada della cucina, che ha ripreso a funzionare regolarmente il 2026-11-09.",
                 "house",
                 Some(1794277816),
             ),
             (
                 2,
-                "Il 2026-11-09 è stato risolto l'errore di sincronizzazione delle luci dello studio, che ora funzionano correttamente dopo la segnalazione di problemi di permessi avvenuta il 2026-11-08.",
+                "Il 2026-11-09 è stato risolto l'errore di sincronizzazione delle luci della cucina, che ora funzionano correttamente dopo la segnalazione di problemi di permessi avvenuta il 2026-11-08.",
                 "house",
                 Some(1794277816),
             ),
             (3, "L'utente si chiama Mario R.", "fact", None),
             (
                 4,
-                "Il 9 novembre 2026 l'utente ha confermato la chiusura della tapparella sinistra del salone, ha spostato la tapparella al 10% il 13 novembre 2026 e non ha confermato di volerla chiudere il 11 novembre 2026.",
+                "Il 9 novembre 2026 l'utente ha confermato la chiusura della tapparella del soggiorno, ha spostato la tapparella al 10% il 13 novembre 2026 e non ha confermato di volerla chiudere il 11 novembre 2026.",
                 "house",
                 None,
             ),
@@ -1062,7 +1062,7 @@ mod tests {
             ),
             (
                 6,
-                "Il 9 novembre 2026 è stato risolto un problema di permessi con la lampada dello studio e l'errore di sincronizzazione delle luci, che ora funzionano correttamente.",
+                "Il 9 novembre 2026 è stato risolto un problema di permessi con la lampada della cucina e l'errore di sincronizzazione delle luci, che ora funzionano correttamente.",
                 "house",
                 None,
             ),
