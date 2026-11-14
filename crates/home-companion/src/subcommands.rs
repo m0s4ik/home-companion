@@ -235,7 +235,7 @@ pub fn ha_setup(cfg: &Config, action: &str, row: Option<&str>) -> Result<(), Str
             )?;
         }
         "unlink" => {
-            let errors = setup::unlink(&mut api, &st);
+            let errors = setup::unlink(&mut api, &st, &body.name);
             if !errors.is_empty() {
                 return Err(errors.join("; "));
             }

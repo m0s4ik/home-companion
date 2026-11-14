@@ -667,6 +667,13 @@ fn go<S: Screen>(
             Settings::in_dir(&cfg.state_dir()),
             cfg.character.language.clone(),
         );
+        // What the agent always knows, as a state in Home Assistant (ha/memory.rs).
+        home_companion::ha::memory::spawn(
+            home_companion::brain_link::socket_path(),
+            std::sync::Arc::new(cfg.ha_auth()),
+            cfg.home_assistant.url.clone(),
+            cfg.satellite.name.clone(),
+        );
     }
 
     // Cards and shopping lists from Home Assistant (one WebSocket connection, its own thread):
