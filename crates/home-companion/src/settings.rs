@@ -7,7 +7,8 @@
 //! of "Casa": an edge and the offset along it, in the view's logical pixels),
 //! `ha_url = "http://ha.example:8123"` (Home Assistant picked on the first-start page
 //! when the configuration has no `[home_assistant] url`), `[assistant]` (the AI, speech-to-text
-//! and voice chosen on the Home Assistant page).
+//! and voice chosen on the Home Assistant page), `wake_sensitivity = "more"` (how readily the
+//! character answers to his wake word: less, normal, more).
 
 use std::path::{Path, PathBuf};
 
