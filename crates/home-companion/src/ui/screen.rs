@@ -4604,6 +4604,8 @@ impl<S: Screen> Ui<S> {
                     self.refresh_home();
                 }
             }
+            HubMsg::Screen(true) => self.wake(WakeSource::HomeAssistant),
+            HubMsg::Screen(false) => self.screen_off_by("Home Assistant"),
             HubMsg::Entities(e) => {
                 self.choice.borrow_mut().known = e;
                 self.render_choices();
@@ -5260,6 +5262,10 @@ impl<S: Screen> Ui<S> {
     /// panel stays on: only the backlight goes, as Vol+ and Vol− together do). Over Home
     /// Assistant's view the view closes first.
     fn screen_off(&self) {
+        self.screen_off_by("voice");
+    }
+
+    fn screen_off_by(&self, by: &str) {
         if self.opts.demo.is_some() {
             return;
         }
@@ -5267,7 +5273,7 @@ impl<S: Screen> Ui<S> {
             super::webview::request_home();
         }
         self.screen.set_control_open(false);
-        log::info!(event = "screen_sleep", by = "voice"; "screen: off (asked by voice)");
+        log::info!(event = "screen_sleep", by; "screen: off (asked by {by})");
         self.motion.borrow_mut().awake.sleep(Instant::now());
         self.step();
     }
