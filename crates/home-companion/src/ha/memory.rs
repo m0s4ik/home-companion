@@ -107,7 +107,7 @@ pub fn spawn(brain_socket: PathBuf, auth: Arc<Auth>, url: String, name: String) 
                     if ok {
                         log::info!(event = "ha_memory", ok = true, status = status; "memory: {entity} written");
                     } else if matches!(status, 401 | 403) {
-                        log::warn!(event = "ha_memory", ok = false, status = status; "memory: Home Assistant refused {entity}: the linked user is not an administrator");
+                        log::warn!(event = "ha_memory", ok = false, status = status; "memory: Home Assistant refused {entity} (HTTP {status}): the linked user must be an administrator, or the link is no longer valid");
                     } else {
                         log::warn!(event = "ha_memory", ok = false, status = status; "memory: {entity} not written (HTTP {status})");
                     }

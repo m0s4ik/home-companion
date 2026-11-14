@@ -289,8 +289,9 @@ The body runs **UxPlay** as a child process (patched, `tools/airplay/`) and stay
 - The brain's memory is kept on the device. The stable facts (active, at most 1500 characters) go to Home Assistant as
   a state, and from there to the agent's model at every conversation: every Home Assistant user and integration can
   read that state, and Home Assistant's history keeps it for its purge period (`recorder: exclude:` the entity to
-  avoid that). Candidates and past conversations stay on the device; their pieces reach the agent only through its
-  `recall` tool.
+  avoid that). Candidates and past conversations stay on the device: past conversations reach the agent only
+  through its `recall` tool; candidates never reach the agent, but the end-of-conversation prompt lists them to the
+  `ai_task` model (so that it can tell when one is said again).
 
 ## 12. Testing
 

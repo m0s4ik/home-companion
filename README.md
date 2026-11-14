@@ -122,7 +122,8 @@ conversations).
 So that the assistant knows these facts at every conversation, Alfred writes them (at most 1500 characters) into Home
 Assistant as the state `sensor.alfred_memory`, which his agent's instructions read. Like any state, every Home
 Assistant user can see it and its history is kept for the recorder's purge period (add it to `recorder: exclude:` to
-avoid that). If you edited the agent's instructions yourself, add these lines at the end:
+avoid that). Two devices with the same character name would share one state: give them different names. If you
+edited the agent's instructions yourself, add these lines at the end:
 
 ```
 What you know about this home and the people in it:

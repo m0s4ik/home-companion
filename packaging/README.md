@@ -206,7 +206,8 @@ heard. Home Assistant reads the tool list at setup and every 30 minutes: reload 
 
 The body's control socket (`control_socket`, `/run/home-companion-brain/brain.sock`): the "Ricordi" page (what the brain knows,
 each fact deletable; what it heard once, Right / Wrong; "Dimentica tutto"), the reminder cards, and what the agent always
-knows (`memory.context`), which the body writes into Home Assistant as `sensor.<name>_memory` (see the README's memory section). The unit's `RuntimeDirectory` is group `home-companion-brain`, so
+knows (`memory.context`), which the body writes into Home Assistant as `sensor.<name>_memory` (see the README's memory section; two devices need
+different names, or they overwrite each other's state). The unit's `RuntimeDirectory` is group `home-companion-brain`, so
 the body's user is in that group (install.sh). Without the brain (no socket) the page
 says the brain is not active and the Altro tile is hidden.
 

@@ -1982,12 +1982,12 @@ fn set_prompt(api: &mut dyn Api, ai: &str, sub: &str, prompt: &str) -> Result<()
 
 /// Whether the instructions Home Assistant has are still the body's (`written`, what it last
 /// wrote), so a newer version may replace them. Before the body kept a copy (`written` empty): the
-/// body's when they read like its template (they use its tools and its memory state: 0.2's
-/// `sensor.<name>_memoria`, `sensor.<name>_memory` since 0.3).
+/// body's when they read like its template (they use its tools and its memory sensor of 0.2).
+/// Since 0.2 the copy is always kept: a current prompt with no copy (the state file lost) may
+/// be the user's, completed with the README's lines, and is left alone.
 pub fn prompt_is_ours(current: &str, written: &str) -> bool {
     if written.is_empty() {
-        current.contains("home_control")
-            && (current.contains("_memoria") || current.contains("_memory'"))
+        current.contains("home_control") && current.contains("_memoria")
     } else {
         current == written
     }
@@ -2749,8 +2749,13 @@ mod tests {
         let ours = agent_prompt(Path::new("/nonexistent"), "en", "Alfred");
         assert!(prompt_is_ours(&ours, &ours));
         assert!(!prompt_is_ours("Be brief.", &ours));
-        // Before the body kept a copy: its template, by its tools and memory sensor.
-        assert!(prompt_is_ours(&ours, ""));
+        // Before the body kept a copy: 0.2's template, by its tools and memory sensor; a current
+        // one without a copy is not judged the body's (it may be the user's).
+        assert!(prompt_is_ours(
+            "Usa home_control.\n{{ state_attr('sensor.alfred_memoria', 'profile') }}",
+            ""
+        ));
+        assert!(!prompt_is_ours(&ours, ""));
         assert!(!prompt_is_ours("You are a pirate.", ""));
     }
     use std::collections::HashMap;
