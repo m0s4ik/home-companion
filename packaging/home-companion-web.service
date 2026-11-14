@@ -28,8 +28,9 @@ ExecStart=/bin/sh -c 'd=/run/home-companion-web; exec 3< $d/login; rm -f $d/logi
 # The freezer: the body (user home-companion) freezes this unit's cgroup after [web] freeze_after_seconds hidden
 ExecStartPost=+/bin/chown home-companion /sys/fs/cgroup/system.slice/home-companion-web.service/cgroup.freeze /sys/fs/cgroup/system.slice/home-companion-web.service/cgroup.kill
 Environment=HOME=/var/lib/home-companion-web XDG_RUNTIME_DIR=/tmp/xdg
-# freedreno's tiled (gmem) path loops forever on some of WebKit's draws even in Mesa 26.3: direct rendering to system
-# memory for this process only (thinksmart-view-debian docs/known-issues.md, "GPU and web layer")
+# freedreno's tiled (gmem) path loops forever on MSAA targets with depth up to mesa-freedreno 26.3.0-1: direct rendering
+# to system memory for this process only (thinksmart-view-debian docs/known-issues.md, "GPU and web layer"). install.sh
+# empties it with a drop-in (mesa-gmem.conf) when mesa-freedreno 26.3.0-2 or later, which has the fix, is installed.
 Environment=FD_MESA_DEBUG=sysmem
 # WebKit paints the page's tiles with Skia on the CPU (the GPU still composites): the dashboard's peak goes from ~1.15 GB
 # to ~0.4 GB (its GPU buffers from ~810 MB to ~55 MB), the same frames per second while scrolling, a picture the same

@@ -1088,17 +1088,12 @@ static gboolean body_listen(const char *path, GError **error)
 
 static void setup_environment(void)
 {
-    // freedreno's GMEM tiling loops forever on some of the browser's render targets (Adreno 5xx); sysmem
-    // rendering avoids it. Set before WebKit starts, so the web (and GPU) processes inherit it. Only here:
-    // the body keeps tiling.
-    const char *debug = g_getenv("FD_MESA_DEBUG");
-    if (!debug || !*debug)
+    // freedreno's GMEM tiling loops forever on MSAA render targets with depth (Adreno 5xx) up to Mesa 26.3.0-1;
+    // sysmem rendering avoids it. The unit decides: when FD_MESA_DEBUG is set, even empty (mesa-freedreno 26.3.0-2
+    // and later carry the fix, see install.sh), it is left as it is; unset, sysmem is the safe default. Set before
+    // WebKit starts, so the web (and GPU) processes inherit it. Only here: the body keeps tiling.
+    if (!g_getenv("FD_MESA_DEBUG"))
         g_setenv("FD_MESA_DEBUG", "sysmem", TRUE);
-    else if (!strstr(debug, "sysmem")) {
-        char *value = g_strconcat(debug, ",sysmem", NULL);
-        g_setenv("FD_MESA_DEBUG", value, TRUE);
-        g_free(value);
-    }
 }
 
 static char *origin_of(const char *url)

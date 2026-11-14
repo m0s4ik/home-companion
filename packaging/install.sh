@@ -20,6 +20,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 PREFIX=/opt/home-companion
 ETC=/etc/home-companion
 UNITS=/etc/systemd/system
+WEB_MESA_DROPIN=$UNITS/home-companion-web.service.d/mesa-gmem.conf
+MESA_GMEM_FIXED=26.3.0-2
 UDEV_RULE=/etc/udev/rules.d/99-home-companion-backlight.rules
 NFT_FILE=/etc/nftables.d/home-companion.nft
 ARCH_LIBS=/usr/lib/aarch64-linux-gnu
@@ -147,7 +149,7 @@ if [ -n "$UNINSTALL" ]; then
     for u in home-companion-web home-companion-brain home-companion; do
         have_unit "$u.service" && run systemctl disable --now "$u.service"
     done
-    for f in "$UNITS/home-companion.service" "$UNITS/home-companion-web.service" "$UNITS/home-companion-brain.service" "$UDEV_RULE"; do
+    for f in "$UNITS/home-companion.service" "$UNITS/home-companion-web.service" "$UNITS/home-companion-brain.service" "$UDEV_RULE" "$WEB_MESA_DROPIN"; do
         [ -e "$f" ] && run rm -f "$f"
     done
     [ -d "$UNITS/home-companion.service.wants" ] && run rm -rf "$UNITS/home-companion.service.wants"
@@ -454,6 +456,18 @@ put "$HERE/packaging/home-companion.service" "$UNITS/home-companion.service" 064
 put "$HERE/packaging/home-companion-brain.service" "$UNITS/home-companion-brain.service" 0644
 if [ "$WEB_AVAILABLE" = yes ]; then
     put "$HERE/packaging/home-companion-web.service" "$UNITS/home-companion-web.service" 0644
+    # mesa-freedreno 26.3.0-2 fixes freedreno's GMEM loop: the browser no longer needs sysmem rendering
+    if dpkg --compare-versions "$(pkg_version mesa-freedreno)" ge "$MESA_GMEM_FIXED" 2>/dev/null; then
+        run mkdir -p "$UNITS/home-companion-web.service.d"
+        if [ -n "$DRY" ]; then
+            printf '    + write %s\n' "$WEB_MESA_DROPIN"
+        else
+            printf '# written by install.sh: mesa-freedreno %s has the GMEM fix\n[Service]\nEnvironment=FD_MESA_DEBUG=\n' \
+                "$(pkg_version mesa-freedreno)" > "$WEB_MESA_DROPIN"
+        fi
+    elif [ -e "$WEB_MESA_DROPIN" ]; then
+        run rm -f "$WEB_MESA_DROPIN"
+    fi
 elif have_unit home-companion-web.service; then
     run systemctl disable home-companion-web.service
     run rm -f "$UNITS/home-companion-web.service"
