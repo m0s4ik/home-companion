@@ -8,7 +8,7 @@ id = "alfred"
 name = "Alfred"
 license = "CC0-1.0"
 authors = ["Andrea Mattera"]
-languages = ["en", "it"]
+languages = ["en", "it", "nl"]
 wake_word = "Okay Alfred"
 
 # The figure stands in x 212-812 of the 1024x1024 poses; in the deck chair it is wider.
@@ -40,6 +40,13 @@ listening = "La ascolto…"
 thinking = "Ci penso…"
 error = "Non ho capito"
 offline = "Sono in pausa: non riesco a parlare con casa"
+
+[phrases.nl]
+idle = "Zeg «Okay Alfred»"
+listening = "Ik luister…"
+thinking = "Even nadenken…"
+error = "Dat heb ik niet verstaan"
+offline = "Ik heb even pauze: ik kan het huis niet bereiken"
 
 # A butler: a man's voice, calm. Voice ids of Home Assistant's text-to-speech engines (OpenAI's
 # cedar, onyx, ash, echo; Google Gemini's charon, orus), tried in order; used until the user picks

@@ -949,8 +949,7 @@ impl Brain {
     /// replaced, never carried out. (id, text).
     fn ask(&self, actions: Vec<Action>) -> (i64, String) {
         let id = self.next_id();
-        let it = self.language().starts_with("it");
-        let text = crate::house::question_text(&actions, it);
+        let text = crate::house::question_text(&actions, crate::house::Lang::of(&self.language()));
         let turn = self.open_turn().map(|t| t.seq);
         let q = Question::new(id, actions, text.clone(), self.now_ms(), turn);
         let mut events = Vec::new();
@@ -2381,12 +2380,14 @@ impl Brain {
                 return t;
             }
         }
-        let it = lang.starts_with("it");
-        match (todays.is_empty(), it) {
-            (true, true) => "Buongiorno. Oggi nessun promemoria.".into(),
-            (true, false) => "Good morning. No reminders today.".into(),
-            (false, true) => format!("Buongiorno. Oggi: {}.", todays.join("; ")),
-            (false, false) => format!("Good morning. Today: {}.", todays.join("; ")),
+        use crate::house::Lang;
+        match (todays.is_empty(), Lang::of(&lang)) {
+            (true, Lang::It) => "Buongiorno. Oggi nessun promemoria.".into(),
+            (true, Lang::En) => "Good morning. No reminders today.".into(),
+            (true, Lang::Nl) => "Goedemorgen. Vandaag geen geheugensteuntjes.".into(),
+            (false, Lang::It) => format!("Buongiorno. Oggi: {}.", todays.join("; ")),
+            (false, Lang::En) => format!("Good morning. Today: {}.", todays.join("; ")),
+            (false, Lang::Nl) => format!("Goedemorgen. Vandaag: {}.", todays.join("; ")),
         }
     }
 

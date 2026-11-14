@@ -472,7 +472,8 @@ pub fn unfinished(text: &str) -> bool {
     const OPEN: &[&str] = &[
         "alle", "alla", "allo", "al", "all", "a", "ad", "di", "del", "della", "da", "dal", "dalle",
         "tra", "fra", "per", "in", "con", "su", "e", "il", "lo", "la", "le", "gli", "un", "una",
-        "uno", "at", "to", "for", "in", "of", "the", "a", "an", "and",
+        "uno", "at", "to", "for", "in", "of", "the", "a", "an", "and", "om", "op", "van", "voor",
+        "tot", "naar", "met", "de", "het", "een", "en",
     ];
     text.split_whitespace()
         .last()
@@ -719,6 +720,9 @@ mod tests {
         );
         assert!(unfinished("metti una sveglia alle"));
         assert!(!unfinished("che ore sono"));
+        assert!(unfinished("zet de wekker om"));
+        assert!(unfinished("zet een timer op"));
+        assert!(!unfinished("hoe lang nog"));
     }
 
     /// R7: noise only.
