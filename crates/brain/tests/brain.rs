@@ -36,8 +36,9 @@ fn remember_and_recall_through_the_tools() {
 fn end_of_conversation_extraction_through_ai_task() {
     let f = Fake::default();
     f.ai.lock().unwrap().push(
-        "```json\n{\"summary\": \"Andrea ha detto dove è la caldaia.\", \"ops\": [\
-          {\"op\": \"add\", \"text\": \"La caldaia di casa è in cantina\", \"kind\": \"house\", \"importance\": 6}]}\n```"
+        "```json\n{\"summary\": \"Marco ha detto dove è la caldaia.\", \"ops\": [\
+          {\"op\": \"add\", \"text\": \"La caldaia di casa è in cantina\", \"kind\": \"house\", \
+          \"quote\": \"la caldaia è in cantina\", \"importance\": 6}]}\n```"
             .into(),
     );
     let (mut cfg, dir) = setup("extract", &fake_ha(f.clone()));
@@ -65,7 +66,7 @@ fn nightly_tidy_up_merges_updates_and_retires() {
     f.ai.lock().unwrap().push(
         "{\"merge\": [{\"ids\": [1, 2], \"text\": \"Andrea beve il caffè senza zucchero\"}], \
           \"update\": [{\"id\": 3, \"text\": \"La caldaia di casa è in cantina, a sinistra\"}], \
-          \"invalidate\": [4, 99], \"profile\": \"- Si chiama Andrea\", \"notes\": null}"
+          \"invalidate\": [4, 99]}"
             .into(),
     );
     let (cfg, dir) = setup("tidy", &fake_ha(f.clone()));
@@ -81,7 +82,7 @@ fn nightly_tidy_up_merges_updates_and_retires() {
     }
     let r = b.consolidate();
     assert!(r.ok, "{r:?}");
-    assert_eq!((r.merged, r.updated, r.invalidated, r.blocks), (2, 1, 1, 1));
+    assert_eq!((r.merged, r.updated, r.invalidated, r.blocks), (2, 1, 1, 0));
     let list = b.memory_list();
     let texts: Vec<&str> = list["facts"]
         .as_array()
@@ -92,12 +93,12 @@ fn nightly_tidy_up_merges_updates_and_retires() {
     assert_eq!(texts.len(), 3, "{texts:?}");
     assert!(texts.contains(&"Andrea beve il caffè senza zucchero"));
     assert!(!texts.iter().any(|t| t.contains("dentista")));
-    assert_eq!(list["profile"], "- Si chiama Andrea\n");
     let asked = f.asked.lock().unwrap();
     assert!(
         asked[0].contains("[4] (") && asked[0].contains("dentista"),
         "{asked:?}"
     );
+    drop(asked);
     // The AI task chosen in Home Assistant was used.
     assert!(
         f.calls
@@ -107,6 +108,10 @@ fn nightly_tidy_up_merges_updates_and_retires() {
             .any(|c| c["service_data"]["entity_id"] == "ai_task.test")
     );
     assert_eq!(b.status()["tidy"]["merged"], 2);
+    // Y1: nothing changed since: no model call.
+    let r = b.consolidate();
+    assert_eq!(r.skipped, "nothing changed", "{r:?}");
+    assert_eq!(f.asked.lock().unwrap().len(), 1);
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -136,8 +141,25 @@ fn control_socket_commands() {
     let (l, _) = answer(&b, &json!({"cmd": "memory.list"}));
     let id = l["facts"][0]["id"].as_i64().unwrap();
     assert!(l["facts"][0]["created"].as_i64().unwrap() > 0);
+    let (c, _) = answer(&b, &json!({"cmd": "memory.context"}));
+    assert_eq!(
+        (c["text"].as_str(), c["shown"].as_i64()),
+        (Some("- Il gatto si chiama Neve"), Some(1))
+    );
+    let rev = c["rev"].as_i64().unwrap();
+    assert_eq!(l["shown"], 1);
+    assert_eq!(l["facts"][0]["status"], "active");
+    let (k, _) = answer(&b, &json!({"cmd": "memory.confirm", "id": id}));
+    assert_eq!(k["confirmed"], 1);
     let (d, _) = answer(&b, &json!({"cmd": "memory.delete", "id": id}));
     assert_eq!(d["deleted"], 1);
+    // Rejected, not gone: the same fact is not learned again.
+    let (c, _) = answer(&b, &json!({"cmd": "memory.context"}));
+    assert_eq!(c["text"], "");
+    assert!(c["rev"].as_i64().unwrap() > rev);
+    let (_, err) = tool(&b, "remember", json!({"text": "Il gatto si chiama Neve"}));
+    assert!(!err);
+    assert_eq!(b.status()["facts"], 1, "an explicit remember revives it");
     let (f, _) = answer(&b, &json!({"cmd": "memory.forget_all"}));
     assert_eq!(f["ok"], false);
     let (f, _) = answer(&b, &json!({"cmd": "memory.forget_all", "confirm": true}));
@@ -693,6 +715,139 @@ fn announce_goes_to_every_satellite_or_the_named_ones() {
             .chars()
             .count()
             <= 201
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A brain with the fake Home Assistant and conversations that close at once.
+fn brain_with(name: &str, f: &Fake) -> (Brain, std::path::PathBuf) {
+    let (mut cfg, dir) = setup(name, &fake_ha(f.clone()));
+    cfg.memory.session_gap_minutes = 0;
+    (Brain::new(cfg).unwrap(), dir)
+}
+
+#[test]
+fn t1_remember_and_forget_by_voice() {
+    let f = Fake {
+        states: vec![("person.marco", "Marco")],
+        ..Fake::default()
+    };
+    let (b, dir) = brain_with("t1", &f);
+    // Asked: active at once, in what the agent knows.
+    b.turn(1, "ricordati che il gatto si chiama Neve", None);
+    let (r, err) = tool(
+        &b,
+        "remember",
+        json!({"text": "Il gatto si chiama Neve", "kind": "person"}),
+    );
+    assert!(!err && r == "remembered", "{r}");
+    assert!(
+        b.memory_context()["text"]
+            .as_str()
+            .unwrap()
+            .contains("Neve")
+    );
+    b.turn_end(1, "Va bene.");
+    // The model's own idea during a command: a name heard once waits on the screen.
+    b.turn(2, "chiudi la tapparella", None);
+    let (r, _) = tool(
+        &b,
+        "remember",
+        json!({"text": "La vicina si chiama Greta", "kind": "person"}),
+    );
+    assert!(r.as_str().unwrap().contains("to be confirmed"), "{r}");
+    let list = b.memory_list();
+    let greta = list["facts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["text"].as_str().unwrap().contains("Greta"))
+        .unwrap()
+        .clone();
+    assert_eq!(greta["status"], "candidate");
+    assert!(
+        !b.memory_context()["text"]
+            .as_str()
+            .unwrap()
+            .contains("Greta")
+    );
+    // A resident's name is known: active.
+    let (r, _) = tool(
+        &b,
+        "remember",
+        json!({"text": "Marco prende il caffè amaro", "kind": "person"}),
+    );
+    assert_eq!(r, "remembered", "{r}");
+    // Not a lasting fact.
+    let (r, _) = tool(
+        &b,
+        "remember",
+        json!({"text": "Chiusa la tapparella il 14 novembre 2026", "kind": "house"}),
+    );
+    assert!(r.as_str().unwrap().starts_with("not stored"), "{r}");
+    // forget: only when the user says so.
+    b.add_fact("L'utente si chiama Mario R.");
+    b.turn(3, "che ore sono", None);
+    let (r, err) = tool(&b, "forget", json!({"query": "mi chiamo Mario"}));
+    assert!(
+        err && r["error"].as_str().unwrap().contains("did not ask"),
+        "{r}"
+    );
+    b.turn(4, "non mi chiamo Mario", None);
+    let (r, err) = tool(&b, "forget", json!({"query": "mi chiamo Mario"}));
+    assert!(!err, "{r}");
+    assert!(r["forgotten"].as_str().unwrap().contains("Mario"));
+    assert!(b.facts("Mario").is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn x1_what_reaches_the_model_and_what_stays() {
+    let f = Fake::default();
+    let (b, dir) = brain_with("x1", &f);
+    // Commands only: closed without the model, with the user's words as the summary.
+    b.turn(1, "metti un timer di dieci minuti", None);
+    let _ = tool(&b, "timer", json!({"seconds": 600}));
+    b.turn_end(1, "Fatto.");
+    b.close_sessions();
+    assert!(f.asked.lock().unwrap().is_empty());
+    // A chat: the model answers with a chronicle; nothing is stored.
+    f.ai.lock().unwrap().push(
+        "{\"summary\": \"s\", \"ops\": [\
+          {\"op\": \"add\", \"text\": \"La lista della spesa ora include i rotoloni\", \"kind\": \"house\", \"quote\": \"aggiungi i rotoloni\"},\
+          {\"op\": \"add\", \"text\": \"Il 14 novembre 2026 l'utente ha chiuso la tapparella\", \"kind\": \"house\", \"quote\": \"aggiungi i rotoloni\"},\
+          {\"op\": \"add\", \"text\": \"È stato risolto l'errore delle luci dello studio\", \"kind\": \"house\", \"quote\": \"risolto l'errore delle luci\"}]}"
+            .into(),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    b.turn(2, "aggiungi i rotoloni e dimmi come stai oggi", None);
+    b.turn_end(2, "Sto bene, ho risolto l'errore delle luci.");
+    b.close_sessions();
+    assert_eq!(f.asked.lock().unwrap().len(), 1);
+    assert_eq!(b.status()["facts"], 0);
+    assert_eq!(b.memory_list()["facts"].as_array().unwrap().len(), 0);
+    // "Remember that…" and the agent did not call remember: stored at the end, active.
+    f.ai.lock().unwrap().push(
+        "{\"summary\": \"s\", \"ops\": [{\"op\": \"add\", \"text\": \"Il cane si chiama Fido\", \
+          \"kind\": \"person\", \"quote\": \"il cane si chiama Fido\", \"importance\": 5}]}"
+            .into(),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    b.turn(3, "ricordati che il cane si chiama Fido", None);
+    b.turn_end(3, "Certo.");
+    b.close_sessions();
+    let asked = f.asked.lock().unwrap();
+    assert!(
+        asked[1].contains("explicitly asked to remember"),
+        "{asked:?}"
+    );
+    assert!(asked[1].contains("Only the lines marked"));
+    drop(asked);
+    assert!(
+        b.memory_context()["text"]
+            .as_str()
+            .unwrap()
+            .contains("Fido")
     );
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -6,7 +6,9 @@
 pub mod agent;
 pub mod calendar;
 pub mod clock;
+pub mod collect;
 pub mod config;
+pub mod context;
 pub mod control;
 pub mod events;
 pub mod ha;

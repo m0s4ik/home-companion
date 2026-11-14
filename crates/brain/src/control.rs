@@ -8,8 +8,10 @@
 //! | request | answer |
 //! |---|---|
 //! | `{"cmd":"status"}` | `{"ok":true,"key":…,"provider":…,"model":…,"facts":N,"jobs":N,"tidy":{…}\|null}` |
-//! | `{"cmd":"memory.list"}` | `{"ok":true,"profile":"…","notes":"…","facts":[{id,text,kind,importance,created,updated}]}` |
-//! | `{"cmd":"memory.delete","id":N}` | `{"ok":true,"deleted":0\|1}` |
+//! | `{"cmd":"memory.list"}` | `{"ok":true,"facts":[{id,text,kind,importance,created,updated,status,origin}],"shown":N,"profile":"","notes":""}`: the active facts in the order the agent reads them (the first `shown` fit in its instructions), then the candidates (`status` = `candidate`); `profile`/`notes` always empty (kept for an older body) |
+//! | `{"cmd":"memory.context"}` | `{"ok":true,"text":"- …\n- …","shown":N,"active":N,"rev":N}`: what the agent always knows; the body publishes `text` in Home Assistant when `rev` changes |
+//! | `{"cmd":"memory.confirm","id":N}` | `{"ok":true,"confirmed":0\|1}`: "Right" on the screen |
+//! | `{"cmd":"memory.delete","id":N}` | `{"ok":true,"deleted":0\|1}`: deleted or "Wrong" on the screen; the fact is kept as rejected so it is not learned again |
 //! | `{"cmd":"memory.forget_all","confirm":true}` | `{"ok":true}` (without `confirm`: an error) |
 //! | `{"cmd":"jobs.list"}` | `{"ok":true,"jobs":[{id,due_at,repeat,text,how,status,source,late}]}` |
 //! | `{"cmd":"jobs.cancel","id":N}` / `{"cmd":"job.ack","id":N}` | `{"ok":true,"changed":0\|1}` |
@@ -78,6 +80,10 @@ pub fn answer(brain: &Brain, req: &Value) -> (Value, bool) {
     let r = match req.get("cmd").and_then(Value::as_str).unwrap_or("") {
         "status" => ok(brain.status()),
         "memory.list" => ok(brain.memory_list()),
+        "memory.context" => ok(brain.memory_context()),
+        "memory.confirm" => brain
+            .memory_confirm(id)
+            .map_or_else(err, |n| json!({"ok": true, "confirmed": n})),
         "memory.delete" => brain
             .delete_fact(id)
             .map_or_else(err, |n| json!({"ok": true, "deleted": n})),
