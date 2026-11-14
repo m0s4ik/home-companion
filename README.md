@@ -243,13 +243,16 @@ To change the Wi-Fi later: `nmcli device wifi connect "<ssid>" password "<passwo
 
 ## Languages
 
-Italian and English, complete: the screen (`locales/`), the reflexes' grammar
+Italian, English and Dutch, complete: the screen (`locales/`), the reflexes' grammar
 (`characters/alfred/grammar/`) and the speech model the installer downloads. With any other language set in Home
 Assistant, the device still works (Home Assistant answers in its language) without the local reflexes.
 
 Adding a language: a `locales/<lang>.toml`, a `characters/alfred/grammar/<lang>.toml`, the number words in
 `crates/reflex/src/slots.rs`, and the [Vosk model](https://alphacephei.com/vosk/models) in the installer's
-`VOSK_MODELS` table.
+`VOSK_MODELS` table (and `--language`). For the character and Home Assistant: `[phrases.<lang>]` and
+`persona.<lang>.md` in `characters/alfred/`, `crates/home-companion/src/ha/agent-prompt.<lang>.md` with its line in
+`agent_prompt()` and the OpenAI hints in `speech_hints()` (both in `ha/setup.rs`); the brain's own words (yes/no
+questions, the morning summary's fallback) in `Lang` of `crates/brain/src/house.rs`.
 
 ## Build from source
 

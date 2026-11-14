@@ -265,7 +265,7 @@ The body runs **UxPlay** as a child process (patched, `tools/airplay/`) and stay
   ([packaging/README.md](../packaging/README.md)).
 - **Logs**: structured logs to the journal (`journalctl -u home-companion`); every conversation ends with one log line
   carrying its latencies.
-- **Language**: on-screen text, phrases and the reflex grammar per language (English, the default, and Italian),
+- **Language**: on-screen text, phrases and the reflex grammar per language (English, the default, Italian and Dutch),
   chosen on the first start's screen or in Settings → Language. The body's own words are in `locales/<code>.toml`
   (checked by `cargo test -p locale`), the character's phrases in its `character.toml`.
 
