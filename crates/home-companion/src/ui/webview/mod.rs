@@ -1144,6 +1144,9 @@ impl<S: Screen> Casa<S> {
             });
             i.page_loaded = self.cfg.preload;
             i.warming = (self.cfg.preload && !i.visible).then(Instant::now);
+            // A new helper has been hidden for no time: the old one's hidden time would freeze it
+            // before it loads anything.
+            i.hidden_since = Instant::now();
             i.status = Status::Ok;
             i.message.clear();
             i.visible
@@ -2030,8 +2033,10 @@ impl<S: Screen> Casa<S> {
         }
         let hidden = now.duration_since(hidden_since).as_secs_f32();
         let mut i = self.inner.borrow_mut();
-        // Not while the page loads (it would load on show), unless it never finishes.
-        let settled = i.status != Status::Loading || hidden >= 3.0 * self.cfg.freeze_after_seconds;
+        // Not while the page loads or the preload draws it (it would load on show), unless it
+        // never finishes.
+        let settled = (i.status != Status::Loading && i.warming.is_none())
+            || hidden >= 3.0 * self.cfg.freeze_after_seconds;
         if let Some(c) = i.conn.as_mut()
             && hidden >= self.cfg.freeze_after_seconds
             && settled
