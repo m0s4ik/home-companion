@@ -2752,9 +2752,11 @@ impl Brain {
             (true, Lang::It) => "Buongiorno. Oggi nessun promemoria.".into(),
             (true, Lang::En) => "Good morning. No reminders today.".into(),
             (true, Lang::Nl) => "Goedemorgen. Vandaag geen geheugensteuntjes.".into(),
+            (true, Lang::De) => "Guten Morgen. Heute keine Erinnerungen.".into(),
             (false, Lang::It) => format!("Buongiorno. Oggi: {}.", todays.join("; ")),
             (false, Lang::En) => format!("Good morning. Today: {}.", todays.join("; ")),
             (false, Lang::Nl) => format!("Goedemorgen. Vandaag: {}.", todays.join("; ")),
+            (false, Lang::De) => format!("Guten Morgen. Heute: {}.", todays.join("; ")),
         }
     }
 

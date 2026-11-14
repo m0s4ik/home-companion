@@ -944,9 +944,10 @@ mod tests {
     fn alfred() {
         let c = load(&repo_characters().join("alfred")).unwrap();
         assert_eq!(c.pose_size, (1024, 1024));
-        assert_eq!(c.languages().collect::<Vec<_>>(), ["en", "it", "nl"]);
+        assert_eq!(c.languages().collect::<Vec<_>>(), ["en", "it", "nl", "de"]);
         assert_eq!(c.phrases("it").listening, "La ascolto…");
         assert_eq!(c.phrases("nl").listening, "Ik luister…");
+        assert_eq!(c.phrases("de").listening, "Ich höre zu…");
         assert_eq!(c.phrases("xx").listening, "I'm listening…"); // unknown language: the first one
         assert_eq!(c.voices[..2], ["cedar", "onyx"]);
         assert_eq!(preferred_voices(&c.dir), c.voices);

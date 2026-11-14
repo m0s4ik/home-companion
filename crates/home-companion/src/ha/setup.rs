@@ -2036,6 +2036,12 @@ pub fn speech_hints(language: &str) -> Option<(&'static str, &'static str)> {
             "Spreek Nederlands, met een natuurlijk Nederlands accent.",
             "Schrijf uit in het Nederlands. Opdrachten voor een huisassistent in het Nederlands.",
         )),
+        // The Italian pair's wording in German; checked by ear on a device (the transcription
+        // prompt names the radio stations of its user there, which is left out here).
+        "de" => Some((
+            "Sprich Deutsch, mit einem natürlichen deutschen Akzent.",
+            "Schreibe auf Deutsch. Befehle für einen Hausassistenten auf Deutsch.",
+        )),
         _ => None,
     }
 }
@@ -2722,6 +2728,7 @@ pub fn agent_prompt(character_dir: &Path, language: &str, name: &str) -> String 
     let tools = match language {
         "it" => include_str!("agent-prompt.it.md"),
         "nl" => include_str!("agent-prompt.nl.md"),
+        "de" => include_str!("agent-prompt.de.md"),
         _ => include_str!("agent-prompt.en.md"),
     };
     let persona = [language, "en"]
@@ -4103,6 +4110,9 @@ mod tests {
         assert!(
             nl.contains("Hulpmiddelen:") && nl.contains("home_control") && !nl.contains("<!--")
         );
+        let de = agent_prompt(&dir, "de");
+        assert!(de.starts_with("Du bist Alfred"), "{de}");
+        assert!(de.contains("Werkzeuge:") && de.contains("home_control") && !de.contains("<!--"));
     }
 
     #[test]
@@ -4123,7 +4133,7 @@ mod tests {
     #[test]
     fn every_row_has_its_words() {
         let dir = locale::repo_locales();
-        for lang in ["it", "en", "nl"] {
+        for lang in ["it", "en", "nl", "de"] {
             let l = locale::load(&dir, lang).unwrap();
             let src = include_str!("setup.rs");
             let src = &src[..src.find("#[cfg(test)]").unwrap()];
@@ -4241,6 +4251,8 @@ mod tests {
         assert_eq!(speech_hints("en"), None);
         assert_eq!(speech_hints("nl-NL"), speech_hints("nl"));
         assert!(speech_hints("nl").unwrap().1.contains("Nederlands"));
+        assert_eq!(speech_hints("de-DE"), speech_hints("de"));
+        assert!(speech_hints("de").unwrap().1.contains("Deutsch"));
     }
 
     #[test]

@@ -348,12 +348,13 @@ pub fn plan(
 }
 
 /// The language of the questions and words written here: Italian, English (also every
-/// language without its own words) and Dutch.
+/// language without its own words), Dutch and German.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lang {
     It,
     En,
     Nl,
+    De,
 }
 
 impl Lang {
@@ -362,47 +363,54 @@ impl Lang {
         match code.split(['-', '_']).next().unwrap_or("") {
             "it" => Lang::It,
             "nl" => Lang::Nl,
+            "de" => Lang::De,
             _ => Lang::En,
         }
     }
 
-    /// One of three words: Italian, English, Dutch.
-    fn pick<T>(self, it: T, en: T, nl: T) -> T {
+    /// One of four words: Italian, English, Dutch, German.
+    fn pick<T>(self, it: T, en: T, nl: T, de: T) -> T {
         match self {
             Lang::It => it,
             Lang::En => en,
             Lang::Nl => nl,
+            Lang::De => de,
         }
     }
 }
 
 /// The question before a command that needs a yes, in the user's words: "Chiudo Tapparella
 /// salone?", "Sposto Tapparella salone al 30%?" (position 0 and 100 read as closing and
-/// opening); a service without a verb here keeps its name. Dutch puts the verb last
-/// ("Rolluik woonkamer sluiten?").
+/// opening); a service without a verb here keeps its name. Dutch and German put the
+/// verb last ("Rolluik woonkamer sluiten?", "Rollladen Wohnzimmer schließen?").
 pub fn confirm_question(name: &str, service: &str, data: &Value, lang: Lang) -> String {
     let pos = data.get("position").and_then(Value::as_i64);
     let verb = match (service, pos) {
-        ("set_cover_position" | "set_valve_position", Some(0)) => ("Chiudo", "Close", "sluiten"),
-        ("set_cover_position" | "set_valve_position", Some(100)) => ("Apro", "Open", "openen"),
-        ("open_cover" | "open_valve", _) => ("Apro", "Open", "openen"),
-        ("close_cover" | "close_valve", _) => ("Chiudo", "Close", "sluiten"),
-        ("stop_cover" | "stop_valve", _) => ("Fermo", "Stop", "stoppen"),
-        ("turn_on", _) => ("Accendo", "Turn on", "aanzetten"),
-        ("turn_off", _) => ("Spengo", "Turn off", "uitzetten"),
+        ("set_cover_position" | "set_valve_position", Some(0)) => {
+            ("Chiudo", "Close", "sluiten", "schließen")
+        }
+        ("set_cover_position" | "set_valve_position", Some(100)) => {
+            ("Apro", "Open", "openen", "öffnen")
+        }
+        ("open_cover" | "open_valve", _) => ("Apro", "Open", "openen", "öffnen"),
+        ("close_cover" | "close_valve", _) => ("Chiudo", "Close", "sluiten", "schließen"),
+        ("stop_cover" | "stop_valve", _) => ("Fermo", "Stop", "stoppen", "stoppen"),
+        ("turn_on", _) => ("Accendo", "Turn on", "aanzetten", "einschalten"),
+        ("turn_off", _) => ("Spengo", "Turn off", "uitzetten", "ausschalten"),
         ("set_cover_position" | "set_valve_position", _) => {
             let p = pos.map_or(String::new(), |p| format!(" {p}%"));
             return match lang {
                 Lang::It => format!("Sposto {name} al{p}?"),
                 Lang::En => format!("Move {name} to{p}?"),
                 Lang::Nl => format!("{name} naar{p} zetten?"),
+                Lang::De => format!("{name} auf{p} stellen?"),
             };
         }
         _ => {
             let s = service.replace('_', " ");
             return format!(
                 "{name} ({s}): {}?",
-                lang.pick("confermi", "confirm", "bevestigen")
+                lang.pick("confermi", "confirm", "bevestigen", "bestätigen")
             );
         }
     };
@@ -410,23 +418,24 @@ pub fn confirm_question(name: &str, service: &str, data: &Value, lang: Lang) -> 
         Lang::It => format!("{} {name}?", verb.0),
         Lang::En => format!("{} {name}?", verb.1),
         Lang::Nl => format!("{name} {}?", verb.2),
+        Lang::De => format!("{name} {}?", verb.3),
     }
 }
 
 /// What several devices of one kind are called, in the plural.
 fn kind_plural(e: &Entity, lang: Lang) -> &'static str {
     let domain = e.entity_id.split('.').next().unwrap_or("");
-    let (it, en, nl) = match (domain, e.device_class.as_str()) {
-        ("cover", "curtain") => ("tende", "curtains", "gordijnen"),
-        ("cover", "awning") => ("tende da sole", "awnings", "zonneschermen"),
-        ("cover", _) => ("tapparelle", "blinds", "rolluiken"),
-        ("light", _) => ("luci", "lights", "lampen"),
-        ("valve", _) => ("valvole", "valves", "kleppen"),
-        ("switch", _) => ("prese", "switches", "schakelaars"),
-        ("fan", _) => ("ventilatori", "fans", "ventilatoren"),
-        _ => ("dispositivi", "devices", "apparaten"),
+    let (it, en, nl, de) = match (domain, e.device_class.as_str()) {
+        ("cover", "curtain") => ("tende", "curtains", "gordijnen", "Vorhänge"),
+        ("cover", "awning") => ("tende da sole", "awnings", "zonneschermen", "Markisen"),
+        ("cover", _) => ("tapparelle", "blinds", "rolluiken", "Rollläden"),
+        ("light", _) => ("luci", "lights", "lampen", "Lampen"),
+        ("valve", _) => ("valvole", "valves", "kleppen", "Ventile"),
+        ("switch", _) => ("prese", "switches", "schakelaars", "Schalter"),
+        ("fan", _) => ("ventilatori", "fans", "ventilatoren", "Ventilatoren"),
+        _ => ("dispositivi", "devices", "apparaten", "Geräte"),
     };
-    lang.pick(it, en, nl)
+    lang.pick(it, en, nl, de)
 }
 
 /// The question for several actions: one service on up to three devices names them ("Chiudo
@@ -445,6 +454,7 @@ pub fn question_text(actions: &[Action], lang: Lang) -> String {
             Lang::It => format!("Confermo {n} comandi?"),
             Lang::En => format!("Confirm {n} commands?"),
             Lang::Nl => format!("{n} opdrachten bevestigen?"),
+            Lang::De => format!("{n} Befehle bestätigen?"),
         };
     }
     let names: Vec<String> = actions.iter().map(|a| a.entity.full_name()).collect();
@@ -452,7 +462,11 @@ pub fn question_text(actions: &[Action], lang: Lang) -> String {
         [one] => one.clone(),
         many if many.len() <= 3 => {
             let (last, rest) = many.split_last().unwrap_or((&many[0], &[]));
-            format!("{} {} {last}", rest.join(", "), lang.pick("e", "and", "en"))
+            format!(
+                "{} {} {last}",
+                rest.join(", "),
+                lang.pick("e", "and", "en", "und")
+            )
         }
         many => {
             // "4 tapparelle in Salone": what they are (all the same kind) and where (all in one
@@ -462,7 +476,7 @@ pub fn question_text(actions: &[Action], lang: Lang) -> String {
             let noun = if actions.iter().all(|a| kind(a) == noun) {
                 noun
             } else {
-                lang.pick("dispositivi", "devices", "apparaten")
+                lang.pick("dispositivi", "devices", "apparaten", "Geräte")
             };
             let area = first.entity.area.trim();
             let one_room = !area.is_empty() && actions.iter().all(|a| a.entity.area.trim() == area);
@@ -752,7 +766,43 @@ mod tests {
         assert_eq!(question_text(&mixed, Lang::Nl), "2 opdrachten bevestigen?");
         assert_eq!(Lang::of("nl-NL"), Lang::Nl);
         assert_eq!(Lang::of("it"), Lang::It);
-        assert_eq!(Lang::of("de"), Lang::En);
+        // German: the verb last, as an infinitive.
+        assert_eq!(
+            q("Rollladen Wohnzimmer", "close_cover", &json!({}), Lang::De),
+            "Rollladen Wohnzimmer schließen?"
+        );
+        assert_eq!(
+            q("Küchenlampe", "turn_on", &json!({}), Lang::De),
+            "Küchenlampe einschalten?"
+        );
+        assert_eq!(
+            q(
+                "X",
+                "set_cover_position",
+                &json!({"position": 30}),
+                Lang::De
+            ),
+            "X auf 30% stellen?"
+        );
+        assert_eq!(
+            q("X", "set_foo", &json!({}), Lang::De),
+            "X (set foo): bestätigen?"
+        );
+        assert_eq!(
+            question_text(&two, Lang::De),
+            "Living left und Living right schließen?"
+        );
+        assert_eq!(
+            question_text(&five, Lang::De),
+            "5 Rollläden in Living room schließen?"
+        );
+        assert_eq!(
+            question_text(&kinds, Lang::De),
+            "5 Geräte in Living room schließen?"
+        );
+        assert_eq!(question_text(&mixed, Lang::De), "2 Befehle bestätigen?");
+        assert_eq!(Lang::of("de-DE"), Lang::De);
+        assert_eq!(Lang::of("fr"), Lang::En);
     }
 
     #[test]
