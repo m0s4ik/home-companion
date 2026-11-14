@@ -79,6 +79,8 @@ typedef struct {
     WebKitOptionMenu *menu;
     guint32 menu_id;
     GArray *paused;        // pids of the web processes stopped by "pause" (pid_t)
+    guint drain_source;    // while paused: wakes them up now and then to take Home Assistant's updates
+    gboolean draining;     // they run right now (a drain)
     enum hcw_load_state load_state;
     guint32 progress_milli;
     char *error_message;
@@ -646,6 +648,28 @@ static GArray *web_processes(void)
 // not, so the page's WebSocket to Home Assistant stays open (the network process answers its pings) and
 // the dashboard is there at once when shown. Freezing the whole cgroup closed it: Home Assistant drops a
 // client that does not answer its pings, and the frontend said "Connection lost" and drew everything again.
+// Home Assistant's updates wait for the stopped page, though: after 25 minutes it spent 22 s on them when
+// shown, with the old data on screen. So it is let run DRAIN_RUN_MS every DRAIN_EVERY_S to take them.
+#define DRAIN_EVERY_S 60
+#define DRAIN_RUN_MS 3000
+
+static void signal_paused(int sig)
+{
+    for (guint i = 0; i < app.paused->len; i++)
+        kill(g_array_index(app.paused, pid_t, i), sig);
+}
+
+static gboolean drain_tick(gpointer data)
+{
+    (void)data;
+    app.draining = !app.draining;
+    signal_paused(app.draining ? SIGCONT : SIGSTOP);
+    // Next: stop again after the run, or the next run after the wait.
+    app.drain_source = g_timeout_add(app.draining ? DRAIN_RUN_MS : (DRAIN_EVERY_S * 1000 - DRAIN_RUN_MS),
+                                     drain_tick, NULL);
+    return G_SOURCE_REMOVE;
+}
+
 static void pause_web(gboolean pause)
 {
     if (pause) {
@@ -660,10 +684,18 @@ static void pause_web(gboolean pause)
                 say("pause: web process %d: %s", (int)p, g_strerror(errno));
         }
         g_array_free(web, TRUE);
-        say("paused (%u web process(es) stopped)", app.paused->len);
+        if (app.paused->len) {
+            app.draining = FALSE;
+            app.drain_source = g_timeout_add(DRAIN_EVERY_S * 1000 - DRAIN_RUN_MS, drain_tick, NULL);
+        }
+        say("paused (%u web process(es) stopped, %d s of every %d s to take updates)", app.paused->len,
+            DRAIN_RUN_MS / 1000, DRAIN_EVERY_S);
     } else if (app.paused->len) {
-        for (guint i = 0; i < app.paused->len; i++)
-            kill(g_array_index(app.paused, pid_t, i), SIGCONT);
+        if (app.drain_source)
+            g_source_remove(app.drain_source);
+        app.drain_source = 0;
+        app.draining = FALSE;
+        signal_paused(SIGCONT);
         say("resumed (%u web process(es))", app.paused->len);
         g_array_set_size(app.paused, 0);
     }
