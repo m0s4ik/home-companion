@@ -217,6 +217,7 @@ memories_right = "Giusto"
 memories_wrong = "Sbagliato"
 memories_empty = "Ancora niente: dica «Okay {name}, ricordati che…»"
 tile_memories = "{n} ricordi"
+tile_memories_confirm = "{n} da confermare"
 
 # Deleting and forgetting
 delete_question = "Elimina?"

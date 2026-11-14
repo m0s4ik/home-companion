@@ -220,6 +220,7 @@ memories_right = "Right"
 memories_wrong = "Wrong"
 memories_empty = "Nothing yet: say \"Okay {name}, remember that…\""
 tile_memories = "{n} memories"
+tile_memories_confirm = "{n} to confirm"
 
 # Deleting and forgetting
 delete_question = "Delete?"

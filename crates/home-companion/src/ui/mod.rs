@@ -399,7 +399,10 @@ pub struct MemoryLine {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MemoriesView {
     pub present: bool,
+    /// The tile in Altro: what waits to be confirmed, else how many memories.
     pub tile: String,
+    /// "N memories", from the brain's status.
+    pub tile_known: String,
     /// The "Promemoria" tile in Altro: how many are coming, or none.
     pub reminders_tile: String,
     pub status: String,

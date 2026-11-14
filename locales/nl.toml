@@ -219,6 +219,7 @@ memories_right = "Klopt"
 memories_wrong = "Fout"
 memories_empty = "Nog niets: zeg \"Okay {name}, onthoud dat…\""
 tile_memories = "{n} herinneringen"
+tile_memories_confirm = "{n} te bevestigen"
 
 # Deleting and forgetting
 delete_question = "Verwijderen?"

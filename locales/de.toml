@@ -208,6 +208,7 @@ memories_right = "Stimmt"
 memories_wrong = "Falsch"
 memories_empty = "Noch nichts: Sagen Sie \"Okay {name}, merk dir, dass…\""
 tile_memories = "{n} Erinnerungen"
+tile_memories_confirm = "{n} zu bestätigen"
 
 delete_question = "Löschen?"
 forget_all = "Alles vergessen"

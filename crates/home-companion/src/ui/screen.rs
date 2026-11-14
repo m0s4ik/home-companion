@@ -2835,6 +2835,7 @@ impl<S: Screen> Ui<S> {
             self.screen.set_memories(&MemoriesView {
                 present: true,
                 tile: l.text("tile_memories").replace("{n}", &n),
+                tile_known: l.text("tile_memories").replace("{n}", &n),
                 reminders_tile: l.text("tile_reminders").replace("{n}", "1"),
                 status: format!(
                     "{} · {}",
@@ -4851,7 +4852,9 @@ impl<S: Screen> Ui<S> {
                         "status" => {
                             mv.present = true;
                             let facts = a["facts"].as_i64().unwrap_or(0);
-                            mv.tile = l.text("tile_memories").replace("{n}", &facts.to_string());
+                            mv.tile_known =
+                                l.text("tile_memories").replace("{n}", &facts.to_string());
+                            mv.tile = memories_tile(&l, &mv.tile_known, mv.confirm.len());
                             let mut lines = Vec::new();
                             if a["key"] != true {
                                 lines.push(word(&l, "brain_no_key", &name));
@@ -4875,6 +4878,7 @@ impl<S: Screen> Ui<S> {
                             mv.more = more_line(&l, over);
                             mv.facts = facts;
                             mv.confirm = confirm;
+                            mv.tile = memories_tile(&l, &mv.tile_known, mv.confirm.len());
                         }
                         "jobs.list" => {
                             let mut up: Vec<(i64, String)> = a["jobs"]
@@ -5473,6 +5477,17 @@ fn load_cover(path: &std::path::Path) -> Option<Image> {
     Some(Image::from_rgba8(buf))
 }
 
+/// The memories tile in Altro: what waits to be confirmed comes first (the page is where it is
+/// done), else how many memories there are.
+fn memories_tile(l: &Locale, known: &str, to_confirm: usize) -> String {
+    match to_confirm {
+        0 => known.to_string(),
+        n => l
+            .text("tile_memories_confirm")
+            .replace("{n}", &n.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -5504,6 +5519,13 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn memories_tile_says_what_waits() {
+        let l = locale::load(&locale::repo_locales(), "it").unwrap();
+        assert_eq!(memories_tile(&l, "6 ricordi", 0), "6 ricordi");
+        assert_eq!(memories_tile(&l, "6 ricordi", 2), "2 da confermare");
+    }
     use crate::ha::discover::{Found, Outcome};
 
     #[test]
