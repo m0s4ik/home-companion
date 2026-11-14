@@ -5429,7 +5429,7 @@ mod tests {
         );
         assert!(ha_picks(&Choices::default(), |k| k.into()).is_empty());
         let dir = locale::repo_locales();
-        for lang in ["it", "en"] {
+        for lang in ["it", "en", "nl"] {
             let l = locale::load(&dir, lang).unwrap();
             for k in crate::ha::setup::CHOICES {
                 for key in [format!("ha_choice_{k}"), format!("ha_choice_{k}_hint")] {
