@@ -1087,9 +1087,93 @@ Uova = { bare = "uova" }
     }
 
     #[test]
+    fn alfred_in_german() {
+        let de = alfred("de");
+        let c = |s: &str| de.command(s);
+        assert_eq!(c("wie spät ist es"), Some(Command::Time));
+        assert_eq!(
+            c("stell einen timer auf zehn minuten"),
+            Some(Command::TimerStart {
+                seconds: 600,
+                name: None
+            })
+        );
+        assert_eq!(
+            c("timer auf anderthalb stunden"),
+            Some(Command::TimerStart {
+                seconds: 5400,
+                name: None
+            })
+        );
+        assert_eq!(
+            c("timer nudeln acht minuten"),
+            Some(Command::TimerStart {
+                seconds: 480,
+                name: Some("Nudeln".into())
+            })
+        );
+        assert_eq!(
+            c("stell einen timer für eier auf neun minuten"),
+            Some(Command::TimerStart {
+                seconds: 540,
+                name: Some("Eier".into())
+            })
+        );
+        assert_eq!(
+            c("stell einen wecker um halb acht"),
+            Some(Command::AlarmSet {
+                hour: 7,
+                minute: 30
+            })
+        );
+        assert_eq!(
+            c("weck mich um viertel vor sieben"),
+            Some(Command::AlarmSet {
+                hour: 6,
+                minute: 45
+            })
+        );
+        assert_eq!(
+            c("stell einen wecker um sieben uhr abends"),
+            Some(Command::AlarmSet {
+                hour: 19,
+                minute: 0
+            })
+        );
+        assert_eq!(
+            c("stell die lautstärke auf fünfzig prozent"),
+            Some(Command::VolumeSet { percent: 50 })
+        );
+        assert_eq!(
+            c("maximale lautstärke"),
+            Some(Command::VolumeSet { percent: 100 })
+        );
+        assert_eq!(
+            c("stoppe den timer für nudeln"),
+            Some(Command::TimerCancel {
+                name: Some("Nudeln".into())
+            })
+        );
+        assert_eq!(
+            c("nicht stören für eine stunde"),
+            Some(Command::DoNotDisturb {
+                seconds: Some(3600)
+            })
+        );
+        assert_eq!(c("ja bitte"), Some(Command::Yes));
+        assert_eq!(c("nein danke"), Some(Command::No));
+        assert_eq!(c("vielen dank"), Some(Command::Silence));
+        assert_eq!(c("mach das licht an"), None);
+        let words = super::answer_words(include_str!("../../../characters/alfred/grammar/de.toml"))
+            .unwrap();
+        assert_eq!(words.classify("Ja, bitte."), Some(true));
+        assert_eq!(words.classify("nein"), Some(false));
+    }
+
+    #[test]
     fn alfred_grammars_stay_small() {
         // Vosk compiles the phrase list at start: keep it within reach of the device.
-        for lang in ["it", "en", "nl"] {
+        for lang in ["it", "en", "nl", "de"] {
             let n = alfred(lang).len();
             eprintln!("{lang}: {n} phrases");
             assert!(n < 30_000, "{lang}: {n} phrases");

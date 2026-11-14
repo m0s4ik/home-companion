@@ -33,6 +33,7 @@ VOSK_MODELS="
 it vosk-model-small-it-0.22 9ec65e75861d1c6c2e457cccd932705340dcdf233f5b239f00733b4de0bf3267
 en vosk-model-small-en-us-0.15 30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498
 nl vosk-model-small-nl-0.22 039811c3b829de64e4f123a9f684a53784005b212a346ac0b899dc7efce2ed0a
+de vosk-model-small-de-0.15 b7e53c90b1f0a38456f4cd62b366ecd58803cd97cd42b06438e2c131713d5e43
 "
 
 # Debian packages: what the body and its helpers load (Mesa's libgbm/libEGL come from mesa-freedreno),
@@ -53,7 +54,7 @@ usage: install.sh [options]
 Nothing is asked (but whether to keep an existing configuration): the language and Home Assistant's
 address are chosen on the device's screen at first start unless given here.
 
-  --language it|en|nl   the language
+  --language it|en|nl|de   the language
   --name NAME           the device's name in Home Assistant and in the AirPlay menu (default Alfred)
   --ha-url URL          Home Assistant's address, http://host:8123
   --no-airplay          no AirPlay receiver (default: on when the system has the AirPlay runtime,
@@ -230,7 +231,7 @@ fi
 if [ "$CONFIG_MODE" = new ]; then
     # Nothing is asked: the language and Home Assistant's address are chosen on the device's screen at
     # first start unless given here; the name is the character's
-    case "$LANGUAGE" in "" | it | en | nl) ;; *) die "--language: it, en or nl, not $LANGUAGE" ;; esac
+    case "$LANGUAGE" in "" | it | en | nl | de) ;; *) die "--language: it, en, nl or de, not $LANGUAGE" ;; esac
     [ -n "$DEVICE_NAME" ] || DEVICE_NAME=Alfred
     case "$DEVICE_NAME" in *'"'* | *\\* | *'|'* | *'&'*) die "--name: no quotes, backslashes, | or &" ;; esac
     HA_URL=${HA_URL%/}

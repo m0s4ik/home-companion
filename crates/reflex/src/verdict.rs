@@ -473,7 +473,8 @@ pub fn unfinished(text: &str) -> bool {
         "alle", "alla", "allo", "al", "all", "a", "ad", "di", "del", "della", "da", "dal", "dalle",
         "tra", "fra", "per", "in", "con", "su", "e", "il", "lo", "la", "le", "gli", "un", "una",
         "uno", "at", "to", "for", "in", "of", "the", "a", "an", "and", "om", "op", "van", "voor",
-        "tot", "naar", "met", "de", "het", "een", "en",
+        "tot", "naar", "met", "de", "het", "een", "en", "auf", "für", "von", "bis", "mit", "der",
+        "dem", "um", "den", "die", "eine", "einen", "und",
     ];
     text.split_whitespace()
         .last()
@@ -723,6 +724,10 @@ mod tests {
         assert!(unfinished("zet de wekker om"));
         assert!(unfinished("zet een timer op"));
         assert!(!unfinished("hoe lang nog"));
+        assert!(unfinished("stell einen wecker um"));
+        assert!(unfinished("stell einen timer auf"));
+        assert!(!unfinished("wie lange noch"));
+        assert!(!unfinished("mach das"));
     }
 
     /// R7: noise only.
