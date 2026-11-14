@@ -11,6 +11,67 @@
 
 use std::path::{Path, PathBuf};
 
+/// Settings → how readily the character answers to his wake word: a step around the cutoff the
+/// detector was made with (the configuration's `wake_word.cutoff`, else the model's manifest).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WakeSensitivity {
+    /// Fewer false wakes (a loud room, a television): the cutoff 0.02 higher.
+    Less,
+    #[default]
+    Normal,
+    /// For an accent or a soft voice: the cutoff 0.04 lower. A Dutch "Oké Alfred" scored
+    /// 0.92-0.96 against the manifest's 0.96 (near misses in the log, on one device).
+    More,
+}
+
+impl WakeSensitivity {
+    /// The value in settings.toml.
+    pub fn key(self) -> &'static str {
+        match self {
+            WakeSensitivity::Less => "less",
+            WakeSensitivity::Normal => "normal",
+            WakeSensitivity::More => "more",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<WakeSensitivity> {
+        match key {
+            "less" => Some(WakeSensitivity::Less),
+            "normal" => Some(WakeSensitivity::Normal),
+            "more" => Some(WakeSensitivity::More),
+            _ => None,
+        }
+    }
+
+    /// -1, 0, 1: the screen's stepper.
+    pub fn step(self) -> i32 {
+        match self {
+            WakeSensitivity::Less => -1,
+            WakeSensitivity::Normal => 0,
+            WakeSensitivity::More => 1,
+        }
+    }
+
+    /// From the stepper's value, clamped.
+    pub fn from_step(step: i32) -> WakeSensitivity {
+        match step {
+            i32::MIN..=-1 => WakeSensitivity::Less,
+            0 => WakeSensitivity::Normal,
+            _ => WakeSensitivity::More,
+        }
+    }
+
+    /// The cutoff for a detector made with `base`. Raising never goes past 0.99 (at 1.0 nothing
+    /// is ever heard) unless `base` already is.
+    pub fn cutoff(self, base: f32) -> f32 {
+        match self {
+            WakeSensitivity::Less => (base + 0.02).min(0.99).max(base),
+            WakeSensitivity::Normal => base,
+            WakeSensitivity::More => (base - 0.04).max(0.0),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub path: PathBuf,
@@ -229,6 +290,21 @@ impl Settings {
         }
     }
 
+    /// Settings → the wake word's sensitivity; normal by default.
+    pub fn wake_sensitivity(&self) -> WakeSensitivity {
+        self.table()
+            .and_then(|t| {
+                t.get("wake_sensitivity")?
+                    .as_str()
+                    .and_then(WakeSensitivity::from_key)
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn save_wake_sensitivity(&self, s: WakeSensitivity) {
+        self.save_logged("wake_sensitivity", s.key().into());
+    }
+
     fn flag(&self, key: &str) -> Option<bool> {
         self.table()?.get(key)?.as_bool()
     }
@@ -326,6 +402,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wake_sensitivity_steps_around_the_base() {
+        use WakeSensitivity::*;
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-6;
+        assert!(near(Normal.cutoff(0.96), 0.96));
+        assert!(near(More.cutoff(0.96), 0.92));
+        assert!(near(Less.cutoff(0.96), 0.98));
+        assert!(near(Less.cutoff(0.98), 0.99), "never past 0.99");
+        assert!(near(Less.cutoff(0.995), 0.995), "a base above 0.99 stays");
+        assert!(near(More.cutoff(0.02), 0.0));
+        for s in [Less, Normal, More] {
+            assert_eq!(WakeSensitivity::from_key(s.key()), Some(s));
+            assert_eq!(WakeSensitivity::from_step(s.step()), s);
+        }
+        assert_eq!(WakeSensitivity::from_step(-5), Less);
+        assert_eq!(WakeSensitivity::from_step(7), More);
+        assert_eq!(WakeSensitivity::from_key("loud"), None);
+    }
+
+    #[test]
     fn saves_and_reads_back() {
         let dir =
             std::env::temp_dir().join(format!("home-companion-settings-{}", std::process::id()));
@@ -350,6 +445,14 @@ mod tests {
         assert!(!s.home_compact(), "normal by default");
         s.save_home_compact(true);
         assert!(s.home_compact());
+        assert_eq!(
+            s.wake_sensitivity(),
+            WakeSensitivity::Normal,
+            "normal by default"
+        );
+        s.save_wake_sensitivity(WakeSensitivity::More);
+        assert_eq!(s.wake_sensitivity(), WakeSensitivity::More);
+        assert!(s.home_compact(), "the other keys stay");
         assert_eq!(s.night(), (true, 23, 7));
         s.save_night(false, 22, 6);
         assert_eq!(s.night(), (false, 22, 6));
