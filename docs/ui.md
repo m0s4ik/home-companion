@@ -117,8 +117,9 @@ its ring and the gold fill) and No stays a target that wins.
   "Timer finished" (or "Alarm") in gold, the name 96 Light, the time since it ended counting up, "Touch anywhere to
   stop"; band "+1 minute" (a new local timer of one minute with the same name) and Stop, with a ring that breathes.
   The character uses `timer_finished`, falling back to `speaking`.
-- **More**: tiles Conversations, Timers and alarms, Settings and Home Assistant, plus Music while something plays,
-  Memories and Reminders when the brain answers, Shopping when a list is configured; each says what is going on
+- **More**: tiles in the order of use: Timers and alarms, Reminders (when the brain answers), Music (while something
+  plays), Shopping (when a list is configured), Memories (when the brain answers; "2 to confirm" when something
+  waits), Conversations, Home Assistant, and Settings last in the bottom right corner; each says what is going on
   there. With more than four tiles they become compact (two columns, the icon left of the words), with more than six
   dense. HA stays in the left slot, Talk in the middle.
 - **Conversations**: sessions separated by "Today · 14:02 · Home Assistant", the user's lines in bubbles on the right,

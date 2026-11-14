@@ -1778,15 +1778,21 @@ export component CompanionWindow inherits Window {
         property <length> row-step: self.dense ? 124px : self.compact ? 160px : 220px;
         // Two columns across the desk column.
         property <length> tile-w: (Grid.col-width - 24px) / 2;
-        // Settings last, in the bottom right corner (a gap on its left when the count is odd).
-        property <int> i-ha: self.music-tile ? 3 : 2;
+        // The order of use (Andrea, 2026-11-14): what runs and comes due first (timers,
+        // reminders, what plays), then the lists (shopping, memories), then conversations and
+        // Home Assistant; Settings last, in the bottom right corner (a gap on its left when the
+        // count is odd).
+        property <int> i-timers: 0;
+        property <int> i-reminders: 1;
+        property <int> i-music: 1 + (root.brain-present ? 1 : 0);
+        property <int> i-shopping: self.i-music + (self.music-tile ? 1 : 0);
+        property <int> i-memories: self.i-shopping + (root.shopping-on ? 1 : 0);
+        property <int> i-chat: self.i-memories + (root.brain-present ? 1 : 0);
+        property <int> i-ha: self.i-chat + 1;
         property <int> i-settings: self.n-tiles - 1 + mod(self.n-tiles, 2);
-        property <int> i-memories: self.i-ha + 1;
-        property <int> i-reminders: self.i-memories + 1;
-        property <int> i-shopping: self.i-memories + (root.brain-present ? 2 : 0);
         Tile {
-            x: Grid.col-x;
-            y: 128px;
+            x: Grid.col-x + mod(parent.i-chat, 2) * (parent.tile-w + 24px);
+            y: 128px + floor(parent.i-chat / 2) * parent.row-step;
             width: parent.tile-w;
             compact: parent.compact;
             dense: parent.dense;
@@ -1798,8 +1804,8 @@ export component CompanionWindow inherits Window {
             }
         }
         Tile {
-            x: Grid.col-x + parent.tile-w + 24px;
-            y: 128px;
+            x: Grid.col-x + mod(parent.i-timers, 2) * (parent.tile-w + 24px);
+            y: 128px + floor(parent.i-timers / 2) * parent.row-step;
             width: parent.tile-w;
             compact: parent.compact;
             dense: parent.dense;
@@ -1811,8 +1817,8 @@ export component CompanionWindow inherits Window {
             }
         }
         if altro-page.music-tile: Tile {
-            x: Grid.col-x;
-            y: 128px + parent.row-step;
+            x: Grid.col-x + mod(parent.i-music, 2) * (parent.tile-w + 24px);
+            y: 128px + floor(parent.i-music / 2) * parent.row-step;
             width: parent.tile-w;
             compact: parent.compact;
             dense: parent.dense;
@@ -2381,7 +2387,7 @@ export component CompanionWindow inherits Window {
                         label: root.usage-label;
                         value: root.usage-line;
                         clicked => {
-                            root.page-back = "ha";
+                            // Its back goes to "ha" by itself: page-back stays where the HA page came from.
                             root.page = "usage";
                         }
                     }
