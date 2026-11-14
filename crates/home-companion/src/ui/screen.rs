@@ -1720,6 +1720,9 @@ impl<S: Screen> Ui<S> {
                     app.set_clock("");
                     ui.tick_clock();
                     ui.refresh_desk();
+                    // The brain's texts ("6 memories", the reminders' tile) are written when its
+                    // answers come: asked again so they come in the new language.
+                    ui.refresh_memories();
                     ui.show(ui.view.get());
                     ui.send(UiEvent::Language(code));
                     if app.get_page() == "welcome" {
