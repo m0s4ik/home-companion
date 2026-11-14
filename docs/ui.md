@@ -133,7 +133,7 @@ its ring and the gold fill) and No stays a target that wins.
   Timers set by touch are the body's own (`local-N`); pausing or cancelling one of Home Assistant's timers is local
   only (Wyoming cannot tell Home Assistant). Alarms are the body's (`crates/home-companion/src/alarms.rs`,
   `<state_dir>/alarms.json`) and ring like a timer.
-- **Settings** (grouped rows, scrolling): the character's group ({name}'s memories, Language → its page, Keep
+- **Settings** (grouped rows, scrolling): the character's group (Language → its page, Keep
   conversations, "Answers to his name" with − and +: Less often · Normal · More often, a step around the wake word's
   cutoff — the configuration's `wake_word.cutoff`, else the model's — of +0.02 or −0.04, applied at once and kept in
   settings.toml; the log's near misses tell which one a voice needs), DEVICE (Volume, Screen → night mode on/off, from, to; About, with the version; **Suspend {name}** →
@@ -195,9 +195,11 @@ its ring and the gold fill) and No stays a target that wins.
   switching it off here would cut Home Assistant), Bluetooth (greyed while the device has no adapter), AirPlay,
   Microphone (off: no wake word, Talk still works), Night, Home Assistant; under them the volume and brightness bars
   (brightness "Auto" while it follows the light sensor).
-- **Memories** (home-companion-brain; More, shown only when the brain answers, and Settings → "{name}'s memories"):
-  the status line (memories, model, last nightly tidy-up), WHAT I KNOW ABOUT YOU (the profile block), NOTES, MEMORIES
-  (facts, newest first, with their date). Each fact: the cross asks "Delete?" in the row itself, a second tap deletes.
+- **Memories** (home-companion-brain; its tile in More, shown only when the brain answers: the only way in, since the
+  page is used, not set): the status line (memories, model, last nightly tidy-up), TO CONFIRM (what Alfred heard once,
+  such as a name: Right makes it known, Wrong drops it for good), WHAT I KNOW (what reaches the assistant in every
+  conversation, newest first, with their date; the ones over the budget dimmed, found only when asked). Each fact: the
+  cross asks "Delete?" in the row itself, a second tap deletes.
   Action band: Talk, **Forget all** (a dialog: everything the brain knows goes, reminders stay).
 - **Reminders**: a page of the reminders still to come; a due one is the home's message card (bell, gold, OK); OK =
   done (no voice after it); at night only the card (no wake-up of the screen). Late ones say so; missed ones are one

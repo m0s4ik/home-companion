@@ -199,7 +199,6 @@ reflex_music_previous = "Vorheriger Titel."
 reflex_no_music = "Es läuft nichts."
 
 memories = "Erinnerungen"
-memories_row = "Erinnerungen von {name}"
 memories_about = "WAS ICH WEISS"
 memories_sent = "{name} gibt dies bei jedem Gespräch an den Assistenten weiter, den Sie in Home Assistant gewählt haben."
 memories_more = "Die letzten {n} findet er nur, wenn man danach fragt."

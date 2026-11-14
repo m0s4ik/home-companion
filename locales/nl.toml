@@ -210,7 +210,6 @@ reflex_no_music = "Er speelt niets."
 # home-companion-brain: the "Ricordi" page, reminder cards, the shopping list (strings drafted with Gemini, reviewed)
 # Memories and notes
 memories = "Herinneringen"
-memories_row = "Herinneringen van {name}"
 memories_about = "WAT IK WEET"
 memories_sent = "{name} geeft dit bij elk gesprek door aan de assistent die u in Home Assistant koos."
 memories_more = "De laatste {n} vindt hij alleen op verzoek."

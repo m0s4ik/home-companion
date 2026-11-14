@@ -208,7 +208,6 @@ reflex_no_music = "Non sta suonando niente."
 # home-companion-brain: the "Ricordi" page, reminder cards, the shopping list (strings drafted with Gemini, reviewed)
 # Memories and notes
 memories = "Ricordi"
-memories_row = "I ricordi di {name}"
 memories_about = "COSA SO"
 memories_sent = "{name} dice queste cose all'assistente scelto in Home Assistant a ogni conversazione."
 memories_more = "Gli ultimi {n} li trova solo se glielo chiede."

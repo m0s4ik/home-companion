@@ -208,7 +208,6 @@ export struct Words {
     error_hint: string,
     alarm: string,
     memories: string,
-    memories_row: string,
     memories_about: string,
     memories_confirm: string,
     memories_right: string,
@@ -577,7 +576,7 @@ export component CompanionWindow inherits Window {
         ha-unavailable-text: "Home Assistant is not answering. I retry by myself; timers and alarms keep working.",
         error-hint: "Say it again? Just say \"Okay Alfred\"",
         alarm: "Alarm",
-        memories: "Memories", memories-row: "Alfred's memories",
+        memories: "Memories",
         memories-about: "WHAT I KNOW",
         memories-confirm: "TO CONFIRM",
         memories-right: "Right", memories-wrong: "Wrong",
@@ -2236,19 +2235,7 @@ export component CompanionWindow inherits Window {
                     text: root.character-name.to-uppercase();
                 }
                 Group {
-                    height: 4 * 76px;
-                    Row {
-                        y: 152px;
-                        width: parent.width;
-                        icon: Icons.brain-28;
-                        label: root.t.memories-row;
-                        value: root.tile-memories;
-                        clicked => {
-                            root.page-back = "settings";
-                            root.page = "memories";
-                        }
-                    }
-
+                    height: 3 * 76px;
                     Row {
                         y: 0;
                         width: parent.width;
@@ -2274,7 +2261,7 @@ export component CompanionWindow inherits Window {
                     }
                     // How readily he answers to his name: a step around the wake word's cutoff.
                     Row {
-                        y: 228px;
+                        y: 152px;
                         width: parent.width;
                         kind: "";
                         icon: Icons.microphone-32;
@@ -2282,7 +2269,7 @@ export component CompanionWindow inherits Window {
                     }
                     Stepper {
                         x: parent.width - 16px - self.width;
-                        y: 228px + 6px;
+                        y: 152px + 6px;
                         value-width: 200px;
                         font-size: 28px;
                         value: root.wake-step < 0 ? root.t.wake-less : root.wake-step > 0 ? root.t.wake-more : root.t.wake-normal;

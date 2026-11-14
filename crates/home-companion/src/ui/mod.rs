@@ -586,7 +586,6 @@ macro_rules! impl_screen {
                     error_hint,
                     alarm,
                     memories,
-                    memories_row,
                     memories_about,
                     memories_confirm,
                     memories_right,

@@ -211,7 +211,6 @@ reflex_no_music = "Nothing is playing."
 # home-companion-brain: the "Ricordi" page, reminder cards, the shopping list (strings drafted with Gemini, reviewed)
 # Memories and notes
 memories = "Memories"
-memories_row = "{name}'s memories"
 memories_about = "WHAT I KNOW"
 memories_sent = "{name} tells these to the assistant you chose in Home Assistant at every conversation."
 memories_more = "The last {n} are found only when asked."
