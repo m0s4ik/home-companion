@@ -1246,7 +1246,10 @@ fn short_date(l: &Locale, ts: i64) -> String {
         .get(tm.tm_mon as usize)
         .map(|m| m.chars().take(3).collect())
         .unwrap_or_default();
-    format!("{} {month}", tm.tm_mday)
+    // "13 nov", "13. Nov." (the locale's `short_date`).
+    l.text("short_date")
+        .replace("{d}", &tm.tm_mday.to_string())
+        .replace("{m}", &month)
 }
 
 /// "14:02" of a time in seconds since the epoch, and the day it is on (days since the epoch, local).
