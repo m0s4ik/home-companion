@@ -24,6 +24,7 @@ pub mod subcommands;
 pub mod suspend;
 pub mod timers;
 pub mod ui;
+pub mod update;
 pub mod usage;
 pub mod voice;
 pub mod volume;

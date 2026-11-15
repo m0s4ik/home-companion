@@ -79,6 +79,7 @@ cp -R characters "$STAGE/opt/characters"
 cp -R locales "$STAGE/opt/locales"
 cp packaging/home-companion.service packaging/home-companion-brain.service packaging/home-companion-web.service \
     packaging/home-companion.nft packaging/99-home-companion-backlight.rules \
+    packaging/home-companion-update.sh packaging/home-companion-update.service packaging/home-companion-update.path \
     packaging/home-companion.toml.in packaging/brain.toml.in "$STAGE/packaging/"
 install -m 0755 packaging/install.sh "$STAGE/install.sh"
 install -m 0755 tools/slim-vosk-model.py "$STAGE/tools/"

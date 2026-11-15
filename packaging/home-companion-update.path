@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+#
+# The body asks for an update by writing a release tag to this file (update.rs).
+[Unit]
+Description=Home Companion update requests
+
+[Path]
+PathExists=/var/lib/home-companion/update/request
+Unit=home-companion-update.service
+
+[Install]
+WantedBy=multi-user.target

@@ -86,6 +86,21 @@ pub struct SettingsView {
     pub night_end: u32,
 }
 
+/// Settings → Info, updates, in the screen's words.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UpdateView {
+    pub version: String,
+    pub repo: String,
+    pub checked: String,
+    pub state: String,
+    /// Something to do (a newer version, a failure): the line in gold.
+    pub attention: bool,
+    /// The install button's label ("" = none).
+    pub install: String,
+    /// An install is going on: the buttons wait.
+    pub busy: bool,
+}
+
 /// A check of Settings → Home Assistant, in the screen's words.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HaLine {
@@ -248,6 +263,10 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// "taking") and the countdown ("" none).
     fn set_camera(&self, frame: Option<Image>, state: &str, count: &str);
     fn set_photo_thumbs(&self, thumbs: Vec<Image>);
+    /// Settings → Info: the page of updates.
+    fn set_update(&self, u: &UpdateView);
+    fn on_update_check(&self, f: impl Fn() + 'static);
+    fn on_update_install(&self, f: impl Fn() + 'static);
     fn on_camera_shoot(&self, f: impl Fn() + 'static);
     fn on_photo_open(&self, f: impl Fn(usize) + 'static);
     fn on_control_opened(&self, f: impl Fn() + 'static);
@@ -649,6 +668,11 @@ macro_rules! impl_screen {
                     no,
                     ask_executing,
                     what_short,
+                    update_title,
+                    update_version,
+                    update_repo,
+                    update_checked,
+                    update_check,
                     camera,
                     camera_shoot,
                     camera_covered,
@@ -942,6 +966,21 @@ macro_rules! impl_screen {
                 }
                 $m::CompanionWindow::set_camera_state(self, state.into());
                 $m::CompanionWindow::set_camera_count(self, count.into());
+            }
+            fn set_update(&self, u: &UpdateView) {
+                $m::CompanionWindow::set_update_version(self, u.version.as_str().into());
+                $m::CompanionWindow::set_update_repo(self, u.repo.as_str().into());
+                $m::CompanionWindow::set_update_checked(self, u.checked.as_str().into());
+                $m::CompanionWindow::set_update_state(self, u.state.as_str().into());
+                $m::CompanionWindow::set_update_attention(self, u.attention);
+                $m::CompanionWindow::set_update_install(self, u.install.as_str().into());
+                $m::CompanionWindow::set_update_busy(self, u.busy);
+            }
+            fn on_update_check(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_update_check(self, f)
+            }
+            fn on_update_install(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_update_install_clicked(self, f)
             }
             fn set_photo_thumbs(&self, thumbs: Vec<Image>) {
                 $m::CompanionWindow::set_photo_thumbs(self, model!(thumbs))

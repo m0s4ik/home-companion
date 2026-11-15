@@ -224,6 +224,8 @@ fn run(a: &args::Args, cfg: Config, first: home_companion::settings::FirstStart)
         ha_linked: cfg.ha_linked(),
         ha_host: cfg.ha_host(),
         setup_at_start: matches!(kind, Kind::Gpu | Kind::Software),
+        update: (a.state.is_none() && matches!(kind, Kind::Gpu | Kind::Software))
+            .then(|| cfg.update.clone()),
         first_start: first,
         link: (a.state.is_none() && !cfg.home_assistant.url.is_empty()).then(|| {
             home_companion::ha::link::LinkSetup {

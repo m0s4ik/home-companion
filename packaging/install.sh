@@ -151,7 +151,8 @@ if [ -n "$UNINSTALL" ]; then
     for u in home-companion-web home-companion-brain home-companion; do
         have_unit "$u.service" && run systemctl disable --now "$u.service"
     done
-    for f in "$UNITS/home-companion.service" "$UNITS/home-companion-web.service" "$UNITS/home-companion-brain.service" "$UDEV_RULE" "$WEB_MESA_DROPIN"; do
+    have_unit home-companion-update.path && run systemctl disable --now home-companion-update.path
+    for f in "$UNITS/home-companion.service" "$UNITS/home-companion-web.service" "$UNITS/home-companion-brain.service" "$UNITS/home-companion-update.service" "$UNITS/home-companion-update.path" "$UDEV_RULE" "$WEB_MESA_DROPIN"; do
         [ -e "$f" ] && run rm -f "$f"
     done
     [ -d "$UNITS/home-companion.service.wants" ] && run rm -rf "$UNITS/home-companion.service.wants"
@@ -352,6 +353,8 @@ for b in home-companion home-companion-brain home-companion-reflex; do
     put "$HERE/opt/$b" "$PREFIX/$b" 0755
 done
 put "$HERE/opt/lib/libvosk.so" "$PREFIX/lib/libvosk.so" 0755
+# Updates from the screen (Settings -> Info): the root side (crates/home-companion/src/update.rs)
+put "$HERE/packaging/home-companion-update.sh" "$PREFIX/home-companion-update.sh" 0755
 put "$HERE/opt/airplay/uxplay" "$PREFIX/airplay/uxplay" 0755
 if [ "$WEB_AVAILABLE" = yes ]; then
     put "$HERE/opt/home-companion-web" "$PREFIX/home-companion-web" 0755
@@ -456,6 +459,10 @@ fi
 say "services, udev rule, firewall"
 put "$HERE/packaging/home-companion.service" "$UNITS/home-companion.service" 0644
 put "$HERE/packaging/home-companion-brain.service" "$UNITS/home-companion-brain.service" 0644
+put "$HERE/packaging/home-companion-update.service" "$UNITS/home-companion-update.service" 0644
+put "$HERE/packaging/home-companion-update.path" "$UNITS/home-companion-update.path" 0644
+# where the body asks for an update (the path unit watches it) and the service says how it goes
+run install -d -m 0750 -o home-companion -g home-companion /var/lib/home-companion/update
 if [ "$WEB_AVAILABLE" = yes ]; then
     put "$HERE/packaging/home-companion-web.service" "$UNITS/home-companion-web.service" 0644
     # mesa-freedreno 26.3.0-2 fixes freedreno's GMEM loop: the browser no longer needs sysmem rendering
@@ -514,6 +521,7 @@ UNITS_ON="home-companion.service home-companion-brain.service"
 [ "$WEB_AVAILABLE" = yes ] && UNITS_ON="$UNITS_ON home-companion-web.service"
 # shellcheck disable=SC2086
 run systemctl enable $UNITS_ON
+run systemctl enable --now home-companion-update.path
 if [ -n "$DRY" ] || systemctl -q is-active home-companion.service; then
     say "restarting the services"
     # home-companion-web is PartOf home-companion: it restarts with it

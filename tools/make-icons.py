@@ -30,7 +30,7 @@ USED = {
     "view-dashboard": [48, 32, 28], "dots-horizontal": [48], "home": [48, 44, 28],
     "message-plus": [48], "delete": [48], "close": [48, 36], "timer-plus": [48],
     "alarm-plus": [48], "skip-previous": [48, 36], "skip-next": [48, 36], "translate": [48, 28],
-    "refresh": [44], "pause": [44, 28, 24], "play": [44, 28], "plus": [48, 36],
+    "refresh": [48, 44], "download": [44], "pause": [44, 28, 24], "play": [44, 28], "plus": [48, 36],
     "minus": [36], "check": [44, 28],
     # tiles, headers, rows
     "forum": [48, 32], "music-note": [48, 32], "timer": [48, 32, 24], "cog": [48], "chevron-left": [40],

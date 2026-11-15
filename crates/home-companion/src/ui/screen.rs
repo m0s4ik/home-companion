@@ -28,6 +28,7 @@ use super::lists::{self, Choice, ShopList};
 use super::next;
 use super::{
     AlarmLineView, MemoriesView, MemoryLine, MusicView, Screen, SettingsView, TimerLineView,
+    UpdateView,
 };
 use crate::alarms::Alarm;
 use crate::brain_link::{self, BrainLink, BrainMsg, Upcoming};
@@ -940,6 +941,8 @@ pub struct UiOptions {
     /// The QR-code link of the setup page (None: no Home Assistant address, or `--state`). Its
     /// words are filled in when the page opens.
     pub link: Option<crate::ha::link::LinkSetup>,
+    /// Updates (Settings → Info): where from; None: no checking (`--state`, the simulator, tests).
+    pub update: Option<crate::update::UpdateCfg>,
 }
 
 /// The animation side of the UI.
@@ -1115,6 +1118,9 @@ pub struct Ui<S: Screen> {
     cam_used: Cell<Instant>,
     /// The gallery: the photos listed (newest first), their thumbnails coming from a thread, the
     /// one shown whole.
+    /// Updates (update.rs): the checking thread (None: no checking) and the page's timer.
+    updater: Option<crate::update::Checker>,
+    update_timer: Timer,
     gallery: RefCell<Vec<PathBuf>>,
     thumbs_rx: RefCell<Option<ThumbsRx>>,
     viewing: RefCell<Option<PathBuf>>,
@@ -1398,6 +1404,7 @@ impl<S: Screen> Ui<S> {
         let opts_linked = opts.ha_linked;
         let opts_first = opts.first_start;
         let has_camera = !demo && super::camera::present();
+        let opts_update = opts.update.clone();
         let ui = Rc::new(Ui {
             screen,
             mirror: RefCell::new(None),
@@ -1439,6 +1446,10 @@ impl<S: Screen> Ui<S> {
             cam_seq: Cell::new(0),
             cam_count: Cell::new(None),
             cam_used: Cell::new(Instant::now()),
+            updater: opts_update
+                .as_ref()
+                .map(|c| crate::update::Checker::spawn(c, env!("CARGO_PKG_VERSION"))),
+            update_timer: Timer::default(),
             gallery: RefCell::new(Vec::new()),
             thumbs_rx: RefCell::new(None),
             viewing: RefCell::new(None),
@@ -1694,6 +1705,21 @@ impl<S: Screen> Ui<S> {
         self.screen.on_photo_delete(move || {
             if let Some(ui) = ui.upgrade() {
                 ui.photo_delete();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_update_check(move || {
+            if let Some(ui) = ui.upgrade() {
+                if let Some(u) = &ui.updater {
+                    u.check_now();
+                }
+                ui.refresh_update();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_update_install(move || {
+            if let Some(ui) = ui.upgrade() {
+                ui.update_install();
             }
         });
         let ui = Rc::downgrade(self);
@@ -3799,6 +3825,112 @@ impl<S: Screen> Ui<S> {
         }
     }
 
+    /// Settings → Info: what the check found and what the update service says.
+    fn refresh_update(&self) {
+        let v = self.update_view();
+        self.screen.set_update(&v);
+    }
+
+    fn update_view(&self) -> UpdateView {
+        let l = self.locale.borrow();
+        let current = env!("CARGO_PKG_VERSION");
+        let Some(u) = &self.updater else {
+            return UpdateView {
+                version: current.into(),
+                repo: "—".into(),
+                checked: String::new(),
+                state: l.text("update_off").into(),
+                ..Default::default()
+            };
+        };
+        let st = u.state();
+        let now = now_unix() as i64;
+        let checked = match st.checked_at {
+            Some(t) => {
+                let (hm, day) = local_hm(t);
+                if day == local_hm(now).1 {
+                    l.text("update_today").replace("{t}", &hm)
+                } else {
+                    format!("{} {hm}", short_date(&l, t))
+                }
+            }
+            None => l.text("update_never").into(),
+        };
+        let dir = self.opts.state_dir.clone();
+        let service = dir.as_deref().and_then(crate::update::status);
+        let requested = dir.as_deref().is_some_and(crate::update::requested);
+        // What the service said in the last hour (a "done" stays a day).
+        let recent = service.filter(|s| {
+            let age = now - s.at;
+            age < if s.phase == "done" { 86_400 } else { 3_600 }
+        });
+        let working = |s: &crate::update::Status| {
+            matches!(
+                s.phase.as_str(),
+                "downloading" | "checking" | "installing" | "waiting"
+            )
+        };
+        let busy = requested || recent.as_ref().is_some_and(working);
+        let (state, attention) = match &recent {
+            _ if requested => (l.text("update_starting").to_string(), false),
+            Some(s) if s.phase == "downloading" => (
+                l.text("update_downloading").replace("{v}", &s.version),
+                false,
+            ),
+            Some(s) if working(s) => (
+                l.text("update_installing").replace("{v}", &s.version),
+                false,
+            ),
+            Some(s) if s.phase == "failed" => {
+                (l.text("update_failed").replace("{m}", &s.message), true)
+            }
+            Some(s) if s.phase == "rolled-back" => (
+                l.text("update_rolled_back").replace("{m}", &s.message),
+                true,
+            ),
+            Some(s) if s.phase == "done" && s.version == current => {
+                (l.text("update_done").replace("{v}", current), false)
+            }
+            _ if st.checking => (l.text("update_checking").into(), false),
+            _ if st.failed => (l.text("update_check_failed").into(), true),
+            _ => match &st.latest {
+                Some(r) => (l.text("update_available").replace("{v}", &r.version), true),
+                None if st.checked_at.is_some() => (l.text("update_none").into(), false),
+                None => (String::new(), false),
+            },
+        };
+        let install = match &st.latest {
+            Some(r) if !busy => l.text("update_install").replace("{v}", &r.version),
+            _ => String::new(),
+        };
+        UpdateView {
+            version: current.into(),
+            repo: u.repo.clone(),
+            checked,
+            state,
+            attention,
+            install,
+            busy,
+        }
+    }
+
+    /// Install: the request to the root service (update.rs); the page follows its status.
+    fn update_install(&self) {
+        let (Some(u), Some(dir)) = (&self.updater, self.opts.state_dir.as_deref()) else {
+            return;
+        };
+        let Some(r) = u.state().latest else {
+            return;
+        };
+        match crate::update::request(dir, &r.tag) {
+            Ok(()) => {
+                log::info!(event = "update", version = r.version.as_str(); "update: {} asked", r.version)
+            }
+            Err(e) => log::warn!(event = "update"; "update: asking for {}: {e}", r.version),
+        }
+        self.refresh_update();
+    }
+
     /// The camera page (the control center's tile, "fammi una foto" with `countdown`).
     pub fn open_camera(self: &Rc<Self>, countdown: bool) {
         if !self.camera {
@@ -4425,6 +4557,20 @@ impl<S: Screen> Ui<S> {
             // Leaving the page closes the port.
             self.link.borrow_mut().take();
         }
+        if page == "update" {
+            self.refresh_update();
+            let ui = Rc::downgrade(self);
+            self.update_timer
+                .start(TimerMode::Repeated, Duration::from_secs(1), move || {
+                    if let Some(ui) = ui.upgrade() {
+                        if ui.screen.get_page() == "update" {
+                            ui.refresh_update();
+                        } else {
+                            ui.update_timer.stop();
+                        }
+                    }
+                });
+        }
         // The camera runs only on its page.
         if page == "camera" {
             self.camera_start();
@@ -4798,7 +4944,13 @@ impl<S: Screen> Ui<S> {
             language_name: l.name.clone(),
             brains: BRAIN.into(),
             ha_status: ha.into(),
-            version: format!("home-companion {}", env!("CARGO_PKG_VERSION")),
+            version: match self.updater.as_ref().and_then(|u| u.state().latest) {
+                Some(r) => l
+                    .text("update_available_short")
+                    .replace("{v}", env!("CARGO_PKG_VERSION"))
+                    .replace("{new}", &r.version),
+                None => format!("home-companion {}", env!("CARGO_PKG_VERSION")),
+            },
             screen_status: screen,
             save_chat: self.history.borrow().keeps(),
             night_on: on,
@@ -6064,6 +6216,7 @@ mod tests {
                 home_assistant: true,
             },
             link: None,
+            update: None,
         };
         let ui = Ui::new(prepared.screen, character, opts, tx).unwrap();
         let w = &ui.screen;

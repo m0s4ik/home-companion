@@ -54,6 +54,13 @@ enabled = @AIRPLAY@
 # Keep the phrases said after the wake word (to tune the wake word and the reflexes)
 enabled = false
 
+[update]
+# Updates from the releases of this GitHub repository (Settings -> Info). The update service reads
+# it from here as root: change it only here.
+repo = "m0s4ik/home-companion"
+# Offer release candidates too
+prerelease = false
+
 [paths]
 state_dir = "/var/lib/home-companion"
 locales_dir = "/opt/home-companion/locales"

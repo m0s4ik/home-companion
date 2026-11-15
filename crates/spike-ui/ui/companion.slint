@@ -255,6 +255,11 @@ export struct Words {
     no: string,
     ask_executing: string,
     what_short: string,
+    update_title: string,
+    update_version: string,
+    update_repo: string,
+    update_checked: string,
+    update_check: string,
     camera: string,
     camera_shoot: string,
     camera_covered: string,
@@ -878,6 +883,17 @@ export component CompanionWindow inherits Window {
     in property <string> camera-count;
     in property <[image]> photo-thumbs: [];
     callback camera-shoot();
+    // Settings → Info, updates (update.rs): the version running, where updates come from, the
+    // last check, what is going on, and the install button's label ("" = nothing to install).
+    in property <string> update-version;
+    in property <string> update-repo;
+    in property <string> update-checked;
+    in property <string> update-state;
+    in property <bool> update-attention: false;
+    in property <string> update-install;
+    in property <bool> update-busy: false;
+    callback update-check();
+    callback update-install-clicked();
     callback photo-open(int);
     callback music-toggle();
     // A touch on the mirroring page: its controls come up (or stay) for a while.
@@ -2471,10 +2487,12 @@ export component CompanionWindow inherits Window {
                     Row {
                         y: 152px;
                         width: parent.width;
-                        kind: "";
                         icon: Icons.information-28;
                         label: root.t.info;
                         value: root.version;
+                        clicked => {
+                            root.page = "update";
+                        }
                     }
                     Row {
                         y: 228px;
@@ -3043,6 +3061,78 @@ export component CompanionWindow inherits Window {
     }
 
     // ---- Settings → Screen: the night hours.
+    // ---- Settings → Info: the version, updates.
+    if root.desk && root.desk-page == "update": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.update-title;
+            clock: root.clock;
+            back => {
+                root.page = "settings";
+            }
+        }
+        Group {
+            x: Grid.col-x;
+            y: Grid.page-y + 16px;
+            width: Grid.col-width;
+            height: 3 * 76px;
+            Row {
+                y: 0;
+                width: parent.width;
+                first: true;
+                kind: "";
+                icon: Icons.information-28;
+                label: root.t.update-version;
+                value: root.update-version;
+            }
+            Row {
+                y: 76px;
+                width: parent.width;
+                kind: "";
+                label: root.t.update-repo;
+                value: root.update-repo;
+            }
+            Row {
+                y: 152px;
+                width: parent.width;
+                kind: "";
+                label: root.t.update-checked;
+                value: root.update-checked;
+            }
+        }
+        Text {
+            x: Grid.col-x + 24px;
+            y: Grid.page-y + 16px + 3 * 76px + 32px;
+            width: Grid.col-width - 48px;
+            text: root.update-state;
+            font-size: 26px;
+            color: root.update-attention ? Theme.accent : Theme.text-2;
+            wrap: word-wrap;
+        }
+        BareButton {
+            x: root.slot-left;
+            y: Grid.band-y;
+            icon: Icons.refresh-48;
+            label: root.t.update-check;
+            enabled: !root.update-busy;
+            clicked => {
+                root.update-check();
+            }
+        }
+        if root.update-install != "": PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.download-44;
+            label: root.update-install;
+            enabled: !root.update-busy;
+            spinning: root.update-busy;
+            clicked => {
+                root.update-install-clicked();
+            }
+        }
+    }
+
     if root.desk && root.desk-page == "screen": Rectangle {
         PageHeader {
             x: Grid.col-x;
