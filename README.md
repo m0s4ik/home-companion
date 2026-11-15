@@ -47,7 +47,7 @@ answers on the screen and out loud. "Stop" or "basta" interrupts him; "repeat" s
 question of his, a "no thanks" closes it.
 
 If he woke up by mistake, **False alarm** next to Stop ends it and keeps that recording on the device, to train
-the wake word better.
+the wake word better. Stop pressed while he is still listening after his name counts the same way.
 
 <p align="center">
 <img src="docs/images/listening.png" width="400" alt="Alfred with a hand to his ear: I'm listening, with the Stop and False alarm buttons"> <!-- state: listening -->
@@ -97,7 +97,9 @@ says what was done, with Undo. Locks, alarms, doors and gates are never moved by
 
 A pull from the top edge opens the control centre: Wi-Fi, AirPlay, the microphone, night mode, do not disturb and
 the link to Home Assistant, each a tile that says how it stands; under them the volume, the brightness (by hand or
-automatic) and what is playing.
+automatic) and what is playing. On a device with a camera (thinksmart-view-debian with `CAMERA=1`) a **Camera**
+tile takes a photo, shows it for a moment and keeps it on the device (`/var/lib/home-companion/photos`, the last
+20); with the lens cover closed it says so instead.
 
 **Do not disturb**, from its tile or by voice ("do not disturb for an hour", "good night"), silences the cards'
 sounds and the announcements; timers and alarms still ring. A bell asleep on a cushion at Alfred's feet shows it
@@ -140,7 +142,9 @@ a section each on the Shopping page.
 
 Your Home Assistant dashboard full screen, kept loaded in the background so it opens at once. The gold button, or
 a swipe from its edge, brings you back to Alfred; "Okay Alfred" still works over it. "Show me the front door
-camera", or the name of a dashboard, opens it by voice.
+camera", or the name of a dashboard, opens it by voice. When the page is still catching up after a while hidden, a
+gold arc turns around the home button; if the connection to Home Assistant is lost, the button shows a cloud and
+the time of the last data.
 
 <p align="center">
 <img src="docs/images/home-assistant-3d.png" width="400" alt="A 3D floor plan of a house in Home Assistant, with its lights, covers, speaker and thermostat, and the gold home button">
