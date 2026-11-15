@@ -863,6 +863,8 @@ pub const MIRROR_CHROME: Duration = Duration::from_secs(4);
 pub const MIRROR_NO_FRAME: Duration = Duration::from_secs(8);
 /// A desk page left alone goes back home after this.
 pub const PAGE_IDLE: Duration = Duration::from_secs(60);
+/// How long the photo just taken stays on the screen (a tap closes it sooner).
+pub const PHOTO_SHOWN: Duration = Duration::from_secs(10);
 /// The "Annulla" chip after a timer or an alarm is removed.
 pub const UNDO: Duration = Duration::from_secs(5);
 /// The last long answer stays as a card this long.
@@ -1089,6 +1091,11 @@ pub struct Ui<S: Screen> {
     settings: Option<Settings>,
     /// Linked to Home Assistant (a token of either kind); starts as `opts.ha_linked`.
     ha_linked: Cell<bool>,
+    /// The camera (camera.rs): there is one, a photo is being taken (its result comes here),
+    /// and the timer that hides the preview.
+    camera: bool,
+    photo_rx: RefCell<Option<std::sync::mpsc::Receiver<Result<PathBuf, String>>>>,
+    photo_timer: Timer,
     /// The back of a page was just pressed: the next page change makes the home or tap sound.
     back_pending: Cell<Option<Instant>>,
     /// The link in progress while the setup page is shown.
@@ -1364,6 +1371,7 @@ impl<S: Screen> Ui<S> {
         let opts_auto = opts.screen.auto.filter(|_| !demo).map(Auto::new);
         let opts_linked = opts.ha_linked;
         let opts_first = opts.first_start;
+        let has_camera = !demo && super::camera::present();
         let ui = Rc::new(Ui {
             screen,
             mirror: RefCell::new(None),
@@ -1397,6 +1405,9 @@ impl<S: Screen> Ui<S> {
             history: RefCell::new(history),
             settings,
             ha_linked: Cell::new(opts_linked),
+            camera: has_camera,
+            photo_rx: RefCell::new(None),
+            photo_timer: Timer::default(),
             back_pending: Cell::new(None),
             link: RefCell::new(None),
             link_done: Cell::new(None),
@@ -1629,6 +1640,7 @@ impl<S: Screen> Ui<S> {
                 }
                 "night" => ui.toggle_night(),
                 "dnd" => ui.toggle_dnd(),
+                "camera" => ui.take_photo(),
                 "ha" => {
                     ui.screen.set_control_open(false);
                     ui.screen
@@ -1636,6 +1648,13 @@ impl<S: Screen> Ui<S> {
                     ui.on_page(&ui.screen.get_page());
                 }
                 _ => {}
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_photo_closed(move || {
+            if let Some(ui) = ui.upgrade() {
+                ui.photo_timer.stop();
+                ui.screen.set_photo(None, "");
             }
         });
         let ui = Rc::downgrade(self);
@@ -2718,6 +2737,7 @@ impl<S: Screen> Ui<S> {
                 night_from: "23:00".into(),
                 dnd: d.dnd.then(|| "07:00".into()),
                 ha: Some(true),
+                camera: Some(crate::ui::control::Camera::Ready),
             };
             let tiles = crate::ui::control::tiles(&st, &w);
             self.screen
@@ -3627,6 +3647,75 @@ impl<S: Screen> Ui<S> {
         }
     }
 
+    /// The camera tile: a photo in a thread (about 2 s), then shown over everything for
+    /// [`PHOTO_SHOWN`] and kept in `<state>/photos` (Andrea, 2026-11-15: for now a preview).
+    fn take_photo(self: &Rc<Self>) {
+        if !self.camera || self.photo_rx.borrow().is_some() {
+            return;
+        }
+        let Some(dir) = self.opts.state_dir.as_ref().map(|d| d.join("photos")) else {
+            return;
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("camera".into())
+            .spawn(move || {
+                let _ = tx.send(super::camera::capture(&dir));
+            });
+        if let Err(e) = spawned {
+            log::warn!(event = "camera_photo"; "camera: {e}");
+            return;
+        }
+        *self.photo_rx.borrow_mut() = Some(rx);
+        log::info!(event = "camera_photo"; "camera: taking a photo");
+        self.refresh_control();
+        let ui = Rc::downgrade(self);
+        self.photo_timer
+            .start(TimerMode::Repeated, Duration::from_millis(100), move || {
+                if let Some(ui) = ui.upgrade() {
+                    ui.photo_poll();
+                }
+            });
+    }
+
+    fn photo_poll(self: &Rc<Self>) {
+        let got = match self.photo_rx.borrow().as_ref().map(|r| r.try_recv()) {
+            Some(Ok(r)) => r,
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) => return,
+            _ => Err("the camera thread ended".into()),
+        };
+        *self.photo_rx.borrow_mut() = None;
+        self.photo_timer.stop();
+        self.refresh_control();
+        self.wake(WakeSource::Touch);
+        let l = self.locale.borrow();
+        let (img, caption) = match got {
+            Ok(path) => match Image::load_from_path(&path) {
+                Ok(img) => {
+                    let hm = local_hm(self.now() as i64).0;
+                    (Some(img), l.text("photo_saved").replace("{t}", &hm))
+                }
+                Err(_) => (None, l.text("photo_failed").to_string()),
+            },
+            Err(e) => {
+                log::warn!(event = "camera_photo"; "camera: {e}");
+                (None, l.text("photo_failed").to_string())
+            }
+        };
+        drop(l);
+        self.screen.set_control_open(false);
+        // A failure: the line alone, on the same sheet.
+        let shown = img.unwrap_or_else(|| Image::from_rgba8(slint::SharedPixelBuffer::new(1, 1)));
+        self.screen.set_photo(Some(shown), &caption);
+        let ui = Rc::downgrade(self);
+        self.photo_timer
+            .start(TimerMode::SingleShot, PHOTO_SHOWN, move || {
+                if let Some(ui) = ui.upgrade() {
+                    ui.screen.set_photo(None, "");
+                }
+            });
+    }
+
     /// The control center comes down (the pull from the top, here or over "Casa").
     pub fn open_control(&self) {
         *self.wifi_name.borrow_mut() = wifi_ssid("wlan0");
@@ -3652,6 +3741,16 @@ impl<S: Screen> Ui<S> {
                 night_from: format!("{:02}:00", d.night.1),
                 dnd: self.dnd_until_hm(),
                 ha: self.ha_linked.get().then_some(true),
+                camera: self.camera.then(|| {
+                    use super::control::Camera;
+                    if self.photo_rx.borrow().is_some() {
+                        Camera::Busy
+                    } else if super::camera::lens_covered() == Some(true) {
+                        Camera::Covered
+                    } else {
+                        Camera::Ready
+                    }
+                }),
             }
         };
         let (auto, pct) = {

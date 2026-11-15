@@ -3026,7 +3026,16 @@ impl Core {
                 }
                 _ => {}
             },
-            UiEvent::Stop => self.on_stop(),
+            UiEvent::Stop => {
+                let trigger = self.conv.as_ref().map(|c| c.trigger);
+                if stop_is_a_false_wake(self.phase, trigger) {
+                    // Andrea, 2026-11-15: Stop right after the wake word means it woke by mistake.
+                    log::info!(event = "false_wake", via = "stop"; "Stop while listening after the wake word: a false alarm");
+                    self.on_false_wake();
+                } else {
+                    self.on_stop();
+                }
+            }
             UiEvent::FalseWake => self.on_false_wake(),
             UiEvent::Question(id, text) => self.on_question(id, text),
             UiEvent::QuestionAnswer { id, yes } => self.on_question_answer(id, yes),
@@ -4177,6 +4186,13 @@ fn quiet_after_command(text: &str) -> bool {
     !t.is_empty() && !t.ends_with('?') && t.split_whitespace().count() <= QUIET_MAX_WORDS
 }
 
+/// Stop pressed (the button) while listening in a conversation the wake word opened: the
+/// wake word heard something else, so its recording is kept as a false alarm (like the
+/// "Falso allarme" button).
+pub fn stop_is_a_false_wake(phase: Phase, trigger: Option<crate::conversation::Trigger>) -> bool {
+    phase == Phase::Listening && trigger == Some(crate::conversation::Trigger::Wake)
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -4381,5 +4397,19 @@ mod tests {
         ] {
             assert!(!final_tick_allowed(p, false, false, false), "{p:?}");
         }
+    }
+
+    #[test]
+    fn stop_after_the_wake_word_is_a_false_alarm() {
+        use crate::conversation::Trigger;
+        assert!(stop_is_a_false_wake(Phase::Listening, Some(Trigger::Wake)));
+        assert!(!stop_is_a_false_wake(Phase::Listening, Some(Trigger::Talk)));
+        assert!(!stop_is_a_false_wake(
+            Phase::Listening,
+            Some(Trigger::FollowUp)
+        ));
+        assert!(!stop_is_a_false_wake(Phase::Thinking, Some(Trigger::Wake)));
+        assert!(!stop_is_a_false_wake(Phase::Speaking, Some(Trigger::Wake)));
+        assert!(!stop_is_a_false_wake(Phase::Listening, None));
     }
 }

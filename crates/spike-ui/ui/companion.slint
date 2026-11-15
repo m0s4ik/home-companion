@@ -857,6 +857,11 @@ export component CompanionWindow inherits Window {
     callback control-volume(int);
     callback control-brightness(int);
     callback control-brightness-auto();
+    // The photo just taken from the control center (camera.rs), over everything, and its line.
+    in property <bool> photo-shown: false;
+    in property <image> photo;
+    in property <string> photo-caption;
+    callback photo-closed();
     callback music-toggle();
     // A touch on the mirroring page: its controls come up (or stay) for a while.
     callback mirror-poked();
@@ -4276,6 +4281,7 @@ export component CompanionWindow inherits Window {
                 : t.key == "mic" ? (t.on ? Icons.microphone-32 : Icons.microphone-off-32)
                 : t.key == "night" ? Icons.weather-night-32
                 : t.key == "dnd" ? (t.on ? Icons.bell-off-32 : Icons.bell-32)
+                : t.key == "camera" ? Icons.camera-32
                 : Icons.view-dashboard-32;
             label: t.label;
             status: t.status;
@@ -4410,5 +4416,41 @@ export component CompanionWindow inherits Window {
         icon-color: root.mic-hud-on ? Theme.text : Theme.danger;
         border: root.mic-hud-on ? Theme.line : Theme.danger;
         title: root.mic-hud-text;
+    }
+
+    // ---- The photo just taken: over everything, the picture whole with its line under it; a
+    // tap anywhere closes it (else it goes by itself after 10 s).
+    if root.photo-shown: Rectangle {
+        background: Theme.bg;
+        TouchArea {
+            clicked => {
+                root.photo-closed();
+            }
+        }
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: 48px;
+            width: min(parent.width - 96px, (parent.height - 160px) * 4 / 3);
+            height: self.width * 3 / 4;
+            border-radius: 16px;
+            clip: true;
+            Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.photo;
+                image-fit: contain;
+            }
+        }
+        Text {
+            x: 0;
+            y: parent.height - 88px;
+            width: parent.width;
+            height: 40px;
+            text: root.photo-caption;
+            font-size: 24px;
+            color: Theme.text;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
     }
 }

@@ -8,6 +8,7 @@
 
 pub mod anim;
 pub mod backlight;
+pub mod camera;
 pub mod cards;
 pub mod control;
 pub mod house;
@@ -237,6 +238,9 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// AirPlay's cover art (None: an empty square) and paused (the play glyph).
     fn set_music_cover(&self, cover: Option<Image>, paused: bool);
     fn on_control_tile(&self, f: impl Fn(String) + 'static);
+    /// The photo just taken over everything (None: hidden), with its line ("Saved · 12:47").
+    fn set_photo(&self, photo: Option<Image>, caption: &str);
+    fn on_photo_closed(&self, f: impl Fn() + 'static);
     fn on_control_opened(&self, f: impl Fn() + 'static);
     fn on_control_volume(&self, f: impl Fn(i32) + 'static);
     fn on_control_brightness(&self, f: impl Fn(i32) + 'static);
@@ -904,6 +908,14 @@ macro_rules! impl_screen {
             fn set_music_cover(&self, cover: Option<Image>, paused: bool) {
                 $m::CompanionWindow::set_music_cover(self, cover.unwrap_or_default());
                 $m::CompanionWindow::set_music_paused(self, paused);
+            }
+            fn set_photo(&self, photo: Option<Image>, caption: &str) {
+                $m::CompanionWindow::set_photo_shown(self, photo.is_some());
+                $m::CompanionWindow::set_photo(self, photo.unwrap_or_default());
+                $m::CompanionWindow::set_photo_caption(self, caption.into());
+            }
+            fn on_photo_closed(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_photo_closed(self, f)
             }
             fn on_control_tile(&self, f: impl Fn(String) + 'static) {
                 $m::CompanionWindow::on_control_tile(self, move |k| f(k.into()))
