@@ -863,6 +863,9 @@ pub const MIRROR_CHROME: Duration = Duration::from_secs(4);
 pub const MIRROR_NO_FRAME: Duration = Duration::from_secs(8);
 /// A desk page left alone goes back home after this.
 pub const PAGE_IDLE: Duration = Duration::from_secs(60);
+/// The camera thread's answer: the photo, small enough for the screen, or why not.
+type PhotoRx = std::sync::mpsc::Receiver<Result<SharedPixelBuffer<Rgba8Pixel>, String>>;
+
 /// How long the photo just taken stays on the screen (a tap closes it sooner).
 pub const PHOTO_SHOWN: Duration = Duration::from_secs(10);
 /// The "Annulla" chip after a timer or an alarm is removed.
@@ -1094,7 +1097,7 @@ pub struct Ui<S: Screen> {
     /// The camera (camera.rs): there is one, a photo is being taken (its result comes here),
     /// and the timer that hides the preview.
     camera: bool,
-    photo_rx: RefCell<Option<std::sync::mpsc::Receiver<Result<PathBuf, String>>>>,
+    photo_rx: RefCell<Option<PhotoRx>>,
     photo_timer: Timer,
     /// The back of a page was just pressed: the next page change makes the home or tap sound.
     back_pending: Cell<Option<Instant>>,
@@ -2073,6 +2076,11 @@ impl<S: Screen> Ui<S> {
     /// Shows a phase: screen state, pose, idle phrase, animation, backlight.
     pub fn show(&self, p: Phase) {
         let prev = self.view.replace(p);
+        // A conversation or a ringing timer is not hidden under the photo just taken.
+        if p != Phase::Home && p != Phase::Offline && self.screen.get_photo_shown() {
+            self.photo_timer.stop();
+            self.screen.set_photo(None, "");
+        }
         let now = Instant::now();
         {
             let mut m = self.motion.borrow_mut();
@@ -3653,6 +3661,11 @@ impl<S: Screen> Ui<S> {
         if !self.camera || self.photo_rx.borrow().is_some() {
             return;
         }
+        // The cover may have closed since the tiles were drawn: no black photo.
+        if super::camera::lens_covered() == Some(true) {
+            self.refresh_control();
+            return;
+        }
         let Some(dir) = self.opts.state_dir.as_ref().map(|d| d.join("photos")) else {
             return;
         };
@@ -3660,7 +3673,9 @@ impl<S: Screen> Ui<S> {
         let spawned = std::thread::Builder::new()
             .name("camera".into())
             .spawn(move || {
-                let _ = tx.send(super::camera::capture(&dir));
+                let r =
+                    super::camera::capture(&dir).and_then(|p| super::camera::preview(&p, 880, 660));
+                let _ = tx.send(r);
             });
         if let Err(e) = spawned {
             log::warn!(event = "camera_photo"; "camera: {e}");
@@ -3690,13 +3705,13 @@ impl<S: Screen> Ui<S> {
         self.wake(WakeSource::Touch);
         let l = self.locale.borrow();
         let (img, caption) = match got {
-            Ok(path) => match Image::load_from_path(&path) {
-                Ok(img) => {
-                    let hm = local_hm(self.now() as i64).0;
-                    (Some(img), l.text("photo_saved").replace("{t}", &hm))
-                }
-                Err(_) => (None, l.text("photo_failed").to_string()),
-            },
+            Ok(buf) => {
+                let hm = local_hm(self.now() as i64).0;
+                (
+                    Some(Image::from_rgba8(buf)),
+                    l.text("photo_saved").replace("{t}", &hm),
+                )
+            }
             Err(e) => {
                 log::warn!(event = "camera_photo"; "camera: {e}");
                 (None, l.text("photo_failed").to_string())
@@ -3705,7 +3720,7 @@ impl<S: Screen> Ui<S> {
         drop(l);
         self.screen.set_control_open(false);
         // A failure: the line alone, on the same sheet.
-        let shown = img.unwrap_or_else(|| Image::from_rgba8(slint::SharedPixelBuffer::new(1, 1)));
+        let shown = img.unwrap_or_else(|| Image::from_rgba8(SharedPixelBuffer::new(1, 1)));
         self.screen.set_photo(Some(shown), &caption);
         let ui = Rc::downgrade(self);
         self.photo_timer

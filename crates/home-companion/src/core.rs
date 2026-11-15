@@ -1450,7 +1450,7 @@ impl Core {
     /// "Falso allarme": the conversation stops, and its recording (the 3.5 s before the wake
     /// word, what followed, the reflexes' verdict) is copied to `false-wakes/` beside the
     /// recordings, out of their rotation: negatives to train the wake word again.
-    fn on_false_wake(&mut self) {
+    fn on_false_wake(&mut self, via: &str) {
         let wake = self.last_wake.clone();
         self.on_stop();
         // The recording of this conversation (stopped just now or at the end of the speech).
@@ -1488,6 +1488,9 @@ impl Core {
         }
         let info = serde_json::json!({
             "false_wake": true,
+            // "button" (Falso allarme) or "stop" (Stop while listening): the second may be a
+            // real wake the user changed their mind about, to listen to before training.
+            "via": via,
             "wake_word": wake.as_ref().map(|w| w.0.clone()),
             "probability": wake.as_ref().map(|w| w.1),
             "conversation_started_unix": started,
@@ -3031,12 +3034,12 @@ impl Core {
                 if stop_is_a_false_wake(self.phase, trigger) {
                     // Andrea, 2026-11-15: Stop right after the wake word means it woke by mistake.
                     log::info!(event = "false_wake", via = "stop"; "Stop while listening after the wake word: a false alarm");
-                    self.on_false_wake();
+                    self.on_false_wake("stop");
                 } else {
                     self.on_stop();
                 }
             }
-            UiEvent::FalseWake => self.on_false_wake(),
+            UiEvent::FalseWake => self.on_false_wake("button"),
             UiEvent::Question(id, text) => self.on_question(id, text),
             UiEvent::QuestionAnswer { id, yes } => self.on_question_answer(id, yes),
             UiEvent::QuestionPending(id, until_ms) => self.on_question_pending(id, until_ms),

@@ -9,7 +9,6 @@
 //! closed lens cover (`SW_CAMERA_LENS_COVER` on `gpio-keys`) is said instead of taking a black
 //! picture.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -164,7 +163,12 @@ pub fn capture(dir: &Path) -> Result<PathBuf, String> {
         .arg(format!("location={}", tmp.display()))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        // Its messages to a file: a pipe read only at the end could fill and block it.
+        .stderr(
+            std::fs::File::create(dir.join(".capture.log"))
+                .map(Stdio::from)
+                .unwrap_or_else(|_| Stdio::null()),
+        )
         .spawn()
         .map_err(|e| format!("gst-launch-1.0: {e}"))?;
     let status = loop {
@@ -179,13 +183,14 @@ pub fn capture(dir: &Path) -> Result<PathBuf, String> {
                 let _ = std::fs::remove_file(&tmp);
                 return Err(format!("no picture in {} s", TIMEOUT.as_secs()));
             }
-            Err(e) => return Err(format!("gst-launch-1.0: {e}")),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("gst-launch-1.0: {e}"));
+            }
         }
     };
-    let mut err = String::new();
-    if let Some(mut e) = child.stderr.take() {
-        let _ = e.read_to_string(&mut err);
-    }
+    let err = std::fs::read_to_string(dir.join(".capture.log")).unwrap_or_default();
     let data = std::fs::read(&tmp).unwrap_or_default();
     let _ = std::fs::remove_file(&tmp);
     if !status.success() && data.is_empty() {
@@ -213,6 +218,24 @@ pub fn capture(dir: &Path) -> Result<PathBuf, String> {
         }
     }
     Ok(path)
+}
+
+/// The photo for the screen, decoded here (off the UI thread) and at most `w` x `h`: not with
+/// `Image::load_from_path`, whose cache by path would keep 5 MB of RGBA after the preview.
+pub fn preview(
+    path: &Path,
+    w: u32,
+    h: u32,
+) -> Result<slint::SharedPixelBuffer<slint::Rgba8Pixel>, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let img = image::load_from_memory(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    let rgba = img.thumbnail(w, h).to_rgba8();
+    let (w, h) = rgba.dimensions();
+    Ok(slint::SharedPixelBuffer::clone_from_slice(
+        rgba.as_raw(),
+        w,
+        h,
+    ))
 }
 
 #[cfg(test)]

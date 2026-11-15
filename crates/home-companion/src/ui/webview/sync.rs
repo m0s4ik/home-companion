@@ -25,6 +25,13 @@ pub const QUIET: Duration = Duration::from_millis(1500);
 pub const MIN: Duration = Duration::from_millis(600);
 pub const MAX: Duration = Duration::from_secs(15);
 
+/// Whether the offline sign's arrows turn, `offline_for` after Home Assistant was lost: the first
+/// 10 s, then 2 s every 20 s (a redraw 10 times a second, for hours, would cost a core's share).
+pub fn offline_turning(offline_for: Duration) -> bool {
+    let s = offline_for.as_millis();
+    s < 10_000 || s % 20_000 < 2_000
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sign {
     None,
@@ -182,6 +189,14 @@ mod tests {
         s.shown(t0, Duration::from_secs(60));
         s.hidden();
         assert_eq!(s.sign(t0 + ms(100), true), Sign::None);
+    }
+
+    #[test]
+    fn offline_arrows_turn_only_at_times() {
+        assert!(offline_turning(ms(0)) && offline_turning(ms(9_999)));
+        assert!(!offline_turning(ms(10_000)) && !offline_turning(ms(19_999)));
+        assert!(offline_turning(ms(20_000)) && offline_turning(ms(21_999)));
+        assert!(!offline_turning(ms(22_000)));
     }
 
     #[test]

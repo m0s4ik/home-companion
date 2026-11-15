@@ -74,6 +74,14 @@ pub enum HubMsg {
     },
 }
 
+/// What the hub knows of its link across connections: when the last message came (seconds since
+/// the epoch, 0 = never) and whether the screen was told it is up.
+#[derive(Debug, Default)]
+struct LinkState {
+    seen: i64,
+    told_up: bool,
+}
+
 /// Seconds since the epoch, now.
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
@@ -243,8 +251,10 @@ fn run(cfg: HubConfig, tx: Sender<HubMsg>, cmds: Receiver<HubCmd>, stop: fn() ->
     log::info!(event = "ha_hub"; "cards and lists from {}:{}", ep.host, ep.port);
     let mut chosen = cfg.lists.clone();
     // When the last message came, and whether the screen was told the link is up.
-    let mut seen: i64 = 0;
-    let mut told_up = false;
+    let mut link = LinkState::default();
+    // The screen was told the link is lost (or was never made): the retries then stay short, so
+    // the offline sign goes soon after Home Assistant is back (the backoff alone grows to 5 min).
+    let mut told_down = false;
     let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(300));
     loop {
         if stop() {
@@ -262,28 +272,24 @@ fn run(cfg: HubConfig, tx: Sender<HubMsg>, cmds: Receiver<HubCmd>, stop: fn() ->
             }
         };
         let started = Instant::now();
-        match session(
-            &cfg,
-            &ep,
-            &token,
-            &tx,
-            &cmds,
-            &mut chosen,
-            &mut seen,
-            &mut told_up,
-            stop,
-        ) {
+        match session(&cfg, &ep, &token, &tx, &cmds, &mut chosen, &mut link, stop) {
             Ok(()) => return,
             Err(why) => {
-                if std::mem::take(&mut told_up)
-                    && tx
+                if std::mem::take(&mut link.told_up) {
+                    told_down = false;
+                }
+                if !told_down {
+                    // Also when it never connected (Home Assistant away at start-up).
+                    if tx
                         .send(HubMsg::Link {
                             up: false,
-                            last_seen: seen,
+                            last_seen: link.seen,
                         })
                         .is_err()
-                {
-                    return;
+                    {
+                        return;
+                    }
+                    told_down = true;
                 }
                 if started.elapsed() >= Duration::from_secs(60) {
                     backoff.reset();
@@ -291,13 +297,20 @@ fn run(cfg: HubConfig, tx: Sender<HubMsg>, cmds: Receiver<HubCmd>, stop: fn() ->
                 log::info!(event = "ha_hub"; "cards and lists: {why}, retrying");
             }
         }
-        if !pause(backoff.next_delay(), stop) {
+        let delay = backoff.next_delay();
+        let delay = if told_down {
+            delay.min(Duration::from_secs(15))
+        } else {
+            delay
+        };
+        if !pause(delay, stop) {
             return;
         }
     }
 }
 
 /// One connection; Ok = stop (or the UI is gone), Err = lost.
+#[allow(clippy::too_many_arguments)]
 fn session(
     cfg: &HubConfig,
     ep: &Endpoint,
@@ -305,8 +318,7 @@ fn session(
     tx: &Sender<HubMsg>,
     cmds: &Receiver<HubCmd>,
     chosen: &mut Vec<String>,
-    seen: &mut i64,
-    told_up: &mut bool,
+    link: &mut LinkState,
     stop: fn() -> bool,
 ) -> Result<(), String> {
     let lost = |e: io::Error| format!("{}:{}: {e}", ep.host, ep.port);
@@ -385,12 +397,12 @@ fn session(
         return Ok(());
     }
     log::info!(event = "ha_hub"; "cards and lists: connected to Home Assistant");
-    *seen = unix_now();
-    *told_up = true;
+    link.seen = unix_now();
+    link.told_up = true;
     if tx
         .send(HubMsg::Link {
             up: true,
-            last_seen: *seen,
+            last_seen: link.seen,
         })
         .is_err()
     {
@@ -442,7 +454,7 @@ fn session(
         match ws.read().map_err(lost)? {
             Some(Message::Text(t)) => {
                 last_rx = Instant::now();
-                *seen = unix_now();
+                link.seen = unix_now();
                 let Ok(v) = serde_json::from_str::<Value>(&t) else {
                     continue;
                 };

@@ -607,6 +607,8 @@ struct Inner {
     sync: sync::SyncSign,
     sync_shown: (sync::Sign, String),
     sync_turn: f32,
+    /// Offline since then (the arrows turn only at times: [`sync::offline_turning`]).
+    offline_since: Option<Instant>,
     /// Where the home button rests, and the touch on it.
     place: controls::Place,
     drag: Option<controls::Drag>,
@@ -750,6 +752,7 @@ impl<S: Screen> Casa<S> {
                 sync: sync::SyncSign::default(),
                 sync_shown: (sync::Sign::None, String::new()),
                 sync_turn: 0.0,
+                offline_since: None,
                 place: saved_place(&opts.state_dir),
                 drag: None,
                 target: Target::None,
@@ -1777,7 +1780,8 @@ impl<S: Screen> Casa<S> {
             if ev.kind == TouchKind::Down {
                 // The button takes the touch only if it was shown already (and not under a
                 // menu or the warning): a touch on its spot while hidden is the page's.
-                let on_home = i.controls.armed(now)
+                // Shown for a sign (sync.rs) it takes a tap too: else it goes to the page under it.
+                let on_home = (i.controls.armed(now) || i.sync_shown.0 != sync::Sign::None)
                     && i.menu.is_none()
                     && i.confirm.is_none()
                     && i.place.hit(x, y);
@@ -1969,7 +1973,19 @@ impl<S: Screen> Casa<S> {
                 }
                 _ => String::new(),
             };
-            let turning = sign != sync::Sign::None;
+            if sign == sync::Sign::Offline {
+                i.offline_since.get_or_insert(now);
+            } else {
+                i.offline_since = None;
+            }
+            let turning = match sign {
+                sync::Sign::None => false,
+                sync::Sign::CatchingUp => true,
+                // Not for hours at 10 Hz: the view may stay open with Home Assistant away.
+                sync::Sign::Offline => sync::offline_turning(
+                    now.saturating_duration_since(i.offline_since.unwrap_or(now)),
+                ),
+            };
             if turning {
                 i.sync_turn = (i.sync_turn + 30.0) % 360.0;
             }

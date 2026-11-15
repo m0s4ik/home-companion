@@ -241,6 +241,7 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// The photo just taken over everything (None: hidden), with its line ("Saved · 12:47").
     fn set_photo(&self, photo: Option<Image>, caption: &str);
     fn on_photo_closed(&self, f: impl Fn() + 'static);
+    fn get_photo_shown(&self) -> bool;
     fn on_control_opened(&self, f: impl Fn() + 'static);
     fn on_control_volume(&self, f: impl Fn(i32) + 'static);
     fn on_control_brightness(&self, f: impl Fn(i32) + 'static);
@@ -913,6 +914,9 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_photo_shown(self, photo.is_some());
                 $m::CompanionWindow::set_photo(self, photo.unwrap_or_default());
                 $m::CompanionWindow::set_photo_caption(self, caption.into());
+            }
+            fn get_photo_shown(&self) -> bool {
+                $m::CompanionWindow::get_photo_shown(self)
             }
             fn on_photo_closed(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_photo_closed(self, f)
