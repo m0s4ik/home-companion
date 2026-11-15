@@ -243,6 +243,56 @@ automation:
 `state: "off"` does what "screen off" does by voice (the backlight goes dark); `state: "on"` wakes it like a touch.
 Touching the screen or moving in front of it still wakes it, and the screen's own idle timeout still applies.
 
+Tapping **OK** on a card tells Home Assistant: the body fires `home_companion_card_ok` with the `id` the card was
+sent with (a card without an `id`, one that expires by itself, and one taken away with `home_companion_card_dismiss`
+fire nothing). An automation can then act on it. For example, one card per overdue to-do item, and the OK ticks
+the item off (the card's `id` is the item's uid, with a prefix so that the second automation can tell these cards
+from others):
+
+```yaml
+automation:
+  - alias: Overdue chores as cards
+    triggers:
+      - trigger: time_pattern
+        minutes: "/30"
+      - trigger: state
+        entity_id: todo.household
+    actions:
+      - action: todo.get_items
+        target: {entity_id: todo.household}
+        data: {status: needs_action}
+        response_variable: chores
+      - repeat:
+          for_each: >-
+            {{ (chores['todo.household']['items']
+                | selectattr('due', 'defined') | selectattr('due', 'string')
+                | selectattr('due', 'lt', (now() + timedelta(days=1)).date().isoformat())
+                | sort(attribute='due') | list)[:3] }}
+          sequence:
+            - action: event
+              event: home_companion_card
+              event_data:
+                id: "todo-{{ repeat.item.uid }}"
+                title: "{{ repeat.item.summary }}"
+                text: Overdue
+                seconds: 2700   # gone by itself if the item is done elsewhere
+                device: Alfred
+
+  - alias: OK on a chore card ticks it off
+    triggers:
+      - trigger: event
+        event_type: home_companion_card_ok
+        event_data: {device: Alfred}
+    conditions:
+      - "{{ trigger.event.data.id.startswith('todo-') }}"
+    actions:
+      - action: todo.update_item
+        target: {entity_id: todo.household}
+        data:
+          item: "{{ trigger.event.data.id[5:] }}"
+          status: completed
+```
+
 The body fires an event too, `home_companion_conversation`, when a conversation starts and when it ends, so an
 automation can make room for the voice (lower a speaker, dim a light, pause a TV):
 

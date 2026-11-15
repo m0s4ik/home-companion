@@ -30,6 +30,8 @@ use serde_json::Value;
 /// The event types the body subscribes to.
 pub const CARD_EVENT: &str = "home_companion_card";
 pub const DISMISS_EVENT: &str = "home_companion_card_dismiss";
+/// The event type the body fires when the user taps OK on one of Home Assistant's cards.
+pub const CARD_OK_EVENT: &str = "home_companion_card_ok";
 pub const SCREEN_EVENT: &str = "home_companion_screen";
 /// The event type the body fires when a conversation starts and ends.
 pub const CONVERSATION_EVENT: &str = "home_companion_conversation";
@@ -119,6 +121,11 @@ pub fn parse_screen(msg: &Value, device: &str) -> Option<bool> {
         "off" => Some(false),
         _ => None,
     }
+}
+
+/// The data of `home_companion_card_ok` (the hub adds `device`): the `id` the card was sent with.
+pub fn card_ok_data(id: &str) -> Value {
+    serde_json::json!({ "id": id })
 }
 
 /// Who dealt with a conversation, from its outcome: "reflex" (the body itself), "home_assistant"
@@ -232,6 +239,11 @@ mod tests {
             parse(&m(json!({"state": "on", "text": "x"})), "Alfred"),
             None
         );
+    }
+
+    #[test]
+    fn card_ok_event_data() {
+        assert_eq!(card_ok_data("washing"), json!({"id": "washing"}));
     }
 
     #[test]
