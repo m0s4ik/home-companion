@@ -1844,9 +1844,9 @@ impl<S: Screen> Casa<S> {
                         {
                             log::info!(
                                 event = "edge_swipe", outcome = t.outcome, down_in = t.down_in as f64,
-                                max_in = t.max_in as f64, edge = i.swipe.side().name();
-                                "casa: touch from the {} edge: {} (started {:.0} px in, reached {:.0})",
-                                i.swipe.side().name(), t.outcome, t.down_in, t.max_in
+                                max_in = t.max_in as f64, up_in = t.up_in as f64, edge = i.swipe.side().name();
+                                "casa: touch from the {} edge: {} (started {:.0} px in, reached {:.0}, let go at {:.0})",
+                                i.swipe.side().name(), t.outcome, t.down_in, t.max_in, t.up_in
                             );
                         }
                         (r, i.swipe.pull(), i.swipe.armed(), false)

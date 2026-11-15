@@ -37,6 +37,10 @@ pub enum Route {
     Home,
 }
 
+/// How far from the edge a swipe may start (view pixels). 20 px missed real swipes: the panel's
+/// first point of a finger coming from the bezel was 25 px in (2026-11-15).
+pub const STRIP: f32 = 40.0;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Phase {
     Idle,
@@ -81,6 +85,7 @@ pub struct EdgeSwipe {
     /// went, and the last one's outcome once it is over (see [`EdgeSwipe::finished`]).
     down_in: f32,
     max_in: f32,
+    up_in: f32,
     finished: Option<Trace>,
 }
 
@@ -90,12 +95,14 @@ pub struct EdgeSwipe {
 pub struct Trace {
     pub down_in: f32,
     pub max_in: f32,
+    /// Where the finger was said to leave (the panel may report a stray point there).
+    pub up_in: f32,
     pub outcome: &'static str,
 }
 
 impl Default for EdgeSwipe {
     fn default() -> Self {
-        EdgeSwipe::new(800.0, 20.0, 120.0, 16.0)
+        EdgeSwipe::new(800.0, STRIP, 120.0, 16.0)
     }
 }
 
@@ -144,6 +151,7 @@ impl EdgeSwipe {
             pull: 0.0,
             down_in: 0.0,
             max_in: 0.0,
+            up_in: 0.0,
             finished: None,
         }
     }
@@ -157,6 +165,7 @@ impl EdgeSwipe {
         self.finished = Some(Trace {
             down_in: self.down_in,
             max_in: self.max_in,
+            up_in: self.up_in,
             outcome,
         });
     }
@@ -180,11 +189,13 @@ impl EdgeSwipe {
     pub fn event(&mut self, kind: Kind, x: f32, y: f32) -> Route {
         // From here on `y` is the distance from the bottom edge (up = more).
         let (x, y) = self.edge_uv(x, y);
-        if kind == Kind::Down {
-            self.down_in = y;
-            self.max_in = y;
-        } else {
-            self.max_in = self.max_in.max(y);
+        match kind {
+            Kind::Down => {
+                self.down_in = y;
+                self.max_in = y;
+            }
+            Kind::Move => self.max_in = self.max_in.max(y),
+            Kind::Up => self.up_in = y,
         }
         match (self.phase, kind) {
             (_, Kind::Down) => {
@@ -223,8 +234,11 @@ impl EdgeSwipe {
                 self.pull = (y - y0).max(0.0);
                 Route::Hold
             }
-            (Phase::Pulling { y0 }, Kind::Up) => {
-                let home = y - y0 >= self.threshold;
+            (Phase::Pulling { .. }, Kind::Up) => {
+                // How far the last move took it: the point of the release itself is not trusted
+                // (2026-11-15: a pull 434 px in, released "short", the panel's last point being
+                // back near the edge).
+                let home = self.pull >= self.threshold;
                 self.finish(if home { "home" } else { "short" });
                 self.reset();
                 if home { Route::Home } else { Route::Hold }
@@ -268,16 +282,36 @@ mod tests {
         let t = g.finished().unwrap();
         assert_eq!((t.down_in, t.max_in, t.outcome), (5.0, 150.0, "home"));
         assert_eq!(g.finished(), None);
-        // Started 30 px in: outside the strip, the page's.
-        g.event(Kind::Down, 600.0, 770.0);
+        // Started 50 px in: outside the strip, the page's.
+        g.event(Kind::Down, 600.0, 750.0);
         g.event(Kind::Move, 600.0, 600.0);
         g.event(Kind::Up, 600.0, 600.0);
         let t = g.finished().unwrap();
-        assert_eq!((t.down_in, t.max_in, t.outcome), (30.0, 200.0, "outside"));
+        assert_eq!((t.down_in, t.max_in, t.outcome), (50.0, 200.0, "outside"));
         g.event(Kind::Down, 600.0, 795.0);
         g.event(Kind::Move, 600.0, 740.0);
         g.event(Kind::Up, 600.0, 740.0);
         assert_eq!(g.finished().unwrap().outcome, "short");
+    }
+
+    #[test]
+    fn a_stray_release_point_does_not_undo_the_pull() {
+        // The finger came 434 px in; the panel said it left back near the edge.
+        let mut g = EdgeSwipe::default();
+        g.event(Kind::Down, 600.0, 795.0);
+        g.event(Kind::Move, 600.0, 600.0);
+        g.event(Kind::Move, 600.0, 361.0);
+        assert_eq!(g.event(Kind::Up, 600.0, 790.0), Route::Home);
+        let t = g.finished().unwrap();
+        assert_eq!((t.up_in, t.outcome), (10.0, "home"));
+    }
+
+    #[test]
+    fn a_swipe_may_start_25_px_in() {
+        let mut g = EdgeSwipe::default();
+        assert_eq!(g.event(Kind::Down, 600.0, 775.0), Route::Hold);
+        g.event(Kind::Move, 600.0, 600.0);
+        assert_eq!(g.event(Kind::Up, 600.0, 600.0), Route::Home);
     }
 
     #[test]
@@ -357,6 +391,7 @@ mod tests {
         g.set_side(Edge::Top);
         g.event(Kind::Down, 640.0, 4.0);
         g.event(Kind::Move, 641.0, 80.0);
+        g.event(Kind::Move, 641.0, 140.0);
         assert_eq!(g.event(Kind::Up, 641.0, 140.0), Route::Home);
     }
 }
