@@ -89,17 +89,20 @@ pub struct SettingsView {
 /// Settings → Info, updates, in the screen's words.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UpdateView {
-    pub version: String,
-    pub repo: String,
-    pub checked: String,
+    /// "Version 0.3.0 · from m0s4ik/home-companion · checked today at 14:25".
+    pub facts: String,
     pub state: String,
+    /// The release notes of the version offered ("" none).
+    pub notes: String,
+    /// Its bundle's SHA-256, in groups ("" none).
+    pub sha: String,
     /// Something to do (a newer version, a failure): the line in gold.
     pub attention: bool,
     /// The install button's label ("" = none).
     pub install: String,
     /// An install is going on: the buttons wait.
     pub busy: bool,
-    /// The confirmation: the question and the text with the bundle's SHA-256.
+    /// The confirmation: the question and one line.
     pub question: String,
     pub confirm: String,
 }
@@ -672,9 +675,6 @@ macro_rules! impl_screen {
                     ask_executing,
                     what_short,
                     update_title,
-                    update_version,
-                    update_repo,
-                    update_checked,
                     update_check,
                     camera,
                     camera_shoot,
@@ -971,10 +971,10 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_camera_count(self, count.into());
             }
             fn set_update(&self, u: &UpdateView) {
-                $m::CompanionWindow::set_update_version(self, u.version.as_str().into());
-                $m::CompanionWindow::set_update_repo(self, u.repo.as_str().into());
-                $m::CompanionWindow::set_update_checked(self, u.checked.as_str().into());
+                $m::CompanionWindow::set_update_facts(self, u.facts.as_str().into());
                 $m::CompanionWindow::set_update_state(self, u.state.as_str().into());
+                $m::CompanionWindow::set_update_notes(self, u.notes.as_str().into());
+                $m::CompanionWindow::set_update_sha(self, u.sha.as_str().into());
                 $m::CompanionWindow::set_update_attention(self, u.attention);
                 $m::CompanionWindow::set_update_install(self, u.install.as_str().into());
                 $m::CompanionWindow::set_update_busy(self, u.busy);

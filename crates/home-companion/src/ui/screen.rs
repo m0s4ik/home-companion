@@ -3135,19 +3135,21 @@ impl<S: Screen> Ui<S> {
             let sha = "d4ede2782c0b31223b00e62a56b95c3620b20992f419a1ae8001bf075bafc61f";
             let repo = crate::update::DEFAULT_REPO;
             self.screen.set_update(&UpdateView {
-                version: env!("CARGO_PKG_VERSION").into(),
-                repo: repo.into(),
-                checked: l.text("update_today").replace("{t}", "14:25"),
+                facts: l
+                    .text("update_facts")
+                    .replace("{v}", env!("CARGO_PKG_VERSION"))
+                    .replace("{repo}", repo)
+                    .replace("{when}", &l.text("update_today").replace("{t}", "14:25")),
                 state: l.text("update_available").replace("{v}", "0.3.1"),
+                notes: crate::update::notes_text(
+                    "A small release: **the camera's colours** and two fixes.\n\n## New\n\n- The camera tuned for the S5KC505A: natural colours, brighter in a dim room.\n\n## Fixed\n\n- The swipe from the edge of the Home Assistant view works every time.\n- German: the last lines of the Memories page are no longer hidden.",
+                ),
+                sha: crate::update::sha_groups(sha),
                 attention: true,
                 install: l.text("update_install").replace("{v}", "0.3.1"),
                 busy: false,
                 question: l.text("update_question").replace("{v}", "0.3.1"),
-                confirm: l
-                    .text("update_confirm")
-                    .replace("{repo}", repo)
-                    .replace("{file}", "home-companion-0.3.1-arm64.tar.gz")
-                    .replace("{sha}", &crate::update::sha_groups(sha)),
+                confirm: l.text("update_confirm").into(),
             });
         }
         // Sample use for the Home Assistant page's row and the use page.
@@ -3867,9 +3869,7 @@ impl<S: Screen> Ui<S> {
         let current = env!("CARGO_PKG_VERSION");
         let Some(u) = &self.updater else {
             return UpdateView {
-                version: current.into(),
-                repo: "—".into(),
-                checked: String::new(),
+                facts: l.text("update_facts_off").replace("{v}", current),
                 state: l.text("update_off").into(),
                 ..Default::default()
             };
@@ -3940,26 +3940,28 @@ impl<S: Screen> Ui<S> {
             }
             _ => String::new(),
         };
-        let (question, confirm) = match &st.latest {
-            Some(r) => (
-                l.text("update_question").replace("{v}", &r.version),
-                l.text("update_confirm")
-                    .replace("{repo}", &u.repo)
-                    .replace("{file}", &r.bundle)
-                    .replace("{sha}", &crate::update::sha_groups(&r.sha256)),
-            ),
-            None => (String::new(), String::new()),
-        };
+        let offered = st.latest.as_ref().filter(|_| !busy);
+        let question = offered
+            .map(|r| l.text("update_question").replace("{v}", &r.version))
+            .unwrap_or_default();
+        let facts = l
+            .text("update_facts")
+            .replace("{v}", current)
+            .replace("{repo}", &u.repo)
+            .replace("{when}", &checked);
         UpdateView {
-            version: current.into(),
-            repo: u.repo.clone(),
-            checked,
+            facts,
             state,
+            notes: offered.map(|r| r.notes.clone()).unwrap_or_default(),
+            sha: offered
+                .filter(|r| !r.sha256.is_empty())
+                .map(|r| crate::update::sha_groups(&r.sha256))
+                .unwrap_or_default(),
             attention,
             install,
             busy,
             question,
-            confirm,
+            confirm: l.text("update_confirm").into(),
         }
     }
 

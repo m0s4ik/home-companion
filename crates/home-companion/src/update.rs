@@ -141,6 +141,8 @@ pub struct Release {
     /// check; empty when it could not be read: then nothing is offered to install).
     pub bundle: String,
     pub sha256: String,
+    /// The release notes, as plain text for the screen ([`notes_text`]).
+    pub notes: String,
 }
 
 /// The newest release in GitHub's `releases` list that is newer than `current`, has the bundle
@@ -187,11 +189,78 @@ pub fn pick(releases: &Value, current: &str, allow_pre: bool, arch: &str) -> Opt
                     prerelease: pre,
                     bundle,
                     sha256: String::new(),
+                    notes: notes_text(r.get("body").and_then(Value::as_str).unwrap_or("")),
                 },
             ));
         }
     }
     best.map(|(_, r)| r)
+}
+
+/// The longest notes shown (the rest is on the release's page).
+const NOTES_MAX: usize = 4000;
+
+/// GitHub's Markdown release notes as plain text for the screen: no headings' #, no emphasis,
+/// links as their text, `> [!NOTE]` markers dropped, list items as "• ", no characters outside
+/// the Basic Multilingual Plane (emoji: not in the screen's fonts), blank lines kept single.
+pub fn notes_text(md: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for raw in md.lines() {
+        let mut l = raw.trim_end().to_string();
+        // Quotes and alerts.
+        let t = l.trim_start();
+        if t.starts_with("> [!") {
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix('>') {
+            l = rest.trim_start().to_string();
+        }
+        let t = l.trim_start();
+        let indent = l.len() - t.len();
+        let mut line = if let Some(h) = t.strip_prefix('#') {
+            h.trim_start_matches('#').trim().to_string()
+        } else if let Some(item) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
+            format!("{}• {item}", "  ".repeat(indent / 2))
+        } else {
+            t.to_string()
+        };
+        line = strip_links(&line);
+        line = line.replace("**", "").replace("__", "").replace('`', "");
+        line.retain(|c| (c as u32) < 0x1_0000 && c != '\u{fe0f}');
+        let blank = line.trim().is_empty();
+        if blank && out.last().is_none_or(|p| p.is_empty()) {
+            continue;
+        }
+        out.push(if blank { String::new() } else { line });
+    }
+    while out.last().is_some_and(|l| l.is_empty()) {
+        out.pop();
+    }
+    let mut s = out.join("\n");
+    if s.chars().count() > NOTES_MAX {
+        s = s.chars().take(NOTES_MAX).collect::<String>() + "…";
+    }
+    s
+}
+
+/// "[text](url)" → "text".
+fn strip_links(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(open) = rest.find('[') {
+        let Some(close) = rest[open..].find("](") else {
+            break;
+        };
+        let close = open + close;
+        let Some(end) = rest[close..].find(')') else {
+            break;
+        };
+        out.push_str(&rest[..open]);
+        out.push_str(&rest[open + 1..close]);
+        rest = &rest[close + end + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// A tag the update service accepts (the same rule as its shell check).
@@ -568,6 +637,17 @@ mod tests {
             sha_groups(&h.to_ascii_lowercase()),
             "d4ede278 2c0b3122 3b00e62a 56b95c36 20b20992 f419a1ae 8001bf07 5bafc61f"
         );
+    }
+
+    #[test]
+    fn notes_for_the_screen() {
+        let md = "Second release: **memories** and [German](https://x/4).\n\n> [!IMPORTANT]\n> **Update the system too.**\n\n## New\n\n- **Camera** 📷 tile\n  - nested `code`\n\n\n## Fixed\n";
+        assert_eq!(
+            notes_text(md),
+            "Second release: memories and German.\n\nUpdate the system too.\n\nNew\n\n• Camera  tile\n  • nested code\n\nFixed"
+        );
+        let long = "x".repeat(5000);
+        assert_eq!(notes_text(&long).chars().count(), NOTES_MAX + 1);
     }
 
     #[test]

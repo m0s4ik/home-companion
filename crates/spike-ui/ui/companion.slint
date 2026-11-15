@@ -256,9 +256,6 @@ export struct Words {
     ask_executing: string,
     what_short: string,
     update_title: string,
-    update_version: string,
-    update_repo: string,
-    update_checked: string,
     update_check: string,
     camera: string,
     camera_shoot: string,
@@ -885,10 +882,10 @@ export component CompanionWindow inherits Window {
     callback camera-shoot();
     // Settings → Info, updates (update.rs): the version running, where updates come from, the
     // last check, what is going on, and the install button's label ("" = nothing to install).
-    in property <string> update-version;
-    in property <string> update-repo;
-    in property <string> update-checked;
+    in property <string> update-facts;
     in property <string> update-state;
+    in property <string> update-notes;
+    in property <string> update-sha;
     in property <bool> update-attention: false;
     in property <string> update-install;
     in property <bool> update-busy: false;
@@ -3064,7 +3061,8 @@ export component CompanionWindow inherits Window {
     }
 
     // ---- Settings → Screen: the night hours.
-    // ---- Settings → Info: the version, updates.
+    // ---- Settings → Info: updates. What is going on, the facts in one small line, the release
+    // notes of a newer version, its SHA-256 in small (for whoever wants to compare it).
     if root.desk && root.desk-page == "update": Rectangle {
         PageHeader {
             x: Grid.col-x;
@@ -3075,43 +3073,55 @@ export component CompanionWindow inherits Window {
                 root.page = "settings";
             }
         }
-        Group {
-            x: Grid.col-x;
-            y: Grid.page-y + 16px;
-            width: Grid.col-width;
-            height: 3 * 76px;
-            Row {
-                y: 0;
-                width: parent.width;
-                first: true;
-                kind: "";
-                icon: Icons.information-28;
-                label: root.t.update-version;
-                value: root.update-version;
-            }
-            Row {
-                y: 76px;
-                width: parent.width;
-                kind: "";
-                label: root.t.update-repo;
-                value: root.update-repo;
-            }
-            Row {
-                y: 152px;
-                width: parent.width;
-                kind: "";
-                label: root.t.update-checked;
-                value: root.update-checked;
-            }
-        }
         Text {
-            x: Grid.col-x + 24px;
-            y: Grid.page-y + 16px + 3 * 76px + 32px;
-            width: Grid.col-width - 48px;
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
             text: root.update-state;
             font-size: 26px;
-            color: root.update-attention ? Theme.accent : Theme.text-2;
+            color: root.update-attention ? Theme.accent : Theme.text;
             wrap: word-wrap;
+        }
+        Text {
+            x: Grid.col-x;
+            y: Grid.page-y + 44px;
+            width: Grid.col-width;
+            text: root.update-facts;
+            font-size: 18px;
+            color: Theme.text-3;
+            overflow: elide;
+        }
+        if root.update-notes != "": Rectangle {
+            x: Grid.col-x;
+            y: Grid.page-y + 84px;
+            width: Grid.col-width;
+            height: Grid.band-y - self.y - (root.update-sha != "" ? 48px : 16px);
+            border-radius: 16px;
+            background: Theme.surface;
+            clip: true;
+            Flickable {
+                x: 20px;
+                y: 16px;
+                width: parent.width - 40px;
+                height: parent.height - 32px;
+                viewport-height: notes-text.preferred-height;
+                notes-text := Text {
+                    width: parent.width;
+                    text: root.update-notes;
+                    font-size: 20px;
+                    color: Theme.text-2;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        if root.update-sha != "": Text {
+            x: Grid.col-x;
+            y: Grid.band-y - 36px;
+            width: Grid.col-width;
+            text: "SHA-256  " + root.update-sha;
+            font-size: 15px;
+            color: Theme.text-3;
+            overflow: elide;
         }
         BareButton {
             x: root.slot-left;
