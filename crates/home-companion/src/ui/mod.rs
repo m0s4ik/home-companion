@@ -284,6 +284,9 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_update(&self, u: &UpdateView);
     fn on_update_check(&self, f: impl Fn() + 'static);
     fn on_update_install(&self, f: impl Fn() + 'static);
+    /// How an update ended: shown as a dialog until OK.
+    fn show_update_result(&self, title: &str, text: &str, ok: bool);
+    fn on_update_result_seen(&self, f: impl Fn() + 'static);
     fn on_camera_shoot(&self, f: impl Fn() + 'static);
     fn on_photo_open(&self, f: impl Fn(usize) + 'static);
     fn on_control_opened(&self, f: impl Fn() + 'static);
@@ -1005,6 +1008,15 @@ macro_rules! impl_screen {
             }
             fn on_update_install(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_update_install_clicked(self, f)
+            }
+            fn show_update_result(&self, title: &str, text: &str, ok: bool) {
+                $m::CompanionWindow::set_update_result_title(self, title.into());
+                $m::CompanionWindow::set_update_result_text(self, text.into());
+                $m::CompanionWindow::set_update_result_ok(self, ok);
+                $m::CompanionWindow::set_dialog(self, "update-result".into());
+            }
+            fn on_update_result_seen(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_update_result_seen(self, f)
             }
             fn set_camera_caption(&self, caption: &str) {
                 $m::CompanionWindow::set_camera_caption(self, caption.into())

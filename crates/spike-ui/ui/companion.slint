@@ -962,6 +962,11 @@ export component CompanionWindow inherits Window {
     in property <bool> update-busy: false;
     // The confirmation before installing: the question and the bundle's SHA-256 to compare.
     in property <[UpdateStep]> update-steps: [];
+    // How an update ended, over any page until OK (Andrea, 2026-11-16).
+    in property <string> update-result-title;
+    in property <string> update-result-text;
+    in property <bool> update-result-ok: true;
+    callback update-result-seen();
     in property <float> update-progress: -1;
     in property <string> update-question;
     in property <string> update-confirm-text;
@@ -3945,6 +3950,17 @@ export component CompanionWindow inherits Window {
                 root.page = "home";
                 root.suspend-confirmed();
             }
+        }
+    }
+    if root.dialog == "update-result": Dialog {
+        icon: root.update-result-ok ? Icons.check-circle-48 : Icons.alert-circle-64;
+        icon-color: root.update-result-ok ? Theme.accent : Theme.danger;
+        title: root.update-result-title;
+        text: root.update-result-text;
+        confirm: root.t.ok;
+        answered(yes) => {
+            root.dialog = "";
+            root.update-result-seen();
         }
     }
     if root.dialog == "update": Dialog {
