@@ -77,6 +77,20 @@ pub struct EdgeSwipe {
     phase: Phase,
     /// How far up the finger is (0 when not pulling), for the pill.
     pull: f32,
+    /// The touch in progress, for the log: how far from the edge it started, the farthest in it
+    /// went, and the last one's outcome once it is over (see [`EdgeSwipe::finished`]).
+    down_in: f32,
+    max_in: f32,
+    finished: Option<Trace>,
+}
+
+/// One touch near the edge, once over: where it started and how far it went (view pixels from
+/// the edge) and what it was ("home", "short", "tap", "page", "outside").
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Trace {
+    pub down_in: f32,
+    pub max_in: f32,
+    pub outcome: &'static str,
 }
 
 impl Default for EdgeSwipe {
@@ -128,7 +142,23 @@ impl EdgeSwipe {
             slop,
             phase: Phase::Idle,
             pull: 0.0,
+            down_in: 0.0,
+            max_in: 0.0,
+            finished: None,
         }
+    }
+
+    /// The touch that just ended (taken once): for the log of swipes that did not work.
+    pub fn finished(&mut self) -> Option<Trace> {
+        self.finished.take()
+    }
+
+    fn finish(&mut self, outcome: &'static str) {
+        self.finished = Some(Trace {
+            down_in: self.down_in,
+            max_in: self.max_in,
+            outcome,
+        });
     }
 
     /// How far the finger has come up while pulling (0 = no pill).
@@ -150,9 +180,16 @@ impl EdgeSwipe {
     pub fn event(&mut self, kind: Kind, x: f32, y: f32) -> Route {
         // From here on `y` is the distance from the bottom edge (up = more).
         let (x, y) = self.edge_uv(x, y);
+        if kind == Kind::Down {
+            self.down_in = y;
+            self.max_in = y;
+        } else {
+            self.max_in = self.max_in.max(y);
+        }
         match (self.phase, kind) {
             (_, Kind::Down) => {
                 self.pull = 0.0;
+                self.finished = None;
                 if y < self.edge {
                     self.phase = Phase::Held { x, y };
                     Route::Hold
@@ -169,6 +206,7 @@ impl EdgeSwipe {
                     Route::Hold
                 } else if dx.abs() >= self.slop || -dy >= self.slop {
                     self.phase = Phase::Page;
+                    self.finish("page");
                     let (x, y) = self.screen_xy(x0, y0);
                     Route::PageFrom { x, y }
                 } else {
@@ -177,6 +215,7 @@ impl EdgeSwipe {
             }
             (Phase::Held { x: x0, y: y0 }, Kind::Up) => {
                 self.phase = Phase::Idle;
+                self.finish("tap");
                 let (x, y) = self.screen_xy(x0, y0);
                 Route::Tap { x, y }
             }
@@ -186,11 +225,15 @@ impl EdgeSwipe {
             }
             (Phase::Pulling { y0 }, Kind::Up) => {
                 let home = y - y0 >= self.threshold;
+                self.finish(if home { "home" } else { "short" });
                 self.reset();
                 if home { Route::Home } else { Route::Hold }
             }
             (Phase::Page, Kind::Up) => {
                 self.phase = Phase::Idle;
+                if self.finished.is_none() {
+                    self.finish("outside");
+                }
                 Route::Page
             }
             (Phase::Page, Kind::Move) => Route::Page,
@@ -214,6 +257,27 @@ mod tests {
         assert!(g.armed());
         assert_eq!(g.event(Kind::Up, 605.0, 660.0), Route::Home);
         assert_eq!(g.pull(), 0.0);
+    }
+
+    #[test]
+    fn traces_say_what_each_touch_was() {
+        let mut g = EdgeSwipe::default();
+        g.event(Kind::Down, 600.0, 795.0);
+        g.event(Kind::Move, 600.0, 650.0);
+        g.event(Kind::Up, 600.0, 650.0);
+        let t = g.finished().unwrap();
+        assert_eq!((t.down_in, t.max_in, t.outcome), (5.0, 150.0, "home"));
+        assert_eq!(g.finished(), None);
+        // Started 30 px in: outside the strip, the page's.
+        g.event(Kind::Down, 600.0, 770.0);
+        g.event(Kind::Move, 600.0, 600.0);
+        g.event(Kind::Up, 600.0, 600.0);
+        let t = g.finished().unwrap();
+        assert_eq!((t.down_in, t.max_in, t.outcome), (30.0, 200.0, "outside"));
+        g.event(Kind::Down, 600.0, 795.0);
+        g.event(Kind::Move, 600.0, 740.0);
+        g.event(Kind::Up, 600.0, 740.0);
+        assert_eq!(g.finished().unwrap().outcome, "short");
     }
 
     #[test]
