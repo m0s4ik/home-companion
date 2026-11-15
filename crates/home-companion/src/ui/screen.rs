@@ -6528,8 +6528,11 @@ mod tests {
         assert!(tap(&ui));
         assert_eq!(ids(&fired), ok("c"));
         ui.set_dnd(None);
-        // The night layout (dimmed): the same.
-        ui.toggle_night();
+        // The night layout (dimmed): the same. A toggle: at night (the CI ran at 23:05) it is on
+        // already and one toggle would turn it off.
+        if !ui.desk.borrow().night_now {
+            ui.toggle_night();
+        }
         assert!(ui.desk.borrow().night_now);
         ui.apply_hub(show(Some("d")));
         assert!(tap(&ui));
