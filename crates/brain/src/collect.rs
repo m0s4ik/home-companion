@@ -126,6 +126,7 @@ const ACTION_TOOLS: &[&str] = &[
     "list_jobs",
     "do_not_disturb",
     "show_view",
+    "take_photo",
     "announce",
     "read_briefing",
 ];

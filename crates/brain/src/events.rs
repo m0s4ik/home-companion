@@ -18,6 +18,7 @@
 //! | `confirm_pending` | `id`, `until_ms` (unix ms) | a spoken yes was heard: the commands run at `until_ms` unless a no (or the stop word) comes first |
 //! | `confirm_done` | `id`, `yes` (true/false; null = nobody answered), `via` (`screen`, `voice_reflex`, `voice_ha`, `stop`, `timeout`, `replaced`), `failed` (names of the devices that did not do it) | the question is over, exactly once per question; after a yes its `changed` events come first |
 //! | `show_view` | `path` (a Home Assistant path) or `camera` (a `camera.*` entity) | opens Home Assistant's view there |
+//! | `take_photo` | (none) | the camera page with its countdown, then a photo kept on the device |
 //! | `upcoming` | `items`: `start`, `end` (unix s), `all_day`, `title`, `calendar` | the calendar events for the "next" card, soonest first; sent on subscribe and when they change |
 
 use serde_json::{Value, json};
@@ -91,6 +92,11 @@ pub fn show_view(view: View) -> Value {
     }
 }
 
+/// "Fammi una foto" through Home Assistant: the body's camera page with its countdown.
+pub fn take_photo() -> Value {
+    json!({"event": "take_photo"})
+}
+
 /// One calendar event for the "next" card.
 pub struct Upcoming<'a> {
     pub start: i64,
@@ -140,6 +146,7 @@ mod tests {
             confirm_done(44, None, "timeout", &[]),
             show_view(View::Path("/lovelace/energy")),
             show_view(View::Camera("camera.front_door")),
+            take_photo(),
             upcoming(&[Upcoming {
                 start: 1_794_150_000,
                 end: 1_794_153_600,

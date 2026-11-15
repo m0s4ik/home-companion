@@ -1307,6 +1307,7 @@ enum HouseEvent {
     /// A new subscription: the question on screen is forgotten (the brain replays it).
     Resubscribed,
     View(brain_link::View),
+    Photo,
 }
 
 /// Whether `hour` is in the night hours `start..end` (they may cross midnight).
@@ -5425,6 +5426,7 @@ impl<S: Screen> Ui<S> {
                     house_cards.push(HouseEvent::AskOver(id, yes, via, failed));
                 }
                 BrainMsg::ShowView(v) => house_cards.push(HouseEvent::View(v)),
+                BrainMsg::TakePhoto => house_cards.push(HouseEvent::Photo),
                 BrainMsg::Upcoming(items) => {
                     d.memories.events = event_rows(&items, &l, now_unix() as i64);
                     d.events = items;
@@ -5554,6 +5556,12 @@ impl<S: Screen> Ui<S> {
             HouseEvent::Resubscribed => self.house.borrow_mut().clear_question(),
             HouseEvent::View(v) => {
                 self.show_view(v);
+                return;
+            }
+            HouseEvent::Photo => {
+                if let Some(me) = self.this.borrow().upgrade() {
+                    me.open_camera(true);
+                }
                 return;
             }
         }

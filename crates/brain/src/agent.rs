@@ -1370,6 +1370,7 @@ impl Brain {
                 None => Err("Home Assistant is not configured".into()),
             },
             "show_view" => self.show_view(&call.args),
+            "take_photo" => self.take_photo(),
             "announce" => self.announce_tool(&call.args),
             "schedule" => self.schedule(&call.args),
             "list_jobs" => {
@@ -1887,6 +1888,14 @@ impl Brain {
                 }),
                 &[],
             ),
+        });
+        v.push(ToolSpec {
+            name: "take_photo",
+            description: "Take a photo with the device's own camera: its screen shows the camera \
+                          with a 3-second countdown, then the photo, kept on the device (its Photos \
+                          page). 'fammi una foto', 'scatta una foto', 'take a picture of me'. Nothing \
+                          leaves the device.",
+            parameters: obj(json!({}), &[]),
         });
         if self.ha().is_some() {
             v.push(ToolSpec {
@@ -2408,6 +2417,18 @@ impl Brain {
         } else {
             st.last = Some(ev.clone());
             Some(ev)
+        }
+    }
+
+    /// The `take_photo` tool: the body opens its camera page with the countdown.
+    fn take_photo(&self) -> Result<Value, String> {
+        match self.hub.get() {
+            Some(h) if h.subscribers() > 0 => {
+                h.broadcast(&[crate::events::take_photo()]);
+                log::info!(event = "brain_take_photo"; "photo asked on the device");
+                Ok(json!({"countdown_s": 3, "kept_on": "the device's Photos page"}))
+            }
+            _ => Err("the device's screen is not connected: no photo".into()),
         }
     }
 
