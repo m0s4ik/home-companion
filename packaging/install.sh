@@ -20,6 +20,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 PREFIX=/opt/home-companion
 ETC=/etc/home-companion
 UNITS=/etc/systemd/system
+WEB_MESA_DROPIN=$UNITS/home-companion-web.service.d/mesa-gmem.conf
+MESA_GMEM_FIXED=26.3.0-2
 UDEV_RULE=/etc/udev/rules.d/99-home-companion-backlight.rules
 NFT_FILE=/etc/nftables.d/home-companion.nft
 ARCH_LIBS=/usr/lib/aarch64-linux-gnu
@@ -30,6 +32,8 @@ VOSK_URL=https://alphacephei.com/vosk/models
 VOSK_MODELS="
 it vosk-model-small-it-0.22 9ec65e75861d1c6c2e457cccd932705340dcdf233f5b239f00733b4de0bf3267
 en vosk-model-small-en-us-0.15 30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498
+nl vosk-model-small-nl-0.22 039811c3b829de64e4f123a9f684a53784005b212a346ac0b899dc7efce2ed0a
+de vosk-model-small-de-0.15 b7e53c90b1f0a38456f4cd62b366ecd58803cd97cd42b06438e2c131713d5e43
 "
 
 # Debian packages: what the body and its helpers load (Mesa's libgbm/libEGL come from mesa-freedreno),
@@ -50,7 +54,7 @@ usage: install.sh [options]
 Nothing is asked (but whether to keep an existing configuration): the language and Home Assistant's
 address are chosen on the device's screen at first start unless given here.
 
-  --language it|en      the language
+  --language it|en|nl|de   the language
   --name NAME           the device's name in Home Assistant and in the AirPlay menu (default Alfred)
   --ha-url URL          Home Assistant's address, http://host:8123
   --no-airplay          no AirPlay receiver (default: on when the system has the AirPlay runtime,
@@ -147,7 +151,8 @@ if [ -n "$UNINSTALL" ]; then
     for u in home-companion-web home-companion-brain home-companion; do
         have_unit "$u.service" && run systemctl disable --now "$u.service"
     done
-    for f in "$UNITS/home-companion.service" "$UNITS/home-companion-web.service" "$UNITS/home-companion-brain.service" "$UDEV_RULE"; do
+    have_unit home-companion-update.path && run systemctl disable --now home-companion-update.path
+    for f in "$UNITS/home-companion.service" "$UNITS/home-companion-web.service" "$UNITS/home-companion-brain.service" "$UNITS/home-companion-update.service" "$UNITS/home-companion-update.path" "$UDEV_RULE" "$WEB_MESA_DROPIN"; do
         [ -e "$f" ] && run rm -f "$f"
     done
     [ -d "$UNITS/home-companion.service.wants" ] && run rm -rf "$UNITS/home-companion.service.wants"
@@ -227,7 +232,7 @@ fi
 if [ "$CONFIG_MODE" = new ]; then
     # Nothing is asked: the language and Home Assistant's address are chosen on the device's screen at
     # first start unless given here; the name is the character's
-    case "$LANGUAGE" in "" | it | en) ;; *) die "--language: it or en, not $LANGUAGE" ;; esac
+    case "$LANGUAGE" in "" | it | en | nl | de) ;; *) die "--language: it, en, nl or de, not $LANGUAGE" ;; esac
     [ -n "$DEVICE_NAME" ] || DEVICE_NAME=Alfred
     case "$DEVICE_NAME" in *'"'* | *\\* | *'|'* | *'&'*) die "--name: no quotes, backslashes, | or &" ;; esac
     HA_URL=${HA_URL%/}
@@ -348,6 +353,8 @@ for b in home-companion home-companion-brain home-companion-reflex; do
     put "$HERE/opt/$b" "$PREFIX/$b" 0755
 done
 put "$HERE/opt/lib/libvosk.so" "$PREFIX/lib/libvosk.so" 0755
+# Updates from the screen (Settings -> Info): the root side (crates/home-companion/src/update.rs)
+put "$HERE/packaging/home-companion-update.sh" "$PREFIX/home-companion-update.sh" 0755
 put "$HERE/opt/airplay/uxplay" "$PREFIX/airplay/uxplay" 0755
 if [ "$WEB_AVAILABLE" = yes ]; then
     put "$HERE/opt/home-companion-web" "$PREFIX/home-companion-web" 0755
@@ -452,8 +459,24 @@ fi
 say "services, udev rule, firewall"
 put "$HERE/packaging/home-companion.service" "$UNITS/home-companion.service" 0644
 put "$HERE/packaging/home-companion-brain.service" "$UNITS/home-companion-brain.service" 0644
+put "$HERE/packaging/home-companion-update.service" "$UNITS/home-companion-update.service" 0644
+put "$HERE/packaging/home-companion-update.path" "$UNITS/home-companion-update.path" 0644
+# where the body asks for an update (the path unit watches it) and the service says how it goes
+run install -d -m 0750 -o home-companion -g home-companion /var/lib/home-companion/update
 if [ "$WEB_AVAILABLE" = yes ]; then
     put "$HERE/packaging/home-companion-web.service" "$UNITS/home-companion-web.service" 0644
+    # mesa-freedreno 26.3.0-2 fixes freedreno's GMEM loop: the browser no longer needs sysmem rendering
+    if dpkg --compare-versions "$(pkg_version mesa-freedreno)" ge "$MESA_GMEM_FIXED" 2>/dev/null; then
+        run mkdir -p "$UNITS/home-companion-web.service.d"
+        if [ -n "$DRY" ]; then
+            printf '    + write %s\n' "$WEB_MESA_DROPIN"
+        else
+            printf '# written by install.sh: mesa-freedreno %s has the GMEM fix\n[Service]\nEnvironment=FD_MESA_DEBUG=\n' \
+                "$(pkg_version mesa-freedreno)" > "$WEB_MESA_DROPIN"
+        fi
+    elif [ -e "$WEB_MESA_DROPIN" ]; then
+        run rm -f "$WEB_MESA_DROPIN"
+    fi
 elif have_unit home-companion-web.service; then
     run systemctl disable home-companion-web.service
     run rm -f "$UNITS/home-companion-web.service"
@@ -498,6 +521,7 @@ UNITS_ON="home-companion.service home-companion-brain.service"
 [ "$WEB_AVAILABLE" = yes ] && UNITS_ON="$UNITS_ON home-companion-web.service"
 # shellcheck disable=SC2086
 run systemctl enable $UNITS_ON
+run systemctl enable --now home-companion-update.path
 if [ -n "$DRY" ] || systemctl -q is-active home-companion.service; then
     say "restarting the services"
     # home-companion-web is PartOf home-companion: it restarts with it

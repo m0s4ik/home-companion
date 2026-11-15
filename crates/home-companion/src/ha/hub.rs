@@ -47,12 +47,16 @@ pub enum HubCmd {
     Done { list: String, uid: String },
     /// The user's choice of lists (empty = all of them).
     SetLists(Vec<String>),
+    /// An event for Home Assistant's bus (`fire_event`, needs an admin user); `device` is added.
+    Fire { event_type: String, data: Value },
 }
 
 /// What the screen gets.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HubMsg {
     Card(CardEvent),
+    /// Home Assistant asks the screen to wake (true) or sleep (false).
+    Screen(bool),
     /// The lists and calendars that exist (the choosing page).
     Entities(Entities),
     /// The lists shown now, in order, with their names (a list left out disappears).
@@ -62,6 +66,27 @@ pub enum HubMsg {
         list: String,
         items: Vec<Item>,
     },
+    /// The connection to Home Assistant is up (true) or lost (false); `last_seen` is when the
+    /// last message came (seconds since the epoch, 0 = never), for "last synced at".
+    Link {
+        up: bool,
+        last_seen: i64,
+    },
+}
+
+/// What the hub knows of its link across connections: when the last message came (seconds since
+/// the epoch, 0 = never) and whether the screen was told it is up.
+#[derive(Debug, Default)]
+struct LinkState {
+    seen: i64,
+    told_up: bool,
+}
+
+/// Seconds since the epoch, now.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 pub struct HubConfig {
@@ -99,6 +124,18 @@ pub fn card_subscriptions(first: u64) -> [String; 2] {
         .collect::<Vec<_>>()
         .try_into()
         .expect("two event types")
+}
+
+/// The `subscribe_events` message for the screen event.
+pub fn screen_subscription(id: u64) -> String {
+    json!({"id": id, "type": "subscribe_events", "event_type": events::SCREEN_EVENT}).to_string()
+}
+
+/// The `fire_event` message: `data` with this device's name as `device`.
+pub fn fire_message(id: u64, event_type: &str, device: &str, data: &Value) -> Value {
+    let mut d = data.clone();
+    d["device"] = device.into();
+    json!({"id": id, "type": "fire_event", "event_type": event_type, "event_data": d})
 }
 
 /// The entities of an `event` message of the entities subscription (`{"event": {"result": …}}`,
@@ -213,6 +250,11 @@ fn run(cfg: HubConfig, tx: Sender<HubMsg>, cmds: Receiver<HubCmd>, stop: fn() ->
     };
     log::info!(event = "ha_hub"; "cards and lists from {}:{}", ep.host, ep.port);
     let mut chosen = cfg.lists.clone();
+    // When the last message came, and whether the screen was told the link is up.
+    let mut link = LinkState::default();
+    // The screen was told the link is lost (or was never made): the retries then stay short, so
+    // the offline sign goes soon after Home Assistant is back (the backoff alone grows to 5 min).
+    let mut told_down = false;
     let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(300));
     loop {
         if stop() {
@@ -230,22 +272,45 @@ fn run(cfg: HubConfig, tx: Sender<HubMsg>, cmds: Receiver<HubCmd>, stop: fn() ->
             }
         };
         let started = Instant::now();
-        match session(&cfg, &ep, &token, &tx, &cmds, &mut chosen, stop) {
+        match session(&cfg, &ep, &token, &tx, &cmds, &mut chosen, &mut link, stop) {
             Ok(()) => return,
             Err(why) => {
+                if std::mem::take(&mut link.told_up) {
+                    told_down = false;
+                }
+                if !told_down {
+                    // Also when it never connected (Home Assistant away at start-up).
+                    if tx
+                        .send(HubMsg::Link {
+                            up: false,
+                            last_seen: link.seen,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                    told_down = true;
+                }
                 if started.elapsed() >= Duration::from_secs(60) {
                     backoff.reset();
                 }
                 log::info!(event = "ha_hub"; "cards and lists: {why}, retrying");
             }
         }
-        if !pause(backoff.next_delay(), stop) {
+        let delay = backoff.next_delay();
+        let delay = if told_down {
+            delay.min(Duration::from_secs(15))
+        } else {
+            delay
+        };
+        if !pause(delay, stop) {
             return;
         }
     }
 }
 
 /// One connection; Ok = stop (or the UI is gone), Err = lost.
+#[allow(clippy::too_many_arguments)]
 fn session(
     cfg: &HubConfig,
     ep: &Endpoint,
@@ -253,6 +318,7 @@ fn session(
     tx: &Sender<HubMsg>,
     cmds: &Receiver<HubCmd>,
     chosen: &mut Vec<String>,
+    link: &mut LinkState,
     stop: fn() -> bool,
 ) -> Result<(), String> {
     let lost = |e: io::Error| format!("{}:{}: {e}", ep.host, ep.port);
@@ -287,10 +353,16 @@ fn session(
     let entities_id = take_id();
     let first_card_id = take_id();
     let _second_card_id = take_id();
+    let screen_id = take_id();
     let initial = [json!({"id": entities_id, "type": "render_template",
                           "template": ENTITIES_TEMPLATE, "report_errors": true})
     .to_string()];
-    for m in initial.iter().chain(&card_subscriptions(first_card_id)) {
+    let screen_sub = [screen_subscription(screen_id)];
+    for m in initial
+        .iter()
+        .chain(&card_subscriptions(first_card_id))
+        .chain(&screen_sub)
+    {
         ws.send_text(m).map_err(lost)?;
     }
     let mut known: Option<Entities> = None;
@@ -325,6 +397,23 @@ fn session(
         return Ok(());
     }
     log::info!(event = "ha_hub"; "cards and lists: connected to Home Assistant");
+    link.seen = unix_now();
+    link.told_up = true;
+    if tx
+        .send(HubMsg::Link {
+            up: true,
+            last_seen: link.seen,
+        })
+        .is_err()
+    {
+        ws.close();
+        return Ok(());
+    }
+    // A command (an event to fire) waits at most this long for the next read to end.
+    ws.set_read_timeout(Duration::from_millis(100))
+        .map_err(lost)?;
+    let mut fire_ids: Vec<u64> = Vec::new();
+    let mut fire_refused = false;
     let mut last_rx = Instant::now();
     let mut last_ping = Instant::now();
     loop {
@@ -339,6 +428,15 @@ fn session(
                     ws.send_text(&tick_message(take_id(), &list, &uid).to_string())
                         .map_err(lost)?;
                     log::info!(event = "ha_shopping"; "item ticked on the screen");
+                }
+                Ok(HubCmd::Fire { event_type, data }) => {
+                    let id = take_id();
+                    fire_ids.push(id);
+                    if fire_ids.len() > 16 {
+                        fire_ids.remove(0);
+                    }
+                    ws.send_text(&fire_message(id, &event_type, &cfg.device, &data).to_string())
+                        .map_err(lost)?;
                 }
                 Ok(HubCmd::SetLists(l)) => {
                     if *chosen != l {
@@ -356,6 +454,7 @@ fn session(
         match ws.read().map_err(lost)? {
             Some(Message::Text(t)) => {
                 last_rx = Instant::now();
+                link.seen = unix_now();
                 let Ok(v) = serde_json::from_str::<Value>(&t) else {
                     continue;
                 };
@@ -363,7 +462,13 @@ fn session(
                 let is_event = v.get("type").and_then(Value::as_str) == Some("event");
                 let failed = v.get("type").and_then(Value::as_str) == Some("result")
                     && v.get("success").and_then(Value::as_bool) == Some(false);
-                if failed {
+                if failed && id.is_some_and(|i| fire_ids.contains(&i)) {
+                    // Firing an event needs an admin user: said once, the conversation never waits.
+                    if !fire_refused {
+                        fire_refused = true;
+                        log::warn!(event = "ha_fire_refused"; "Home Assistant refused an event ({}): the QR link's user must be an administrator", v.pointer("/error/message").and_then(Value::as_str).unwrap_or("refused"));
+                    }
+                } else if failed {
                     let why = v
                         .pointer("/error/message")
                         .and_then(Value::as_str)
@@ -396,6 +501,12 @@ fn session(
                             })
                             .is_err()
                     {
+                        ws.close();
+                        return Ok(());
+                    }
+                } else if is_event && let Some(on) = events::parse_screen(&v, &cfg.device) {
+                    log::info!(event = "ha_screen", on; "screen from Home Assistant: {}", if on { "on" } else { "off" });
+                    if tx.send(HubMsg::Screen(on)).is_err() {
                         ws.close();
                         return Ok(());
                     }
@@ -440,6 +551,16 @@ mod tests {
     use events::HaCard;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+
+    /// The next message, the link's up and down left out.
+    fn next(rx: &Receiver<HubMsg>) -> HubMsg {
+        loop {
+            match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                HubMsg::Link { .. } => {}
+                m => return m,
+            }
+        }
+    }
 
     fn named(v: &[(&str, &str)]) -> Vec<Named> {
         v.iter()
@@ -620,6 +741,8 @@ mod tests {
         assert_eq!(c1["event_type"], "home_companion_card");
         let c2 = read_frame(&mut s, &mut buf);
         assert_eq!(c2["event_type"], "home_companion_card_dismiss");
+        let c3 = read_frame(&mut s, &mut buf);
+        assert_eq!(c3["event_type"], "home_companion_screen");
         // Home Assistant tells what exists: every todo list is subscribed (nothing chosen).
         send(
             &mut s,
@@ -637,9 +760,15 @@ mod tests {
             );
         }
         let mut got = Vec::new();
-        // First the empty list of lists (nothing known yet), then what exists, then the lists.
+        // First the empty list of lists (nothing known yet), then what exists, then the lists;
+        // the link's "up" comes once the subscriptions are made.
         while got.len() < 3 {
-            got.push(rx.recv_timeout(Duration::from_secs(5)).unwrap());
+            match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                HubMsg::Link { up, last_seen } => {
+                    assert!(up && last_seen > 0);
+                }
+                m => got.push(m),
+            }
         }
         assert!(
             got.iter()
@@ -660,7 +789,7 @@ mod tests {
                 {"uid": "a", "summary": "Pane", "status": "needs_action"}]}}),
         );
         assert_eq!(
-            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            next(&rx),
             HubMsg::Items {
                 list: "todo.spesa".into(),
                 items: vec![("a".into(), "Pane".into())]
@@ -672,13 +801,47 @@ mod tests {
                     "data": {"id": "w", "text": "Done"}}}),
         );
         assert_eq!(
-            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            next(&rx),
             HubMsg::Card(CardEvent::Show(HaCard {
                 id: Some("w".into()),
                 text: "Done".into(),
                 ..Default::default()
             }))
         );
+        // The screen is asked to sleep, and to wake.
+        for (state, want) in [("off", false), ("on", true)] {
+            send(
+                &mut s,
+                &json!({"id": c3["id"], "type": "event", "event": {
+                    "event_type": "home_companion_screen", "data": {"state": state}}}),
+            );
+            assert_eq!(next(&rx), HubMsg::Screen(want));
+        }
+        // An event for Home Assistant's bus, with this device's name; a refusal is not fatal.
+        tx.send(HubCmd::Fire {
+            event_type: "home_companion_conversation".into(),
+            data: json!({"state": "started", "trigger": "wake"}),
+        })
+        .unwrap();
+        let fire = read_frame(&mut s, &mut buf);
+        assert_eq!(fire["type"], "fire_event");
+        assert_eq!(fire["event_type"], "home_companion_conversation");
+        assert_eq!(
+            fire["event_data"],
+            json!({"state": "started", "trigger": "wake", "device": "Alfred"})
+        );
+        send(
+            &mut s,
+            &json!({"id": fire["id"], "type": "result", "success": false,
+                    "error": {"code": "unauthorized", "message": "Unauthorized"}}),
+        );
+        tx.send(HubCmd::Fire {
+            event_type: "home_companion_conversation".into(),
+            data: json!({"state": "ended", "trigger": "wake", "handled_by": "reflex"}),
+        })
+        .unwrap();
+        let fire2 = read_frame(&mut s, &mut buf);
+        assert_eq!(fire2["event_data"]["handled_by"], "reflex");
         // A tick on the screen.
         tx.send(HubCmd::Done {
             list: "todo.spesa".into(),
@@ -693,10 +856,7 @@ mod tests {
         let m = read_frame(&mut s, &mut buf);
         assert_eq!(m["type"], "unsubscribe_events");
         assert_eq!(m["subscription"], sub_ids["todo.spesa"]);
-        assert_eq!(
-            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-            HubMsg::Lists(named(&[("todo.casa", "Casa")]))
-        );
+        assert_eq!(next(&rx), HubMsg::Lists(named(&[("todo.casa", "Casa")])));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -1982,7 +1982,9 @@ fn set_prompt(api: &mut dyn Api, ai: &str, sub: &str, prompt: &str) -> Result<()
 
 /// Whether the instructions Home Assistant has are still the body's (`written`, what it last
 /// wrote), so a newer version may replace them. Before the body kept a copy (`written` empty): the
-/// body's when they read like its template (they use its tools and its memory sensor).
+/// body's when they read like its template (they use its tools and its memory sensor of 0.2).
+/// Since 0.2 the copy is always kept: a current prompt with no copy (the state file lost) may
+/// be the user's, completed with the README's lines, and is left alone.
 pub fn prompt_is_ours(current: &str, written: &str) -> bool {
     if written.is_empty() {
         current.contains("home_control") && current.contains("_memoria")
@@ -2027,6 +2029,18 @@ pub fn speech_hints(language: &str) -> Option<(&'static str, &'static str)> {
             // model transcribed an Italian sentence in Spanish (3 times out of 3) and wrote the
             // prompt itself on a false wake's noise; with this one, Italian and nothing (13/11).
             "Trascrivi in italiano. Comandi per un assistente di casa in italiano.",
+        )),
+        // Worded like the Italian ones (an order, not only the topic); not yet measured the
+        // way they were.
+        "nl" => Some((
+            "Spreek Nederlands, met een natuurlijk Nederlands accent.",
+            "Schrijf uit in het Nederlands. Opdrachten voor een huisassistent in het Nederlands.",
+        )),
+        // The Italian pair's wording in German; checked by ear on a device (the transcription
+        // prompt names the radio stations of its user there, which is left out here).
+        "de" => Some((
+            "Sprich Deutsch, mit einem natürlichen deutschen Akzent.",
+            "Schreibe auf Deutsch. Befehle für einen Hausassistenten auf Deutsch.",
         )),
         _ => None,
     }
@@ -2207,9 +2221,9 @@ fn reconfigure_sub(
 
 /// "Unlink": the satellite's options back as they were, then what the body made removed (the
 /// pipeline, the agent and any left behind by a move, the preferred AI task it set, the MCP and
-/// the Wyoming integrations), newest first. Errors are logged
-/// and the rest goes on.
-pub fn unlink(api: &mut dyn Api, st: &State) -> Vec<String> {
+/// the Wyoming integrations, the memory state of the character `name`), newest first. Errors are
+/// logged and the rest goes on.
+pub fn unlink(api: &mut dyn Api, st: &State, name: &str) -> Vec<String> {
     let mut errors = Vec::new();
     let mut note = |what: &str, r: Result<(), String>| {
         if let Err(e) = r {
@@ -2266,6 +2280,12 @@ pub fn unlink(api: &mut dyn Api, st: &State) -> Vec<String> {
             );
             note(what, r.map(|_| ()));
         }
+    }
+    // What the agent knew (ha/memory.rs): gone with the link; already gone is fine.
+    let path = format!("/api/states/{}", super::memory::entity_id(name));
+    match api.rest("DELETE", &path, None) {
+        Err(e) if !e.contains("HTTP 404") => note("memory", Err(e)),
+        _ => {}
     }
     errors
 }
@@ -2592,7 +2612,7 @@ fn run(cfg: SetupConfig, cmds: Receiver<SetupCmd>, ev: Sender<SetupEvent>, stop:
                 // Answered above, without "busy".
                 SetupCmd::Usage => {}
                 SetupCmd::Unlink => {
-                    let errors = unlink(&mut api, &st);
+                    let errors = unlink(&mut api, &st, &body.name);
                     if errors.is_empty() {
                         let _ = std::fs::remove_file(&cfg.state_file);
                     }
@@ -2702,10 +2722,13 @@ fn background(cfg: &SetupConfig, st: &mut State, at_start: bool, ev: &Sender<Set
 }
 
 /// The agent's instructions: the character's persona (`persona.<lang>.md`, comments dropped)
-/// and how to use the tools, in the character's language (English if there is none).
-pub fn agent_prompt(character_dir: &Path, language: &str) -> String {
+/// and how to use the tools, in the character's language (English if there is none), reading
+/// the memory state of the character `name` (ha/memory.rs).
+pub fn agent_prompt(character_dir: &Path, language: &str, name: &str) -> String {
     let tools = match language {
         "it" => include_str!("agent-prompt.it.md"),
+        "nl" => include_str!("agent-prompt.nl.md"),
+        "de" => include_str!("agent-prompt.de.md"),
         _ => include_str!("agent-prompt.en.md"),
     };
     let persona = [language, "en"]
@@ -2721,6 +2744,7 @@ pub fn agent_prompt(character_dir: &Path, language: &str) -> String {
             .to_string()
     };
     format!("{}\n\n{}", text(&persona), text(tools))
+        .replace("@MEMORY_ENTITY@", &super::memory::entity_id(name))
 }
 
 #[cfg(test)]
@@ -2729,11 +2753,16 @@ mod tests {
 
     #[test]
     fn instructions_are_ours_until_the_user_edits_them() {
-        let ours = agent_prompt(Path::new("/nonexistent"), "en");
+        let ours = agent_prompt(Path::new("/nonexistent"), "en", "Alfred");
         assert!(prompt_is_ours(&ours, &ours));
         assert!(!prompt_is_ours("Be brief.", &ours));
-        // Before the body kept a copy: its template, by its tools and memory sensor.
-        assert!(prompt_is_ours(&ours, ""));
+        // Before the body kept a copy: 0.2's template, by its tools and memory sensor; a current
+        // one without a copy is not judged the body's (it may be the user's).
+        assert!(prompt_is_ours(
+            "Usa home_control.\n{{ state_attr('sensor.alfred_memoria', 'profile') }}",
+            ""
+        ));
+        assert!(!prompt_is_ours(&ours, ""));
         assert!(!prompt_is_ours("You are a pirate.", ""));
     }
     use std::collections::HashMap;
@@ -2752,6 +2781,8 @@ mod tests {
         flows: HashMap<String, (String, Option<String>)>,
         next: u32,
         reloads: Vec<String>,
+        /// States deleted (`DELETE /api/states/…`).
+        deleted_states: Vec<String>,
         writes: u32,
         ai_task_pref: Option<String>,
         /// The timbres of a voice engine (`tts/engine/voices`).
@@ -3164,6 +3195,10 @@ mod tests {
                         self.remove_entry(id);
                         json!(null)
                     }
+                    ("DELETE", ["", "api", "states", id]) => {
+                        self.deleted_states.push(id.to_string());
+                        json!(null)
+                    }
                     ("POST", ["subentries", "flow"])
                         if matches!(body["handler"][1].as_str(), Some("tts" | "stt")) =>
                     {
@@ -3459,7 +3494,7 @@ mod tests {
 
         // Unlink: the user's three AIs, nothing else.
         ha.ai_task_pref = Some(st.ai_task_set.clone());
-        assert!(unlink(&mut ha, &st).is_empty());
+        assert!(unlink(&mut ha, &st, "Alfred").is_empty());
         assert_eq!(ha.entries.len(), 3);
         assert!(ha.subs.values().all(|v| v.is_empty()));
         assert_eq!(ha.pipelines.len(), 1);
@@ -3627,6 +3662,35 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ha.alfred()["tts_voice"], "cedar");
+    }
+
+    #[test]
+    fn instructions_of_0_2_become_the_memory_ones() {
+        // P5: the agent with 0.2's instructions (from before the body kept a copy) gets the new
+        // ones, which read sensor.alfred_memory; instructions the user wrote are left alone.
+        let file = tmp("prompt-0.2");
+        let mut ha = FakeHa::new();
+        let ai = ha.add_ai();
+        let mut st = State::default();
+        run(&mut ha, &mut st, &file, Scope::Missing);
+        let old = "Usa home_control.\n{{ state_attr('sensor.alfred_memoria', 'profile') or 'ancora niente' }}";
+        ha.subs.get_mut(&ai).unwrap()[0]["data"]["prompt"] = json!(old);
+        st.prompt_written.clear();
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../characters/alfred");
+        let newer = Body {
+            prompt: agent_prompt(&dir, "it", "Alfred"),
+            ..body()
+        };
+        assert!(refresh_prompt(&mut ha, &mut st, &newer).unwrap());
+        let now = ha.subs[&ai][0]["data"]["prompt"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(now.contains("sensor.alfred_memory'"), "{now}");
+        // Edited by the user: left.
+        ha.subs.get_mut(&ai).unwrap()[0]["data"]["prompt"] = json!("Sei un pirata.");
+        assert!(!refresh_prompt(&mut ha, &mut st, &newer).unwrap());
+        assert_eq!(ha.subs[&ai][0]["data"]["prompt"], "Sei un pirata.");
     }
 
     #[test]
@@ -3941,11 +4005,12 @@ mod tests {
         let file = tmp("unlink");
         let mut st = State::default();
         run(&mut ha, &mut st, &file, Scope::Missing);
-        assert!(unlink(&mut ha, &st).is_empty());
+        assert!(unlink(&mut ha, &st, "Alfred").is_empty());
         assert_eq!(ha.entries.len(), 1, "only the user's AI is left");
         assert_eq!(ha.entries[0]["entry_id"], ai.as_str());
         assert_eq!(ha.pipelines.len(), 1);
         assert!(ha.subs[&ai].is_empty());
+        assert_eq!(ha.deleted_states, vec!["sensor.alfred_memory".to_string()]);
     }
 
     #[test]
@@ -3978,7 +4043,7 @@ mod tests {
                 .count(),
             1
         );
-        unlink(&mut ha, &st);
+        unlink(&mut ha, &st, "Alfred");
         assert_eq!(
             ha.entries
                 .iter()
@@ -4023,10 +4088,31 @@ mod tests {
     #[test]
     fn the_agents_instructions() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../characters/alfred");
-        let it = agent_prompt(&dir, "it");
+        let it = agent_prompt(&dir, "it", "Alfred");
         assert!(it.starts_with("Sei Alfred"), "{it}");
         assert!(it.contains("home_control") && !it.contains("<!--"));
-        assert!(agent_prompt(&dir, "xx").contains("Tools:"));
+        assert!(agent_prompt(&dir, "xx", "Alfred").contains("Tools:"));
+        // P3: the memory state of the character, and Home Assistant's people.
+        for l in ["en", "it", "nl", "de"] {
+            let p = agent_prompt(&dir, l, "Alfred");
+            assert!(
+                p.contains("{{ state_attr('sensor.alfred_memory', 'text') or '"),
+                "{l}: {p}"
+            );
+            assert!(p.contains("{{ states.person | map(attribute='name') | join(', ') or '"));
+            assert!(!p.contains('@') && !p.contains("_memoria"), "{l}");
+        }
+        // An instructions text of 0.2 is still recognized as the body's.
+        let old = "Usa home_control.\n{{ state_attr('sensor.alfred_memoria', 'profile') or 'ancora niente' }}";
+        assert!(prompt_is_ours(old, ""));
+        let nl = agent_prompt(&dir, "nl", "Alfred");
+        assert!(nl.starts_with("Je bent Alfred"), "{nl}");
+        assert!(
+            nl.contains("Hulpmiddelen:") && nl.contains("home_control") && !nl.contains("<!--")
+        );
+        let de = agent_prompt(&dir, "de", "Alfred");
+        assert!(de.starts_with("Du bist Alfred"), "{de}");
+        assert!(de.contains("Werkzeuge:") && de.contains("home_control") && !de.contains("<!--"));
     }
 
     #[test]
@@ -4047,7 +4133,7 @@ mod tests {
     #[test]
     fn every_row_has_its_words() {
         let dir = locale::repo_locales();
-        for lang in ["it", "en"] {
+        for lang in ["it", "en", "nl", "de"] {
             let l = locale::load(&dir, lang).unwrap();
             let src = include_str!("setup.rs");
             let src = &src[..src.find("#[cfg(test)]").unwrap()];
@@ -4163,6 +4249,10 @@ mod tests {
         assert!(ha.speech.is_empty());
         assert_eq!(speech_hints("it-IT"), speech_hints("it"));
         assert_eq!(speech_hints("en"), None);
+        assert_eq!(speech_hints("nl-NL"), speech_hints("nl"));
+        assert!(speech_hints("nl").unwrap().1.contains("Nederlands"));
+        assert_eq!(speech_hints("de-DE"), speech_hints("de"));
+        assert!(speech_hints("de").unwrap().1.contains("Deutsch"));
     }
 
     #[test]

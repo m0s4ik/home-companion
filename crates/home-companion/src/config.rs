@@ -39,6 +39,9 @@ pub struct Config {
     pub airplay: crate::airplay::AirplayCfg,
     /// Prices for the rough cost of the cloud services shown in Settings (usage.rs).
     pub usage: crate::usage::Prices,
+    /// Updates from the releases of a GitHub repository (update.rs); the root update service
+    /// reads `repo` from this file too.
+    pub update: crate::update::UpdateCfg,
     pub paths: Paths,
     pub log: LogCfg,
 }
@@ -289,6 +292,7 @@ impl Default for Config {
             reflexes: ReflexesCfg::default(),
             airplay: Default::default(),
             usage: Default::default(),
+            update: Default::default(),
             paths: Paths::default(),
             log: LogCfg::default(),
         }
@@ -813,7 +817,11 @@ impl Config {
             name: self.satellite.name.clone(),
             wyoming_port: self.bind_addr()?.port(),
             mcp_port: self.home_assistant.mcp_port,
-            prompt: crate::ha::setup::agent_prompt(character, &self.character.language),
+            prompt: crate::ha::setup::agent_prompt(
+                character,
+                &self.character.language,
+                &self.satellite.name,
+            ),
             voices: character::preferred_voices(character),
             language: self.character.language.clone(),
             brain: crate::brain_link::brain_info,

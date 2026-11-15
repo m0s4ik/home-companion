@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!-- SPDX-FileCopyrightText: 2026 Andrea Mattera -->
 
-# home-companion-web socket protocol (version 1)
+# home-companion-web socket protocol (version 2)
 
 The body (`home-companion`) and the web view helper (`home-companion-web`) talk over one Unix socket of type
 `SOCK_SEQPACKET` (`home-companion-web.sock`): the helper listens, the body connects. One message per packet;
@@ -58,6 +58,8 @@ H = helper → body, B = body → helper. Size = whole message.
 | 15 | `confirm` | H | 20 + path | u32 id, u32 kind (0 heavy view), u32 path_len, path |
 | 16 | `confirm-result` | B | 16 | u32 id, i32 accepted (1 open, 0 stay) |
 | 17 | `guard` | B | 12 + paths | u32 n_paths, then per path {u32 len, path} |
+| 18 | `pause` | B | 8 | (version 2) stop the web process while the view stays hidden; the network process runs, so the page's connections stay open |
+| 19 | `resume` | B | 8 | (version 2) let it run again; `show` and the body going away resume it too |
 
 ### hello
 

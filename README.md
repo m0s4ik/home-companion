@@ -47,7 +47,7 @@ answers on the screen and out loud. "Stop" or "basta" interrupts him; "repeat" s
 question of his, a "no thanks" closes it.
 
 If he woke up by mistake, **False alarm** next to Stop ends it and keeps that recording on the device, to train
-the wake word better.
+the wake word better. Stop pressed while he is still listening after his name counts the same way.
 
 <p align="center">
 <img src="docs/images/listening.png" width="400" alt="Alfred with a hand to his ear: I'm listening, with the Stop and False alarm buttons"> <!-- state: listening -->
@@ -97,7 +97,10 @@ says what was done, with Undo. Locks, alarms, doors and gates are never moved by
 
 A pull from the top edge opens the control centre: Wi-Fi, AirPlay, the microphone, night mode, do not disturb and
 the link to Home Assistant, each a tile that says how it stands; under them the volume, the brightness (by hand or
-automatic) and what is playing.
+automatic) and what is playing. On a device with a camera (thinksmart-view-debian with `CAMERA=1`) a **Camera**
+tile opens the camera as a mirror, framed exactly as the photo will be: **Shoot** counts 3-2-1 (Cancel meanwhile)
+and takes it, and **Photos** shows the ones kept on the device (the last 20; each can be deleted). "Okay Alfred, take
+a photo" opens the camera and starts the countdown once he has answered. With the lens cover closed it says so.
 
 **Do not disturb**, from its tile or by voice ("do not disturb for an hour", "good night"), silences the cards'
 sounds and the announcements; timers and alarms still ring. A bell asleep on a cushion at Alfred's feet shows it
@@ -114,8 +117,22 @@ a red "Microphone off" over the clock, and the control centre's tile says who sw
 ### 🧠 Memories, reminders and lists
 
 What you tell Alfred to remember ("remember that the boiler is in the cellar") is kept **on the device** and tidied
-at night; More → Memories shows all of it, one tap forgets a memory, another forgets everything. Conversations are
-kept on the screen too, if you want them (Settings → Keep conversations).
+at night; "forget that…" or one tap on More → Memories forgets a memory, another tap forgets everything. Alfred keeps
+only standing facts said by you (never what was done today, nor dates), and a name he heard only once waits under
+"To confirm" until you tap Right. Conversations are kept on the screen too, if you want them (Settings → Keep
+conversations).
+
+So that the assistant knows these facts at every conversation, Alfred writes them (at most 1500 characters) into Home
+Assistant as the state `sensor.alfred_memory`, which his agent's instructions read. Like any state, every Home
+Assistant user can see it and its history is kept for the recorder's purge period (add it to `recorder: exclude:` to
+avoid that). Two devices with the same character name would share one state: give them different names. If you
+edited the agent's instructions yourself, add these lines at the end:
+
+```
+What you know about this home and the people in it:
+{{ state_attr('sensor.alfred_memory', 'text') or 'Nothing yet.' }}
+People registered in Home Assistant: {{ states.person | map(attribute='name') | join(', ') or 'none' }}
+```
 
 Lists and calendars are Home Assistant's: "add milk to the shopping list" writes to a `todo.*` list (Home
 Assistant's own, Bring!, ...), and the home's next card reads your `calendar.*` calendars. Home Assistant page →
@@ -126,7 +143,9 @@ a section each on the Shopping page.
 
 Your Home Assistant dashboard full screen, kept loaded in the background so it opens at once. The gold button, or
 a swipe from its edge, brings you back to Alfred; "Okay Alfred" still works over it. "Show me the front door
-camera", or the name of a dashboard, opens it by voice.
+camera", or the name of a dashboard, opens it by voice. When the page is still catching up after a while hidden, a
+gold arc turns around the home button; if the connection to Home Assistant is lost, the button shows a cloud and
+the time of the last data.
 
 <p align="center">
 <img src="docs/images/home-assistant-3d.png" width="400" alt="A 3D floor plan of a house in Home Assistant, with its lights, covers, speaker and thermostat, and the gold home button">
@@ -198,6 +217,127 @@ event_data:
 The card plays the soft reminder sound by day and goes away with its OK. `home_companion_card_dismiss` with an `id`
 takes a card away.
 
+The screen can be put to sleep and woken the same way, for example from a presence sensor:
+
+```yaml
+automation:
+  - alias: Kitchen display follows the room
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.kitchen_presence
+        to: "off"
+        for: "00:05:00"
+        id: empty
+      - trigger: state
+        entity_id: binary_sensor.kitchen_presence
+        to: "on"
+        id: present
+    actions:
+      - action: event
+        event: home_companion_screen
+        event_data:
+          state: "{{ \"off\" if trigger.id == \"empty\" else \"on\" }}"
+          device: Alfred   # optional, as for cards
+```
+
+`state: "off"` does what "screen off" does by voice (the backlight goes dark); `state: "on"` wakes it like a touch.
+Touching the screen or moving in front of it still wakes it, and the screen's own idle timeout still applies.
+
+Tapping **OK** on a card tells Home Assistant: the body fires `home_companion_card_ok` with the `id` the card was
+sent with (a card without an `id`, one that expires by itself, and one taken away with `home_companion_card_dismiss`
+fire nothing). An automation can then act on it. For example, one card per overdue to-do item, and the OK ticks
+the item off (the card's `id` is the item's uid, with a prefix so that the second automation can tell these cards
+from others):
+
+```yaml
+automation:
+  - alias: Overdue chores as cards
+    triggers:
+      - trigger: time_pattern
+        minutes: "/30"
+      - trigger: state
+        entity_id: todo.household
+    actions:
+      - action: todo.get_items
+        target: {entity_id: todo.household}
+        data: {status: needs_action}
+        response_variable: chores
+      - repeat:
+          for_each: >-
+            {{ (chores['todo.household']['items']
+                | selectattr('due', 'defined') | selectattr('due', 'string')
+                | selectattr('due', 'lt', (now() + timedelta(days=1)).date().isoformat())
+                | sort(attribute='due') | list)[:3] }}
+          sequence:
+            - action: event
+              event: home_companion_card
+              event_data:
+                id: "todo-{{ repeat.item.uid }}"
+                title: "{{ repeat.item.summary }}"
+                text: Overdue
+                seconds: 2700   # gone by itself if the item is done elsewhere
+                device: Alfred
+
+  - alias: OK on a chore card ticks it off
+    triggers:
+      - trigger: event
+        event_type: home_companion_card_ok
+        event_data: {device: Alfred}
+    conditions:
+      - "{{ trigger.event.data.id.startswith('todo-') }}"
+    actions:
+      - action: todo.update_item
+        target: {entity_id: todo.household}
+        data:
+          item: "{{ trigger.event.data.id[5:] }}"
+          status: completed
+```
+
+The body fires an event too, `home_companion_conversation`, when a conversation starts and when it ends, so an
+automation can make room for the voice (lower a speaker, dim a light, pause a TV):
+
+```yaml
+event_type: home_companion_conversation
+event_data:
+  device: Alfred          # the character's name
+  state: started          # started | ended
+  trigger: wake           # wake | talk (a touch) | follow_up (Alfred asked a question)
+  handled_by: reflex      # only on "ended": reflex | home_assistant | none
+```
+
+`started` comes as soon as the wake word (or the touch) opens the microphone, before anything is sent to Home Assistant,
+so it is there for reflexes too. Announcements do not fire it. Firing an event needs an administrator user (the one of
+the QR link normally is); if Home Assistant refuses, one line in the log says so and the conversation goes on.
+
+```yaml
+automation:
+  - alias: Lower the kitchen speaker while Alfred listens
+    mode: single
+    triggers:
+      - trigger: event
+        event_type: home_companion_conversation
+        event_data: {state: started, device: Alfred}
+    conditions:
+      - condition: state
+        entity_id: media_player.kitchen
+        state: "playing"
+    actions:
+      - variables:
+          before: "{{ state_attr('media_player.kitchen', 'volume_level') }}"
+      - action: media_player.volume_set
+        target: {entity_id: media_player.kitchen}
+        data: {volume_level: 0.15}
+      - wait_for_trigger:
+          - trigger: event
+            event_type: home_companion_conversation
+            event_data: {state: ended, device: Alfred}
+        timeout: "00:01:00"
+        continue_on_timeout: true
+      - action: media_player.volume_set
+        target: {entity_id: media_player.kitchen}
+        data: {volume_level: "{{ before }}"}
+```
+
 ## How it works
 
 ```
@@ -222,13 +362,13 @@ intents" off. Only the answer to a follow-up question goes straight to the agent
 ## Install
 
 You need a **Lenovo ThinkSmart View with [thinksmart-view-debian](https://github.com/m0s4ik/thinksmart-view-debian)
-v0.4** (v0.3-rc3 or later works), built with `WEB=1` (the Home Assistant view) and `AIRPLAY=1` (AirPlay) if you want them. The
+v0.5** (v0.3-rc3 or later works), built with `WEB=1` (the Home Assistant view), `AIRPLAY=1` (AirPlay) and `CAMERA=1` (the camera) if you want them. The
 system image is where the Wi-Fi and your ssh key are set. Then, on the device:
 
 ```sh
-curl -LO https://github.com/m0s4ik/home-companion/releases/download/v0.2.0/home-companion-0.2.0-arm64.tar.gz
-tar xzf home-companion-0.2.0-arm64.tar.gz
-cd home-companion-0.2.0-arm64 && ./install.sh
+curl -LO https://github.com/m0s4ik/home-companion/releases/download/v0.3.0/home-companion-0.3.0-arm64.tar.gz
+tar xzf home-companion-0.3.0-arm64.tar.gz
+cd home-companion-0.3.0-arm64 && ./install.sh
 ```
 
 The installer asks nothing: it checks the system (it never lets apt replace the image's Mesa), installs the
@@ -236,20 +376,27 @@ programs and the services, downloads the speech models of every language and sta
 language → Home Assistant (found on the network) → QR code. Options (`--language`, `--ha-url`, `--no-airplay`,
 `--uninstall`, `--dry-run`…) and the manual steps are in [packaging/README.md](packaging/README.md).
 
-**Updating** is the same three lines with the new version: an installed one is updated in place and its settings
-stay.
+**Updating**, from 0.3.0 on: Settings → Info says when a newer release is out, and **Install** installs it (the
+device restarts by itself, its settings stay; if the new version does not start, the one before comes back). It
+looks once a day at the releases of `[update] repo` in `/etc/home-companion/home-companion.toml`, this repository by
+default: point it at your fork to get your own builds, and set `prerelease = true` for release candidates. The
+repository is read from that root-owned file only, never from the screen. By hand it is the same three lines with
+the new version.
 
 To change the Wi-Fi later: `nmcli device wifi connect "<ssid>" password "<password>"` on the device.
 
 ## Languages
 
-Italian and English, complete: the screen (`locales/`), the reflexes' grammar
+Italian, English, Dutch and German, complete: the screen (`locales/`), the reflexes' grammar
 (`characters/alfred/grammar/`) and the speech model the installer downloads. With any other language set in Home
 Assistant, the device still works (Home Assistant answers in its language) without the local reflexes.
 
 Adding a language: a `locales/<lang>.toml`, a `characters/alfred/grammar/<lang>.toml`, the number words in
 `crates/reflex/src/slots.rs`, and the [Vosk model](https://alphacephei.com/vosk/models) in the installer's
-`VOSK_MODELS` table.
+`VOSK_MODELS` table (and `--language`). For the character and Home Assistant: `[phrases.<lang>]` and
+`persona.<lang>.md` in `characters/alfred/`, `crates/home-companion/src/ha/agent-prompt.<lang>.md` with its line in
+`agent_prompt()` and the OpenAI hints in `speech_hints()` (both in `ha/setup.rs`); the brain's own words (yes/no
+questions, the morning summary's fallback) in `Lang` of `crates/brain/src/house.rs`.
 
 ## Build from source
 
@@ -258,7 +405,7 @@ Cross-compiled from an amd64 Debian 13 with the arm64 multiarch libraries:
 ```sh
 cargo build --release --target aarch64-unknown-linux-gnu -p home-companion --no-default-features --features fbdev,gpu
 cargo run -p home-companion -- --simulator          # the screen in a window on a laptop
-tools/release/build-bundle.sh 0.2.0                 # the release bundle
+tools/release/build-bundle.sh 0.3.0                 # the release bundle
 ```
 
 Contributing, with or without a coding assistant: [AGENTS.md](AGENTS.md).

@@ -194,6 +194,13 @@ impl WebSocket<TcpStream> {
     }
 }
 
+impl WebSocket<TcpStream> {
+    /// How long `read` waits for a message before it returns `None` (1 s after `connect`).
+    pub fn set_read_timeout(&self, d: Duration) -> io::Result<()> {
+        self.stream.set_read_timeout(Some(d))
+    }
+}
+
 impl<S: Read + Write> WebSocket<S> {
     /// The HTTP upgrade on an open stream.
     pub fn handshake(mut stream: S, host: &str, path: &str) -> io::Result<Self> {

@@ -16,6 +16,7 @@ pub mod discover;
 pub mod events;
 pub mod hub;
 pub mod link;
+pub mod memory;
 pub mod setup;
 pub mod todo;
 pub mod tts;

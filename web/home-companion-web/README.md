@@ -34,7 +34,8 @@ per second) and gives the previous buffer back.
   away every buffer it held goes back to WebKit except the latest frame's (kept for the next body), and the local
   consumer takes over.
 - `main.c`: the web view (persistent network session, 2D canvas and WebGL on the GPU, developer extras off,
-  autoplay denied), `FD_MESA_DEBUG=sysmem` set before WebKit starts (freedreno's GMEM loop, see the spike page),
+  autoplay denied), `FD_MESA_DEBUG=sysmem` set before WebKit starts when the unit leaves it unset (freedreno's GMEM loop up to
+  mesa-freedreno 26.3.0-1, see the spike page),
   the login, the control on standard input.
 - `snapshot.c`: `--png`/`png`: imports the frame's dma-buf with EGL (`EGL_LINUX_DMA_BUF_EXT`), binds it to a GLES
   texture and reads it back, the way the body will import it.

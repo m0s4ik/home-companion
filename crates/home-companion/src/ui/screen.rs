@@ -26,14 +26,17 @@ use super::house::{self, Dnd, HouseCards};
 use super::light::{Auto, Curve};
 use super::lists::{self, Choice, ShopList};
 use super::next;
-use super::{AlarmLineView, MemoriesView, MusicView, Screen, SettingsView, TimerLineView};
+use super::{
+    AlarmLineView, MemoriesView, MemoryLine, MusicView, Screen, SettingsView, TimerLineView,
+    UpdateView,
+};
 use crate::alarms::Alarm;
 use crate::brain_link::{self, BrainLink, BrainMsg, Upcoming};
 use crate::core::{CoreEvent, MirrorInfo, Phase, UiCommand, UiEvent};
 use crate::ha::hub::{HubCmd, HubMsg};
 use crate::ha::weather::Weather;
 use crate::history::History;
-use crate::settings::Settings;
+use crate::settings::{Settings, WakeSensitivity};
 use crate::timers::{TimerView, now_unix};
 use serde_json::json;
 
@@ -145,6 +148,53 @@ fn qr_image(text: &str) -> Option<Image> {
 /// A word of the locale with `{name}` filled in.
 fn word(t: &Locale, key: &str, name: &str) -> String {
     t.text(key).replace("{name}", name)
+}
+
+/// The brain's `memory.list` as the "Ricordi" page shows it: what Alfred knows (in the order the
+/// assistant reads it; past `shown` dimmed), what is to confirm, and how many known facts the
+/// assistant finds only when asked.
+fn memory_lines(
+    a: &serde_json::Value,
+    date: impl Fn(i64) -> String,
+) -> (Vec<MemoryLine>, Vec<MemoryLine>, usize) {
+    let shown = a["shown"].as_u64().map_or(usize::MAX, |n| n as usize);
+    let (mut facts, mut confirm) = (Vec::new(), Vec::new());
+    for f in a["facts"].as_array().into_iter().flatten() {
+        let line = MemoryLine {
+            id: f["id"].as_i64().unwrap_or(0),
+            text: f["text"].as_str().unwrap_or("").to_string(),
+            date: date(f["updated"].as_i64().unwrap_or(0)),
+            dim: false,
+        };
+        if f["status"] == "candidate" {
+            confirm.push(line);
+        } else {
+            facts.push(MemoryLine {
+                dim: facts.len() >= shown,
+                ..line
+            });
+        }
+    }
+    let over = facts.len().saturating_sub(shown);
+    (facts, confirm, over)
+}
+
+/// The note under the known facts: how many the assistant finds only when asked ("" = none).
+fn more_line(l: &Locale, over: usize) -> String {
+    match over {
+        0 => String::new(),
+        1 => l.text("memories_more_one").to_string(),
+        n => l.text("memories_more").replace("{n}", &n.to_string()),
+    }
+}
+
+/// "Right" (`yes`) or "Wrong"/delete on a fact of the "Ricordi" page, for the brain.
+fn memory_answer(id: i64, yes: bool) -> serde_json::Value {
+    if yes {
+        json!({"cmd": "memory.confirm", "id": id})
+    } else {
+        json!({"cmd": "memory.delete", "id": id})
+    }
 }
 
 /// The use of the AI in words: the Home Assistant page's row (today only) and the use page
@@ -437,7 +487,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 72] = [
+pub const DEMO_STATES: [&str; 74] = [
     "home",
     "cards",
     "cards-setup",
@@ -510,6 +560,8 @@ pub const DEMO_STATES: [&str; 72] = [
     "cards-3",
     "cards-4",
     "what",
+    "update",
+    "update-confirm",
 ];
 
 impl Demo {
@@ -747,6 +799,11 @@ impl Demo {
             | "setup" | "ha" | "memories" | "reminders" | "shopping" | "what" => {
                 page(DEMO_STATES.into_iter().find(|x| *x == s)?)
             }
+            "update" => page("update"),
+            "update-confirm" => Demo {
+                dialog: "update",
+                ..page("update")
+            },
             "first-language" => page("welcome"),
             "first-ha-searching" => Demo {
                 find: "searching",
@@ -814,6 +871,17 @@ pub const MIRROR_CHROME: Duration = Duration::from_secs(4);
 pub const MIRROR_NO_FRAME: Duration = Duration::from_secs(8);
 /// A desk page left alone goes back home after this.
 pub const PAGE_IDLE: Duration = Duration::from_secs(60);
+/// The camera thread's answer: the photo, small enough for the screen, or why not.
+type PhotoRx = std::sync::mpsc::Receiver<Result<SharedPixelBuffer<Rgba8Pixel>, String>>;
+/// The gallery's thumbnails, from their thread.
+type ThumbsRx = std::sync::mpsc::Receiver<Vec<SharedPixelBuffer<Rgba8Pixel>>>;
+/// The camera page goes home after this long without a touch or a photo.
+pub const CAMERA_IDLE: Duration = Duration::from_secs(120);
+/// The countdown before a photo (seconds).
+pub const COUNTDOWN: u64 = 3;
+
+/// How long the photo just taken stays in the camera's frame before the mirror comes back.
+pub const SHOT_SHOWN: Duration = Duration::from_secs(4);
 /// The "Annulla" chip after a timer or an alarm is removed.
 pub const UNDO: Duration = Duration::from_secs(5);
 /// The last long answer stays as a card this long.
@@ -880,6 +948,8 @@ pub struct UiOptions {
     /// The QR-code link of the setup page (None: no Home Assistant address, or `--state`). Its
     /// words are filled in when the page opens.
     pub link: Option<crate::ha::link::LinkSetup>,
+    /// Updates (Settings → Info): where from; None: no checking (`--state`, the simulator, tests).
+    pub update: Option<crate::update::UpdateCfg>,
 }
 
 /// The animation side of the UI.
@@ -1040,6 +1110,29 @@ pub struct Ui<S: Screen> {
     settings: Option<Settings>,
     /// Linked to Home Assistant (a token of either kind); starts as `opts.ha_linked`.
     ha_linked: Cell<bool>,
+    /// The camera (camera.rs): there is one, a photo is being taken (its result comes here),
+    /// and the timer that hides the preview.
+    camera: bool,
+    photo_rx: RefCell<Option<PhotoRx>>,
+    photo_timer: Timer,
+    /// The camera page: the live picture, its timer (frames, the countdown, the cover), the
+    /// last frame shown, when the countdown started and its last number, and when the page was
+    /// last used (it goes home after [`CAMERA_IDLE`]).
+    cam_live: RefCell<Option<super::camera::Live>>,
+    cam_timer: Timer,
+    cam_seq: Cell<u64>,
+    cam_count: Cell<Option<(Instant, u64)>>,
+    /// A countdown asked (by voice) that starts once the conversation is over and the mirror shows.
+    cam_count_wanted: Cell<bool>,
+    cam_used: Cell<Instant>,
+    /// The gallery: the photos listed (newest first), their thumbnails coming from a thread, the
+    /// one shown whole.
+    /// Updates (update.rs): the checking thread (None: no checking) and the page's timer.
+    updater: Option<crate::update::Checker>,
+    update_timer: Timer,
+    gallery: RefCell<Vec<PathBuf>>,
+    thumbs_rx: RefCell<Option<ThumbsRx>>,
+    viewing: RefCell<Option<PathBuf>>,
     /// The back of a page was just pressed: the next page change makes the home or tap sound.
     back_pending: Cell<Option<Instant>>,
     /// The link in progress while the setup page is shown.
@@ -1187,11 +1280,14 @@ fn short_date(l: &Locale, ts: i64) -> String {
         .get(tm.tm_mon as usize)
         .map(|m| m.chars().take(3).collect())
         .unwrap_or_default();
-    format!("{} {month}", tm.tm_mday)
+    // "13 nov", "13. Nov." (the locale's `short_date`).
+    l.text("short_date")
+        .replace("{d}", &tm.tm_mday.to_string())
+        .replace("{m}", &month)
 }
 
 /// "14:02" of a time in seconds since the epoch, and the day it is on (days since the epoch, local).
-fn local_hm(t: i64) -> (String, i64) {
+pub(crate) fn local_hm(t: i64) -> (String, i64) {
     // SAFETY: localtime_r only writes into the struct we pass.
     let tm = unsafe {
         let mut tm: libc::tm = std::mem::zeroed();
@@ -1226,6 +1322,7 @@ enum HouseEvent {
     /// A new subscription: the question on screen is forgotten (the brain replays it).
     Resubscribed,
     View(brain_link::View),
+    Photo,
 }
 
 /// Whether `hour` is in the night hours `start..end` (they may cross midnight).
@@ -1315,6 +1412,8 @@ impl<S: Screen> Ui<S> {
         let opts_auto = opts.screen.auto.filter(|_| !demo).map(Auto::new);
         let opts_linked = opts.ha_linked;
         let opts_first = opts.first_start;
+        let has_camera = !demo && super::camera::present();
+        let opts_update = opts.update.clone();
         let ui = Rc::new(Ui {
             screen,
             mirror: RefCell::new(None),
@@ -1348,6 +1447,22 @@ impl<S: Screen> Ui<S> {
             history: RefCell::new(history),
             settings,
             ha_linked: Cell::new(opts_linked),
+            camera: has_camera,
+            photo_rx: RefCell::new(None),
+            photo_timer: Timer::default(),
+            cam_live: RefCell::new(None),
+            cam_timer: Timer::default(),
+            cam_seq: Cell::new(0),
+            cam_count: Cell::new(None),
+            cam_count_wanted: Cell::new(false),
+            cam_used: Cell::new(Instant::now()),
+            updater: opts_update
+                .as_ref()
+                .map(|c| crate::update::Checker::spawn(c, env!("CARGO_PKG_VERSION"))),
+            update_timer: Timer::default(),
+            gallery: RefCell::new(Vec::new()),
+            thumbs_rx: RefCell::new(None),
+            viewing: RefCell::new(None),
             back_pending: Cell::new(None),
             link: RefCell::new(None),
             link_done: Cell::new(None),
@@ -1373,6 +1488,21 @@ impl<S: Screen> Ui<S> {
             this: RefCell::new(Weak::new()),
         });
         *ui.this.borrow_mut() = Rc::downgrade(&ui);
+        // Back after an update's restart: its page again, to see the end (Andrea, 2026-11-15).
+        if let Some(dir) = ui.opts.state_dir.clone().filter(|_| ui.updater.is_some()) {
+            let w = Rc::downgrade(&ui);
+            Timer::single_shot(Duration::from_secs(2), move || {
+                let going = crate::update::status(&dir).is_some_and(|s| {
+                    matches!(s.phase.as_str(), "installing" | "waiting")
+                        && now_unix() as i64 - s.at < 600
+                });
+                if going && let Some(ui) = w.upgrade() {
+                    log::info!(event = "update"; "update: back after the restart, its page");
+                    ui.screen.set_page("update");
+                    ui.on_page("update");
+                }
+            });
+        }
         ui.set_welcome();
         ui.wire();
         ui.start_wifi();
@@ -1450,6 +1580,12 @@ impl<S: Screen> Ui<S> {
 
     fn wire(self: &Rc<Self>) {
         self.screen.set_home_compact(self.home_compact.get());
+        let sensitivity = self
+            .settings
+            .as_ref()
+            .map(Settings::wake_sensitivity)
+            .unwrap_or_default();
+        self.screen.set_wake_step(sensitivity.step());
         let ui = Rc::downgrade(self);
         self.screen.on_state_changed(move |app, s| {
             let Some(ui) = ui.upgrade() else { return };
@@ -1507,7 +1643,13 @@ impl<S: Screen> Ui<S> {
         let ui = Rc::downgrade(self);
         self.screen.on_memory_delete(move |id| {
             if let Some(ui) = ui.upgrade() {
-                ui.brain_do(json!({"cmd": "memory.delete", "id": id}));
+                ui.brain_do(memory_answer(id, false));
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_memory_confirm(move |id| {
+            if let Some(ui) = ui.upgrade() {
+                ui.brain_do(memory_answer(id, true));
             }
         });
         let ui = Rc::downgrade(self);
@@ -1568,6 +1710,7 @@ impl<S: Screen> Ui<S> {
                 }
                 "night" => ui.toggle_night(),
                 "dnd" => ui.toggle_dnd(),
+                "camera" => ui.open_camera(false),
                 "ha" => {
                     ui.screen.set_control_open(false);
                     ui.screen
@@ -1575,6 +1718,39 @@ impl<S: Screen> Ui<S> {
                     ui.on_page(&ui.screen.get_page());
                 }
                 _ => {}
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_photo_delete(move || {
+            if let Some(ui) = ui.upgrade() {
+                ui.photo_delete();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_update_check(move || {
+            if let Some(ui) = ui.upgrade() {
+                if let Some(u) = &ui.updater {
+                    u.check_now();
+                }
+                ui.refresh_update();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_update_install(move || {
+            if let Some(ui) = ui.upgrade() {
+                ui.update_install();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_camera_shoot(move || {
+            if let Some(ui) = ui.upgrade() {
+                ui.camera_countdown();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_photo_open(move |i| {
+            if let Some(ui) = ui.upgrade() {
+                ui.photo_open(i);
             }
         });
         let ui = Rc::downgrade(self);
@@ -1714,6 +1890,9 @@ impl<S: Screen> Ui<S> {
                     app.set_clock("");
                     ui.tick_clock();
                     ui.refresh_desk();
+                    // The brain's texts ("6 memories", the reminders' tile) are written when its
+                    // answers come: asked again so they come in the new language.
+                    ui.refresh_memories();
                     ui.show(ui.view.get());
                     ui.send(UiEvent::Language(code));
                     if app.get_page() == "welcome" {
@@ -1890,6 +2069,15 @@ impl<S: Screen> Ui<S> {
                     s.save_keep_conversations(keep);
                 }
                 ui.refresh_desk();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_wake_step_changed(move |step| {
+            if let Some(ui) = ui.upgrade() {
+                let s = WakeSensitivity::from_step(step);
+                ui.screen.set_wake_step(s.step());
+                // The core saves it and has the wake word thread apply it.
+                ui.send(UiEvent::WakeSensitivity(s));
             }
         });
         let ui = Rc::downgrade(self);
@@ -2645,6 +2833,7 @@ impl<S: Screen> Ui<S> {
                 night_from: "23:00".into(),
                 dnd: d.dnd.then(|| "07:00".into()),
                 ha: Some(true),
+                camera: Some(crate::ui::control::Camera::Ready),
             };
             let tiles = crate::ui::control::tiles(&st, &w);
             self.screen
@@ -2762,6 +2951,7 @@ impl<S: Screen> Ui<S> {
             self.screen.set_memories(&MemoriesView {
                 present: true,
                 tile: l.text("tile_memories").replace("{n}", &n),
+                tile_known: l.text("tile_memories").replace("{n}", &n),
                 reminders_tile: l.text("tile_reminders").replace("{n}", "1"),
                 status: format!(
                     "{} · {}",
@@ -2774,12 +2964,28 @@ impl<S: Screen> Ui<S> {
                         .replace("{updated}", "1")
                         .replace("{retired}", "1")
                 ),
-                profile: l.sample("memory_profile").replace('|', "\n"),
-                notes: l.sample("memory_notes").into(),
+                sent: word(&l, "memories_sent", &self.character.name),
+                more: more_line(&l, 1),
                 facts: vec![
-                    (2, l.sample("memory_fact1").into(), "4 nov".into()),
-                    (1, l.sample("memory_fact2").into(), "2 nov".into()),
+                    MemoryLine {
+                        id: 2,
+                        text: l.sample("memory_fact2").into(),
+                        date: "4 nov".into(),
+                        dim: false,
+                    },
+                    MemoryLine {
+                        id: 1,
+                        text: l.sample("memory_fact1").into(),
+                        date: "2 nov".into(),
+                        dim: true,
+                    },
                 ],
+                confirm: vec![MemoryLine {
+                    id: 3,
+                    text: l.sample("memory_fact3").into(),
+                    date: "13 nov".into(),
+                    dim: false,
+                }],
                 jobs: vec![(
                     3,
                     format!("{} 18:00", w("today")),
@@ -2928,6 +3134,30 @@ impl<S: Screen> Ui<S> {
         }
         if let Some(v) = d.volume {
             self.screen.set_volume(v, true);
+        }
+        // Settings → Info: a newer release out (sample hash).
+        if d.page == "update" {
+            let sha = "d4ede2782c0b31223b00e62a56b95c3620b20992f419a1ae8001bf075bafc61f";
+            let repo = crate::update::DEFAULT_REPO;
+            self.screen.set_update(&UpdateView {
+                facts: l
+                    .text("update_facts")
+                    .replace("{v}", env!("CARGO_PKG_VERSION"))
+                    .replace("{repo}", repo)
+                    .replace("{when}", &l.text("update_today").replace("{t}", "14:25")),
+                state: l.text("update_available").replace("{v}", "0.3.1"),
+                notes: crate::update::notes_text(
+                    "A small release: **the camera's colours** and two fixes.\n\n## New\n\n- The camera tuned for the S5KC505A: natural colours, brighter in a dim room.\n\n## Fixed\n\n- The swipe from the edge of the Home Assistant view works every time.\n- German: the last lines of the Memories page are no longer hidden.",
+                ),
+                sha: crate::update::sha_groups(sha),
+                attention: true,
+                install: l.text("update_install").replace("{v}", "0.3.1"),
+                busy: false,
+                question: l.text("update_question").replace("{v}", "0.3.1"),
+                confirm: l.text("update_confirm").into(),
+                steps: Vec::new(),
+                progress: -1.0,
+            });
         }
         // Sample use for the Home Assistant page's row and the use page.
         if matches!(d.page, "ha" | "usage") {
@@ -3195,8 +3425,25 @@ impl<S: Screen> Ui<S> {
                 self.screen.set_volume(p, false);
             }
             UiCommand::ScreenOff => self.screen_off(),
+            UiCommand::TakePhoto => {
+                if let Some(me) = self.this.borrow().upgrade() {
+                    me.open_camera(true);
+                }
+            }
             UiCommand::DoNotDisturb(until) => self.set_dnd(until),
             UiCommand::Announcing(on) => self.screen.set_announcing(on),
+            UiCommand::Conversation {
+                state,
+                trigger,
+                handled_by,
+            } => {
+                if let Some(tx) = self.hub_tx.borrow().as_ref() {
+                    let _ = tx.send(HubCmd::Fire {
+                        event_type: crate::ha::events::CONVERSATION_EVENT.into(),
+                        data: crate::ha::events::conversation_data(state, trigger, handled_by),
+                    });
+                }
+            }
             UiCommand::Suspending => {
                 self.screen.set_settings_open(false);
                 self.motion.borrow_mut().awake.sleep(Instant::now());
@@ -3525,6 +3772,536 @@ impl<S: Screen> Ui<S> {
         }
     }
 
+    /// The camera tile: a photo in a thread (about 2 s), then shown over everything for
+    /// [`SHOT_SHOWN`] in the camera's frame and kept in `<state>/photos` (Andrea, 2026-11-15).
+    fn take_photo(self: &Rc<Self>) {
+        if !self.camera || self.photo_rx.borrow().is_some() {
+            return;
+        }
+        // The cover may have closed since the tiles were drawn: no black photo.
+        if super::camera::lens_covered() == Some(true) {
+            self.refresh_control();
+            return;
+        }
+        let Some(dir) = self.opts.state_dir.as_ref().map(|d| d.join("photos")) else {
+            return;
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("camera".into())
+            .spawn(move || {
+                let r =
+                    super::camera::capture(&dir).and_then(|p| super::camera::preview(&p, 880, 660));
+                let _ = tx.send(r);
+            });
+        if let Err(e) = spawned {
+            log::warn!(event = "camera_photo"; "camera: {e}");
+            return;
+        }
+        *self.photo_rx.borrow_mut() = Some(rx);
+        log::info!(event = "camera_photo"; "camera: taking a photo");
+        self.refresh_control();
+        let ui = Rc::downgrade(self);
+        self.photo_timer
+            .start(TimerMode::Repeated, Duration::from_millis(100), move || {
+                if let Some(ui) = ui.upgrade() {
+                    ui.photo_poll();
+                }
+            });
+    }
+
+    fn photo_poll(self: &Rc<Self>) {
+        let got = match self.photo_rx.borrow().as_ref().map(|r| r.try_recv()) {
+            Some(Ok(r)) => r,
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) => return,
+            _ => Err("the camera thread ended".into()),
+        };
+        *self.photo_rx.borrow_mut() = None;
+        self.photo_timer.stop();
+        self.refresh_control();
+        self.wake(WakeSource::Touch);
+        let l = self.locale.borrow();
+        let (img, caption) = match got {
+            Ok(buf) => {
+                let hm = local_hm(self.now() as i64).0;
+                (
+                    Some(Image::from_rgba8(buf)),
+                    l.text("photo_saved").replace("{t}", &hm),
+                )
+            }
+            Err(e) => {
+                log::warn!(event = "camera_photo"; "camera: {e}");
+                (None, l.text("photo_failed").to_string())
+            }
+        };
+        drop(l);
+        self.screen.set_control_open(false);
+        // Shown where the mirror was, the same frame (Andrea, 2026-11-15), then the mirror again.
+        self.screen.set_camera_caption(&caption);
+        match img {
+            Some(img) => self.screen.set_camera(Some(img), "photo", ""),
+            None => self.screen.set_camera(None, "failed", ""),
+        }
+        let ui = Rc::downgrade(self);
+        self.photo_timer
+            .start(TimerMode::SingleShot, SHOT_SHOWN, move || {
+                if let Some(ui) = ui.upgrade()
+                    && ui.screen.get_page() == "camera"
+                {
+                    ui.camera_start();
+                }
+            });
+    }
+
+    /// Settings → Info: what the check found and what the update service says.
+    fn refresh_update(&self) {
+        // The demo's sample stays (`--state update`).
+        if self.opts.demo.is_some() {
+            return;
+        }
+        let v = self.update_view();
+        self.screen.set_update(&v);
+    }
+
+    fn update_view(&self) -> UpdateView {
+        let l = self.locale.borrow();
+        let current = env!("CARGO_PKG_VERSION");
+        let Some(u) = &self.updater else {
+            return UpdateView {
+                facts: l.text("update_facts_off").replace("{v}", current),
+                state: l.text("update_off").into(),
+                progress: -1.0,
+                ..Default::default()
+            };
+        };
+        let st = u.state();
+        let now = now_unix() as i64;
+        let checked = match st.checked_at {
+            Some(t) => {
+                let (hm, day) = local_hm(t);
+                if day == local_hm(now).1 {
+                    l.text("update_today").replace("{t}", &hm)
+                } else {
+                    format!("{} {hm}", short_date(&l, t))
+                }
+            }
+            None => l.text("update_never").into(),
+        };
+        let dir = self.opts.state_dir.clone();
+        let service = dir.as_deref().and_then(crate::update::status);
+        let requested = dir.as_deref().is_some_and(crate::update::requested);
+        // What the service said in the last hour (a "done" stays a day).
+        let recent = service.filter(|s| {
+            let age = now - s.at;
+            age < if s.phase == "done" { 86_400 } else { 3_600 }
+        });
+        let working = |s: &crate::update::Status| {
+            matches!(
+                s.phase.as_str(),
+                "downloading" | "checking" | "installing" | "waiting"
+            )
+        };
+        let busy = requested || recent.as_ref().is_some_and(working);
+        // An install under way, or just over (ten minutes): its steps.
+        let shown_steps = if requested {
+            Some(None)
+        } else {
+            recent
+                .as_ref()
+                .filter(|s| now - s.at < 600 || working(s))
+                .filter(|s| {
+                    working(s) || matches!(s.phase.as_str(), "done" | "failed" | "rolled-back")
+                })
+                .map(Some)
+        };
+        let target = recent
+            .as_ref()
+            .map(|s| s.version.clone())
+            .filter(|v| !v.is_empty())
+            .or_else(|| st.latest.as_ref().map(|r| r.version.clone()))
+            .unwrap_or_default();
+        let (steps, progress) = match shown_steps {
+            Some(s) => self.update_steps(&l, s, &target),
+            None => (Vec::new(), -1.0),
+        };
+        let (state, attention) = match &recent {
+            _ if requested => (l.text("update_progress").replace("{v}", &target), false),
+            Some(s) if working(s) => (l.text("update_progress").replace("{v}", &s.version), false),
+            // The service's reason is for the log (English, technical); the screen says what happened.
+            Some(s) if s.phase == "failed" => (l.text("update_failed").into(), true),
+            Some(s) if s.phase == "rolled-back" => (l.text("update_rolled_back").into(), true),
+            Some(s) if s.phase == "done" && s.version == current => {
+                (l.text("update_done").replace("{v}", current), false)
+            }
+            _ if st.checking => (l.text("update_checking").into(), false),
+            _ if st.failed => (l.text("update_check_failed").into(), true),
+            _ => match &st.latest {
+                Some(r) if r.sha256.is_empty() => {
+                    (l.text("update_no_sha").replace("{v}", &r.version), true)
+                }
+                Some(r) => (l.text("update_available").replace("{v}", &r.version), true),
+                None if st.checked_at.is_some() => (l.text("update_none").into(), false),
+                None => (String::new(), false),
+            },
+        };
+        // Offered only with the hash to show (and to check against).
+        let install = match &st.latest {
+            Some(r) if !busy && !r.sha256.is_empty() => {
+                l.text("update_install").replace("{v}", &r.version)
+            }
+            _ => String::new(),
+        };
+        let offered = st.latest.as_ref().filter(|_| !busy);
+        let question = offered
+            .map(|r| l.text("update_question").replace("{v}", &r.version))
+            .unwrap_or_default();
+        let facts = l
+            .text("update_facts")
+            .replace("{v}", current)
+            .replace("{repo}", &u.repo)
+            .replace("{when}", &checked);
+        UpdateView {
+            facts,
+            state,
+            notes: offered.map(|r| r.notes.clone()).unwrap_or_default(),
+            sha: offered
+                .filter(|r| !r.sha256.is_empty())
+                .map(|r| crate::update::sha_groups(&r.sha256))
+                .unwrap_or_default(),
+            attention,
+            install,
+            busy,
+            question,
+            confirm: l.text("update_confirm").into(),
+            steps,
+            progress,
+        }
+    }
+
+    /// The five steps of an install for the page, and the download's progress (-1: none).
+    fn update_steps(
+        &self,
+        l: &Locale,
+        s: Option<&crate::update::Status>,
+        version: &str,
+    ) -> (Vec<super::UpdateStepView>, f32) {
+        use crate::update::StepState;
+        let states = crate::update::steps(s);
+        let mb = |b: u64| {
+            format!("{:.1}", b as f64 / 1_000_000.0).replace('.', l.text("decimal_separator"))
+        };
+        let mut progress = -1.0;
+        let rows = crate::update::STEPS
+            .iter()
+            .zip(states)
+            .map(|(step, state)| {
+                let label = match *step {
+                    "downloading" => l.text("update_step_download").replace("{v}", version),
+                    "checking" => l.text("update_step_check").to_string(),
+                    "installing" => l.text("update_step_install").to_string(),
+                    "waiting" => l.text("update_step_verify").to_string(),
+                    _ => l.text("update_step_done").replace("{v}", version),
+                };
+                let detail = match (*step, state, s) {
+                    ("downloading", StepState::Now, None) => {
+                        l.text("update_step_starting").to_string()
+                    }
+                    ("downloading", StepState::Now, Some(st)) if st.total > 0 => {
+                        progress = (st.bytes as f32 / st.total as f32).clamp(0.0, 1.0);
+                        l.text("update_mb_of")
+                            .replace("{a}", &mb(st.bytes))
+                            .replace("{b}", &mb(st.total))
+                    }
+                    ("downloading", StepState::Now, Some(st)) => {
+                        l.text("update_mb").replace("{a}", &mb(st.bytes))
+                    }
+                    ("installing", StepState::Now, _) => {
+                        l.text("update_step_install_detail").to_string()
+                    }
+                    // A service before 0.3.0 does not say how long is left.
+                    ("waiting", StepState::Now, Some(st)) if st.left > 0 => l
+                        .text("update_step_verify_left")
+                        .replace("{s}", &st.left.to_string()),
+                    _ => String::new(),
+                };
+                super::UpdateStepView {
+                    label,
+                    detail,
+                    state: match state {
+                        StepState::Done => "done",
+                        StepState::Now => "now",
+                        StepState::Todo => "todo",
+                        StepState::Failed => "failed",
+                    },
+                }
+            })
+            .collect();
+        (rows, progress)
+    }
+
+    /// Install: the request to the root service (update.rs); the page follows its status.
+    fn update_install(&self) {
+        let (Some(u), Some(dir)) = (&self.updater, self.opts.state_dir.as_deref()) else {
+            return;
+        };
+        let Some(r) = u.state().latest else {
+            return;
+        };
+        match crate::update::request(dir, &r.tag, &r.sha256) {
+            Ok(()) => {
+                log::info!(event = "update", version = r.version.as_str(); "update: {} asked", r.version)
+            }
+            Err(e) => log::warn!(event = "update"; "update: asking for {}: {e}", r.version),
+        }
+        self.refresh_update();
+    }
+
+    /// The camera page (the control center's tile, "fammi una foto" with `countdown`).
+    pub fn open_camera(self: &Rc<Self>, countdown: bool) {
+        if !self.camera {
+            return;
+        }
+        self.wake(WakeSource::Touch);
+        self.screen.set_control_open(false);
+        if self.screen.get_page() != "camera" {
+            self.screen.set_page("camera");
+            self.on_page("camera");
+        }
+        // Not yet: Alfred may still be answering, and the mirror is not on. camera_tick starts it
+        // when both are true (Andrea, 2026-11-15: always see yourself first, always able to stop).
+        self.cam_count_wanted.set(countdown);
+    }
+
+    /// The live picture on (or the cover's notice), with the page's timer.
+    fn camera_start(self: &Rc<Self>) {
+        self.cam_used.set(Instant::now());
+        if self.cam_live.borrow().is_none() {
+            if super::camera::lens_covered() == Some(true) {
+                self.screen.set_camera(None, "covered", "");
+            } else {
+                match super::camera::Live::start() {
+                    Ok(l) => {
+                        *self.cam_live.borrow_mut() = Some(l);
+                        self.screen.set_camera(None, "starting", "");
+                    }
+                    Err(e) => {
+                        log::warn!(event = "camera_live"; "camera: {e}");
+                        self.screen.set_camera(None, "starting", "");
+                    }
+                }
+            }
+        }
+        let ui = Rc::downgrade(self);
+        self.cam_timer
+            .start(TimerMode::Repeated, Duration::from_millis(66), move || {
+                if let Some(ui) = ui.upgrade() {
+                    ui.camera_tick();
+                }
+            });
+    }
+
+    fn camera_stop(&self) {
+        self.cam_timer.stop();
+        self.cam_count.set(None);
+        self.cam_count_wanted.set(false);
+        if self.cam_live.borrow_mut().take().is_some() {
+            self.cam_seq.set(0);
+        }
+    }
+
+    /// Shoot (the button, or the voice): 3, 2, 1, then the photo. Pressed again during the
+    /// countdown (the button says Cancel then): no photo.
+    fn camera_countdown(self: &Rc<Self>) {
+        if self.cam_count.get().is_some() {
+            log::info!(event = "camera_photo"; "camera: countdown cancelled");
+            self.cam_count.set(None);
+            self.cam_used.set(Instant::now());
+            return;
+        }
+        if self.photo_rx.borrow().is_some() {
+            return;
+        }
+        self.cam_used.set(Instant::now());
+        self.cam_count.set(Some((Instant::now(), COUNTDOWN + 1)));
+    }
+
+    /// 15 times a second while the page is there: the newest frame, the countdown, the cover.
+    fn camera_tick(self: &Rc<Self>) {
+        if self.screen.get_page() != "camera" {
+            self.camera_stop();
+            return;
+        }
+        let now = Instant::now();
+        // A countdown asked by voice: once the conversation is over and the mirror has been on a
+        // second.
+        if self.cam_count_wanted.get()
+            && matches!(self.view.get(), Phase::Home | Phase::Offline)
+            && self.cam_seq.get() >= 12
+        {
+            self.cam_count_wanted.set(false);
+            self.camera_countdown();
+        }
+        // The countdown: a number and a tick each second, then the photo.
+        let mut count = String::new();
+        if let Some((t0, last)) = self.cam_count.get() {
+            let gone = now.duration_since(t0).as_secs();
+            if gone >= COUNTDOWN {
+                self.cam_count.set(None);
+                self.camera_shoot();
+                return;
+            }
+            let n = COUNTDOWN - gone;
+            if n != last {
+                self.cam_count.set(Some((t0, n)));
+                self.send(UiEvent::CountdownTick);
+            }
+            count = n.to_string();
+        }
+        // The cover, once a second: closed, the live picture stops; opened, it starts.
+        if self.cam_seq.get() % 15 == 0 || self.cam_live.borrow().is_none() {
+            let covered = super::camera::lens_covered() == Some(true);
+            if covered && self.cam_live.borrow().is_some() {
+                self.cam_live.borrow_mut().take();
+                self.cam_count.set(None);
+            }
+            if covered {
+                self.screen.set_camera(None, "covered", "");
+                self.cam_seq.set(self.cam_seq.get() + 1);
+                return;
+            }
+            if self.cam_live.borrow().is_none() {
+                self.cam_seq.set(0);
+                if let Ok(l) = super::camera::Live::start() {
+                    *self.cam_live.borrow_mut() = Some(l);
+                }
+                self.screen.set_camera(None, "starting", &count);
+                return;
+            }
+        }
+        let frame = self
+            .cam_live
+            .borrow()
+            .as_ref()
+            .and_then(|l| l.frame(self.cam_seq.get()));
+        match frame {
+            Some((n, buf)) => {
+                self.cam_seq.set(n);
+                self.screen
+                    .set_camera(Some(Image::from_rgba8(buf)), "live", &count);
+            }
+            None if self.cam_seq.get() == 0 => self.screen.set_camera(None, "starting", &count),
+            None => self.screen.set_camera(None, "live", &count),
+        }
+        // Left alone: home (the camera off).
+        if self.cam_count.get().is_none() && now.duration_since(self.cam_used.get()) >= CAMERA_IDLE
+        {
+            log::info!(event = "camera_live"; "camera: page left alone, home");
+            self.camera_stop();
+            self.screen.set_page("home");
+            self.on_page("home");
+        }
+    }
+
+    /// The photo itself: the live picture stops (the camera is one), a flash, the full-size
+    /// photo in its thread, then it is shown (photo_poll) and the live picture comes back.
+    fn camera_shoot(self: &Rc<Self>) {
+        self.cam_live.borrow_mut().take();
+        self.cam_seq.set(0);
+        self.cam_timer.stop();
+        self.screen.set_camera(None, "taking", "");
+        self.take_photo();
+    }
+
+    /// The gallery: the photos listed now, their thumbnails decoded in a thread.
+    fn refresh_photos(self: &Rc<Self>) {
+        let Some(dir) = self.opts.state_dir.as_ref().map(|d| d.join("photos")) else {
+            return;
+        };
+        let list = super::camera::photos(&dir);
+        *self.gallery.borrow_mut() = list.clone();
+        self.screen.set_photo_thumbs(Vec::new());
+        if list.is_empty() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("thumbnails".into())
+            .spawn(move || {
+                let thumbs = list
+                    .iter()
+                    .map(|p| {
+                        super::camera::preview(p, 256, 192)
+                            .unwrap_or_else(|_| SharedPixelBuffer::new(1, 1))
+                    })
+                    .collect();
+                let _ = tx.send(thumbs);
+            });
+        if spawned.is_err() {
+            return;
+        }
+        *self.thumbs_rx.borrow_mut() = Some(rx);
+        let ui = Rc::downgrade(self);
+        Timer::single_shot(Duration::from_millis(100), move || {
+            if let Some(ui) = ui.upgrade() {
+                ui.thumbs_poll();
+            }
+        });
+    }
+
+    fn thumbs_poll(self: &Rc<Self>) {
+        let got = match self.thumbs_rx.borrow().as_ref().map(|r| r.try_recv()) {
+            Some(Ok(t)) => Some(t),
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) => None,
+            _ => {
+                self.thumbs_rx.borrow_mut().take();
+                return;
+            }
+        };
+        match got {
+            Some(t) => {
+                self.thumbs_rx.borrow_mut().take();
+                self.screen
+                    .set_photo_thumbs(t.into_iter().map(Image::from_rgba8).collect());
+            }
+            None => {
+                let ui = Rc::downgrade(self);
+                Timer::single_shot(Duration::from_millis(100), move || {
+                    if let Some(ui) = ui.upgrade() {
+                        ui.thumbs_poll();
+                    }
+                });
+            }
+        }
+    }
+
+    /// One photo of the gallery on its page, with Delete.
+    fn photo_open(self: &Rc<Self>, i: usize) {
+        let Some(p) = self.gallery.borrow().get(i).cloned() else {
+            return;
+        };
+        let Ok(buf) = super::camera::preview(&p, 880, 660) else {
+            return;
+        };
+        let caption = p
+            .file_stem()
+            .map(|s| photo_caption(&s.to_string_lossy()))
+            .unwrap_or_default();
+        *self.viewing.borrow_mut() = Some(p);
+        self.screen.set_photo(Image::from_rgba8(buf), &caption);
+        self.screen.set_page("photo");
+    }
+
+    fn photo_delete(self: &Rc<Self>) {
+        if let Some(p) = self.viewing.borrow_mut().take() {
+            match std::fs::remove_file(&p) {
+                Ok(()) => log::info!(event = "camera_photo"; "camera: {} deleted", p.display()),
+                Err(e) => log::warn!(event = "camera_photo"; "camera: {}: {e}", p.display()),
+            }
+        }
+        self.screen.set_page("photos");
+        self.on_page("photos");
+    }
+
     /// The control center comes down (the pull from the top, here or over "Casa").
     pub fn open_control(&self) {
         *self.wifi_name.borrow_mut() = wifi_ssid("wlan0");
@@ -3550,6 +4327,16 @@ impl<S: Screen> Ui<S> {
                 night_from: format!("{:02}:00", d.night.1),
                 dnd: self.dnd_until_hm(),
                 ha: self.ha_linked.get().then_some(true),
+                camera: self.camera.then(|| {
+                    use super::control::Camera;
+                    if self.photo_rx.borrow().is_some() {
+                        Camera::Busy
+                    } else if super::camera::lens_covered() == Some(true) {
+                        Camera::Covered
+                    } else {
+                        Camera::Ready
+                    }
+                }),
             }
         };
         let (auto, pct) = {
@@ -3883,7 +4670,7 @@ impl<S: Screen> Ui<S> {
         }
     }
 
-    fn on_page(&self, page: &str) {
+    fn on_page(self: &Rc<Self>, page: &str) {
         if self
             .back_pending
             .take()
@@ -3909,6 +4696,29 @@ impl<S: Screen> Ui<S> {
         } else if self.link.borrow().is_some() {
             // Leaving the page closes the port.
             self.link.borrow_mut().take();
+        }
+        if page == "update" {
+            self.refresh_update();
+            let ui = Rc::downgrade(self);
+            self.update_timer
+                .start(TimerMode::Repeated, Duration::from_secs(1), move || {
+                    if let Some(ui) = ui.upgrade() {
+                        if ui.screen.get_page() == "update" {
+                            ui.refresh_update();
+                        } else {
+                            ui.update_timer.stop();
+                        }
+                    }
+                });
+        }
+        // The camera runs only on its page.
+        if page == "camera" {
+            self.camera_start();
+        } else {
+            self.camera_stop();
+        }
+        if page == "photos" {
+            self.refresh_photos();
         }
         match page {
             "chat" => self.refresh_chat(),
@@ -4274,7 +5084,13 @@ impl<S: Screen> Ui<S> {
             language_name: l.name.clone(),
             brains: BRAIN.into(),
             ha_status: ha.into(),
-            version: format!("home-companion {}", env!("CARGO_PKG_VERSION")),
+            version: match self.updater.as_ref().and_then(|u| u.state().latest) {
+                Some(r) => l
+                    .text("update_available_short")
+                    .replace("{v}", env!("CARGO_PKG_VERSION"))
+                    .replace("{new}", &r.version),
+                None => format!("home-companion {}", env!("CARGO_PKG_VERSION")),
+            },
             screen_status: screen,
             save_chat: self.history.borrow().keeps(),
             night_on: on,
@@ -4514,6 +5330,9 @@ impl<S: Screen> Ui<S> {
                     self.refresh_home();
                 }
             }
+            HubMsg::Link { up, last_seen } => super::webview::set_ha_link(up, last_seen),
+            HubMsg::Screen(true) => self.wake(WakeSource::HomeAssistant),
+            HubMsg::Screen(false) => self.screen_off_by("Home Assistant"),
             HubMsg::Entities(e) => {
                 self.choice.borrow_mut().known = e;
                 self.render_choices();
@@ -4556,9 +5375,20 @@ impl<S: Screen> Ui<S> {
                 .filter(|k| cards::HA_KINDS.contains(k))
                 .count()
         };
-        let gone = self.desk.borrow_mut().ha_cards.dismiss_nth(nth);
+        let taken = self.desk.borrow_mut().ha_cards.take_nth(nth);
+        let gone = taken.is_some();
         if gone {
             self.refresh_home();
+        }
+        // Told to Home Assistant (an automation may tick a task off, say): only a real OK, and
+        // only for a card that has an id; a channel send, nothing waits for it.
+        if let Some(id) = taken.and_then(|card| card.id)
+            && let Some(tx) = self.hub_tx.borrow().as_ref()
+        {
+            let _ = tx.send(HubCmd::Fire {
+                event_type: crate::ha::events::CARD_OK_EVENT.into(),
+                data: crate::ha::events::card_ok_data(&id),
+            });
         }
         gone
     }
@@ -4762,7 +5592,9 @@ impl<S: Screen> Ui<S> {
                         "status" => {
                             mv.present = true;
                             let facts = a["facts"].as_i64().unwrap_or(0);
-                            mv.tile = l.text("tile_memories").replace("{n}", &facts.to_string());
+                            mv.tile_known =
+                                l.text("tile_memories").replace("{n}", &facts.to_string());
+                            mv.tile = memories_tile(&l, &mv.tile_known, mv.confirm.len());
                             let mut lines = Vec::new();
                             if a["key"] != true {
                                 lines.push(word(&l, "brain_no_key", &name));
@@ -4777,20 +5609,16 @@ impl<S: Screen> Ui<S> {
                             mv.status = lines.join(" · ");
                         }
                         "memory.list" => {
-                            mv.profile = a["profile"].as_str().unwrap_or("").trim().to_string();
-                            mv.notes = a["notes"].as_str().unwrap_or("").trim().to_string();
-                            mv.facts = a["facts"]
-                                .as_array()
-                                .into_iter()
-                                .flatten()
-                                .map(|f| {
-                                    (
-                                        f["id"].as_i64().unwrap_or(0),
-                                        f["text"].as_str().unwrap_or("").to_string(),
-                                        short_date(&l, f["updated"].as_i64().unwrap_or(0)),
-                                    )
-                                })
-                                .collect();
+                            let (facts, confirm, over) = memory_lines(&a, |ts| short_date(&l, ts));
+                            mv.sent = if facts.is_empty() {
+                                String::new()
+                            } else {
+                                word(&l, "memories_sent", &name)
+                            };
+                            mv.more = more_line(&l, over);
+                            mv.facts = facts;
+                            mv.confirm = confirm;
+                            mv.tile = memories_tile(&l, &mv.tile_known, mv.confirm.len());
                         }
                         "jobs.list" => {
                             let mut up: Vec<(i64, String)> = a["jobs"]
@@ -4901,6 +5729,7 @@ impl<S: Screen> Ui<S> {
                     house_cards.push(HouseEvent::AskOver(id, yes, via, failed));
                 }
                 BrainMsg::ShowView(v) => house_cards.push(HouseEvent::View(v)),
+                BrainMsg::TakePhoto => house_cards.push(HouseEvent::Photo),
                 BrainMsg::Upcoming(items) => {
                     d.memories.events = event_rows(&items, &l, now_unix() as i64);
                     d.events = items;
@@ -5030,6 +5859,12 @@ impl<S: Screen> Ui<S> {
             HouseEvent::Resubscribed => self.house.borrow_mut().clear_question(),
             HouseEvent::View(v) => {
                 self.show_view(v);
+                return;
+            }
+            HouseEvent::Photo => {
+                if let Some(me) = self.this.borrow().upgrade() {
+                    me.open_camera(true);
+                }
                 return;
             }
         }
@@ -5172,6 +6007,10 @@ impl<S: Screen> Ui<S> {
     /// panel stays on: only the backlight goes, as Vol+ and Vol− together do). Over Home
     /// Assistant's view the view closes first.
     fn screen_off(&self) {
+        self.screen_off_by("voice");
+    }
+
+    fn screen_off_by(&self, by: &str) {
         if self.opts.demo.is_some() {
             return;
         }
@@ -5179,7 +6018,7 @@ impl<S: Screen> Ui<S> {
             super::webview::request_home();
         }
         self.screen.set_control_open(false);
-        log::info!(event = "screen_sleep", by = "voice"; "screen: off (asked by voice)");
+        log::info!(event = "screen_sleep", by; "screen: off (asked by {by})");
         self.motion.borrow_mut().awake.sleep(Instant::now());
         self.step();
     }
@@ -5376,6 +6215,15 @@ fn parse_ssid(info: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// "15/11 · 13:56" of a photo's name ("photo-20261115-135638").
+fn photo_caption(stem: &str) -> String {
+    let d = stem.strip_prefix("photo-").unwrap_or(stem);
+    match (d.get(6..8), d.get(4..6), d.get(9..11), d.get(11..13)) {
+        (Some(day), Some(mon), Some(h), Some(m)) => format!("{day}/{mon} · {h}:{m}"),
+        _ => String::new(),
+    }
+}
+
 /// AirPlay's cover art, decoded here and not with `Image::load_from_path`: Slint caches images
 /// by path, and every cover is written to the same file. At most 320 px (the page shows 304).
 fn load_cover(path: &std::path::Path) -> Option<Image> {
@@ -5389,9 +6237,55 @@ fn load_cover(path: &std::path::Path) -> Option<Image> {
     Some(Image::from_rgba8(buf))
 }
 
+/// The memories tile in Altro: what waits to be confirmed comes first (the page is where it is
+/// done), else how many memories there are.
+fn memories_tile(l: &Locale, known: &str, to_confirm: usize) -> String {
+    match to_confirm {
+        0 => known.to_string(),
+        n => l
+            .text("tile_memories_confirm")
+            .replace("{n}", &n.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn u1_the_memories_page_reads_the_brain() {
+        let a = serde_json::json!({"ok": true, "shown": 1, "profile": "", "notes": "", "facts": [
+            {"id": 1, "text": "Il gatto si chiama Neve", "updated": 10, "status": "active"},
+            {"id": 2, "text": "La caldaia è in cantina", "updated": 20, "status": "active"},
+            {"id": 3, "text": "La vicina si chiama Greta", "updated": 30, "status": "candidate"}
+        ]});
+        let (facts, confirm, over) = super::memory_lines(&a, |t| t.to_string());
+        assert_eq!(
+            facts.iter().map(|f| (f.id, f.dim)).collect::<Vec<_>>(),
+            vec![(1, false), (2, true)]
+        );
+        assert_eq!(confirm.len(), 1);
+        assert_eq!((confirm[0].id, confirm[0].date.as_str()), (3, "30"));
+        assert_eq!(over, 1);
+        // An older brain (no shown, no status): every fact known, none dimmed.
+        let old = serde_json::json!({"facts": [{"id": 1, "text": "x", "updated": 1}]});
+        let (facts, confirm, over) = super::memory_lines(&old, |t| t.to_string());
+        assert_eq!(
+            (facts.len(), confirm.len(), over, facts[0].dim),
+            (1, 0, 0, false)
+        );
+        // Right confirms, Wrong rejects.
+        assert_eq!(super::memory_answer(3, true)["cmd"], "memory.confirm");
+        assert_eq!(super::memory_answer(3, false)["cmd"], "memory.delete");
+        assert_eq!(super::memory_answer(3, false)["id"], 3);
+    }
+
     use super::*;
+
+    #[test]
+    fn memories_tile_says_what_waits() {
+        let l = locale::load(&locale::repo_locales(), "it").unwrap();
+        assert_eq!(memories_tile(&l, "6 ricordi", 0), "6 ricordi");
+        assert_eq!(memories_tile(&l, "6 ricordi", 2), "2 da confermare");
+    }
     use crate::ha::discover::{Found, Outcome};
 
     #[test]
@@ -5429,7 +6323,7 @@ mod tests {
         );
         assert!(ha_picks(&Choices::default(), |k| k.into()).is_empty());
         let dir = locale::repo_locales();
-        for lang in ["it", "en"] {
+        for lang in ["it", "en", "nl", "de"] {
             let l = locale::load(&dir, lang).unwrap();
             for k in crate::ha::setup::CHOICES {
                 for key in [format!("ha_choice_{k}"), format!("ha_choice_{k}_hint")] {
@@ -5473,6 +6367,7 @@ mod tests {
                 home_assistant: true,
             },
             link: None,
+            update: None,
         };
         let ui = Ui::new(prepared.screen, character, opts, tx).unwrap();
         let w = &ui.screen;
@@ -5510,6 +6405,135 @@ mod tests {
         assert!(!s.setup_later());
         assert_eq!(s.ha_url().as_deref(), Some("http://192.0.2.11:8123"));
         ui.restart_timer.stop();
+        // Settings → how readily he answers to his name: normal at first, one step at a time,
+        // never past the ends; each step told to the core (which saves it and applies it).
+        assert_eq!(w.get_wake_step(), 0);
+        let _ = rx.try_iter().count();
+        w.invoke_wake_step_changed(1);
+        assert_eq!(w.get_wake_step(), 1);
+        w.invoke_wake_step_changed(5);
+        assert_eq!(w.get_wake_step(), 1, "clamped");
+        w.invoke_wake_step_changed(-1);
+        assert_eq!(w.get_wake_step(), -1);
+        let sent: Vec<WakeSensitivity> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                CoreEvent::Ui(UiEvent::WakeSensitivity(s)) => Some(s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                WakeSensitivity::More,
+                WakeSensitivity::More,
+                WakeSensitivity::Less
+            ]
+        );
+        drop(ui);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The OK on one of Home Assistant's cards fires `home_companion_card_ok` with the card's id:
+    /// by day, with do not disturb on and with the night layout; never for a card without an id,
+    /// one that Home Assistant takes away, or a second tap on a card that is gone.
+    #[test]
+    fn card_ok_tells_home_assistant() {
+        use crate::ha::events::{CardEvent, HaCard};
+        let dir =
+            std::env::temp_dir().join(format!("home-companion-cardok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let prepared = super::super::renderer::prepare_fb(
+            super::super::renderer::Kind::Headless,
+            Path::new(""),
+            0,
+        )
+        .unwrap();
+        let character =
+            Rc::new(character::load(&character::repo_characters().join("alfred")).unwrap());
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let opts = UiOptions {
+            locales: locale::repo_locales(),
+            language: locale::DEFAULT.into(),
+            sample_weather: false,
+            demo: None,
+            screen: ScreenOptions {
+                animations: false,
+                ..Default::default()
+            },
+            state_dir: Some(dir.clone()),
+            ha_linked: false,
+            ha_host: None,
+            setup_at_start: false,
+            first_start: crate::settings::FirstStart {
+                language: false,
+                home_assistant: false,
+            },
+            link: None,
+            update: None,
+        };
+        let ui = Ui::new(prepared.screen, character, opts, tx).unwrap();
+        let (hub, fired) = std::sync::mpsc::channel();
+        ui.set_hub(hub, Vec::new());
+        let show = |id: Option<&str>| {
+            HubMsg::Card(CardEvent::Show(HaCard {
+                id: id.map(String::from),
+                title: Some("Task".into()),
+                text: "Text".into(),
+                icon: None,
+                seconds: None,
+            }))
+        };
+        // The OK of the first card of Home Assistant on the home, whatever else is shown.
+        let tap = |ui: &Ui<_>| {
+            let i = ui
+                .card_kinds
+                .borrow()
+                .iter()
+                .position(|k| cards::HA_KINDS.contains(k))
+                .expect("a card of Home Assistant on the home");
+            ui.ha_card_ok(i)
+        };
+        let ids = |rx: &std::sync::mpsc::Receiver<HubCmd>| -> Vec<(String, serde_json::Value)> {
+            rx.try_iter()
+                .filter_map(|c| match c {
+                    HubCmd::Fire { event_type, data } => Some((event_type, data)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let ok = |id: &str| {
+            vec![(
+                "home_companion_card_ok".to_string(),
+                serde_json::json!({"id": id}),
+            )]
+        };
+
+        // By day: the tap takes the card away and tells Home Assistant its id.
+        ui.apply_hub(show(Some("a")));
+        assert!(tap(&ui));
+        assert_eq!(ids(&fired), ok("a"));
+        // Taken away by Home Assistant: nothing fired.
+        ui.apply_hub(show(Some("b")));
+        ui.apply_hub(HubMsg::Card(CardEvent::Dismiss("b".into())));
+        assert!(ids(&fired).is_empty());
+        // A card without an id: the tap works, no event.
+        ui.apply_hub(show(None));
+        assert!(tap(&ui));
+        assert!(ids(&fired).is_empty());
+        // Do not disturb: the tap is what counts.
+        ui.set_dnd(Some(now_unix() as u64 + 3600));
+        assert!(ui.dnd_on());
+        ui.apply_hub(show(Some("c")));
+        assert!(tap(&ui));
+        assert_eq!(ids(&fired), ok("c"));
+        ui.set_dnd(None);
+        // The night layout (dimmed): the same.
+        ui.toggle_night();
+        assert!(ui.desk.borrow().night_now);
+        ui.apply_hub(show(Some("d")));
+        assert!(tap(&ui));
+        assert_eq!(ids(&fired), ok("d"));
         drop(ui);
         let _ = std::fs::remove_dir_all(&dir);
     }

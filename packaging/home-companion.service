@@ -11,7 +11,7 @@ After=network-online.target thinksmart-audio.service sound.target
 Type=simple
 User=home-companion
 Group=home-companion
-SupplementaryGroups=audio video input tty
+SupplementaryGroups=audio video input tty render
 # "Casa" (Home Assistant's frontend, [web]) sets the CPU governor to performance while it is shown
 # and back when hidden: group video may write the governors (as root, before the body starts)
 ExecStartPre=-+/bin/sh -c 'for g in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do chgrp video "$g" && chmod g+w "$g"; done'

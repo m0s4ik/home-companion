@@ -60,6 +60,8 @@ pub enum BrainMsg {
     },
     /// Open Home Assistant's view there (`show_view`).
     ShowView(View),
+    /// The camera page with its countdown (`take_photo`).
+    TakePhoto,
     /// The calendar events for the "next" card, soonest first (`upcoming`).
     Upcoming(Vec<Upcoming>),
     /// The subscription is up (true) or lost (false).
@@ -214,6 +216,7 @@ pub fn parse_event(v: Value) -> Option<BrainMsg> {
             (_, Some(c)) if c.starts_with("camera.") => BrainMsg::ShowView(View::Camera(c)),
             _ => return None,
         },
+        "take_photo" => BrainMsg::TakePhoto,
         "upcoming" => BrainMsg::Upcoming(
             v.get("items")?
                 .as_array()?
@@ -628,6 +631,7 @@ mod tests {
                 },
                 BrainMsg::ShowView(View::Path("/lovelace/energy".into())),
                 BrainMsg::ShowView(View::Camera("camera.front_door".into())),
+                BrainMsg::TakePhoto,
                 BrainMsg::Upcoming(vec![Upcoming {
                     start: 1_794_150_000,
                     end: 1_794_153_600,

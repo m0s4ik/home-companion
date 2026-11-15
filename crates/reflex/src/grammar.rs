@@ -65,6 +65,8 @@ pub enum Command {
     Repeat,
     /// The backlight off until a touch, a key or a wake word.
     ScreenOff,
+    /// A photo: the camera page with its countdown ("fammi una foto").
+    TakePhoto,
     /// Do not disturb for this long; None: the default (the body decides by the hour).
     DoNotDisturb {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -246,6 +248,7 @@ fn command(name: &str, b: Bound) -> Result<Command, String> {
         "music_previous" => plain(&b, Command::MusicPrevious)?,
         "repeat" => plain(&b, Command::Repeat)?,
         "screen_off" => plain(&b, Command::ScreenOff)?,
+        "take_photo" => plain(&b, Command::TakePhoto)?,
         "dnd_morning" => plain(&b, Command::DoNotDisturbMorning)?,
         "dnd_off" => plain(&b, Command::DoNotDisturbOff)?,
         "good_night" => plain(&b, Command::GoodNight)?,
@@ -769,6 +772,8 @@ silence = ["silenzio"]
         assert_eq!(c("ripeti"), Some(Command::Repeat));
         assert_eq!(c("cosa hai detto"), Some(Command::Repeat));
         assert_eq!(c("spegni lo schermo"), Some(Command::ScreenOff));
+        assert_eq!(c("fammi una foto"), Some(Command::TakePhoto));
+        assert_eq!(c("scatta una foto"), Some(Command::TakePhoto));
         assert_eq!(
             c("non disturbare"),
             Some(Command::DoNotDisturb { seconds: None })
@@ -867,6 +872,8 @@ silence = ["silenzio"]
         assert_eq!(c("repeat that"), Some(Command::Repeat));
         assert_eq!(c("what did you say"), Some(Command::Repeat));
         assert_eq!(c("turn off the screen"), Some(Command::ScreenOff));
+        assert_eq!(c("take a photo"), Some(Command::TakePhoto));
+        assert_eq!(c("take a picture of me"), Some(Command::TakePhoto));
         assert_eq!(
             c("do not disturb"),
             Some(Command::DoNotDisturb { seconds: None })
@@ -993,9 +1000,187 @@ Uova = { bare = "uova" }
     }
 
     #[test]
+    fn alfred_in_dutch() {
+        let nl = alfred("nl");
+        let c = |s: &str| nl.command(s);
+        assert_eq!(c("hoe laat is het"), Some(Command::Time));
+        assert_eq!(
+            c("zet een timer op tien minuten"),
+            Some(Command::TimerStart {
+                seconds: 600,
+                name: None
+            })
+        );
+        assert_eq!(
+            c("zet een timer van anderhalve minuut"),
+            Some(Command::TimerStart {
+                seconds: 90,
+                name: None
+            })
+        );
+        assert_eq!(
+            c("timer pasta acht minuten"),
+            Some(Command::TimerStart {
+                seconds: 480,
+                name: Some("Pasta".into())
+            })
+        );
+        assert_eq!(
+            c("zet een timer voor de eieren op negen minuten"),
+            Some(Command::TimerStart {
+                seconds: 540,
+                name: Some("Eieren".into())
+            })
+        );
+        assert_eq!(
+            c("zet een wekker om half acht"),
+            Some(Command::AlarmSet {
+                hour: 7,
+                minute: 30
+            })
+        );
+        assert_eq!(
+            c("maak me wakker om kwart voor zeven"),
+            Some(Command::AlarmSet {
+                hour: 6,
+                minute: 45
+            })
+        );
+        assert_eq!(
+            c("maak me om zeven uur wakker"),
+            Some(Command::AlarmSet { hour: 7, minute: 0 })
+        );
+        assert_eq!(
+            c("zet de wekker om zeven uur 's avonds"),
+            Some(Command::AlarmSet {
+                hour: 19,
+                minute: 0
+            })
+        );
+        assert_eq!(
+            c("zet het volume op vijftig procent"),
+            Some(Command::VolumeSet { percent: 50 })
+        );
+        assert_eq!(
+            c("volume maximaal"),
+            Some(Command::VolumeSet { percent: 100 })
+        );
+        assert_eq!(
+            c("stop de timer van de pasta"),
+            Some(Command::TimerCancel {
+                name: Some("Pasta".into())
+            })
+        );
+        assert_eq!(
+            c("hoe lang moet de pasta nog"),
+            Some(Command::TimerLeft {
+                name: Some("Pasta".into())
+            })
+        );
+        assert_eq!(
+            c("niet storen voor een uur"),
+            Some(Command::DoNotDisturb {
+                seconds: Some(3600)
+            })
+        );
+        assert_eq!(c("ja graag"), Some(Command::Yes));
+        assert_eq!(c("nee laat maar"), Some(Command::No));
+        assert_eq!(c("dank je wel"), Some(Command::Silence));
+        assert_eq!(c("doe de lampen aan"), None);
+        let words = super::answer_words(include_str!("../../../characters/alfred/grammar/nl.toml"))
+            .unwrap();
+        assert_eq!(words.classify("Ja, graag."), Some(true));
+        assert_eq!(words.classify("nee"), Some(false));
+    }
+
+    #[test]
+    fn alfred_in_german() {
+        let de = alfred("de");
+        let c = |s: &str| de.command(s);
+        assert_eq!(c("wie spät ist es"), Some(Command::Time));
+        assert_eq!(
+            c("stell einen timer auf zehn minuten"),
+            Some(Command::TimerStart {
+                seconds: 600,
+                name: None
+            })
+        );
+        assert_eq!(
+            c("timer auf anderthalb stunden"),
+            Some(Command::TimerStart {
+                seconds: 5400,
+                name: None
+            })
+        );
+        assert_eq!(
+            c("timer nudeln acht minuten"),
+            Some(Command::TimerStart {
+                seconds: 480,
+                name: Some("Nudeln".into())
+            })
+        );
+        assert_eq!(
+            c("stell einen timer für eier auf neun minuten"),
+            Some(Command::TimerStart {
+                seconds: 540,
+                name: Some("Eier".into())
+            })
+        );
+        assert_eq!(
+            c("stell einen wecker um halb acht"),
+            Some(Command::AlarmSet {
+                hour: 7,
+                minute: 30
+            })
+        );
+        assert_eq!(
+            c("weck mich um viertel vor sieben"),
+            Some(Command::AlarmSet {
+                hour: 6,
+                minute: 45
+            })
+        );
+        assert_eq!(
+            c("stell einen wecker um sieben uhr abends"),
+            Some(Command::AlarmSet {
+                hour: 19,
+                minute: 0
+            })
+        );
+        assert_eq!(
+            c("stell die lautstärke auf fünfzig prozent"),
+            Some(Command::VolumeSet { percent: 50 })
+        );
+        assert_eq!(
+            c("maximale lautstärke"),
+            Some(Command::VolumeSet { percent: 100 })
+        );
+        assert_eq!(
+            c("stoppe den timer für nudeln"),
+            Some(Command::TimerCancel {
+                name: Some("Nudeln".into())
+            })
+        );
+        assert_eq!(
+            c("nicht stören für eine stunde"),
+            Some(Command::DoNotDisturb {
+                seconds: Some(3600)
+            })
+        );
+        assert_eq!(c("ja bitte"), Some(Command::Yes));
+        assert_eq!(c("nein danke"), Some(Command::No));
+        assert_eq!(c("vielen dank"), Some(Command::Silence));
+        assert_eq!(c("mach das licht an"), None);
+        let words = super::answer_words(include_str!("../../../characters/alfred/grammar/de.toml"))
+            .unwrap();
+        assert_eq!(words.classify("Ja, bitte."), Some(true));
+        assert_eq!(words.classify("nein"), Some(false));
+    }
+
+    #[test]
     fn alfred_grammars_stay_small() {
         // Vosk compiles the phrase list at start: keep it within reach of the device.
-        for lang in ["it", "en"] {
+        for lang in ["it", "en", "nl", "de"] {
             let n = alfred(lang).len();
             eprintln!("{lang}: {n} phrases");
             assert!(n < 30_000, "{lang}: {n} phrases");

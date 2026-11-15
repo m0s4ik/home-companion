@@ -72,6 +72,13 @@ export global CasaBridge {
     in property <length> home-y: 800px - 24px - 96px;
     in property <bool> home-pressed: false;
     in property <bool> home-dragging: false;
+    // The sign on the home button (webview/sync.rs): "" none, "catchup" (a gold arc turns around
+    // it while the page catches up after being hidden), "offline" (Home Assistant lost: a small
+    // house, a cloud whose sync arrows turn, the time of the last data, amber). Andrea, 2026-11-15.
+    in property <string> sync: "";
+    in property <string> sync-time;
+    // What turns, in degrees (set by Rust 10 times a second while there is a sign).
+    in property <float> sync-turn: 0;
     // The character's face (the swipe chip, the conversation bar).
     in property <image> face;
     callback home();
@@ -254,6 +261,24 @@ export component CasaScreen inherits Rectangle {
         // edge), as big as Parla, its gold ring and deep fill, a white house, so it stands out from any
         // dashboard (Andrea, 2026-11-06). Shown only with `controls-shown`; it never takes a touch itself (Rust
         // routes the touches on it: controls.rs SIZE + HIT_SLACK), so hidden it is just not drawn.
+        // Around the button: the catch-up arc (gold, turning) or, offline, a still amber ring.
+        if CasaBridge.sync != "": Path {
+            x: CasaBridge.home-x - 6px;
+            y: CasaBridge.home-y - 6px;
+            width: Grid.primary-size + 12px;
+            height: Grid.primary-size + 12px;
+            opacity: CasaBridge.controls-shown ? 1 : 0;
+            viewbox-width: 108;
+            viewbox-height: 108;
+            fill: transparent;
+            property <angle> a: CasaBridge.sync-turn * 1deg;
+            stroke: CasaBridge.sync == "offline" ? Theme.warn.with-alpha(0.55) : Theme.accent;
+            stroke-width: CasaBridge.sync == "offline" ? 2px : 4px;
+            commands: CasaBridge.sync == "offline"
+                ? "M 54 2 A 52 52 0 1 1 53.99 2"
+                : "M " + (54 + 52 * sin(self.a)) + " " + (54 - 52 * cos(self.a))
+                    + " A 52 52 0 0 1 " + (54 + 52 * sin(self.a + 110deg)) + " " + (54 - 52 * cos(self.a + 110deg));
+        }
         Rectangle {
             x: CasaBridge.home-x;
             y: CasaBridge.home-y;
@@ -261,7 +286,7 @@ export component CasaScreen inherits Rectangle {
             height: Grid.primary-size;
             border-radius: self.width / 2;
             background: CasaBridge.home-pressed ? Theme.accent-deep.brighter(0.5) : Theme.accent-deep;
-            border-color: Theme.accent.with-alpha(0.9);
+            border-color: CasaBridge.sync == "offline" ? transparent : Theme.accent.with-alpha(0.9);
             border-width: 2px;
             opacity: 0;
             visible: self.opacity > 0;
@@ -269,13 +294,56 @@ export component CasaScreen inherits Rectangle {
                 duration: CasaBridge.home-dragging ? 0ms : 160ms;
                 easing: ease-out;
             }
-            Icon {
+            if CasaBridge.sync != "offline": Icon {
                 x: 26px;
                 y: 26px;
                 width: 44px;
                 height: 44px;
                 source: Icons.home-44;
                 color: Theme.text;
+            }
+            // Offline: a small house, then the cloud with its turning sync arrows and the time.
+            if CasaBridge.sync == "offline": VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                HorizontalLayout {
+                    alignment: center;
+                    Icon {
+                        width: 28px;
+                        height: 28px;
+                        source: Icons.home-28;
+                        color: Theme.text;
+                    }
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 3px;
+                    Rectangle {
+                        width: 20px;
+                        height: 20px;
+                        y: (parent.height - self.height) / 2;
+                        Icon {
+                            source: Icons.cloud-20;
+                            color: Theme.warn;
+                        }
+                        Icon {
+                            x: 5.2px;
+                            y: 6.4px;
+                            width: 9.6px;
+                            height: 9.6px;
+                            source: Icons.sync-12;
+                            color: Theme.accent-deep;
+                            transform-rotation: CasaBridge.sync-turn * 1deg;
+                        }
+                    }
+                    Text {
+                        text: CasaBridge.sync-time;
+                        font-size: 19px;
+                        font-weight: 700;
+                        color: Theme.warn;
+                        vertical-alignment: center;
+                    }
+                }
             }
             states [
                 shown when CasaBridge.controls-shown || CasaBridge.home-pressed: {

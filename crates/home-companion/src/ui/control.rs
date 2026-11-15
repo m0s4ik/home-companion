@@ -38,6 +38,18 @@ pub struct ControlState {
     pub dnd: Option<String>,
     /// None: not linked; Some(ok).
     pub ha: Option<bool>,
+    /// None: no camera (no tile); else what the camera tile says.
+    pub camera: Option<Camera>,
+}
+
+/// The camera tile: a tap takes a photo (camera.rs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Camera {
+    Ready,
+    /// The lens cover is closed: the tile only tells.
+    Covered,
+    /// Taking one now.
+    Busy,
 }
 
 pub fn tiles(s: &ControlState, w: &dyn Fn(&str) -> String) -> Vec<ControlTileView> {
@@ -49,7 +61,7 @@ pub fn tiles(s: &ControlState, w: &dyn Fn(&str) -> String) -> Vec<ControlTileVie
         enabled,
         tappable: key != "wifi",
     };
-    vec![
+    let mut v = vec![
         tile(
             "wifi",
             "cc_wifi",
@@ -118,7 +130,26 @@ pub fn tiles(s: &ControlState, w: &dyn Fn(&str) -> String) -> Vec<ControlTileVie
             Some(true) => tile("ha", "ha_short", w("cc_linked"), true, true),
             Some(false) => tile("ha", "ha_short", w("cc_check"), false, true),
         },
-    ]
+    ];
+    match s.camera {
+        None => {}
+        Some(Camera::Ready) => v.push(tile(
+            "camera",
+            "cc_camera",
+            w("cc_camera_take"),
+            false,
+            true,
+        )),
+        Some(Camera::Busy) => v.push(ControlTileView {
+            tappable: false,
+            ..tile("camera", "cc_camera", w("cc_camera_busy"), true, true)
+        }),
+        Some(Camera::Covered) => v.push(ControlTileView {
+            tappable: false,
+            ..tile("camera", "cc_camera", w("cc_camera_covered"), false, true)
+        }),
+    }
+    v
 }
 
 #[cfg(test)]
@@ -164,6 +195,23 @@ mod tests {
         assert_eq!(t[4].status, "Dalle 23:00");
         assert_eq!((t[5].status.as_str(), t[5].on), ("Spento", false));
         assert_eq!(t[6].status, "Collegato");
+    }
+
+    #[test]
+    fn the_camera_tile_comes_last_and_only_with_a_camera() {
+        let mut s = ControlState::default();
+        assert_eq!(tiles(&s, &w).len(), 7);
+        s.camera = Some(Camera::Ready);
+        let t = tiles(&s, &w);
+        assert_eq!((t.len(), t[7].key, t[7].tappable), (8, "camera", true));
+        s.camera = Some(Camera::Covered);
+        let t = &tiles(&s, &w)[7];
+        assert_eq!(
+            (t.status.as_str(), t.tappable),
+            ("cc_camera_covered", false)
+        );
+        s.camera = Some(Camera::Busy);
+        assert!(tiles(&s, &w)[7].on);
     }
 
     #[test]

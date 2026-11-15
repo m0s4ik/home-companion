@@ -30,7 +30,7 @@ USED = {
     "view-dashboard": [48, 32, 28], "dots-horizontal": [48], "home": [48, 44, 28],
     "message-plus": [48], "delete": [48], "close": [48, 36], "timer-plus": [48],
     "alarm-plus": [48], "skip-previous": [48, 36], "skip-next": [48, 36], "translate": [48, 28],
-    "refresh": [44], "pause": [44, 28, 24], "play": [44, 28], "plus": [48, 36],
+    "refresh": [48, 44], "download": [44], "pause": [44, 28, 24], "play": [44, 28], "plus": [48, 36],
     "minus": [36], "check": [44, 28],
     # tiles, headers, rows
     "forum": [48, 32], "music-note": [48, 32], "timer": [48, 32, 24], "cog": [48], "chevron-left": [40],
@@ -46,7 +46,7 @@ USED = {
     # "falso allarme": the wake word heard by mistake
     "ear-hearing-off": [48],
     # cards, status, dialogs
-    "bell": [32], "bell-off": [32, 28], "help-circle": [48], "cloud-off": [32], "microphone-off": [32], "alert-circle": [64, 32],
+    "bell": [32], "bell-off": [32, 28], "help-circle": [48], "cloud-off": [32], "cloud": [20], "sync": [28, 12], "camera": [44, 32], "image-multiple": [48], "microphone-off": [32], "alert-circle": [64, 32],
     "wifi-strength-1": [32, 28], "wifi-strength-2": [32, 28], "wifi-strength-3": [32, 28], "wifi-strength-4": [32, 28], "wifi-strength-off-outline": [32, 28], "check-circle": [48, 32], "undo": [36], "cart": [48, 32], "calendar-clock": [48, 32], "alarm": [40, 32, 28, 24], "cellphone": [28], "timer-sand-full": [48],
     # weather (the date line)
     "weather-sunny": [32], "weather-night-partly-cloudy": [32], "weather-partly-cloudy": [32],

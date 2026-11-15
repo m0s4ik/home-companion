@@ -1,0 +1,107 @@
+# SPDX-License-Identifier: CC0-1.0
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+#
+# Alfred's reflexes in Dutch; see it.toml for the format. Slots: {duration} ("tien minuten",
+# "anderhalve minuut", "een kwartier"), {time} ("om half acht", "om zeven uur 's avonds", "om
+# negentien uur dertig"), {percent} ("vijftig procent", "vijftig"); their words are in
+# crates/reflex/src/slots.rs. {whole_duration} is {duration} in whole minutes up to three hours;
+# {name:<key>} is a timer name of [timer_names] in the form <key>. Every word is in the vocabulary
+# of vosk-model-small-nl-0.22.
+format = 1
+language = "nl"
+
+[commands]
+time = ["hoe laat is het", "hoe laat is het nu", "wat is de tijd", "weet je hoe laat het is", "zeg eens hoe laat het is"]
+timer_start = [
+    "zet een timer op {duration}",
+    "zet een timer van {duration}",
+    "zet een timer voor {duration}",
+    "zet de timer op {duration}",
+    "start een timer van {duration}",
+    "start een timer op {duration}",
+    "een timer van {duration}",
+    "timer van {duration}",
+    "timer op {duration}",
+    "timer {duration}",
+    "timer {name:bare} {whole_duration}",
+    "zet een timer voor {name:the} op {whole_duration}",
+    "zet een timer van {whole_duration} voor {name:the}",
+    "timer van {whole_duration} voor {name:the}",
+]
+timer_cancel = [
+    "annuleer de timer",
+    "stop de timer",
+    "zet de timer uit",
+    "verwijder de timer",
+    "annuleer de timers",
+    "stop de timers",
+    "annuleer timer",
+    "stop timer",
+    "timer uit",
+    "annuleer de timer van {name:the}",
+    "stop de timer van {name:the}",
+    "zet de timer van {name:the} uit",
+    "verwijder de timer van {name:the}",
+]
+timer_left = [
+    "hoe lang nog",
+    "hoeveel tijd nog",
+    "hoe lang duurt de timer nog",
+    "hoe lang loopt de timer nog",
+    "hoeveel tijd heeft de timer nog",
+    "hoe lang nog voor {name:the}",
+    "hoe lang moet {name:the} nog",
+    "hoe lang duurt de timer van {name:the} nog",
+]
+timer_list = ["welke timers lopen er", "welke timers heb ik", "hoeveel timers lopen er", "noem de timers"]
+alarm_set = [
+    "zet een wekker {time}",
+    "zet de wekker {time}",
+    "maak me wakker {time}",
+    "maak me {time} wakker",
+    "wek me {time}",
+    "wekker {time}",
+]
+alarm_cancel = ["annuleer de wekker", "zet de wekker uit", "verwijder de wekker", "wekker uit"]
+volume_up = ["harder", "zet het volume hoger", "volume hoger", "zet het harder", "volume omhoog"]
+volume_down = ["zachter", "zet het volume lager", "volume lager", "zet het zachter", "volume omlaag"]
+volume_set = ["zet het volume op {percent}", "volume op {percent}", "volume {percent}"]
+volume_max = ["volume maximaal", "zet het volume op maximaal", "volume op maximaal"]
+volume_min = ["volume minimaal", "zet het volume op minimaal", "volume op minimaal"]
+music_pause = ["pauzeer de muziek", "zet de muziek op pauze", "pauze", "stop de muziek", "muziek uit", "zet de muziek uit"]
+music_play = ["hervat de muziek", "speel verder", "ga verder met de muziek", "zet de muziek weer aan", "muziek aan", "hervat"]
+music_next = ["volgend nummer", "volgende nummer", "volgend liedje", "sla dit nummer over", "speel het volgende nummer"]
+music_previous = ["vorig nummer", "vorige nummer", "vorig liedje", "speel het vorige nummer"]
+silence = ["stil", "wees stil", "stilte", "dat was het", "dank je", "dank je wel", "bedankt", "genoeg"]
+yes = ["ja", "ja graag", "ja hoor", "ja prima", "jazeker", "zeker", "prima", "doe maar", "ga je gang", "akkoord"]
+no = ["nee", "nee dank je", "nee bedankt", "laat maar", "nee laat maar", "niet doen", "hoeft niet", "annuleer"]
+repeat = ["herhaal", "herhaal dat", "kun je dat herhalen", "zeg dat nog eens", "wat zei je", "nog een keer"]
+screen_off = ["zet het scherm uit", "scherm uit", "doe het scherm uit"]
+dnd_on = [
+    "niet storen",
+    "stoor me niet",
+    "zet niet storen aan",
+    "niet storen voor {whole_duration}",
+    "stoor me niet voor {whole_duration}",
+    "zet niet storen aan voor {whole_duration}",
+]
+dnd_morning = ["niet storen tot morgenochtend", "stoor me niet tot morgenochtend", "niet storen tot morgen"]
+dnd_off = ["zet niet storen uit", "niet storen uit", "schakel niet storen uit"]
+good_night = ["welterusten", "goedenacht", "welterusten alfred", "goedenacht alfred", "slaap lekker"]
+
+# The timers a name can be given by voice ("timer pasta tien minuten"). A closed grammar takes no
+# free words, so the names are a list; edit it freely (label = what the screen shows).
+[timer_names]
+Pasta = { bare = "pasta", the = "de pasta" }
+Eieren = { bare = "eieren", the = "de eieren" }
+Oven = { bare = "oven", the = "de oven" }
+Pizza = { bare = "pizza", the = "de pizza" }
+Rijst = { bare = "rijst", the = "de rijst" }
+Thee = { bare = "thee", the = "de thee" }
+Koffie = { bare = "koffie", the = "de koffie" }
+Was = { bare = "was", the = "de was" }
+Brood = { bare = "brood", the = "het brood" }
+Taart = { bare = "taart", the = "de taart" }
+Vlees = { bare = "vlees", the = "het vlees" }
+Groente = { bare = "groente", the = "de groente" }
+Aardappels = { bare = "aardappels", the = "de aardappels" }

@@ -58,7 +58,7 @@ static inline int hcw_guard_paths(const struct hcw_guard *m,
 
 #endif
 
-#define HCW_VERSION 1u
+#define HCW_VERSION 2u // 2: pause, resume
 #define HCW_HEADER_SIZE 8u
 #define HCW_MAX_MESSAGE 65536u
 #define HCW_MAX_PLANES 4u
@@ -85,6 +85,8 @@ enum hcw_type {
     HCW_CONFIRM = 15,     // H, variable
     HCW_CONFIRM_RESULT = 16, // B
     HCW_GUARD = 17,       // B, variable
+    HCW_PAUSE = 18,       // B: stop the web process (the view is hidden for long); version 2
+    HCW_RESUME = 19,      // B: let it run again (also on show and when the body goes)
 };
 
 struct hcw_header {

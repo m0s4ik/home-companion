@@ -109,10 +109,20 @@ pub struct HaCfg {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct MemoryCfg {
-    /// SQLite database and the `profile.md` / `notes.md` blocks.
+    /// The SQLite database (`brain.db`).
     pub dir: String,
+    /// Unused since 0.3 (the profile and notes blocks became facts); still read so an older
+    /// brain.toml loads.
     pub profile_max_chars: usize,
+    /// Unused since 0.3, as `profile_max_chars`.
     pub notes_max_chars: usize,
+    /// What the agent always knows (the facts in its instructions), at most (200-4000; ≈ 4
+    /// characters a token). The rest is found with `recall`.
+    pub context_max_chars: usize,
+    /// A fact heard once (a candidate) goes after this many days untouched.
+    pub candidate_days: u32,
+    /// At most this many facts alive; over it the oldest inferred ones of least importance go.
+    pub max_facts: usize,
     /// Raw exchanges are kept this long; session summaries and facts stay.
     pub keep_days: u32,
     /// A pause this long closes a conversation (its summary and facts are extracted then).
@@ -122,7 +132,7 @@ pub struct MemoryCfg {
     /// Facts recalled into each request.
     pub recall_facts: usize,
     /// The nightly tidy-up ("03:30", local time; "" = off): merges, updates and retires
-    /// facts and shortens the blocks, with the `deep` model.
+    /// facts, with Home Assistant's AI task.
     pub consolidate_at: String,
     /// At most this many facts are shown to the model in one tidy-up (the oldest first).
     pub consolidate_max_facts: usize,
@@ -165,12 +175,22 @@ impl Default for HaCfg {
     }
 }
 
+impl MemoryCfg {
+    /// `context_max_chars` within 200..=4000.
+    pub fn context_chars(&self) -> usize {
+        self.context_max_chars.clamp(200, 4000)
+    }
+}
+
 impl Default for MemoryCfg {
     fn default() -> Self {
         MemoryCfg {
             dir: "/var/lib/home-companion-brain".into(),
             profile_max_chars: 1400,
             notes_max_chars: 2200,
+            context_max_chars: 1500,
+            candidate_days: 30,
+            max_facts: 200,
             keep_days: 30,
             session_gap_minutes: 10,
             recent_turns: 10,
@@ -201,9 +221,6 @@ impl Config {
     pub fn validate(&self) -> Result<(), String> {
         if !(1.0..=300.0).contains(&self.ai.timeout_seconds) {
             return Err("ai.timeout_seconds: 1-300".into());
-        }
-        if self.memory.profile_max_chars < 200 || self.memory.notes_max_chars < 200 {
-            return Err("memory: block limits below 200 characters".into());
         }
         for (k, v) in [
             ("memory.consolidate_at", &self.memory.consolidate_at),

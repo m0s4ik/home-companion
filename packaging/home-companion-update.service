@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+#
+# Installs the release the body asked for (home-companion-update.sh), as root. Started by
+# home-companion-update.path; nothing else starts it. The script is copied first: install.sh
+# replaces it while it runs.
+[Unit]
+Description=Home Companion update (installs the release asked on the screen)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'cp /opt/home-companion/home-companion-update.sh /run/home-companion-update.sh && exec /bin/sh /run/home-companion-update.sh'
+TimeoutStartSec=30min

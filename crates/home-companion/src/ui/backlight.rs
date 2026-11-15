@@ -57,6 +57,8 @@ pub enum WakeSource {
     Conversation,
     /// SIGUSR1 (`systemctl kill -s USR1 home-companion`): a test hook.
     Signal,
+    /// Home Assistant's `home_companion_screen` event.
+    HomeAssistant,
     Start,
     /// Back from a system suspend (suspend.rs).
     Resume,

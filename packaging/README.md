@@ -37,7 +37,7 @@ On the device, as root, from the unpacked bundle ([INSTALL.md](INSTALL.md) is th
 
 | Option | |
 |---|---|
-| `--language it\|en` | the language; without it the line stays commented out and the screen asks at first start |
+| `--language it\|en\|nl\|de` | the language; without it the line stays commented out and the screen asks at first start |
 | `--name NAME` | the satellite's name in Home Assistant and in the AirPlay menu (default `Alfred`) |
 | `--ha-url URL` | Home Assistant's address; without it the screen finds it at first start (mDNS, `avahi-browse`). An IPv4 address also goes into `[satellite] allowed`, so a Wyoming integration added by hand works before the QR link |
 | `--no-airplay` / `--airplay` | AirPlay is on when the system has its runtime (the GStreamer plugins and libraries of `AIRPLAY=1`); `--airplay` installs the missing Debian packages |
@@ -91,14 +91,15 @@ packages it installed stay.
 | `/etc/udev/rules.d/99-home-companion-backlight.rules` | [99-home-companion-backlight.rules](99-home-companion-backlight.rules): group `video` may write the backlight |
 | `/opt/home-companion/airplay/uxplay` | AirPlay (music and screen mirroring): UxPlay 1.73.7 with our patch, built by `tools/airplay/build-uxplay.sh`; needs the runtime listed under "AirPlay" below and `[airplay] enabled = true` |
 | `/opt/home-companion/home-companion-reflex`, `/opt/home-companion/lib/libvosk.so` | the reflex helper (`cargo build --release --target aarch64-unknown-linux-gnu -p reflex --features vosk --bin home-companion-reflex`) and the prebuilt libvosk 0.3.45 (Apache-2.0, `crates/spike-native/tools/fetch-vosk.sh`; the helper finds it through its rpath `$ORIGIN/lib`, it needs `libatomic1`) |
-| `/opt/home-companion/reflex/<lang>/` | the Vosk model of each language with reflexes: `it` = [vosk-model-small-it-0.22](https://alphacephei.com/vosk/models), `en` = vosk-model-small-en-us-0.15, both Apache-2.0, slimmed (`graph/Gr.fst` goes, its word table stays as `graph/words.txt`). A language without a model has no reflexes (one log line); `[reflexes] enabled = false` turns them off |
+| `/opt/home-companion/reflex/<lang>/` | the Vosk model of each language with reflexes: `it` = [vosk-model-small-it-0.22](https://alphacephei.com/vosk/models), `en` = vosk-model-small-en-us-0.15, `nl` = vosk-model-small-nl-0.22, `de` = vosk-model-small-de-0.15, all Apache-2.0, slimmed (`graph/Gr.fst` goes, its word table stays as `graph/words.txt`). A language without a model has no reflexes (one log line); `[reflexes] enabled = false` turns them off |
 | `/opt/home-companion/home-companion-web`, `/etc/systemd/system/home-companion-web.service` | optional, for "Casa": the web helper (`web/home-companion-web`) and [its unit](home-companion-web.service); its profile in `/var/lib/home-companion-web`, cache in `/var/cache/home-companion-web` (`StateDirectory`, `CacheDirectory`) |
 | `/opt/home-companion/home-companion-brain`, `/etc/home-companion/brain.toml`, `/etc/systemd/system/home-companion-brain.service` | the brain (below); memory in `/var/lib/home-companion-brain` |
+| `/opt/home-companion/home-companion-update.sh`, `/etc/systemd/system/home-companion-update.{path,service}` | updates from the screen (Settings → Info): the body writes a release tag and its SHA-256 to `/var/lib/home-companion/update/request`, the path unit starts [the script](home-companion-update.sh) as root; the repository comes from `[update] repo` in `/etc/home-companion/home-companion.toml` only. What ran before is kept in `/var/lib/home-companion-update/previous` and put back if the new body does not stay up |
 
 ## How it runs
 
-home-companion runs as the `home-companion` user, not root: `audio` for ALSA, `video` for `/dev/dri`, the framebuffer and (with the udev
-rule) the backlight, `input` for touch and keys, `tty` plus `CAP_SYS_TTY_CONFIG` to switch the console to graphics
+home-companion runs as the `home-companion` user, not root: `audio` for ALSA, `video` for `/dev/dri`, the framebuffer, the camera and (with
+the udev rule) the backlight, `render` for the camera's debayering on the GPU, `input` for touch and keys, `tty` plus `CAP_SYS_TTY_CONFIG` to switch the console to graphics
 mode while it draws. The accelerometer (`/sys/bus/iio/devices/*/in_accel_*_raw`) is readable by everybody.
 Settings → Suspend puts the whole device to sleep (s2idle; Vol+ or Vol− wakes it, touch does not): the body writes
 `mem` to `/sys/power/state` itself, and before that `+N` to `/sys/class/rtc/rtc0/wakealarm` when a timer is pending,
@@ -183,8 +184,8 @@ Tools for Home Assistant's own AI: the conversation agent is an agent
 of whatever AI integration the user set up in Home Assistant (Google Gemini, OpenAI, Anthropic…, its key stays there);
 `home-companion-brain` serves it the device's tools over MCP (Home Assistant's built-in MCP client): memory, reminders, timers and
 alarms on the device, the shopping list, the house with gates. Long-term memory stays on the device
-(`/var/lib/home-companion-brain`: `brain.db`, `profile.md`, `notes.md`; the two Markdown blocks can be edited by hand); the memory
-jobs think through Home Assistant's `ai_task`. No API key on the device. (The earlier way, a model called directly with
+(`/var/lib/home-companion-brain/brain.db`; the `profile.md`/`notes.md` blocks of 0.2 became facts at the first start of 0.3 and
+were renamed `*.md.migrated`); the memory jobs think through Home Assistant's `ai_task`. No API key on the device. (The earlier way, a model called directly with
 a key on the device and a Wyoming `handle` service, is kept on the branch `standby/brain-direct-llm`.)
 
 | Path | What |
@@ -205,13 +206,15 @@ switches named like them) are never controlled by voice; other covers and valves
 heard. Home Assistant reads the tool list at setup and every 30 minutes: reload the MCP integration after an update.
 
 The body's control socket (`control_socket`, `/run/home-companion-brain/brain.sock`): the "Ricordi" page (what the brain knows,
-each fact deletable, "Dimentica tutto") and the reminder cards. The unit's `RuntimeDirectory` is group `home-companion-brain`, so
+each fact deletable; what it heard once, Right / Wrong; "Dimentica tutto"), the reminder cards, and what the agent always
+knows (`memory.context`), which the body writes into Home Assistant as `sensor.<name>_memory` (see the README's memory section; two devices need
+different names, or they overwrite each other's state). The unit's `RuntimeDirectory` is group `home-companion-brain`, so
 the body's user is in that group (install.sh). Without the brain (no socket) the page
 says the brain is not active and the Altro tile is hidden.
 
 Nightly tidy-up (`[memory] consolidate_at`, "03:30"; "" = off): with Home Assistant's AI task the brain merges facts that say the
-same thing, updates changed ones, retires the past ones (an appointment last week) and shortens the two blocks within
-their limits, in one transaction; skipped while a conversation is open or ended less than 10 minutes ago; after a
+same thing, updates changed ones and retires the past ones, in one transaction (no model call when no fact changed
+since the last run); skipped while a conversation is open or ended less than 10 minutes ago; after a
 suspend it runs at the next wake-up within 6 hours, else that night is skipped. The result (counts only) is on the
 "Ricordi" page and in the journal (`event=brain_tidy`).
 

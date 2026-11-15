@@ -39,6 +39,13 @@ export { Grid } from "design/tokens.slint";
 // "answer" (the last long answer).
 // One tile of the control center: `key` picks its icon ("wifi", "bluetooth", "airplay", "mic",
 // "night", "ha"); the words come from the body (crates/home-companion/src/ui/control.rs).
+// One step of an install (update.rs): "done", "now", "todo" or "failed".
+export struct UpdateStep {
+    label: string,
+    detail: string,
+    state: string,
+}
+
 export struct ControlRow {
     key: string,
     label: string,
@@ -82,11 +89,14 @@ export struct ChatRow {
     text: string,
 }
 
-// A fact Alfred remembers ("Ricordi"): its text and the day it was written ("5 nov").
+// A fact Alfred remembers ("Ricordi"): its text and the day it was written ("5 nov"); dim =
+// known but not in what the assistant reads at every conversation (over the budget: found only
+// when asked).
 export struct MemoryRow {
     id: int,
     text: string,
     date: string,
+    dim: bool,
 }
 
 // A reminder still to come ("Ricordi"): "domani 18:00", what.
@@ -191,6 +201,10 @@ export struct Words {
     false_wake: string,
     home_compact_off: string,
     home_compact_on: string,
+    wake_sensitivity: string,
+    wake_less: string,
+    wake_normal: string,
+    wake_more: string,
     setup_title: string,
     setup_subtitle: string,
     setup_step1: string,
@@ -201,10 +215,10 @@ export struct Words {
     error_hint: string,
     alarm: string,
     memories: string,
-    memories_row: string,
     memories_about: string,
-    memories_notes: string,
-    memories_facts: string,
+    memories_confirm: string,
+    memories_right: string,
+    memories_wrong: string,
     memories_empty: string,
     reminders_section: string,
     reminders: string,
@@ -248,6 +262,16 @@ export struct Words {
     no: string,
     ask_executing: string,
     what_short: string,
+    update_title: string,
+    update_check: string,
+    camera: string,
+    camera_shoot: string,
+    camera_covered: string,
+    camera_starting: string,
+    photos: string,
+    photos_empty: string,
+    photo_delete: string,
+    photo_delete_question: string,
     what_title: string,
     what_intro: string,
     dnd: string,
@@ -318,6 +342,8 @@ component HaCheck inherits Rectangle {
 component DeletableRow inherits Rectangle {
     in property <string> text;
     in property <string> detail;
+    // Shown fainter (a fact the assistant finds only when asked).
+    in property <bool> dim: false;
     in property <string> ask: "Delete?";
     callback delete();
     property <bool> asking: false;
@@ -338,7 +364,7 @@ component DeletableRow inherits Rectangle {
         y: 14px + title.preferred-height + 4px;
         text: root.detail;
         font-size: 20px;
-        color: Theme.text-3;
+        color: root.dim ? Theme.text-3.with-alpha(0.5) : Theme.text-3;
     }
     if !root.asking: GlyphButton {
         x: parent.width - 8px - 64px;
@@ -356,6 +382,54 @@ component DeletableRow inherits Rectangle {
         clicked => {
             root.asking = false;
             root.delete();
+        }
+    }
+}
+
+// A fact heard once ("Ricordi" → To confirm): its text and day, Right / Wrong on the right.
+component ConfirmRow inherits Rectangle {
+    in property <string> text;
+    in property <string> detail;
+    in property <string> right: "Right";
+    in property <string> wrong: "Wrong";
+    callback confirm();
+    callback reject();
+    height: max(88px, title.preferred-height + (root.detail != "" ? 30px : 0px) + 28px);
+    border-radius: 16px;
+    background: Theme.surface;
+    title := Text {
+        x: 24px;
+        y: 14px;
+        width: right-button.x - 24px - 16px;
+        text: root.text;
+        font-size: 24px;
+        color: Theme.text;
+        wrap: word-wrap;
+    }
+    if root.detail != "": Text {
+        x: 24px;
+        y: 14px + title.preferred-height + 4px;
+        text: root.detail;
+        font-size: 20px;
+        color: Theme.text-3;
+    }
+    wrong-button := PillButton {
+        x: parent.width - 12px - self.width;
+        y: (parent.height - self.height) / 2;
+        width: 136px;
+        label: root.wrong;
+        clicked => {
+            root.reject();
+        }
+    }
+    right-button := PillButton {
+        x: wrong-button.x - 12px - self.width;
+        y: wrong-button.y;
+        width: 136px;
+        primary: true;
+        label: root.right;
+        clicked => {
+            root.confirm();
         }
     }
 }
@@ -449,6 +523,70 @@ component MirrorHomeButton inherits Rectangle {
     }
 }
 
+// The camera's frame (4:3, the photo's shape): the live mirror or a photo, a notice instead
+// when there is no picture, the countdown's number over it, the shot's flash, a line on it.
+component PhotoFrame inherits Rectangle {
+    in property <image> picture;
+    in property <bool> shown;
+    in property <string> notice;
+    in property <string> count;
+    in property <bool> flash;
+    in property <string> caption;
+    width: 640px;
+    height: 480px;
+    border-radius: 20px;
+    clip: true;
+    background: Theme.surface;
+    if root.shown: Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.picture;
+        image-fit: cover;
+    }
+    if root.notice != "": Text {
+        x: 32px;
+        width: parent.width - 64px;
+        height: parent.height;
+        text: root.notice;
+        font-size: 26px;
+        color: Theme.text-2;
+        wrap: word-wrap;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    if root.count != "": Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.count;
+        font-size: 220px;
+        font-weight: 700;
+        color: Theme.text;
+        stroke: Theme.bg.with-alpha(0.6);
+        stroke-width: 4px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    if root.flash: Rectangle {
+        background: #ffffffcc;
+    }
+    if root.caption != "": Rectangle {
+        y: parent.height - self.height - 20px;
+        x: (parent.width - self.width) / 2;
+        height: 48px;
+        width: caption-text.preferred-width + 40px;
+        border-radius: 24px;
+        background: Theme.bg.with-alpha(0.75);
+        caption-text := Text {
+            x: 20px;
+            height: parent.height;
+            text: root.caption;
+            font-size: 20px;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+    }
+}
+
 export component CompanionWindow inherits Window {
     width: 1280px;
     height: 800px;
@@ -519,8 +657,10 @@ export component CompanionWindow inherits Window {
         ha-unavailable-text: "Home Assistant is not answering. I retry by myself; timers and alarms keep working.",
         error-hint: "Say it again? Just say \"Okay Alfred\"",
         alarm: "Alarm",
-        memories: "Memories", memories-row: "Alfred's memories",
-        memories-about: "WHAT I KNOW ABOUT YOU", memories-notes: "NOTES", memories-facts: "MEMORIES",
+        memories: "Memories",
+        memories-about: "WHAT I KNOW",
+        memories-confirm: "TO CONFIRM",
+        memories-right: "Right", memories-wrong: "Wrong",
         memories-empty: "Nothing yet: say \"Okay Alfred, remember that…\".",
         reminders-section: "REMINDERS", reminders: "Reminders",
         reminders-empty: "No reminders coming: say \"Okay Alfred, remind me…\".",
@@ -667,9 +807,12 @@ export component CompanionWindow inherits Window {
     // Memories (home-companion-brain): present = its control socket answers (the tile, the row).
     in property <bool> brain-present: false;
     in property <string> memories-status: "";
-    in property <string> memories-profile: "";
-    in property <string> memories-notes: "";
+    // The line on what reaches the assistant, the note on the facts over the budget ("" = none).
+    in property <string> memories-sent: "";
+    in property <string> memories-more: "";
+    // What Alfred knows, in the order the assistant reads it; what was heard once, to confirm.
     in property <[MemoryRow]> memory-rows: [];
+    in property <[MemoryRow]> confirm-rows: [];
     in property <[JobRow]> job-rows: [];
     // The shopping list (`[lists] shopping`): on = configured; its open items.
     in property <bool> shopping-on: false;
@@ -713,6 +856,8 @@ export component CompanionWindow inherits Window {
     in property <bool> night-on: true;
     // Settings → Screen → "Home compatta" (the clock higher, four cards; Grid.compact).
     in property <bool> home-compact: false;
+    // Settings → how readily the character answers to his wake word: -1 less, 0 normal, 1 more.
+    in property <int> wake-step: 0;
     in property <int> night-start: 23;
     in property <int> night-end: 7;
     // Setup: what the body sees (Wi-Fi, where Home Assistant is).
@@ -793,6 +938,36 @@ export component CompanionWindow inherits Window {
     callback control-volume(int);
     callback control-brightness(int);
     callback control-brightness-auto();
+    // One photo of the gallery (its own page) and its date.
+    in property <image> photo;
+    in property <string> photo-caption;
+    callback photo-delete();
+    // The camera page (camera.rs): the live mirror, "live" / "starting" / "covered" / "taking",
+    // the countdown's number ("" none), and the gallery's thumbnails, newest first.
+    in property <image> camera-frame;
+    in property <string> camera-state: "starting";
+    in property <string> camera-count;
+    // Under the picture after a shot ("Saved · 16:34"), while the photo is shown in the frame.
+    in property <string> camera-caption;
+    in property <[image]> photo-thumbs: [];
+    callback camera-shoot();
+    // Settings → Info, updates (update.rs): the version running, where updates come from, the
+    // last check, what is going on, and the install button's label ("" = nothing to install).
+    in property <string> update-facts;
+    in property <string> update-state;
+    in property <string> update-notes;
+    in property <string> update-sha;
+    in property <bool> update-attention: false;
+    in property <string> update-install;
+    in property <bool> update-busy: false;
+    // The confirmation before installing: the question and the bundle's SHA-256 to compare.
+    in property <[UpdateStep]> update-steps: [];
+    in property <float> update-progress: -1;
+    in property <string> update-question;
+    in property <string> update-confirm-text;
+    callback update-check();
+    callback update-install-clicked();
+    callback photo-open(int);
     callback music-toggle();
     // A touch on the mirroring page: its controls come up (or stay) for a while.
     callback mirror-poked();
@@ -822,6 +997,7 @@ export component CompanionWindow inherits Window {
     callback save-chat-toggled(bool);
     callback night-changed(bool, int, int);
     callback home-compact-changed(bool);
+    callback wake-step-changed(int);
     callback setup-later();
     // The first start: search Home Assistant again; one picked (its address).
     callback find-search();
@@ -836,8 +1012,10 @@ export component CompanionWindow inherits Window {
     // A choice of the Home Assistant page opened (its kind), one picked (its id).
     callback ha-pick(string);
     callback ha-picked(string);
-    // Memories: delete one fact, forget everything (confirmed), cancel a reminder.
+    // Memories: delete one fact ("Wrong" too), confirm one ("Right"), forget everything
+    // (confirmed), cancel a reminder.
     callback memory-delete(int);
+    callback memory-confirm(int);
     callback memories-forget();
     callback job-cancel(int);
     // The shopping list: an item bought (ticked).
@@ -1711,15 +1889,21 @@ export component CompanionWindow inherits Window {
         property <length> row-step: self.dense ? 124px : self.compact ? 160px : 220px;
         // Two columns across the desk column.
         property <length> tile-w: (Grid.col-width - 24px) / 2;
-        // Settings last, in the bottom right corner (a gap on its left when the count is odd).
-        property <int> i-ha: self.music-tile ? 3 : 2;
+        // The order of use (Andrea, 2026-11-14): what runs and comes due first (timers,
+        // reminders, what plays), then the lists (shopping, memories), then conversations and
+        // Home Assistant; Settings last, in the bottom right corner (a gap on its left when the
+        // count is odd).
+        property <int> i-timers: 0;
+        property <int> i-reminders: 1;
+        property <int> i-music: 1 + (root.brain-present ? 1 : 0);
+        property <int> i-shopping: self.i-music + (self.music-tile ? 1 : 0);
+        property <int> i-memories: self.i-shopping + (root.shopping-on ? 1 : 0);
+        property <int> i-chat: self.i-memories + (root.brain-present ? 1 : 0);
+        property <int> i-ha: self.i-chat + 1;
         property <int> i-settings: self.n-tiles - 1 + mod(self.n-tiles, 2);
-        property <int> i-memories: self.i-ha + 1;
-        property <int> i-reminders: self.i-memories + 1;
-        property <int> i-shopping: self.i-memories + (root.brain-present ? 2 : 0);
         Tile {
-            x: Grid.col-x;
-            y: 128px;
+            x: Grid.col-x + mod(parent.i-chat, 2) * (parent.tile-w + 24px);
+            y: 128px + floor(parent.i-chat / 2) * parent.row-step;
             width: parent.tile-w;
             compact: parent.compact;
             dense: parent.dense;
@@ -1731,8 +1915,8 @@ export component CompanionWindow inherits Window {
             }
         }
         Tile {
-            x: Grid.col-x + parent.tile-w + 24px;
-            y: 128px;
+            x: Grid.col-x + mod(parent.i-timers, 2) * (parent.tile-w + 24px);
+            y: 128px + floor(parent.i-timers / 2) * parent.row-step;
             width: parent.tile-w;
             compact: parent.compact;
             dense: parent.dense;
@@ -1744,8 +1928,8 @@ export component CompanionWindow inherits Window {
             }
         }
         if altro-page.music-tile: Tile {
-            x: Grid.col-x;
-            y: 128px + parent.row-step;
+            x: Grid.col-x + mod(parent.i-music, 2) * (parent.tile-w + 24px);
+            y: 128px + floor(parent.i-music / 2) * parent.row-step;
             width: parent.tile-w;
             compact: parent.compact;
             dense: parent.dense;
@@ -1854,6 +2038,140 @@ export component CompanionWindow inherits Window {
             clicked => {
                 root.page-back = "altro";
                 root.page = "what";
+            }
+        }
+    }
+
+    // ---- The camera: the live picture as a mirror in the column (Alfred stays on his third),
+    // a countdown over it, Shoot in the middle of the band, the gallery on its left. The photo
+    // just taken shows in the same frame for a moment, its line on it.
+    if root.desk && root.desk-page == "camera": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.camera;
+            clock: root.clock;
+            back => {
+                root.page = "home";
+            }
+        }
+        PhotoFrame {
+            x: Grid.col-x + (Grid.col-width - self.width) / 2;
+            y: Grid.page-y;
+            picture: root.camera-frame;
+            shown: root.camera-state == "live" || root.camera-state == "taking" || root.camera-state == "photo";
+            notice: root.camera-state == "covered" ? root.t.camera-covered
+                : root.camera-state == "failed" ? root.camera-caption
+                : root.camera-state == "starting" ? root.t.camera-starting : "";
+            count: root.camera-count;
+            flash: root.camera-state == "taking";
+            caption: root.camera-state == "photo" ? root.camera-caption : "";
+        }
+        BareButton {
+            x: root.slot-left;
+            y: Grid.band-y;
+            icon: Icons.image-multiple-48;
+            label: root.t.photos;
+            clicked => {
+                root.page = "photos";
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            // During the countdown it stops it.
+            icon: root.camera-count != "" ? Icons.close-48 : Icons.camera-44;
+            label: root.camera-count != "" ? root.t.cancel : root.t.camera-shoot;
+            enabled: root.camera-state == "live";
+            clicked => {
+                root.camera-shoot();
+            }
+        }
+    }
+
+    // ---- One photo of the gallery: the same frame as the camera, its date as the title, Delete
+    // in the middle of the band (asked first).
+    if root.desk && root.desk-page == "photo": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.photo-caption;
+            clock: root.clock;
+            back => {
+                root.page = "photos";
+            }
+        }
+        PhotoFrame {
+            x: Grid.col-x + (Grid.col-width - self.width) / 2;
+            y: Grid.page-y;
+            picture: root.photo;
+            shown: true;
+        }
+        BareButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.delete-48;
+            label: root.t.photo-delete;
+            clicked => {
+                root.dialog = "photo-delete";
+            }
+        }
+    }
+
+    // ---- The gallery: the photos kept, three to a row, newest first; a tap shows one whole.
+    if root.desk && root.desk-page == "photos": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.photos;
+            clock: root.clock;
+            back => {
+                root.page = "camera";
+            }
+        }
+        if root.photo-thumbs.length == 0: Text {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            text: root.t.photos-empty;
+            font-size: 24px;
+            color: Theme.text-2;
+            wrap: word-wrap;
+        }
+        Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: Grid.band-y - Grid.page-y - 16px;
+            viewport-height: ceil(root.photo-thumbs.length / 3) * (192px + 16px);
+            for th[i] in root.photo-thumbs: Rectangle {
+                x: mod(i, 3) * (256px + 20px);
+                y: floor(i / 3) * (192px + 16px);
+                width: 256px;
+                height: 192px;
+                border-radius: 12px;
+                clip: true;
+                background: Theme.surface;
+                Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: th;
+                    image-fit: cover;
+                }
+                TouchArea {
+                    clicked => {
+                        root.photo-open(i);
+                    }
+                }
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.camera-44;
+            label: root.t.camera;
+            clicked => {
+                root.page = "camera";
             }
         }
     }
@@ -2170,18 +2488,6 @@ export component CompanionWindow inherits Window {
                 Group {
                     height: 3 * 76px;
                     Row {
-                        y: 152px;
-                        width: parent.width;
-                        icon: Icons.brain-28;
-                        label: root.t.memories-row;
-                        value: root.tile-memories;
-                        clicked => {
-                            root.page-back = "settings";
-                            root.page = "memories";
-                        }
-                    }
-
-                    Row {
                         y: 0;
                         width: parent.width;
                         first: true;
@@ -2202,6 +2508,24 @@ export component CompanionWindow inherits Window {
                         on: root.save-chat;
                         toggled(v) => {
                             root.save-chat-toggled(v);
+                        }
+                    }
+                    // How readily he answers to his name: a step around the wake word's cutoff.
+                    Row {
+                        y: 152px;
+                        width: parent.width;
+                        kind: "";
+                        icon: Icons.microphone-32;
+                        label: root.t.wake-sensitivity;
+                    }
+                    Stepper {
+                        x: parent.width - 16px - self.width;
+                        y: 152px + 6px;
+                        value-width: 200px;
+                        font-size: 28px;
+                        value: root.wake-step < 0 ? root.t.wake-less : root.wake-step > 0 ? root.t.wake-more : root.t.wake-normal;
+                        step(d) => {
+                            root.wake-step-changed(max(-1, min(1, root.wake-step + d)));
                         }
                     }
                 }
@@ -2235,10 +2559,12 @@ export component CompanionWindow inherits Window {
                     Row {
                         y: 152px;
                         width: parent.width;
-                        kind: "";
                         icon: Icons.information-28;
                         label: root.t.info;
                         value: root.version;
+                        clicked => {
+                            root.page = "update";
+                        }
                     }
                     Row {
                         y: 228px;
@@ -2308,7 +2634,7 @@ export component CompanionWindow inherits Window {
                         label: root.usage-label;
                         value: root.usage-line;
                         clicked => {
-                            root.page-back = "ha";
+                            // Its back goes to "ha" by itself: page-back stays where the HA page came from.
                             root.page = "usage";
                         }
                     }
@@ -2559,8 +2885,8 @@ export component CompanionWindow inherits Window {
         }
     }
 
-    // ---- Memories (home-companion-brain): reminders still to come, what Alfred knows about the user, his
-    // notes and the facts he remembers, each deletable; "Dimentica tutto" in the action band.
+    // ---- Memories (home-companion-brain): what Alfred heard once, to confirm (Right / Wrong), then what he
+    // knows (in the order the assistant reads it, each deletable); "Dimentica tutto" in the action band.
     if root.desk && root.desk-page == "memories": Rectangle {
         PageHeader {
             x: Grid.col-x;
@@ -2586,53 +2912,46 @@ export component CompanionWindow inherits Window {
                     color: Theme.text-3;
                     wrap: word-wrap;
                 }
-                if root.memories-profile != "": SectionTitle {
-                    text: root.t.memories-about;
+                if root.confirm-rows.length > 0: SectionTitle {
+                    text: root.t.memories-confirm;
                 }
-                if root.memories-profile != "": Rectangle {
-                    height: profile-text.preferred-height + 28px;
-                    border-radius: 16px;
-                    background: Theme.surface;
-                    profile-text := Text {
-                        x: 24px;
-                        y: 14px;
-                        width: parent.width - 48px;
-                        text: root.memories-profile;
-                        font-size: 22px;
-                        color: Theme.text-2;
-                        wrap: word-wrap;
+                for m in root.confirm-rows: ConfirmRow {
+                    text: m.text;
+                    detail: m.date;
+                    right: root.t.memories-right;
+                    wrong: root.t.memories-wrong;
+                    confirm => {
+                        root.memory-confirm(m.id);
                     }
-                }
-                if root.memories-notes != "": SectionTitle {
-                    text: root.t.memories-notes;
-                }
-                if root.memories-notes != "": Rectangle {
-                    height: notes-text.preferred-height + 28px;
-                    border-radius: 16px;
-                    background: Theme.surface;
-                    notes-text := Text {
-                        x: 24px;
-                        y: 14px;
-                        width: parent.width - 48px;
-                        text: root.memories-notes;
-                        font-size: 22px;
-                        color: Theme.text-2;
-                        wrap: word-wrap;
+                    reject => {
+                        root.memory-delete(m.id);
                     }
                 }
                 if root.memory-rows.length > 0: SectionTitle {
-                    text: root.t.memories-facts;
+                    text: root.t.memories-about;
+                }
+                if root.memory-rows.length > 0 && root.memories-sent != "": Text {
+                    text: root.memories-sent;
+                    font-size: 20px;
+                    color: Theme.text-3;
+                    wrap: word-wrap;
                 }
                 for m in root.memory-rows: DeletableRow {
                     text: m.text;
                     detail: m.date;
+                    dim: m.dim;
                     ask: root.t.delete-question;
                     delete => {
                         root.memory-delete(m.id);
                     }
                 }
-                if root.brain-present && root.memory-rows.length == 0 && root.memories-profile == ""
-                    && root.memories-notes == "": Text {
+                if root.memory-rows.length > 0 && root.memories-more != "": Text {
+                    text: root.memories-more;
+                    font-size: 20px;
+                    color: Theme.text-3;
+                    wrap: word-wrap;
+                }
+                if root.brain-present && root.memory-rows.length == 0 && root.confirm-rows.length == 0: Text {
                     height: 120px;
                     text: root.t.memories-empty;
                     font-size: 24px;
@@ -2663,8 +2982,7 @@ export component CompanionWindow inherits Window {
             y: Grid.band-y;
             icon: Icons.delete-48;
             label: root.t.forget-all;
-            enabled: root.brain-present && (root.memory-rows.length > 0 || root.memories-profile != ""
-                || root.memories-notes != "");
+            enabled: root.brain-present && (root.memory-rows.length > 0 || root.confirm-rows.length > 0);
             clicked => {
                 root.dialog = "forget";
             }
@@ -2815,6 +3133,177 @@ export component CompanionWindow inherits Window {
     }
 
     // ---- Settings → Screen: the night hours.
+    // ---- Settings → Info: updates. What is going on, the facts in one small line, the release
+    // notes of a newer version, its SHA-256 in small (for whoever wants to compare it).
+    if root.desk && root.desk-page == "update": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.update-title;
+            clock: root.clock;
+            back => {
+                root.page = "settings";
+            }
+        }
+        update-state-text := Text {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            text: root.update-state;
+            font-size: 26px;
+            color: root.update-attention ? Theme.accent : Theme.text;
+            wrap: word-wrap;
+        }
+        // Under the line above, however many lines it takes.
+        update-facts-text := Text {
+            x: Grid.col-x;
+            y: update-state-text.y + update-state-text.preferred-height + 6px;
+            width: Grid.col-width;
+            text: root.update-facts;
+            font-size: 18px;
+            color: Theme.text-3;
+            overflow: elide;
+        }
+        // An install under way: its steps, each with its sign; the one under way turns, the
+        // download has its bar.
+        if root.update-steps.length > 0: Rectangle {
+            x: Grid.col-x;
+            y: update-facts-text.y + update-facts-text.preferred-height + 16px;
+            width: Grid.col-width;
+            height: root.update-steps.length * 76px + 16px;
+            border-radius: 16px;
+            background: Theme.surface;
+            for st[i] in root.update-steps: Rectangle {
+                y: 8px + i * 76px;
+                height: 76px;
+                width: parent.width;
+                // The sign: done, under way (turning), to do, failed.
+                if st.state == "done": Icon {
+                    x: 24px;
+                    y: 22px;
+                    width: 32px;
+                    height: 32px;
+                    source: Icons.check-circle-32;
+                    color: Theme.accent;
+                }
+                if st.state == "now": Icon {
+                    x: 26px;
+                    y: 24px;
+                    width: 28px;
+                    height: 28px;
+                    source: Icons.sync-28;
+                    color: Theme.text;
+                    transform-rotation: -mod(animation-tick() / 1ms, 1400) / 1400 * 360deg;
+                }
+                if st.state == "todo": Rectangle {
+                    x: 32px;
+                    y: 30px;
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 8px;
+                    border-width: 2px;
+                    border-color: Theme.text-3;
+                }
+                if st.state == "failed": Icon {
+                    x: 24px;
+                    y: 22px;
+                    width: 32px;
+                    height: 32px;
+                    source: Icons.alert-circle-32;
+                    color: Theme.danger;
+                }
+                Text {
+                    x: 80px;
+                    y: st.detail != "" ? 12px : 0px;
+                    width: parent.width - 104px;
+                    height: st.detail != "" ? 30px : parent.height;
+                    text: st.label;
+                    font-size: 22px;
+                    color: st.state == "todo" ? Theme.text-3 : st.state == "failed" ? Theme.danger : Theme.text;
+                    vertical-alignment: center;
+                }
+                if st.detail != "": Text {
+                    x: 80px;
+                    y: 42px;
+                    width: parent.width - 104px - (st.state == "now" && i == 0 && root.update-progress >= 0 ? 280px : 0px);
+                    text: st.detail;
+                    font-size: 17px;
+                    color: Theme.text-2;
+                    overflow: elide;
+                }
+                // The download's bar, on the right of its detail.
+                if st.state == "now" && i == 0 && root.update-progress >= 0: Rectangle {
+                    x: parent.width - 24px - 256px;
+                    y: 48px;
+                    width: 256px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: Theme.surface-2;
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * root.update-progress;
+                        height: parent.height;
+                        border-radius: 4px;
+                        background: Theme.accent;
+                    }
+                }
+            }
+        }
+        if root.update-steps.length == 0 && root.update-notes != "": Rectangle {
+            x: Grid.col-x;
+            y: update-facts-text.y + update-facts-text.preferred-height + 16px;
+            width: Grid.col-width;
+            height: Grid.band-y - self.y - (root.update-sha != "" ? 48px : 16px);
+            border-radius: 16px;
+            background: Theme.surface;
+            clip: true;
+            Flickable {
+                x: 20px;
+                y: 16px;
+                width: parent.width - 40px;
+                height: parent.height - 32px;
+                viewport-height: notes-text.preferred-height;
+                notes-text := Text {
+                    width: parent.width;
+                    text: root.update-notes;
+                    font-size: 20px;
+                    color: Theme.text-2;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        if root.update-sha != "": Text {
+            x: Grid.col-x;
+            y: Grid.band-y - 36px;
+            width: Grid.col-width;
+            text: "SHA-256  " + root.update-sha;
+            font-size: 15px;
+            color: Theme.text-3;
+            overflow: elide;
+        }
+        BareButton {
+            x: root.slot-left;
+            y: Grid.band-y;
+            icon: Icons.refresh-48;
+            label: root.t.update-check;
+            enabled: !root.update-busy;
+            clicked => {
+                root.update-check();
+            }
+        }
+        if root.update-install != "": PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.download-44;
+            label: root.update-install;
+            enabled: !root.update-busy;
+            spinning: root.update-busy;
+            clicked => {
+                root.dialog = "update";
+            }
+        }
+    }
+
     if root.desk && root.desk-page == "screen": Rectangle {
         PageHeader {
             x: Grid.col-x;
@@ -3455,6 +3944,31 @@ export component CompanionWindow inherits Window {
             if (yes) {
                 root.page = "home";
                 root.suspend-confirmed();
+            }
+        }
+    }
+    if root.dialog == "update": Dialog {
+        icon: Icons.download-44;
+        title: root.update-question;
+        text: root.update-confirm-text;
+        cancel: root.t.cancel;
+        confirm: root.update-install;
+        answered(yes) => {
+            root.dialog = "";
+            if (yes) {
+                root.update-install-clicked();
+            }
+        }
+    }
+    if root.dialog == "photo-delete": Dialog {
+        icon: Icons.delete-48;
+        title: root.t.photo-delete-question;
+        cancel: root.t.cancel;
+        confirm: root.t.photo-delete;
+        answered(yes) => {
+            root.dialog = "";
+            if (yes) {
+                root.photo-delete();
             }
         }
     }
@@ -4205,6 +4719,7 @@ export component CompanionWindow inherits Window {
                 : t.key == "mic" ? (t.on ? Icons.microphone-32 : Icons.microphone-off-32)
                 : t.key == "night" ? Icons.weather-night-32
                 : t.key == "dnd" ? (t.on ? Icons.bell-off-32 : Icons.bell-32)
+                : t.key == "camera" ? Icons.camera-32
                 : Icons.view-dashboard-32;
             label: t.label;
             status: t.status;

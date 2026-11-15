@@ -224,6 +224,8 @@ fn run(a: &args::Args, cfg: Config, first: home_companion::settings::FirstStart)
         ha_linked: cfg.ha_linked(),
         ha_host: cfg.ha_host(),
         setup_at_start: matches!(kind, Kind::Gpu | Kind::Software),
+        update: (a.state.is_none() && matches!(kind, Kind::Gpu | Kind::Software))
+            .then(|| cfg.update.clone()),
         first_start: first,
         link: (a.state.is_none() && !cfg.home_assistant.url.is_empty()).then(|| {
             home_companion::ha::link::LinkSetup {
@@ -303,6 +305,12 @@ fn go<S: Screen>(
     let (core_tx, core_rx) = mpsc::channel::<CoreEvent>();
     let (ui_tx, ui_rx) = mpsc::channel();
     let mic = Arc::new(MicControl::default());
+    // The wake word's sensitivity chosen in Settings: applied by the wake word thread on its
+    // first frame, around the cutoff the detector is made with.
+    let sensitivity = settings.wake_sensitivity();
+    if sensitivity != home_companion::settings::WakeSensitivity::Normal {
+        mic.set_wake_sensitivity(sensitivity);
+    }
 
     // Touch (device only).
     let touch = if matches!(prepared.kind, Kind::Gpu | Kind::Software) && !cfg.ui.touch.is_empty() {
@@ -660,6 +668,13 @@ fn go<S: Screen>(
             cfg.state_dir().join(home_companion::ha::setup::STATE_FILE),
             Settings::in_dir(&cfg.state_dir()),
             cfg.character.language.clone(),
+        );
+        // What the agent always knows, as a state in Home Assistant (ha/memory.rs).
+        home_companion::ha::memory::spawn(
+            home_companion::brain_link::socket_path(),
+            std::sync::Arc::new(cfg.ha_auth()),
+            cfg.home_assistant.url.clone(),
+            cfg.satellite.name.clone(),
         );
     }
 

@@ -117,8 +117,9 @@ its ring and the gold fill) and No stays a target that wins.
   "Timer finished" (or "Alarm") in gold, the name 96 Light, the time since it ended counting up, "Touch anywhere to
   stop"; band "+1 minute" (a new local timer of one minute with the same name) and Stop, with a ring that breathes.
   The character uses `timer_finished`, falling back to `speaking`.
-- **More**: tiles Conversations, Timers and alarms, Settings and Home Assistant, plus Music while something plays,
-  Memories and Reminders when the brain answers, Shopping when a list is configured; each says what is going on
+- **More**: tiles in the order of use: Timers and alarms, Reminders (when the brain answers), Music (while something
+  plays), Shopping (when a list is configured), Memories (when the brain answers; "2 to confirm" when something
+  waits), Conversations, Home Assistant, and Settings last in the bottom right corner; each says what is going on
   there. With more than four tiles they become compact (two columns, the icon left of the words), with more than six
   dense. HA stays in the left slot, Talk in the middle.
 - **Conversations**: sessions separated by "Today · 14:02 · Home Assistant", the user's lines in bubbles on the right,
@@ -133,8 +134,10 @@ its ring and the gold fill) and No stays a target that wins.
   Timers set by touch are the body's own (`local-N`); pausing or cancelling one of Home Assistant's timers is local
   only (Wyoming cannot tell Home Assistant). Alarms are the body's (`crates/home-companion/src/alarms.rs`,
   `<state_dir>/alarms.json`) and ring like a timer.
-- **Settings** (grouped rows, scrolling): the character's group ({name}'s memories, Language → its page, Keep
-  conversations), DEVICE (Volume, Screen → night mode on/off, from, to; About, with the version; **Suspend {name}** →
+- **Settings** (grouped rows, scrolling): the character's group (Language → its page, Keep
+  conversations, "Answers to his name" with − and +: Less often · Normal · More often, a step around the wake word's
+  cutoff — the configuration's `wake_word.cutoff`, else the model's — of +0.02 or −0.04, applied at once and kept in
+  settings.toml; the log's near misses tell which one a voice needs), DEVICE (Volume, Screen → night mode on/off, from, to; About, with the version; **Suspend {name}** →
   "Suspend {name}?" / "{name} won't listen or play until you press Vol+ or Vol–. A running timer wakes him by
   itself." Cancel · **Suspend**). Reached from More, or a double tap on the mouth.
 - **Home Assistant** (the tile in More, the setup card, the control centre): linked, one row per check of the setup
@@ -193,9 +196,11 @@ its ring and the gold fill) and No stays a target that wins.
   switching it off here would cut Home Assistant), Bluetooth (greyed while the device has no adapter), AirPlay,
   Microphone (off: no wake word, Talk still works), Night, Home Assistant; under them the volume and brightness bars
   (brightness "Auto" while it follows the light sensor).
-- **Memories** (home-companion-brain; More, shown only when the brain answers, and Settings → "{name}'s memories"):
-  the status line (memories, model, last nightly tidy-up), WHAT I KNOW ABOUT YOU (the profile block), NOTES, MEMORIES
-  (facts, newest first, with their date). Each fact: the cross asks "Delete?" in the row itself, a second tap deletes.
+- **Memories** (home-companion-brain; its tile in More, shown only when the brain answers: the only way in, since the
+  page is used, not set): the status line (memories, model, last nightly tidy-up), TO CONFIRM (what Alfred heard once,
+  such as a name: Right makes it known, Wrong drops it for good), WHAT I KNOW (what reaches the assistant in every
+  conversation, newest first, with their date; the ones over the budget dimmed, found only when asked). Each fact: the
+  cross asks "Delete?" in the row itself, a second tap deletes.
   Action band: Talk, **Forget all** (a dialog: everything the brain knows goes, reminders stay).
 - **Reminders**: a page of the reminders still to come; a due one is the home's message card (bell, gold, OK); OK =
   done (no voice after it); at night only the card (no wake-up of the screen). Late ones say so; missed ones are one

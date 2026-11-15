@@ -20,7 +20,7 @@ use crate::alarms::{Alarm, Alarms};
 use crate::conversation::{AnswerPolicy, Conversation, Record, Swallow, Trigger};
 use crate::cues::Cues;
 use crate::reflex::{ReflexEvent, Reflexes};
-use crate::settings::Settings;
+use crate::settings::{Settings, WakeSensitivity};
 use crate::timers::{TimerView, Timers, now_unix};
 use crate::volume::{Volume, VolumeRequest};
 use reflex::Command as Reflex;
@@ -33,6 +33,8 @@ use reflex::verdict::{self as rv, Verdict};
 pub enum UiEvent {
     /// A control of the screen was pressed: the soft tap sound.
     Tap,
+    /// A second of the camera's countdown: the tick (also with do not disturb: it was asked).
+    CountdownTick,
     /// A reminder or message card appeared (by day): its soft sound.
     Reminder,
     /// Back home from Home Assistant's view, by the user: its own sound.
@@ -71,6 +73,9 @@ pub enum UiEvent {
     Screenshot,
     /// Settings → Suspend, confirmed: the whole device to sleep (suspend.rs).
     Suspend,
+    /// Settings → how readily the character answers to his wake word: saved, and applied by the
+    /// wake word thread before its next frame.
+    WakeSensitivity(WakeSensitivity),
     /// Timer e sveglie: a new timer of this many seconds (a local one).
     /// Seconds and what it is for, when said.
     TimerStart(u64, Option<String>),
@@ -201,6 +206,8 @@ pub enum UiCommand {
     Suspending,
     /// "Spegni lo schermo" (a reflex): the backlight off until a touch, a key or a wake word.
     ScreenOff,
+    /// "Fammi una foto" (a reflex): the camera page with its countdown.
+    TakePhoto,
     /// "Non disturbare" (a reflex): no sounds nor cards' sounds, the screen dim, until this
     /// unix time (Some) or off again (None).
     DoNotDisturb(Option<u64>),
@@ -211,6 +218,12 @@ pub enum UiCommand {
     Announcing(bool),
     /// "Stop" or "basta" over a due reminder: its OK.
     NoticeStop,
+    /// A conversation started or ended: Home Assistant is told (`home_companion_conversation`).
+    Conversation {
+        state: &'static str,
+        trigger: &'static str,
+        handled_by: Option<&'static str>,
+    },
     /// What AirPlay plays (None: nothing); `playing` false while paused or muted here.
     Music(Option<crate::airplay::NowPlaying>),
     /// The music page's spectrum: band levels and peaks, 0..1.
@@ -265,6 +278,8 @@ pub struct MicControl {
     reset: AtomicBool,
     /// The stop word detector runs too (the character thinks, speaks, rings or announces).
     stop: AtomicBool,
+    /// A wake word sensitivity to apply before the next frame (0: none; 1 + the stepper's -1..=1).
+    sensitivity: AtomicU8,
 }
 
 impl MicControl {
@@ -295,6 +310,19 @@ impl MicControl {
 
     pub fn stop_listening(&self) -> bool {
         self.stop.load(Ordering::Acquire)
+    }
+
+    /// Asks the wake word thread to apply this sensitivity before the next frame.
+    pub fn set_wake_sensitivity(&self, s: WakeSensitivity) {
+        self.sensitivity
+            .store((s.step() + 2) as u8, Ordering::Release);
+    }
+
+    pub fn take_wake_sensitivity(&self) -> Option<WakeSensitivity> {
+        match self.sensitivity.swap(0, Ordering::AcqRel) {
+            0 => None,
+            v => Some(WakeSensitivity::from_step(v as i32 - 2)),
+        }
     }
 }
 
@@ -910,6 +938,24 @@ impl Core {
         let _ = self.d.ui.send(c);
     }
 
+    /// `home_companion_conversation` for Home Assistant's bus (an automation may duck a speaker, dim
+    /// a light…). Not for announcements: nothing listens then. A channel send: the conversation
+    /// never waits for Home Assistant.
+    fn tell_home_assistant(
+        &self,
+        state: &'static str,
+        trigger: Trigger,
+        handled_by: Option<&'static str>,
+    ) {
+        if trigger != Trigger::Announcement {
+            self.ui(UiCommand::Conversation {
+                state,
+                trigger: trigger.name(),
+                handled_by,
+            });
+        }
+    }
+
     fn set_phase(&mut self, p: Phase) {
         if p == Phase::Error {
             self.error_until = Some(Instant::now() + self.cfg.error_show);
@@ -1018,6 +1064,8 @@ impl Core {
                 s.abort();
             }
             let r = c.log(outcome);
+            let by = crate::ha::events::handled_by(outcome, r.audio_seconds_sent, &r.answer);
+            self.tell_home_assistant("ended", c.trigger, Some(by));
             // Home Assistant's services worked on it (speech sent or an answer back).
             if r.audio_seconds_sent > 0.0 || !r.answer.is_empty() {
                 if let Some(u) = &mut self.usage {
@@ -1234,6 +1282,7 @@ impl Core {
         }
         log::info!(event = "conversation_start", id = id, trigger = trigger.name(), reflexes = gated, answering = answering.unwrap_or(-1); "conversation {id} started ({}{})", trigger.name(), if gated { ", reflexes first" } else { "" });
         self.conv = Some(c);
+        self.tell_home_assistant("started", trigger, None);
         self.live_vad = None;
         self.ui(UiCommand::Heard(String::new()));
         self.ui(UiCommand::Answer(String::new()));
@@ -1405,7 +1454,7 @@ impl Core {
     /// "Falso allarme": the conversation stops, and its recording (the 3.5 s before the wake
     /// word, what followed, the reflexes' verdict) is copied to `false-wakes/` beside the
     /// recordings, out of their rotation: negatives to train the wake word again.
-    fn on_false_wake(&mut self) {
+    fn on_false_wake(&mut self, via: &str) {
         let wake = self.last_wake.clone();
         self.on_stop();
         // The recording of this conversation (stopped just now or at the end of the speech).
@@ -1443,6 +1492,9 @@ impl Core {
         }
         let info = serde_json::json!({
             "false_wake": true,
+            // "button" (Falso allarme) or "stop" (Stop while listening): the second may be a
+            // real wake the user changed their mind about, to listen to before training.
+            "via": via,
             "wake_word": wake.as_ref().map(|w| w.0.clone()),
             "probability": wake.as_ref().map(|w| w.1),
             "conversation_started_unix": started,
@@ -2047,6 +2099,10 @@ impl Core {
                 after.push(UiCommand::ScreenOff);
                 String::new()
             }
+            Reflex::TakePhoto => {
+                after.push(UiCommand::TakePhoto);
+                self.reflex_text("reflex_photo", &[])
+            }
             Reflex::DoNotDisturb { .. } | Reflex::DoNotDisturbMorning | Reflex::GoodNight => {
                 let local = local_seconds_of_day(now as i64);
                 let until = match &cmd {
@@ -2081,6 +2137,8 @@ impl Core {
             Reflex::TimerCancel { .. } | Reflex::AlarmCancel => Some("cancelled"),
             // Soft and low: the screen goes dark, the evening goes quiet.
             Reflex::Silence | Reflex::No | Reflex::ScreenOff | Reflex::GoodNight => Some("silence"),
+            // The countdown ticks on the camera page.
+            Reflex::TakePhoto => None,
             // The house card shows what follows (done, with Undo).
             Reflex::Yes => None,
             Reflex::TimerLeft { .. } | Reflex::TimerList => Some("done"),
@@ -2981,8 +3039,17 @@ impl Core {
                 }
                 _ => {}
             },
-            UiEvent::Stop => self.on_stop(),
-            UiEvent::FalseWake => self.on_false_wake(),
+            UiEvent::Stop => {
+                let trigger = self.conv.as_ref().map(|c| c.trigger);
+                if stop_is_a_false_wake(self.phase, trigger) {
+                    // Andrea, 2026-11-15: Stop right after the wake word means it woke by mistake.
+                    log::info!(event = "false_wake", via = "stop"; "Stop while listening after the wake word: a false alarm");
+                    self.on_false_wake("stop");
+                } else {
+                    self.on_stop();
+                }
+            }
+            UiEvent::FalseWake => self.on_false_wake("button"),
             UiEvent::Question(id, text) => self.on_question(id, text),
             UiEvent::QuestionAnswer { id, yes } => self.on_question_answer(id, yes),
             UiEvent::QuestionPending(id, until_ms) => self.on_question_pending(id, until_ms),
@@ -3003,6 +3070,12 @@ impl Core {
             }
             UiEvent::HomeAssistant => log::info!("Home Assistant button: dashboards are M6"),
             UiEvent::Suspend => self.suspend(),
+            UiEvent::WakeSensitivity(s) => {
+                if let Some(st) = &self.d.settings {
+                    st.save_wake_sensitivity(s);
+                }
+                self.d.mic.set_wake_sensitivity(s);
+            }
             UiEvent::ControlTile(k) => self.on_control_tile(&k),
             UiEvent::MusicToggle => self.on_music_toggle(),
             UiEvent::MusicNext => self.music_remote(crate::airplay::Remote::Next),
@@ -3079,6 +3152,11 @@ impl Core {
             UiEvent::AlarmDelete(id) => {
                 self.d.alarms.remove(id);
                 self.ui(UiCommand::Alarms(self.d.alarms.list().to_vec()));
+            }
+            UiEvent::CountdownTick => {
+                if !self.speaker_busy() {
+                    self.cue("tick");
+                }
             }
             UiEvent::Tap => {
                 // Not over an answer, the bell or a stream (the speaker is busy then), and not
@@ -4126,6 +4204,13 @@ fn quiet_after_command(text: &str) -> bool {
     !t.is_empty() && !t.ends_with('?') && t.split_whitespace().count() <= QUIET_MAX_WORDS
 }
 
+/// Stop pressed (the button) while listening in a conversation the wake word opened: the
+/// wake word heard something else, so its recording is kept as a false alarm (like the
+/// "Falso allarme" button).
+pub fn stop_is_a_false_wake(phase: Phase, trigger: Option<crate::conversation::Trigger>) -> bool {
+    phase == Phase::Listening && trigger == Some(crate::conversation::Trigger::Wake)
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -4256,6 +4341,16 @@ mod tests {
         m.request_reset();
         assert!(m.take_reset());
         assert!(!m.take_reset());
+        assert_eq!(m.take_wake_sensitivity(), None);
+        for s in [
+            WakeSensitivity::Less,
+            WakeSensitivity::Normal,
+            WakeSensitivity::More,
+        ] {
+            m.set_wake_sensitivity(s);
+            assert_eq!(m.take_wake_sensitivity(), Some(s));
+            assert_eq!(m.take_wake_sensitivity(), None, "taken once");
+        }
     }
 
     #[test]
@@ -4320,5 +4415,19 @@ mod tests {
         ] {
             assert!(!final_tick_allowed(p, false, false, false), "{p:?}");
         }
+    }
+
+    #[test]
+    fn stop_after_the_wake_word_is_a_false_alarm() {
+        use crate::conversation::Trigger;
+        assert!(stop_is_a_false_wake(Phase::Listening, Some(Trigger::Wake)));
+        assert!(!stop_is_a_false_wake(Phase::Listening, Some(Trigger::Talk)));
+        assert!(!stop_is_a_false_wake(
+            Phase::Listening,
+            Some(Trigger::FollowUp)
+        ));
+        assert!(!stop_is_a_false_wake(Phase::Thinking, Some(Trigger::Wake)));
+        assert!(!stop_is_a_false_wake(Phase::Speaking, Some(Trigger::Wake)));
+        assert!(!stop_is_a_false_wake(Phase::Listening, None));
     }
 }

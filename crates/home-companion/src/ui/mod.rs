@@ -8,6 +8,7 @@
 
 pub mod anim;
 pub mod backlight;
+pub mod camera;
 pub mod cards;
 pub mod control;
 pub mod house;
@@ -83,6 +84,39 @@ pub struct SettingsView {
     pub night_on: bool,
     pub night_start: u32,
     pub night_end: u32,
+}
+
+/// Settings → Info, updates, in the screen's words.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UpdateView {
+    /// "Version 0.3.0 · from m0s4ik/home-companion · checked today at 14:25".
+    pub facts: String,
+    pub state: String,
+    /// The release notes of the version offered ("" none).
+    pub notes: String,
+    /// Its bundle's SHA-256, in groups ("" none).
+    pub sha: String,
+    /// Something to do (a newer version, a failure): the line in gold.
+    pub attention: bool,
+    /// The install button's label ("" = none).
+    pub install: String,
+    /// An install is going on: the buttons wait.
+    pub busy: bool,
+    /// The confirmation: the question and one line.
+    pub question: String,
+    pub confirm: String,
+    /// An install under way (or just over): its steps, and the download's progress (-1: none).
+    pub steps: Vec<UpdateStepView>,
+    pub progress: f32,
+}
+
+/// One step of an install: what it is, a detail ("12.3 of 44.9 MB"), "done", "now", "todo" or
+/// "failed".
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UpdateStepView {
+    pub label: String,
+    pub detail: String,
+    pub state: &'static str,
 }
 
 /// A check of Settings → Home Assistant, in the screen's words.
@@ -237,6 +271,21 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// AirPlay's cover art (None: an empty square) and paused (the play glyph).
     fn set_music_cover(&self, cover: Option<Image>, paused: bool);
     fn on_control_tile(&self, f: impl Fn(String) + 'static);
+    /// The photo just taken over everything (None: hidden), with its line ("Saved · 12:47").
+    /// One photo of the gallery (its page) and its date.
+    fn set_photo(&self, photo: Image, caption: &str);
+    fn on_photo_delete(&self, f: impl Fn() + 'static);
+    /// The camera page: the live picture (None: keep), its state ("live", "starting", "covered",
+    /// "taking") and the countdown ("" none).
+    fn set_camera(&self, frame: Option<Image>, state: &str, count: &str);
+    fn set_camera_caption(&self, caption: &str);
+    fn set_photo_thumbs(&self, thumbs: Vec<Image>);
+    /// Settings → Info: the page of updates.
+    fn set_update(&self, u: &UpdateView);
+    fn on_update_check(&self, f: impl Fn() + 'static);
+    fn on_update_install(&self, f: impl Fn() + 'static);
+    fn on_camera_shoot(&self, f: impl Fn() + 'static);
+    fn on_photo_open(&self, f: impl Fn(usize) + 'static);
     fn on_control_opened(&self, f: impl Fn() + 'static);
     fn on_control_volume(&self, f: impl Fn(i32) + 'static);
     fn on_control_brightness(&self, f: impl Fn(i32) + 'static);
@@ -317,6 +366,8 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// The shopping list: configured, open items (uid, text), the tile's line.
     fn set_shopping(&self, on: bool, items: &[(String, String)], tile: &str);
     fn on_memory_delete(&self, f: impl Fn(i64) + 'static);
+    /// "Right" on a fact to confirm.
+    fn on_memory_confirm(&self, f: impl Fn(i64) + 'static);
     fn on_memories_forget(&self, f: impl Fn() + 'static);
     fn on_job_cancel(&self, f: impl Fn(i64) + 'static);
     fn on_shop_done(&self, f: impl Fn(String) + 'static);
@@ -363,6 +414,9 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// The compact home (the clock higher, four cards) or the normal one.
     fn set_home_compact(&self, on: bool);
     fn on_home_compact_changed(&self, f: impl Fn(bool) + 'static);
+    /// Settings → how readily the character answers to his wake word (-1 less, 0, 1 more).
+    fn set_wake_step(&self, step: i32);
+    fn on_wake_step_changed(&self, f: impl Fn(i32) + 'static);
     /// The cloud services' use: the Home Assistant page's row ("" hides it) and its page.
     fn set_usage(&self, v: &UsageView);
     /// The microphone off: on, its line over the clock.
@@ -379,17 +433,36 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn on_ask_cancel(&self, f: impl Fn() + 'static);
 }
 
+/// A fact on the "Ricordi" page.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MemoryLine {
+    pub id: i64,
+    pub text: String,
+    /// The day it was last written ("4 nov").
+    pub date: String,
+    /// Not in what the assistant reads at every conversation (over the budget).
+    pub dim: bool,
+}
+
 /// What the "Ricordi" page shows.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MemoriesView {
     pub present: bool,
+    /// The tile in Altro: what waits to be confirmed, else how many memories.
     pub tile: String,
+    /// "N memories", from the brain's status.
+    pub tile_known: String,
     /// The "Promemoria" tile in Altro: how many are coming, or none.
     pub reminders_tile: String,
     pub status: String,
-    pub profile: String,
-    pub notes: String,
-    pub facts: Vec<(i64, String, String)>,
+    /// The line on what reaches the assistant, and the note on the facts over the budget ("" =
+    /// none).
+    pub sent: String,
+    pub more: String,
+    /// What Alfred knows, in the order the assistant reads it.
+    pub facts: Vec<MemoryLine>,
+    /// What was heard once, to confirm on the screen.
+    pub confirm: Vec<MemoryLine>,
     pub jobs: Vec<(i64, String, String)>,
     /// Calendar events of today and tomorrow: (when, what), after the reminders.
     pub events: Vec<(String, String)>,
@@ -551,6 +624,10 @@ macro_rules! impl_screen {
                     false_wake,
                     home_compact_off,
                     home_compact_on,
+                    wake_sensitivity,
+                    wake_less,
+                    wake_normal,
+                    wake_more,
                     setup_title,
                     setup_subtitle,
                     setup_step1,
@@ -561,10 +638,10 @@ macro_rules! impl_screen {
                     error_hint,
                     alarm,
                     memories,
-                    memories_row,
                     memories_about,
-                    memories_notes,
-                    memories_facts,
+                    memories_confirm,
+                    memories_right,
+                    memories_wrong,
                     memories_empty,
                     reminders_section,
                     reminders,
@@ -608,6 +685,16 @@ macro_rules! impl_screen {
                     no,
                     ask_executing,
                     what_short,
+                    update_title,
+                    update_check,
+                    camera,
+                    camera_shoot,
+                    camera_covered,
+                    camera_starting,
+                    photos,
+                    photos_empty,
+                    photo_delete,
+                    photo_delete_question,
                     what_title,
                     what_intro,
                     dnd,
@@ -877,6 +964,60 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_music_cover(self, cover.unwrap_or_default());
                 $m::CompanionWindow::set_music_paused(self, paused);
             }
+            fn set_photo(&self, photo: Image, caption: &str) {
+                $m::CompanionWindow::set_photo(self, photo);
+                $m::CompanionWindow::set_photo_caption(self, caption.into());
+            }
+            fn on_photo_delete(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_photo_delete(self, f)
+            }
+            fn set_camera(&self, frame: Option<Image>, state: &str, count: &str) {
+                if let Some(f) = frame {
+                    $m::CompanionWindow::set_camera_frame(self, f);
+                }
+                $m::CompanionWindow::set_camera_state(self, state.into());
+                $m::CompanionWindow::set_camera_count(self, count.into());
+            }
+            fn set_update(&self, u: &UpdateView) {
+                $m::CompanionWindow::set_update_facts(self, u.facts.as_str().into());
+                $m::CompanionWindow::set_update_state(self, u.state.as_str().into());
+                $m::CompanionWindow::set_update_notes(self, u.notes.as_str().into());
+                $m::CompanionWindow::set_update_sha(self, u.sha.as_str().into());
+                $m::CompanionWindow::set_update_attention(self, u.attention);
+                $m::CompanionWindow::set_update_install(self, u.install.as_str().into());
+                $m::CompanionWindow::set_update_busy(self, u.busy);
+                $m::CompanionWindow::set_update_question(self, u.question.as_str().into());
+                $m::CompanionWindow::set_update_confirm_text(self, u.confirm.as_str().into());
+                let steps: Vec<$m::UpdateStep> = u
+                    .steps
+                    .iter()
+                    .map(|s| $m::UpdateStep {
+                        label: s.label.as_str().into(),
+                        detail: s.detail.as_str().into(),
+                        state: s.state.into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_update_steps(self, model!(steps));
+                $m::CompanionWindow::set_update_progress(self, u.progress);
+            }
+            fn on_update_check(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_update_check(self, f)
+            }
+            fn on_update_install(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_update_install_clicked(self, f)
+            }
+            fn set_camera_caption(&self, caption: &str) {
+                $m::CompanionWindow::set_camera_caption(self, caption.into())
+            }
+            fn set_photo_thumbs(&self, thumbs: Vec<Image>) {
+                $m::CompanionWindow::set_photo_thumbs(self, model!(thumbs))
+            }
+            fn on_camera_shoot(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_camera_shoot(self, f)
+            }
+            fn on_photo_open(&self, f: impl Fn(usize) + 'static) {
+                $m::CompanionWindow::on_photo_open(self, move |i| f(i.max(0) as usize))
+            }
             fn on_control_tile(&self, f: impl Fn(String) + 'static) {
                 $m::CompanionWindow::on_control_tile(self, move |k| f(k.into()))
             }
@@ -1055,18 +1196,20 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_tile_memories(self, m.tile.as_str().into());
                 $m::CompanionWindow::set_tile_reminders(self, m.reminders_tile.as_str().into());
                 $m::CompanionWindow::set_memories_status(self, m.status.as_str().into());
-                $m::CompanionWindow::set_memories_profile(self, m.profile.as_str().into());
-                $m::CompanionWindow::set_memories_notes(self, m.notes.as_str().into());
-                let f: Vec<$m::MemoryRow> = m
-                    .facts
-                    .iter()
-                    .map(|(id, t, d)| $m::MemoryRow {
-                        id: *id as i32,
-                        text: t.into(),
-                        date: d.into(),
-                    })
-                    .collect();
-                $m::CompanionWindow::set_memory_rows(self, model!(f));
+                $m::CompanionWindow::set_memories_sent(self, m.sent.as_str().into());
+                $m::CompanionWindow::set_memories_more(self, m.more.as_str().into());
+                let rows = |v: &[MemoryLine]| -> Vec<$m::MemoryRow> {
+                    v.iter()
+                        .map(|f| $m::MemoryRow {
+                            id: f.id as i32,
+                            text: f.text.as_str().into(),
+                            date: f.date.as_str().into(),
+                            dim: f.dim,
+                        })
+                        .collect()
+                };
+                $m::CompanionWindow::set_memory_rows(self, model!(rows(&m.facts)));
+                $m::CompanionWindow::set_confirm_rows(self, model!(rows(&m.confirm)));
                 let j: Vec<$m::JobRow> = m
                     .jobs
                     .iter()
@@ -1103,6 +1246,9 @@ macro_rules! impl_screen {
             }
             fn on_memory_delete(&self, f: impl Fn(i64) + 'static) {
                 $m::CompanionWindow::on_memory_delete(self, move |id| f(id as i64))
+            }
+            fn on_memory_confirm(&self, f: impl Fn(i64) + 'static) {
+                $m::CompanionWindow::on_memory_confirm(self, move |id| f(id as i64))
             }
             fn on_memories_forget(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_memories_forget(self, f)
@@ -1256,6 +1402,12 @@ macro_rules! impl_screen {
             }
             fn on_home_compact_changed(&self, f: impl Fn(bool) + 'static) {
                 $m::CompanionWindow::on_home_compact_changed(self, f)
+            }
+            fn set_wake_step(&self, step: i32) {
+                $m::CompanionWindow::set_wake_step(self, step);
+            }
+            fn on_wake_step_changed(&self, f: impl Fn(i32) + 'static) {
+                $m::CompanionWindow::on_wake_step_changed(self, f)
             }
             fn set_usage(&self, v: &UsageView) {
                 $m::CompanionWindow::set_usage_label(self, v.label.as_str().into());

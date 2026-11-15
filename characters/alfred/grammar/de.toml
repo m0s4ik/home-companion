@@ -1,0 +1,269 @@
+# SPDX-License-Identifier: CC0-1.0
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+#
+# Alfred's reflexes in German; see it.toml for the format. Slots:
+# {duration} ("zehn minuten", "anderthalb stunden"), {time} ("um sieben uhr dreißig", "um halb sieben
+# abends"), {percent} ("fünfzig prozent", "fünfzig"), {whole_duration} ({duration} in whole minutes
+# up to three hours), {name:<key>} (a timer name of [timer_names] in the form <key>).
+# Lower case, as Vosk writes it; every word is in vosk-model-small-de-0.15's vocabulary. The polite alarm forms
+# ("stelle einen wecker", "wecke mich") are left out: the phrase list stays under 30000.
+format = 1
+language = "de"
+
+[commands]
+time = [
+    "wie spät ist es",
+    "wie spät",
+    "wie viel uhr",
+    "wie spät ist es jetzt",
+    "wie spät ist es gerade",
+    "was ist die uhrzeit",
+    "welche uhrzeit haben wir",
+    "sag mir wie spät es ist",
+    "wie viel uhr ist es",
+    "wie viel uhr haben wir",
+    "wie spät haben wir",
+    "sag mir die uhrzeit",
+    "sag mir die zeit",
+    "kannst du mir die uhrzeit sagen",
+]
+timer_start = [
+    "stell einen timer auf {duration}",
+    "stelle einen timer auf {duration}",
+    "stell einen timer für {duration}",
+    "stelle einen timer für {duration}",
+    "stell mir einen timer auf {duration}",
+    "starte einen timer für {duration}",
+    "starte einen timer auf {duration}",
+    "timer auf {duration}",
+    "timer {duration}",
+    "timer von {duration}",
+    "{duration} timer",
+    "einen timer für {duration}",
+    "einen timer auf {duration}",
+    "stell einen timer {duration}",
+    "stelle einen timer {duration}",
+    "setze einen timer auf {duration}",
+    "setze einen timer für {duration}",
+    "mach einen timer für {duration}",
+    "stell den timer auf {duration}",
+    "stelle den timer auf {duration}",
+    "stelle mir einen timer auf {duration}",
+    "stelle mir einen timer für {duration}",
+    "timer auf {duration} stellen",
+    "timer stellen auf {duration}",
+    "timer für {duration}",
+    "ein timer für {duration}",
+    "stell einen timer für {name:bare} auf {whole_duration}",
+    "stelle einen timer für {name:bare} auf {whole_duration}",
+    "starte einen timer für {name:bare} auf {whole_duration}",
+    "timer für {name:bare} auf {whole_duration}",
+    "timer {name:bare} {whole_duration}",
+    "stell einen timer für {name:bare} {whole_duration}",
+]
+timer_cancel = [
+    "lösche den timer",
+    "timer löschen",
+    "timer abbrechen",
+    "breche den timer ab",
+    "beende den timer",
+    "stopp den timer",
+    "stoppe den timer",
+    "lösche alle timer",
+    "timer aus",
+    "timer stoppen",
+    "timer beenden",
+    "alle timer löschen",
+    "alle timer beenden",
+    "alle timer stoppen",
+    "stoppe alle timer",
+    "beende alle timer",
+    "lösche die timer",
+    "schalte den timer aus",
+    "lösche den timer für {name:bare}",
+    "beende den timer für {name:bare}",
+    "stoppe den timer für {name:bare}",
+    "breche den timer für {name:bare} ab",
+]
+timer_left = [
+    "wie lange läuft der timer noch",
+    "wie viel zeit ist noch übrig",
+    "wie viel zeit bleibt noch",
+    "wie lange dauert es noch",
+    "wie lange noch",
+    "wie viel zeit noch",
+    "wie lange läuft er noch",
+    "wie lange läuft der timer",
+    "wie viel zeit ist noch auf dem timer",
+    "wie lange noch auf dem timer",
+    "wie lange läuft der timer für {name:bare} noch",
+    "wie viel zeit bleibt für {name:bare}",
+    "wie lange dauert es noch für {name:bare}",
+]
+timer_list = [
+    "welche timer laufen",
+    "welche timer habe ich",
+    "welche timer laufen gerade",
+    "liste die timer auf",
+    "zeig mir meine timer",
+]
+alarm_set = [
+    "stell einen wecker {time}",
+    "weck mich {time}",
+    "stell den wecker {time}",
+    "wecker {time}",
+]
+alarm_cancel = [
+    "lösche den wecker",
+    "wecker löschen",
+    "wecker aus",
+    "schalte den wecker aus",
+    "mach den wecker aus",
+    "wecker abbrechen",
+]
+volume_up = [
+    "lauter",
+    "mach lauter",
+    "mach es lauter",
+    "lauter bitte",
+    "etwas lauter",
+    "ein bisschen lauter",
+    "bisschen lauter",
+    "viel lauter",
+    "lautstärke erhöhen",
+    "dreh lauter",
+    "lautstärke hoch",
+    "erhöhe die lautstärke",
+]
+volume_down = [
+    "leiser",
+    "mach leiser",
+    "mach es leiser",
+    "leiser bitte",
+    "etwas leiser",
+    "ein bisschen leiser",
+    "bisschen leiser",
+    "viel leiser",
+    "lautstärke verringern",
+    "lautstärke senken",
+    "dreh leiser",
+    "lautstärke runter",
+    "verringere die lautstärke",
+]
+volume_set = [
+    "stell die lautstärke auf {percent}",
+    "stelle die lautstärke auf {percent}",
+    "setze die lautstärke auf {percent}",
+    "lautstärke auf {percent}",
+    "lautstärke {percent}",
+]
+volume_max = [
+    "maximale lautstärke",
+    "volle lautstärke",
+    "lautstärke auf maximum",
+    "lautstärke auf maximal",
+]
+volume_min = [
+    "minimale lautstärke",
+    "kleinste lautstärke",
+    "lautstärke auf minimum",
+]
+music_pause = [
+    "pausiere die musik",
+    "musik pausieren",
+    "musik pause",
+    "pause",
+    "pausiere",
+    "halte die musik an",
+    "musik anhalten",
+]
+music_play = [
+    "musik weiter",
+    "spiel weiter",
+    "spiele weiter",
+    "setze die musik fort",
+    "musik fortsetzen",
+    "starte die musik wieder",
+]
+music_next = [
+    "nächstes lied",
+    "nächster titel",
+    "nächster song",
+    "das nächste lied",
+    "lied überspringen",
+    "titel überspringen",
+]
+music_previous = [
+    "vorheriges lied",
+    "vorheriger titel",
+    "voriger titel",
+    "das vorherige lied",
+    "zurück zum vorherigen lied",
+    "ein lied zurück",
+]
+silence = [
+    "ruhe",
+    "sei still",
+    "das war es",
+    "danke",
+    "vielen dank",
+    "danke schön",
+    "genug",
+    "danke alfred",
+]
+yes = ["ja", "ja bitte", "klar", "genau", "gerne", "bestätige", "mach das", "mach es"]
+no = ["nein", "nein danke", "lieber nicht", "abbrechen", "vergiss es", "nichts", "lass es"]
+repeat = [
+    "wiederhole",
+    "wiederhole das",
+    "kannst du das wiederholen",
+    "sag das noch einmal",
+    "sag es noch einmal",
+    "was hast du gesagt",
+    "noch einmal",
+    "nochmal",
+]
+screen_off = [
+    "schalte den bildschirm aus",
+    "bildschirm aus",
+    "mach den bildschirm aus",
+    "bildschirm ausschalten",
+    "display aus",
+]
+dnd_on = [
+    "nicht stören",
+    "bitte nicht stören",
+    "störe mich nicht",
+    "schalte nicht stören ein",
+    "nicht stören für {whole_duration}",
+    "bitte nicht stören für {whole_duration}",
+    "störe mich nicht für {whole_duration}",
+]
+dnd_morning = [
+    "nicht stören bis morgen früh",
+    "bitte nicht stören bis morgen früh",
+    "störe mich nicht bis morgen früh",
+]
+dnd_off = [
+    "schalte nicht stören aus",
+    "nicht stören aus",
+    "nicht stören beenden",
+]
+good_night = ["gute nacht", "gute nacht alfred"]
+
+# The timers a name can be given by voice ("stell einen timer für nudeln auf zehn minuten"). A closed
+# grammar takes no free words, so the names are a list; edit it freely (the key = what the screen
+# shows).
+[timer_names]
+Nudeln = { bare = "nudeln" }
+Eier = { bare = "eier" }
+Ofen = { bare = "ofen" }
+Pizza = { bare = "pizza" }
+Reis = { bare = "reis" }
+Tee = { bare = "tee" }
+Kaffee = { bare = "kaffee" }
+"Wäsche" = { bare = "wäsche" }
+Brot = { bare = "brot" }
+Kuchen = { bare = "kuchen" }
+Fleisch = { bare = "fleisch" }
+"Gemüse" = { bare = "gemüse" }

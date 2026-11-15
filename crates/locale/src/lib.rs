@@ -2,8 +2,11 @@
 // SPDX-FileCopyrightText: 2026 Andrea Mattera
 
 //! The body's own words per language: `locales/<code>.toml` (format in
-//! `locales/README.md`). English is the default and the reference: every other
-//! file has exactly its keys, and [`load_or_english`] falls back to it.
+//! `locales/README.md`). English is the default and the reference: a key another file
+//! lacks is taken from English, one by one (a new feature ships in English and Italian,
+//! and the other languages catch up when someone translates it); a key English does not
+//! have is an error (a typo). [`load_or_english`] falls back to English as a whole only
+//! when the file is missing or broken.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -24,6 +27,8 @@ pub struct Locale {
     pub months: Vec<String>,
     text: BTreeMap<String, String>,
     sample: BTreeMap<String, String>,
+    /// Keys this language lacks, shown in English ("text.key", "sample.key").
+    pub missing: Vec<String>,
 }
 
 impl Locale {
@@ -73,15 +78,26 @@ pub fn load(dir: &Path, code: &str) -> Result<Locale, Vec<String>> {
     if raw.months.len() != 12 {
         errors.push(format!("months: {} names, 12 needed", raw.months.len()));
     }
+    let mut raw = raw;
+    let mut missing = Vec::new();
     if code != DEFAULT {
         match read(dir, DEFAULT) {
             Ok(en) => {
-                for (table, mine, reference) in [("text", &raw.text, &en.text), ("sample", &raw.sample, &en.sample)] {
-                    for key in reference.keys().filter(|k| !mine.contains_key(*k)) {
-                        errors.push(format!("[{table}] {key} is missing ({DEFAULT}.toml has it)"));
-                    }
+                for (table, mine, reference) in
+                    [("text", &mut raw.text, &en.text), ("sample", &mut raw.sample, &en.sample)]
+                {
                     for key in mine.keys().filter(|k| !reference.contains_key(*k)) {
                         errors.push(format!("[{table}] {key} is not in {DEFAULT}.toml"));
+                    }
+                    // Not translated yet: English, key by key.
+                    let lacking: Vec<(String, String)> = reference
+                        .iter()
+                        .filter(|(k, _)| !mine.contains_key(*k))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    for (key, value) in lacking {
+                        missing.push(format!("{table}.{key}"));
+                        mine.insert(key, value);
                     }
                 }
             }
@@ -101,12 +117,26 @@ pub fn load(dir: &Path, code: &str) -> Result<Locale, Vec<String>> {
     if !errors.is_empty() {
         return Err(errors);
     }
-    Ok(Locale { code: code.into(), name: raw.name, days: raw.days, months: raw.months, text: raw.text, sample: raw.sample })
+    Ok(Locale {
+        code: code.into(),
+        name: raw.name,
+        days: raw.days,
+        months: raw.months,
+        text: raw.text,
+        sample: raw.sample,
+        missing,
+    })
 }
 
 /// The locale for `code`, or English when there is none (or it is broken).
 pub fn load_or_english(dir: &Path, code: &str) -> Result<Locale, Vec<String>> {
-    load(dir, code).or_else(|e| {
+    load(dir, code)
+        .inspect(|l| {
+            if !l.missing.is_empty() {
+                eprintln!("locale {code}: {} key(s) not translated yet, shown in {DEFAULT}: {}", l.missing.len(), l.missing.join(", "));
+            }
+        })
+        .or_else(|e| {
         if code != DEFAULT {
             eprintln!("locale {code}: {}; using {DEFAULT}", e.join("; "));
         }
@@ -137,14 +167,19 @@ pub fn repo_locales() -> PathBuf {
 mod tests {
     use super::*;
 
-    /// Every locale of the repository is complete and valid (the check for pull requests).
+    /// Every locale of the repository is valid (the check for pull requests); the keys a
+    /// language has not translated yet are printed, not an error.
     #[test]
     fn repo_locales_are_valid() {
         let codes = available(&repo_locales());
         assert!(codes.contains(&DEFAULT.to_string()), "{DEFAULT}.toml is missing");
         for code in codes {
-            if let Err(errors) = load(&repo_locales(), &code) {
-                panic!("locales/{code}.toml:\n  {}", errors.join("\n  "));
+            match load(&repo_locales(), &code) {
+                Err(errors) => panic!("locales/{code}.toml:\n  {}", errors.join("\n  ")),
+                Ok(l) if !l.missing.is_empty() => {
+                    println!("locales/{code}.toml: not translated yet: {}", l.missing.join(", "))
+                }
+                Ok(_) => {}
             }
         }
     }
@@ -168,10 +203,27 @@ mod tests {
         )
         .unwrap();
         let errors = load(&dir, "xx").unwrap_err().join("\n");
-        for want in ["days: 1", "months: 0", "[text] talk is missing", "[text] extra is not in", "U+201C",
-                     "[sample] answer is missing"] {
+        for want in ["days: 1", "months: 0", "[text] extra is not in", "U+201C"] {
             assert!(errors.contains(want), "missing {want:?} in:\n{errors}");
         }
+        assert!(!errors.contains("talk"), "a missing key is not an error:\n{errors}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_missing_key_is_english_alone() {
+        let dir = std::env::temp_dir().join(format!("locale-fallback-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::copy(repo_locales().join("en.toml"), dir.join("en.toml")).unwrap();
+        // Italian without one key: the rest stays Italian, that key is English.
+        let it = std::fs::read_to_string(repo_locales().join("it.toml")).unwrap();
+        let it: String = it.lines().filter(|l| !l.starts_with("talk =")).map(|l| format!("{l}\n")).collect();
+        std::fs::write(dir.join("it.toml"), it).unwrap();
+        let l = load_or_english(&dir, "it").unwrap();
+        assert_eq!(l.code, "it");
+        assert_eq!(l.text("talk"), "Talk");
+        assert_eq!(l.text("home_compact"), "Home compatta");
+        assert_eq!(l.missing, ["text.talk"]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

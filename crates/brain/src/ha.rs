@@ -249,6 +249,13 @@ impl Ha {
             })
     }
 
+    /// The people registered in Home Assistant (`person.*`): their names.
+    pub fn residents(&self, timeout: Duration) -> Result<Vec<String>, String> {
+        Ok(residents_from(
+            &self.call(json!({"type": "get_states"}), timeout)?,
+        ))
+    }
+
     /// The entities exposed to Assist (Home Assistant's own choice, Settings → Voice
     /// assistants → Expose), with name, area, state and the attributes a command needs.
     pub fn exposed(&self, timeout: Duration) -> Result<Vec<Entity>, String> {
@@ -368,6 +375,26 @@ const KEPT_ATTRIBUTES: &[&str] = &[
 ];
 
 /// Exposed entities from the five registry answers (pure, for tests).
+/// The `friendly_name`s of the `person.*` states.
+pub fn residents_from(states: &Value) -> Vec<String> {
+    states
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| {
+            s.get("entity_id")
+                .and_then(Value::as_str)
+                .is_some_and(|e| e.starts_with("person."))
+        })
+        .filter_map(|s| {
+            s.pointer("/attributes/friendly_name")
+                .and_then(Value::as_str)
+        })
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .collect()
+}
+
 pub fn entities_from(
     exposed: &Value,
     states: &Value,
@@ -582,5 +609,15 @@ mod tests {
         assert_eq!(ha.token().unwrap(), "A1");
         ha.set_token("A0".into(), now_secs() + 10);
         assert!(ha.token().is_err());
+    }
+
+    #[test]
+    fn residents_are_the_persons() {
+        let states = json!([
+            {"entity_id": "person.marco", "state": "home", "attributes": {"friendly_name": "Marco"}},
+            {"entity_id": "light.study", "state": "on", "attributes": {"friendly_name": "Study"}},
+            {"entity_id": "person.x", "state": "home", "attributes": {}}
+        ]);
+        assert_eq!(residents_from(&states), vec!["Marco".to_string()]);
     }
 }
