@@ -99,6 +99,9 @@ pub struct UpdateView {
     pub install: String,
     /// An install is going on: the buttons wait.
     pub busy: bool,
+    /// The confirmation: the question and the text with the bundle's SHA-256.
+    pub question: String,
+    pub confirm: String,
 }
 
 /// A check of Settings → Home Assistant, in the screen's words.
@@ -975,6 +978,8 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_update_attention(self, u.attention);
                 $m::CompanionWindow::set_update_install(self, u.install.as_str().into());
                 $m::CompanionWindow::set_update_busy(self, u.busy);
+                $m::CompanionWindow::set_update_question(self, u.question.as_str().into());
+                $m::CompanionWindow::set_update_confirm_text(self, u.confirm.as_str().into());
             }
             fn on_update_check(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_update_check(self, f)

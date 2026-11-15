@@ -8,8 +8,9 @@
 #
 # Trust: the repository comes from the root-owned configuration only ([update] repo in
 # /etc/home-companion/home-companion.toml), never from the body; the body only chooses a tag of
-# it. The bundle is checked against the release's SHA256SUMS (over HTTPS from GitHub). What runs
-# now is kept, and put back if the new body does not stay up.
+# it, with the bundle's SHA-256 the user saw and confirmed on the screen: only a bundle with exactly
+# that hash, the same as in the release's SHA256SUMS, is installed. What runs now is kept, and put
+# back if the new body does not stay up.
 #
 # It says how it goes in /var/lib/home-companion/update/status (key=value lines, read by the body).
 set -u
@@ -42,11 +43,18 @@ fail() {
 
 # ---------------------------------------------------------------- the request
 [ -f "$REQ" ] && [ ! -L "$REQ" ] || exit 0
-TAG=$(head -c 64 "$REQ" | tr -d '\n\r ')
+# "<tag> <sha256>"
+LINE=$(head -c 160 "$REQ" | head -n 1 | tr -d '\r')
 rm -f "$REQ"
+TAG=${LINE%% *}
+SHA=${LINE#* }
 case $TAG in
     ""|*[!A-Za-z0-9._-]*) fail "not a release tag" ;;
 esac
+case $SHA in
+    *[!0-9a-f]*) fail "no confirmed SHA-256" ;;
+esac
+[ ${#SHA} -eq 64 ] || fail "no confirmed SHA-256"
 VERSION=${TAG#v}
 
 # The repository: [update] repo of the configuration, else ours.
@@ -77,8 +85,11 @@ mkdir -m 700 "$WORK" || fail "cannot create $WORK"
 curl -fsSL --max-time 900 -o "$WORK/$NAME.tar.gz" "$BASE/$NAME.tar.gz" || fail "download of $NAME.tar.gz"
 curl -fsSL --max-time 60 -o "$WORK/SHA256SUMS" "$BASE/SHA256SUMS" || fail "download of SHA256SUMS"
 status checking ""
-(cd "$WORK" && grep " $NAME.tar.gz\$" SHA256SUMS | sha256sum -c --status) ||
-    fail "$NAME.tar.gz does not match SHA256SUMS"
+GOT=$(sha256sum "$WORK/$NAME.tar.gz" | cut -d' ' -f1)
+[ "$GOT" = "$SHA" ] || fail "$NAME.tar.gz has SHA-256 $GOT, not the one confirmed"
+awk -v h="$SHA" -v n="$NAME.tar.gz" 'tolower($1) == h && ($2 == n || $2 == "*" n) { f = 1 } END { exit !f }' \
+    "$WORK/SHA256SUMS" ||
+    fail "$NAME.tar.gz is not in SHA256SUMS with the confirmed SHA-256"
 tar -C "$WORK" -xzf "$WORK/$NAME.tar.gz" || fail "the bundle does not unpack"
 [ -x "$WORK/$NAME/install.sh" ] || fail "no install.sh in the bundle"
 

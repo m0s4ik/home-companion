@@ -137,6 +137,10 @@ pub struct Release {
     pub tag: String,
     pub version: String,
     pub prerelease: bool,
+    /// The bundle's file name and its SHA-256 from the release's SHA256SUMS (filled after the
+    /// check; empty when it could not be read: then nothing is offered to install).
+    pub bundle: String,
+    pub sha256: String,
 }
 
 /// The newest release in GitHub's `releases` list that is newer than `current`, has the bundle
@@ -181,6 +185,8 @@ pub fn pick(releases: &Value, current: &str, allow_pre: bool, arch: &str) -> Opt
                     tag: tag.to_string(),
                     version,
                     prerelease: pre,
+                    bundle,
+                    sha256: String::new(),
                 },
             ));
         }
@@ -276,7 +282,19 @@ fn run(
         if let Ok(mut s) = state.lock() {
             s.checking = true;
         }
-        let got = fetch(repo).map(|v| pick(&v, current, pre, arch()));
+        let got = fetch(repo)
+            .map(|v| pick(&v, current, pre, arch()))
+            .map(|r| {
+                r.map(|mut r| {
+                    match fetch_sha256(repo, &r) {
+                        Ok(h) => r.sha256 = h,
+                        Err(e) => {
+                            log::warn!(event = "update"; "update: SHA256SUMS of {}: {e}", r.tag)
+                        }
+                    }
+                    r
+                })
+            });
         let now = now_unix();
         if let Ok(mut s) = state.lock() {
             s.checking = false;
@@ -326,6 +344,46 @@ fn fetch(repo: &str) -> Result<Value, String> {
     serde_json::from_slice(&out.stdout).map_err(|e| format!("GitHub's answer: {e}"))
 }
 
+/// The bundle's SHA-256 as the release's SHA256SUMS gives it.
+fn fetch_sha256(repo: &str, r: &Release) -> Result<String, String> {
+    let url = format!(
+        "https://github.com/{repo}/releases/download/{}/SHA256SUMS",
+        r.tag
+    );
+    let out = Command::new("curl")
+        .args(["-fsSL", "--max-time", "20", "-A", "home-companion", &url])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("curl: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    sha_of(&String::from_utf8_lossy(&out.stdout), &r.bundle)
+        .ok_or_else(|| format!("no line for {}", r.bundle))
+}
+
+/// The hash of `name` in a SHA256SUMS text (`<64 hex>  <name>`, or ` *<name>` in binary mode).
+pub fn sha_of(sums: &str, name: &str) -> Option<String> {
+    sums.lines().find_map(|l| {
+        let (h, f) = l.trim().split_once(char::is_whitespace)?;
+        let f = f.trim_start().trim_start_matches('*');
+        (f == name && valid_sha(h)).then(|| h.to_ascii_lowercase())
+    })
+}
+
+pub fn valid_sha(h: &str) -> bool {
+    h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// "d4ede278 2c0b3122 …": eight groups of eight, to read and compare.
+pub fn sha_groups(h: &str) -> String {
+    h.as_bytes()
+        .chunks(8)
+        .map(|c| String::from_utf8_lossy(c).into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -337,17 +395,21 @@ pub fn dir(state_dir: &Path) -> PathBuf {
     state_dir.join("update")
 }
 
-/// Asks the root service to install `tag` (written whole, then renamed: the path unit sees it
-/// only complete).
-pub fn request(state_dir: &Path, tag: &str) -> std::io::Result<()> {
+/// Asks the root service to install `tag` whose bundle has the SHA-256 the user saw and
+/// confirmed (written whole, then renamed: the path unit sees it only complete). The service
+/// installs only a bundle with exactly that hash.
+pub fn request(state_dir: &Path, tag: &str, sha256: &str) -> std::io::Result<()> {
     if !valid_tag(tag) {
         return Err(std::io::Error::other("not a release tag"));
+    }
+    if !valid_sha(sha256) {
+        return Err(std::io::Error::other("not a SHA-256"));
     }
     let d = dir(state_dir);
     std::fs::create_dir_all(&d)?;
     let _ = std::fs::remove_file(d.join("status"));
     let tmp = d.join("request.tmp");
-    std::fs::write(&tmp, format!("{tag}\n"))?;
+    std::fs::write(&tmp, format!("{tag} {}\n", sha256.to_ascii_lowercase()))?;
     std::fs::rename(&tmp, d.join("request"))
 }
 
@@ -489,6 +551,26 @@ mod tests {
     }
 
     #[test]
+    fn hashes_from_sha256sums() {
+        let h = "D4EDE2782C0B31223B00E62A56B95C3620B20992F419A1AE8001BF075BAFC61F";
+        let sums = format!("{h}  home-companion-0.3.1-arm64.tar.gz\nffff  other\n");
+        assert_eq!(
+            sha_of(&sums, "home-companion-0.3.1-arm64.tar.gz"),
+            Some(h.to_ascii_lowercase())
+        );
+        assert_eq!(
+            sha_of(&format!("{h} *x.tar.gz"), "x.tar.gz"),
+            Some(h.to_ascii_lowercase())
+        );
+        assert_eq!(sha_of(&sums, "home-companion-0.3.2-arm64.tar.gz"), None);
+        assert_eq!(sha_of("ffff  x.tar.gz", "x.tar.gz"), None);
+        assert_eq!(
+            sha_groups(&h.to_ascii_lowercase()),
+            "d4ede278 2c0b3122 3b00e62a 56b95c36 20b20992 f419a1ae 8001bf07 5bafc61f"
+        );
+    }
+
+    #[test]
     fn status_lines() {
         let s = parse_status("phase=installing\nversion=0.3.1\nmessage=\nat=1794700000\n").unwrap();
         assert_eq!(
@@ -502,13 +584,15 @@ mod tests {
     fn a_request_is_written_whole() {
         let d = std::env::temp_dir().join(format!("hc-update-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        request(&d, "v0.3.1").unwrap();
+        let h = "d4ede2782c0b31223b00e62a56b95c3620b20992f419a1ae8001bf075bafc61f";
+        request(&d, "v0.3.1", h).unwrap();
         assert_eq!(
             std::fs::read_to_string(dir(&d).join("request")).unwrap(),
-            "v0.3.1\n"
+            format!("v0.3.1 {h}\n")
         );
         assert!(requested(&d));
-        assert!(request(&d, "v0.3.1; rm -rf /").is_err());
+        assert!(request(&d, "v0.3.1; rm -rf /", h).is_err());
+        assert!(request(&d, "v0.3.1", "abc").is_err());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

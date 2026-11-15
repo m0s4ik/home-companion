@@ -892,6 +892,9 @@ export component CompanionWindow inherits Window {
     in property <bool> update-attention: false;
     in property <string> update-install;
     in property <bool> update-busy: false;
+    // The confirmation before installing: the question and the bundle's SHA-256 to compare.
+    in property <string> update-question;
+    in property <string> update-confirm-text;
     callback update-check();
     callback update-install-clicked();
     callback photo-open(int);
@@ -3128,7 +3131,7 @@ export component CompanionWindow inherits Window {
             enabled: !root.update-busy;
             spinning: root.update-busy;
             clicked => {
-                root.update-install-clicked();
+                root.dialog = "update";
             }
         }
     }
@@ -3773,6 +3776,19 @@ export component CompanionWindow inherits Window {
             if (yes) {
                 root.page = "home";
                 root.suspend-confirmed();
+            }
+        }
+    }
+    if root.dialog == "update": Dialog {
+        icon: Icons.download-44;
+        title: root.update-question;
+        text: root.update-confirm-text;
+        cancel: root.t.cancel;
+        confirm: root.update-install;
+        answered(yes) => {
+            root.dialog = "";
+            if (yes) {
+                root.update-install-clicked();
             }
         }
     }

@@ -487,7 +487,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 72] = [
+pub const DEMO_STATES: [&str; 74] = [
     "home",
     "cards",
     "cards-setup",
@@ -560,6 +560,8 @@ pub const DEMO_STATES: [&str; 72] = [
     "cards-3",
     "cards-4",
     "what",
+    "update",
+    "update-confirm",
 ];
 
 impl Demo {
@@ -797,6 +799,11 @@ impl Demo {
             | "setup" | "ha" | "memories" | "reminders" | "shopping" | "what" => {
                 page(DEMO_STATES.into_iter().find(|x| *x == s)?)
             }
+            "update" => page("update"),
+            "update-confirm" => Demo {
+                dialog: "update",
+                ..page("update")
+            },
             "first-language" => page("welcome"),
             "first-ha-searching" => Demo {
                 find: "searching",
@@ -3123,6 +3130,26 @@ impl<S: Screen> Ui<S> {
         if let Some(v) = d.volume {
             self.screen.set_volume(v, true);
         }
+        // Settings → Info: a newer release out (sample hash).
+        if d.page == "update" {
+            let sha = "d4ede2782c0b31223b00e62a56b95c3620b20992f419a1ae8001bf075bafc61f";
+            let repo = crate::update::DEFAULT_REPO;
+            self.screen.set_update(&UpdateView {
+                version: env!("CARGO_PKG_VERSION").into(),
+                repo: repo.into(),
+                checked: l.text("update_today").replace("{t}", "14:25"),
+                state: l.text("update_available").replace("{v}", "0.3.1"),
+                attention: true,
+                install: l.text("update_install").replace("{v}", "0.3.1"),
+                busy: false,
+                question: l.text("update_question").replace("{v}", "0.3.1"),
+                confirm: l
+                    .text("update_confirm")
+                    .replace("{repo}", repo)
+                    .replace("{file}", "home-companion-0.3.1-arm64.tar.gz")
+                    .replace("{sha}", &crate::update::sha_groups(sha)),
+            });
+        }
         // Sample use for the Home Assistant page's row and the use page.
         if matches!(d.page, "ha" | "usage") {
             let mut u = crate::usage::Usage::default();
@@ -3827,6 +3854,10 @@ impl<S: Screen> Ui<S> {
 
     /// Settings → Info: what the check found and what the update service says.
     fn refresh_update(&self) {
+        // The demo's sample stays (`--state update`).
+        if self.opts.demo.is_some() {
+            return;
+        }
         let v = self.update_view();
         self.screen.set_update(&v);
     }
@@ -3894,14 +3925,30 @@ impl<S: Screen> Ui<S> {
             _ if st.checking => (l.text("update_checking").into(), false),
             _ if st.failed => (l.text("update_check_failed").into(), true),
             _ => match &st.latest {
+                Some(r) if r.sha256.is_empty() => {
+                    (l.text("update_no_sha").replace("{v}", &r.version), true)
+                }
                 Some(r) => (l.text("update_available").replace("{v}", &r.version), true),
                 None if st.checked_at.is_some() => (l.text("update_none").into(), false),
                 None => (String::new(), false),
             },
         };
+        // Offered only with the hash to show (and to check against).
         let install = match &st.latest {
-            Some(r) if !busy => l.text("update_install").replace("{v}", &r.version),
+            Some(r) if !busy && !r.sha256.is_empty() => {
+                l.text("update_install").replace("{v}", &r.version)
+            }
             _ => String::new(),
+        };
+        let (question, confirm) = match &st.latest {
+            Some(r) => (
+                l.text("update_question").replace("{v}", &r.version),
+                l.text("update_confirm")
+                    .replace("{repo}", &u.repo)
+                    .replace("{file}", &r.bundle)
+                    .replace("{sha}", &crate::update::sha_groups(&r.sha256)),
+            ),
+            None => (String::new(), String::new()),
         };
         UpdateView {
             version: current.into(),
@@ -3911,6 +3958,8 @@ impl<S: Screen> Ui<S> {
             attention,
             install,
             busy,
+            question,
+            confirm,
         }
     }
 
@@ -3922,7 +3971,7 @@ impl<S: Screen> Ui<S> {
         let Some(r) = u.state().latest else {
             return;
         };
-        match crate::update::request(dir, &r.tag) {
+        match crate::update::request(dir, &r.tag, &r.sha256) {
             Ok(()) => {
                 log::info!(event = "update", version = r.version.as_str(); "update: {} asked", r.version)
             }
