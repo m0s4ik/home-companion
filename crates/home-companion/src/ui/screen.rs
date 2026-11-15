@@ -3894,13 +3894,9 @@ impl<S: Screen> Ui<S> {
                 l.text("update_installing").replace("{v}", &s.version),
                 false,
             ),
-            Some(s) if s.phase == "failed" => {
-                (l.text("update_failed").replace("{m}", &s.message), true)
-            }
-            Some(s) if s.phase == "rolled-back" => (
-                l.text("update_rolled_back").replace("{m}", &s.message),
-                true,
-            ),
+            // The service's reason is for the log (English, technical); the screen says what happened.
+            Some(s) if s.phase == "failed" => (l.text("update_failed").into(), true),
+            Some(s) if s.phase == "rolled-back" => (l.text("update_rolled_back").into(), true),
             Some(s) if s.phase == "done" && s.version == current => {
                 (l.text("update_done").replace("{v}", current), false)
             }

@@ -217,8 +217,9 @@ pub fn notes_text(md: &str) -> String {
         }
         let t = l.trim_start();
         let indent = l.len() - t.len();
+        // Headings in capitals: plain text has no bold to set them apart.
         let mut line = if let Some(h) = t.strip_prefix('#') {
-            h.trim_start_matches('#').trim().to_string()
+            h.trim_start_matches('#').trim().to_uppercase()
         } else if let Some(item) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
             format!("{}• {item}", "  ".repeat(indent / 2))
         } else {
@@ -644,7 +645,7 @@ mod tests {
         let md = "Second release: **memories** and [German](https://x/4).\n\n> [!IMPORTANT]\n> **Update the system too.**\n\n## New\n\n- **Camera** 📷 tile\n  - nested `code`\n\n\n## Fixed\n";
         assert_eq!(
             notes_text(md),
-            "Second release: memories and German.\n\nUpdate the system too.\n\nNew\n\n• Camera  tile\n  • nested code\n\nFixed"
+            "Second release: memories and German.\n\nUpdate the system too.\n\nNEW\n\n• Camera  tile\n  • nested code\n\nFIXED"
         );
         let long = "x".repeat(5000);
         assert_eq!(notes_text(&long).chars().count(), NOTES_MAX + 1);

@@ -3136,7 +3136,7 @@ export component CompanionWindow inherits Window {
                 root.page = "settings";
             }
         }
-        Text {
+        update-state-text := Text {
             x: Grid.col-x;
             y: Grid.page-y;
             width: Grid.col-width;
@@ -3145,9 +3145,10 @@ export component CompanionWindow inherits Window {
             color: root.update-attention ? Theme.accent : Theme.text;
             wrap: word-wrap;
         }
-        Text {
+        // Under the line above, however many lines it takes.
+        update-facts-text := Text {
             x: Grid.col-x;
-            y: Grid.page-y + 44px;
+            y: update-state-text.y + update-state-text.preferred-height + 6px;
             width: Grid.col-width;
             text: root.update-facts;
             font-size: 18px;
@@ -3156,7 +3157,7 @@ export component CompanionWindow inherits Window {
         }
         if root.update-notes != "": Rectangle {
             x: Grid.col-x;
-            y: Grid.page-y + 84px;
+            y: update-facts-text.y + update-facts-text.preferred-height + 16px;
             width: Grid.col-width;
             height: Grid.band-y - self.y - (root.update-sha != "" ? 48px : 16px);
             border-radius: 16px;
