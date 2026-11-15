@@ -312,13 +312,13 @@ intents" off. Only the answer to a follow-up question goes straight to the agent
 ## Install
 
 You need a **Lenovo ThinkSmart View with [thinksmart-view-debian](https://github.com/m0s4ik/thinksmart-view-debian)
-v0.4** (v0.3-rc3 or later works), built with `WEB=1` (the Home Assistant view) and `AIRPLAY=1` (AirPlay) if you want them. The
+v0.5** (v0.3-rc3 or later works), built with `WEB=1` (the Home Assistant view), `AIRPLAY=1` (AirPlay) and `CAMERA=1` (the camera) if you want them. The
 system image is where the Wi-Fi and your ssh key are set. Then, on the device:
 
 ```sh
-curl -LO https://github.com/m0s4ik/home-companion/releases/download/v0.2.0/home-companion-0.2.0-arm64.tar.gz
-tar xzf home-companion-0.2.0-arm64.tar.gz
-cd home-companion-0.2.0-arm64 && ./install.sh
+curl -LO https://github.com/m0s4ik/home-companion/releases/download/v0.3.0/home-companion-0.3.0-arm64.tar.gz
+tar xzf home-companion-0.3.0-arm64.tar.gz
+cd home-companion-0.3.0-arm64 && ./install.sh
 ```
 
 The installer asks nothing: it checks the system (it never lets apt replace the image's Mesa), installs the
@@ -326,8 +326,12 @@ programs and the services, downloads the speech models of every language and sta
 language → Home Assistant (found on the network) → QR code. Options (`--language`, `--ha-url`, `--no-airplay`,
 `--uninstall`, `--dry-run`…) and the manual steps are in [packaging/README.md](packaging/README.md).
 
-**Updating** is the same three lines with the new version: an installed one is updated in place and its settings
-stay.
+**Updating**, from 0.3.0 on: Settings → Info says when a newer release is out, and **Install** installs it (the
+device restarts by itself, its settings stay; if the new version does not start, the one before comes back). It
+looks once a day at the releases of `[update] repo` in `/etc/home-companion/home-companion.toml`, this repository by
+default: point it at your fork to get your own builds, and set `prerelease = true` for release candidates. The
+repository is read from that root-owned file only, never from the screen. By hand it is the same three lines with
+the new version.
 
 To change the Wi-Fi later: `nmcli device wifi connect "<ssid>" password "<password>"` on the device.
 
