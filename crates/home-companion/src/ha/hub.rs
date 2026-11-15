@@ -66,6 +66,19 @@ pub enum HubMsg {
         list: String,
         items: Vec<Item>,
     },
+    /// The connection to Home Assistant is up (true) or lost (false); `last_seen` is when the
+    /// last message came (seconds since the epoch, 0 = never), for "last synced at".
+    Link {
+        up: bool,
+        last_seen: i64,
+    },
+}
+
+/// Seconds since the epoch, now.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 pub struct HubConfig {
@@ -229,6 +242,9 @@ fn run(cfg: HubConfig, tx: Sender<HubMsg>, cmds: Receiver<HubCmd>, stop: fn() ->
     };
     log::info!(event = "ha_hub"; "cards and lists from {}:{}", ep.host, ep.port);
     let mut chosen = cfg.lists.clone();
+    // When the last message came, and whether the screen was told the link is up.
+    let mut seen: i64 = 0;
+    let mut told_up = false;
     let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(300));
     loop {
         if stop() {
@@ -246,9 +262,29 @@ fn run(cfg: HubConfig, tx: Sender<HubMsg>, cmds: Receiver<HubCmd>, stop: fn() ->
             }
         };
         let started = Instant::now();
-        match session(&cfg, &ep, &token, &tx, &cmds, &mut chosen, stop) {
+        match session(
+            &cfg,
+            &ep,
+            &token,
+            &tx,
+            &cmds,
+            &mut chosen,
+            &mut seen,
+            &mut told_up,
+            stop,
+        ) {
             Ok(()) => return,
             Err(why) => {
+                if std::mem::take(&mut told_up)
+                    && tx
+                        .send(HubMsg::Link {
+                            up: false,
+                            last_seen: seen,
+                        })
+                        .is_err()
+                {
+                    return;
+                }
                 if started.elapsed() >= Duration::from_secs(60) {
                     backoff.reset();
                 }
@@ -269,6 +305,8 @@ fn session(
     tx: &Sender<HubMsg>,
     cmds: &Receiver<HubCmd>,
     chosen: &mut Vec<String>,
+    seen: &mut i64,
+    told_up: &mut bool,
     stop: fn() -> bool,
 ) -> Result<(), String> {
     let lost = |e: io::Error| format!("{}:{}: {e}", ep.host, ep.port);
@@ -347,6 +385,18 @@ fn session(
         return Ok(());
     }
     log::info!(event = "ha_hub"; "cards and lists: connected to Home Assistant");
+    *seen = unix_now();
+    *told_up = true;
+    if tx
+        .send(HubMsg::Link {
+            up: true,
+            last_seen: *seen,
+        })
+        .is_err()
+    {
+        ws.close();
+        return Ok(());
+    }
     // A command (an event to fire) waits at most this long for the next read to end.
     ws.set_read_timeout(Duration::from_millis(100))
         .map_err(lost)?;
@@ -392,6 +442,7 @@ fn session(
         match ws.read().map_err(lost)? {
             Some(Message::Text(t)) => {
                 last_rx = Instant::now();
+                *seen = unix_now();
                 let Ok(v) = serde_json::from_str::<Value>(&t) else {
                     continue;
                 };
@@ -488,6 +539,16 @@ mod tests {
     use events::HaCard;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+
+    /// The next message, the link's up and down left out.
+    fn next(rx: &Receiver<HubMsg>) -> HubMsg {
+        loop {
+            match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                HubMsg::Link { .. } => {}
+                m => return m,
+            }
+        }
+    }
 
     fn named(v: &[(&str, &str)]) -> Vec<Named> {
         v.iter()
@@ -687,9 +748,15 @@ mod tests {
             );
         }
         let mut got = Vec::new();
-        // First the empty list of lists (nothing known yet), then what exists, then the lists.
+        // First the empty list of lists (nothing known yet), then what exists, then the lists;
+        // the link's "up" comes once the subscriptions are made.
         while got.len() < 3 {
-            got.push(rx.recv_timeout(Duration::from_secs(5)).unwrap());
+            match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                HubMsg::Link { up, last_seen } => {
+                    assert!(up && last_seen > 0);
+                }
+                m => got.push(m),
+            }
         }
         assert!(
             got.iter()
@@ -710,7 +777,7 @@ mod tests {
                 {"uid": "a", "summary": "Pane", "status": "needs_action"}]}}),
         );
         assert_eq!(
-            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            next(&rx),
             HubMsg::Items {
                 list: "todo.spesa".into(),
                 items: vec![("a".into(), "Pane".into())]
@@ -722,7 +789,7 @@ mod tests {
                     "data": {"id": "w", "text": "Done"}}}),
         );
         assert_eq!(
-            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            next(&rx),
             HubMsg::Card(CardEvent::Show(HaCard {
                 id: Some("w".into()),
                 text: "Done".into(),
@@ -736,10 +803,7 @@ mod tests {
                 &json!({"id": c3["id"], "type": "event", "event": {
                     "event_type": "home_companion_screen", "data": {"state": state}}}),
             );
-            assert_eq!(
-                rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-                HubMsg::Screen(want)
-            );
+            assert_eq!(next(&rx), HubMsg::Screen(want));
         }
         // An event for Home Assistant's bus, with this device's name; a refusal is not fatal.
         tx.send(HubCmd::Fire {
@@ -780,10 +844,7 @@ mod tests {
         let m = read_frame(&mut s, &mut buf);
         assert_eq!(m["type"], "unsubscribe_events");
         assert_eq!(m["subscription"], sub_ids["todo.spesa"]);
-        assert_eq!(
-            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-            HubMsg::Lists(named(&[("todo.casa", "Casa")]))
-        );
+        assert_eq!(next(&rx), HubMsg::Lists(named(&[("todo.casa", "Casa")])));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

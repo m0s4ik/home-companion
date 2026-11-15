@@ -1240,7 +1240,7 @@ fn short_date(l: &Locale, ts: i64) -> String {
 }
 
 /// "14:02" of a time in seconds since the epoch, and the day it is on (days since the epoch, local).
-fn local_hm(t: i64) -> (String, i64) {
+pub(crate) fn local_hm(t: i64) -> (String, i64) {
     // SAFETY: localtime_r only writes into the struct we pass.
     let tm = unsafe {
         let mut tm: libc::tm = std::mem::zeroed();
@@ -4616,6 +4616,7 @@ impl<S: Screen> Ui<S> {
                     self.refresh_home();
                 }
             }
+            HubMsg::Link { up, last_seen } => super::webview::set_ha_link(up, last_seen),
             HubMsg::Screen(true) => self.wake(WakeSource::HomeAssistant),
             HubMsg::Screen(false) => self.screen_off_by("Home Assistant"),
             HubMsg::Entities(e) => {

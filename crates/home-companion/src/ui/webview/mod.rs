@@ -26,6 +26,7 @@ pub mod controls;
 pub mod gesture;
 pub mod gl;
 pub mod link;
+pub mod sync;
 pub mod system;
 
 use std::cell::{Cell, RefCell};
@@ -34,7 +35,7 @@ use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -254,6 +255,17 @@ static HOME_REQUESTED: AtomicBool = AtomicBool::new(false);
 static LOGIN_REQUESTED: AtomicBool = AtomicBool::new(false);
 static OPEN_REQUESTED: AtomicBool = AtomicBool::new(false);
 static PRESENT: AtomicBool = AtomicBool::new(false);
+/// The connection to Home Assistant (the hub's, ha/hub.rs) is lost, and when the last data came
+/// (seconds since the epoch): the home button's offline sign ([`sync`]).
+static HA_DOWN: AtomicBool = AtomicBool::new(false);
+static HA_LAST_SEEN: AtomicI64 = AtomicI64::new(0);
+
+/// The connection to Home Assistant is up or lost (from the hub's messages); `last_seen`: when
+/// the last data came.
+pub fn set_ha_link(up: bool, last_seen: i64) {
+    HA_LAST_SEEN.store(last_seen, Ordering::Relaxed);
+    HA_DOWN.store(!up, Ordering::Relaxed);
+}
 
 /// This body has "Casa" (`[web] enabled`, not a demo).
 pub fn present() -> bool {
@@ -375,6 +387,9 @@ pub trait CasaScreen {
     fn casa_set_controls(&self, shown: bool);
     /// The home button: top left (logical pixels), a finger on it, being dragged.
     fn casa_set_home_button(&self, x: f32, y: f32, pressed: bool, dragging: bool);
+    /// The sign on the home button ([`sync::Sign::name`]), the time of the last data ("09:12")
+    /// and the turn of what turns (degrees).
+    fn casa_set_sync(&self, sign: &str, time: &str, turn: f32);
     fn casa_on_home(&self, f: impl Fn() + 'static);
     fn casa_on_retry(&self, f: impl Fn() + 'static);
     fn casa_on_menu_chosen(&self, f: impl Fn(i32) + 'static);
@@ -470,6 +485,12 @@ macro_rules! impl_casa {
                 b.set_home_pressed(pressed);
                 b.set_home_x(x);
                 b.set_home_y(y);
+            }
+            fn casa_set_sync(&self, sign: &str, time: &str, turn: f32) {
+                let b = self.global::<super::$m::CasaBridge>();
+                b.set_sync(sign.into());
+                b.set_sync_time(time.into());
+                b.set_sync_turn(turn);
             }
             fn casa_on_home(&self, f: impl Fn() + 'static) {
                 self.global::<super::$m::CasaBridge>().on_home(f)
@@ -581,6 +602,11 @@ struct Inner {
     /// When the home button and the indicator bar are shown, and whether they are now.
     controls: controls::Controls,
     controls_shown: bool,
+    /// The sign on the home button that the page catches up or Home Assistant is lost, what is
+    /// on screen of it (sign, time) and the turn of its arc.
+    sync: sync::SyncSign,
+    sync_shown: (sync::Sign, String),
+    sync_turn: f32,
     /// Where the home button rests, and the touch on it.
     place: controls::Place,
     drag: Option<controls::Drag>,
@@ -721,6 +747,9 @@ impl<S: Screen> Casa<S> {
                 top_touch: false,
                 controls: controls::Controls::new(opts.cfg.home_button_seconds),
                 controls_shown: false,
+                sync: sync::SyncSign::default(),
+                sync_shown: (sync::Sign::None, String::new()),
+                sync_turn: 0.0,
                 place: saved_place(&opts.state_dir),
                 drag: None,
                 target: Target::None,
@@ -937,7 +966,9 @@ impl<S: Screen> Casa<S> {
                 c.freezer.thaw();
                 was_paused = std::mem::take(&mut c.paused);
             }
-            (now.duration_since(i.hidden_since), was_paused)
+            let hidden_for = now.duration_since(i.hidden_since);
+            i.sync.shown(now, hidden_for);
+            (hidden_for, was_paused)
         };
         VISIBLE.store(true, Ordering::Relaxed);
         log::info!(
@@ -1004,11 +1035,14 @@ impl<S: Screen> Casa<S> {
             i.governor.restore();
             i.swipe.reset();
             i.controls.reset();
+            i.sync.hidden();
+            i.sync_shown = (sync::Sign::None, String::new());
             i.drag = None;
             let touching = i.target == Target::Page;
             i.target = Target::None;
             (i.menu.take(), i.confirm.take(), touching, pull)
         };
+        self.ui.screen.casa_set_sync("", "", 0.0);
         VISIBLE.store(false, Ordering::Relaxed);
         log::info!(event = "casa_hide", reason = why; "casa: hidden ({why})");
         // A view asked by the brain: the dashboard again for the next opening.
@@ -1657,6 +1691,9 @@ impl<S: Screen> Casa<S> {
                     i.show_at = None;
                 }
             }
+            if !f.answered {
+                i.sync.frame(now);
+            }
             if !f.answered
                 && let Some(t) = i.tap_at.take()
             {
@@ -1799,6 +1836,19 @@ impl<S: Screen> Casa<S> {
                         (r, 0.0, false, true)
                     } else {
                         let r = i.swipe.event(kind, x, y);
+                        // Every touch that started near the swipe's edge, said once it is over:
+                        // where it started and how far it went (Andrea, 2026-11-15: the swipe
+                        // works one time out of two).
+                        if let Some(t) = i.swipe.finished()
+                            && t.down_in < 120.0
+                        {
+                            log::info!(
+                                event = "edge_swipe", outcome = t.outcome, down_in = t.down_in as f64,
+                                max_in = t.max_in as f64, edge = i.swipe.side().name();
+                                "casa: touch from the {} edge: {} (started {:.0} px in, reached {:.0})",
+                                i.swipe.side().name(), t.outcome, t.down_in, t.max_in
+                            );
+                        }
                         (r, i.swipe.pull(), i.swipe.armed(), false)
                     }
                 };
@@ -1901,11 +1951,48 @@ impl<S: Screen> Casa<S> {
         self.ui.screen.casa_set_home_button(x, y, pressed, moving);
     }
 
+    /// The sign on the home button (catching up, Home Assistant lost): from the housekeeping,
+    /// every 100 ms while the view is shown; the arc turns once in 1.2 s.
+    fn update_sync(&self, now: Instant) {
+        let down = HA_DOWN.load(Ordering::Relaxed);
+        let (sign, time, turn, changed) = {
+            let mut i = self.inner.borrow_mut();
+            let sign = i.sync.sign(now, !down);
+            let time = match sign {
+                sync::Sign::Offline => {
+                    let seen = HA_LAST_SEEN.load(Ordering::Relaxed);
+                    if seen > 0 {
+                        crate::ui::screen::local_hm(seen).0
+                    } else {
+                        String::new()
+                    }
+                }
+                _ => String::new(),
+            };
+            let turning = sign != sync::Sign::None;
+            if turning {
+                i.sync_turn = (i.sync_turn + 30.0) % 360.0;
+            }
+            let changed = i.sync_shown != (sign, time.clone());
+            if changed {
+                log::info!(event = "casa_sync", sign = sign.name(); "casa: home button sign {:?}", sign);
+                i.sync_shown = (sign, time.clone());
+            }
+            (sign, time, i.sync_turn, changed || turning)
+        };
+        if changed {
+            self.ui.screen.casa_set_sync(sign.name(), &time, turn);
+        }
+    }
+
     /// The home button and the indicator bar: shown or not (the property set only on a change).
     fn update_controls(&self, now: Instant) {
         let shown = {
             let mut i = self.inner.borrow_mut();
-            let shown = i.visible && (i.drag.is_some() || i.controls.shown(now));
+            let shown = i.visible
+                && (i.drag.is_some()
+                    || i.controls.shown(now)
+                    || i.sync_shown.0 != sync::Sign::None);
             if shown == i.controls_shown {
                 return;
             }
@@ -2013,6 +2100,7 @@ impl<S: Screen> Casa<S> {
             }
         }
         if visible {
+            self.update_sync(now);
             self.update_controls(now);
             // A frame kept back by the cap, now due.
             let due = {
