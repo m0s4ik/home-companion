@@ -255,6 +255,13 @@ export struct Words {
     no: string,
     ask_executing: string,
     what_short: string,
+    camera: string,
+    camera_shoot: string,
+    camera_covered: string,
+    camera_starting: string,
+    photos: string,
+    photos_empty: string,
+    photo_delete: string,
     what_title: string,
     what_intro: string,
     dnd: string,
@@ -857,11 +864,21 @@ export component CompanionWindow inherits Window {
     callback control-volume(int);
     callback control-brightness(int);
     callback control-brightness-auto();
-    // The photo just taken from the control center (camera.rs), over everything, and its line.
+    // The photo just taken, or one of the gallery (deletable), over everything, and its line.
     in property <bool> photo-shown: false;
     in property <image> photo;
     in property <string> photo-caption;
+    in property <bool> photo-deletable: false;
     callback photo-closed();
+    callback photo-delete();
+    // The camera page (camera.rs): the live mirror, "live" / "starting" / "covered" / "taking",
+    // the countdown's number ("" none), and the gallery's thumbnails, newest first.
+    in property <image> camera-frame;
+    in property <string> camera-state: "starting";
+    in property <string> camera-count;
+    in property <[image]> photo-thumbs: [];
+    callback camera-shoot();
+    callback photo-open(int);
     callback music-toggle();
     // A touch on the mirroring page: its controls come up (or stay) for a while.
     callback mirror-poked();
@@ -1932,6 +1949,141 @@ export component CompanionWindow inherits Window {
             clicked => {
                 root.page-back = "altro";
                 root.page = "what";
+            }
+        }
+    }
+
+    // ---- The camera: the live picture as a mirror in the column (Alfred stays on his third),
+    // a countdown over it, Shoot in the middle of the band, the gallery on its left.
+    if root.desk && root.desk-page == "camera": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.camera;
+            clock: root.clock;
+            back => {
+                root.page = "home";
+            }
+        }
+        Rectangle {
+            width: 704px;
+            height: 528px;
+            x: Grid.col-x + (Grid.col-width - self.width) / 2;
+            y: Grid.page-y - 8px;
+            border-radius: 20px;
+            clip: true;
+            background: Theme.surface;
+            if root.camera-state == "live" || root.camera-state == "taking": Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.camera-frame;
+                image-fit: cover;
+            }
+            if root.camera-state != "live": Text {
+                width: parent.width - 64px;
+                x: 32px;
+                height: parent.height;
+                text: root.camera-state == "covered" ? root.t.camera-covered
+                    : root.camera-state == "taking" ? "" : root.t.camera-starting;
+                font-size: 26px;
+                color: Theme.text-2;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            // The countdown: a big number over the picture.
+            if root.camera-count != "": Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.camera-count;
+                font-size: 220px;
+                font-weight: 700;
+                color: Theme.text;
+                stroke: Theme.bg.with-alpha(0.6);
+                stroke-width: 4px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            // The shot: a white flash.
+            if root.camera-state == "taking": Rectangle {
+                background: #ffffffcc;
+            }
+        }
+        BareButton {
+            x: root.slot-left;
+            y: Grid.band-y;
+            icon: Icons.image-multiple-48;
+            label: root.t.photos;
+            clicked => {
+                root.page = "photos";
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.camera-44;
+            label: root.t.camera-shoot;
+            enabled: root.camera-state == "live" && root.camera-count == "";
+            clicked => {
+                root.camera-shoot();
+            }
+        }
+    }
+
+    // ---- The gallery: the photos kept, three to a row, newest first; a tap shows one whole.
+    if root.desk && root.desk-page == "photos": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.photos;
+            clock: root.clock;
+            back => {
+                root.page = "camera";
+            }
+        }
+        if root.photo-thumbs.length == 0: Text {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            text: root.t.photos-empty;
+            font-size: 24px;
+            color: Theme.text-2;
+            wrap: word-wrap;
+        }
+        Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: Grid.band-y - Grid.page-y - 16px;
+            viewport-height: ceil(root.photo-thumbs.length / 3) * (192px + 16px);
+            for th[i] in root.photo-thumbs: Rectangle {
+                x: mod(i, 3) * (256px + 20px);
+                y: floor(i / 3) * (192px + 16px);
+                width: 256px;
+                height: 192px;
+                border-radius: 12px;
+                clip: true;
+                background: Theme.surface;
+                Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: th;
+                    image-fit: cover;
+                }
+                TouchArea {
+                    clicked => {
+                        root.photo-open(i);
+                    }
+                }
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.camera-44;
+            label: root.t.camera;
+            clicked => {
+                root.page = "camera";
             }
         }
     }
@@ -4439,6 +4591,24 @@ export component CompanionWindow inherits Window {
                 height: parent.height;
                 source: root.photo;
                 image-fit: contain;
+            }
+        }
+        if root.photo-deletable: BareButton {
+            x: 32px;
+            y: parent.height - 136px;
+            icon: Icons.delete-48;
+            label: root.t.photo-delete;
+            clicked => {
+                root.photo-delete();
+            }
+        }
+        if root.photo-deletable: BareButton {
+            x: parent.width - 32px - self.width;
+            y: parent.height - 136px;
+            icon: Icons.close-48;
+            label: root.t.close;
+            clicked => {
+                root.photo-closed();
             }
         }
         Text {

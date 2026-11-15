@@ -865,6 +865,12 @@ pub const MIRROR_NO_FRAME: Duration = Duration::from_secs(8);
 pub const PAGE_IDLE: Duration = Duration::from_secs(60);
 /// The camera thread's answer: the photo, small enough for the screen, or why not.
 type PhotoRx = std::sync::mpsc::Receiver<Result<SharedPixelBuffer<Rgba8Pixel>, String>>;
+/// The gallery's thumbnails, from their thread.
+type ThumbsRx = std::sync::mpsc::Receiver<Vec<SharedPixelBuffer<Rgba8Pixel>>>;
+/// The camera page goes home after this long without a touch or a photo.
+pub const CAMERA_IDLE: Duration = Duration::from_secs(120);
+/// The countdown before a photo (seconds).
+pub const COUNTDOWN: u64 = 3;
 
 /// How long the photo just taken stays on the screen (a tap closes it sooner).
 pub const PHOTO_SHOWN: Duration = Duration::from_secs(10);
@@ -1099,6 +1105,19 @@ pub struct Ui<S: Screen> {
     camera: bool,
     photo_rx: RefCell<Option<PhotoRx>>,
     photo_timer: Timer,
+    /// The camera page: the live picture, its timer (frames, the countdown, the cover), the
+    /// last frame shown, when the countdown started and its last number, and when the page was
+    /// last used (it goes home after [`CAMERA_IDLE`]).
+    cam_live: RefCell<Option<super::camera::Live>>,
+    cam_timer: Timer,
+    cam_seq: Cell<u64>,
+    cam_count: Cell<Option<(Instant, u64)>>,
+    cam_used: Cell<Instant>,
+    /// The gallery: the photos listed (newest first), their thumbnails coming from a thread, the
+    /// one shown whole.
+    gallery: RefCell<Vec<PathBuf>>,
+    thumbs_rx: RefCell<Option<ThumbsRx>>,
+    viewing: RefCell<Option<PathBuf>>,
     /// The back of a page was just pressed: the next page change makes the home or tap sound.
     back_pending: Cell<Option<Instant>>,
     /// The link in progress while the setup page is shown.
@@ -1414,6 +1433,14 @@ impl<S: Screen> Ui<S> {
             camera: has_camera,
             photo_rx: RefCell::new(None),
             photo_timer: Timer::default(),
+            cam_live: RefCell::new(None),
+            cam_timer: Timer::default(),
+            cam_seq: Cell::new(0),
+            cam_count: Cell::new(None),
+            cam_used: Cell::new(Instant::now()),
+            gallery: RefCell::new(Vec::new()),
+            thumbs_rx: RefCell::new(None),
+            viewing: RefCell::new(None),
             back_pending: Cell::new(None),
             link: RefCell::new(None),
             link_done: Cell::new(None),
@@ -1646,7 +1673,7 @@ impl<S: Screen> Ui<S> {
                 }
                 "night" => ui.toggle_night(),
                 "dnd" => ui.toggle_dnd(),
-                "camera" => ui.take_photo(),
+                "camera" => ui.open_camera(false),
                 "ha" => {
                     ui.screen.set_control_open(false);
                     ui.screen
@@ -1659,8 +1686,25 @@ impl<S: Screen> Ui<S> {
         let ui = Rc::downgrade(self);
         self.screen.on_photo_closed(move || {
             if let Some(ui) = ui.upgrade() {
-                ui.photo_timer.stop();
-                ui.screen.set_photo(None, "");
+                ui.photo_hide();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_photo_delete(move || {
+            if let Some(ui) = ui.upgrade() {
+                ui.photo_delete();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_camera_shoot(move || {
+            if let Some(ui) = ui.upgrade() {
+                ui.camera_countdown();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_photo_open(move |i| {
+            if let Some(ui) = ui.upgrade() {
+                ui.photo_open(i);
             }
         });
         let ui = Rc::downgrade(self);
@@ -2082,6 +2126,8 @@ impl<S: Screen> Ui<S> {
         // A conversation or a ringing timer is not hidden under the photo just taken.
         if p != Phase::Home && p != Phase::Offline && self.screen.get_photo_shown() {
             self.photo_timer.stop();
+            self.viewing.borrow_mut().take();
+            self.screen.set_photo_deletable(false);
             self.screen.set_photo(None, "");
         }
         let now = Instant::now();
@@ -3316,6 +3362,11 @@ impl<S: Screen> Ui<S> {
                 self.screen.set_volume(p, false);
             }
             UiCommand::ScreenOff => self.screen_off(),
+            UiCommand::TakePhoto => {
+                if let Some(me) = self.this.borrow().upgrade() {
+                    me.open_camera(true);
+                }
+            }
             UiCommand::DoNotDisturb(until) => self.set_dnd(until),
             UiCommand::Announcing(on) => self.screen.set_announcing(on),
             UiCommand::Conversation {
@@ -3724,14 +3775,258 @@ impl<S: Screen> Ui<S> {
         self.screen.set_control_open(false);
         // A failure: the line alone, on the same sheet.
         let shown = img.unwrap_or_else(|| Image::from_rgba8(SharedPixelBuffer::new(1, 1)));
+        self.screen.set_photo_deletable(false);
         self.screen.set_photo(Some(shown), &caption);
         let ui = Rc::downgrade(self);
         self.photo_timer
             .start(TimerMode::SingleShot, PHOTO_SHOWN, move || {
                 if let Some(ui) = ui.upgrade() {
-                    ui.screen.set_photo(None, "");
+                    ui.photo_hide();
                 }
             });
+    }
+
+    /// The photo over everything goes; on the camera page the live picture comes back.
+    fn photo_hide(self: &Rc<Self>) {
+        self.photo_timer.stop();
+        self.viewing.borrow_mut().take();
+        self.screen.set_photo_deletable(false);
+        self.screen.set_photo(None, "");
+        self.cam_used.set(Instant::now());
+        if self.screen.get_page() == "camera" && self.photo_rx.borrow().is_none() {
+            self.camera_start();
+        }
+    }
+
+    /// The camera page (the control center's tile, "fammi una foto" with `countdown`).
+    pub fn open_camera(self: &Rc<Self>, countdown: bool) {
+        if !self.camera {
+            return;
+        }
+        self.wake(WakeSource::Touch);
+        self.screen.set_control_open(false);
+        if self.screen.get_page() != "camera" {
+            self.screen.set_page("camera");
+            self.on_page("camera");
+        }
+        if countdown {
+            self.camera_countdown();
+        }
+    }
+
+    /// The live picture on (or the cover's notice), with the page's timer.
+    fn camera_start(self: &Rc<Self>) {
+        self.cam_used.set(Instant::now());
+        if self.cam_live.borrow().is_none() {
+            if super::camera::lens_covered() == Some(true) {
+                self.screen.set_camera(None, "covered", "");
+            } else {
+                match super::camera::Live::start() {
+                    Ok(l) => {
+                        *self.cam_live.borrow_mut() = Some(l);
+                        self.screen.set_camera(None, "starting", "");
+                    }
+                    Err(e) => {
+                        log::warn!(event = "camera_live"; "camera: {e}");
+                        self.screen.set_camera(None, "starting", "");
+                    }
+                }
+            }
+        }
+        let ui = Rc::downgrade(self);
+        self.cam_timer
+            .start(TimerMode::Repeated, Duration::from_millis(66), move || {
+                if let Some(ui) = ui.upgrade() {
+                    ui.camera_tick();
+                }
+            });
+    }
+
+    fn camera_stop(&self) {
+        self.cam_timer.stop();
+        self.cam_count.set(None);
+        if self.cam_live.borrow_mut().take().is_some() {
+            self.cam_seq.set(0);
+        }
+    }
+
+    /// Shoot (the button, or the voice): 3, 2, 1, then the photo.
+    fn camera_countdown(self: &Rc<Self>) {
+        if self.cam_count.get().is_some() || self.photo_rx.borrow().is_some() {
+            return;
+        }
+        self.cam_used.set(Instant::now());
+        self.cam_count.set(Some((Instant::now(), COUNTDOWN + 1)));
+    }
+
+    /// 15 times a second while the page is there: the newest frame, the countdown, the cover.
+    fn camera_tick(self: &Rc<Self>) {
+        if self.screen.get_page() != "camera" {
+            self.camera_stop();
+            return;
+        }
+        let now = Instant::now();
+        // The countdown: a number and a tick each second, then the photo.
+        let mut count = String::new();
+        if let Some((t0, last)) = self.cam_count.get() {
+            let gone = now.duration_since(t0).as_secs();
+            if gone >= COUNTDOWN {
+                self.cam_count.set(None);
+                self.camera_shoot();
+                return;
+            }
+            let n = COUNTDOWN - gone;
+            if n != last {
+                self.cam_count.set(Some((t0, n)));
+                self.send(UiEvent::CountdownTick);
+            }
+            count = n.to_string();
+        }
+        // The cover, once a second: closed, the live picture stops; opened, it starts.
+        if self.cam_seq.get() % 15 == 0 || self.cam_live.borrow().is_none() {
+            let covered = super::camera::lens_covered() == Some(true);
+            if covered && self.cam_live.borrow().is_some() {
+                self.cam_live.borrow_mut().take();
+                self.cam_count.set(None);
+            }
+            if covered {
+                self.screen.set_camera(None, "covered", "");
+                self.cam_seq.set(self.cam_seq.get() + 1);
+                return;
+            }
+            if self.cam_live.borrow().is_none() {
+                self.cam_seq.set(0);
+                if let Ok(l) = super::camera::Live::start() {
+                    *self.cam_live.borrow_mut() = Some(l);
+                }
+                self.screen.set_camera(None, "starting", &count);
+                return;
+            }
+        }
+        let frame = self
+            .cam_live
+            .borrow()
+            .as_ref()
+            .and_then(|l| l.frame(self.cam_seq.get()));
+        match frame {
+            Some((n, buf)) => {
+                self.cam_seq.set(n);
+                self.screen
+                    .set_camera(Some(Image::from_rgba8(buf)), "live", &count);
+            }
+            None if self.cam_seq.get() == 0 => self.screen.set_camera(None, "starting", &count),
+            None => self.screen.set_camera(None, "live", &count),
+        }
+        // Left alone: home (the camera off).
+        if self.cam_count.get().is_none() && now.duration_since(self.cam_used.get()) >= CAMERA_IDLE
+        {
+            log::info!(event = "camera_live"; "camera: page left alone, home");
+            self.camera_stop();
+            self.screen.set_page("home");
+            self.on_page("home");
+        }
+    }
+
+    /// The photo itself: the live picture stops (the camera is one), a flash, the full-size
+    /// photo in its thread, then it is shown (photo_poll) and the live picture comes back.
+    fn camera_shoot(self: &Rc<Self>) {
+        self.cam_live.borrow_mut().take();
+        self.cam_seq.set(0);
+        self.cam_timer.stop();
+        self.screen.set_camera(None, "taking", "");
+        self.take_photo();
+    }
+
+    /// The gallery: the photos listed now, their thumbnails decoded in a thread.
+    fn refresh_photos(self: &Rc<Self>) {
+        let Some(dir) = self.opts.state_dir.as_ref().map(|d| d.join("photos")) else {
+            return;
+        };
+        let list = super::camera::photos(&dir);
+        *self.gallery.borrow_mut() = list.clone();
+        self.screen.set_photo_thumbs(Vec::new());
+        if list.is_empty() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("thumbnails".into())
+            .spawn(move || {
+                let thumbs = list
+                    .iter()
+                    .map(|p| {
+                        super::camera::preview(p, 256, 192)
+                            .unwrap_or_else(|_| SharedPixelBuffer::new(1, 1))
+                    })
+                    .collect();
+                let _ = tx.send(thumbs);
+            });
+        if spawned.is_err() {
+            return;
+        }
+        *self.thumbs_rx.borrow_mut() = Some(rx);
+        let ui = Rc::downgrade(self);
+        Timer::single_shot(Duration::from_millis(100), move || {
+            if let Some(ui) = ui.upgrade() {
+                ui.thumbs_poll();
+            }
+        });
+    }
+
+    fn thumbs_poll(self: &Rc<Self>) {
+        let got = match self.thumbs_rx.borrow().as_ref().map(|r| r.try_recv()) {
+            Some(Ok(t)) => Some(t),
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) => None,
+            _ => {
+                self.thumbs_rx.borrow_mut().take();
+                return;
+            }
+        };
+        match got {
+            Some(t) => {
+                self.thumbs_rx.borrow_mut().take();
+                self.screen
+                    .set_photo_thumbs(t.into_iter().map(Image::from_rgba8).collect());
+            }
+            None => {
+                let ui = Rc::downgrade(self);
+                Timer::single_shot(Duration::from_millis(100), move || {
+                    if let Some(ui) = ui.upgrade() {
+                        ui.thumbs_poll();
+                    }
+                });
+            }
+        }
+    }
+
+    /// One photo of the gallery whole, with Delete and Close.
+    fn photo_open(self: &Rc<Self>, i: usize) {
+        let Some(p) = self.gallery.borrow().get(i).cloned() else {
+            return;
+        };
+        let Ok(buf) = super::camera::preview(&p, 880, 660) else {
+            return;
+        };
+        let caption = p
+            .file_stem()
+            .map(|s| photo_caption(&s.to_string_lossy()))
+            .unwrap_or_default();
+        *self.viewing.borrow_mut() = Some(p);
+        self.photo_timer.stop();
+        self.screen.set_photo_deletable(true);
+        self.screen
+            .set_photo(Some(Image::from_rgba8(buf)), &caption);
+    }
+
+    fn photo_delete(self: &Rc<Self>) {
+        if let Some(p) = self.viewing.borrow_mut().take() {
+            match std::fs::remove_file(&p) {
+                Ok(()) => log::info!(event = "camera_photo"; "camera: {} deleted", p.display()),
+                Err(e) => log::warn!(event = "camera_photo"; "camera: {}: {e}", p.display()),
+            }
+        }
+        self.photo_hide();
+        self.refresh_photos();
     }
 
     /// The control center comes down (the pull from the top, here or over "Casa").
@@ -4102,7 +4397,7 @@ impl<S: Screen> Ui<S> {
         }
     }
 
-    fn on_page(&self, page: &str) {
+    fn on_page(self: &Rc<Self>, page: &str) {
         if self
             .back_pending
             .take()
@@ -4128,6 +4423,15 @@ impl<S: Screen> Ui<S> {
         } else if self.link.borrow().is_some() {
             // Leaving the page closes the port.
             self.link.borrow_mut().take();
+        }
+        // The camera runs only on its page.
+        if page == "camera" {
+            self.camera_start();
+        } else {
+            self.camera_stop();
+        }
+        if page == "photos" {
+            self.refresh_photos();
         }
         match page {
             "chat" => self.refresh_chat(),
@@ -5598,6 +5902,15 @@ fn parse_ssid(info: &str) -> Option<String> {
         .find_map(|l| l.trim().strip_prefix("ssid "))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// "15/11 · 13:56" of a photo's name ("photo-20261115-135638").
+fn photo_caption(stem: &str) -> String {
+    let d = stem.strip_prefix("photo-").unwrap_or(stem);
+    match (d.get(6..8), d.get(4..6), d.get(9..11), d.get(11..13)) {
+        (Some(day), Some(mon), Some(h), Some(m)) => format!("{day}/{mon} · {h}:{m}"),
+        _ => String::new(),
+    }
 }
 
 /// AirPlay's cover art, decoded here and not with `Image::load_from_path`: Slint caches images

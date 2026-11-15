@@ -242,6 +242,14 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_photo(&self, photo: Option<Image>, caption: &str);
     fn on_photo_closed(&self, f: impl Fn() + 'static);
     fn get_photo_shown(&self) -> bool;
+    fn set_photo_deletable(&self, on: bool);
+    fn on_photo_delete(&self, f: impl Fn() + 'static);
+    /// The camera page: the live picture (None: keep), its state ("live", "starting", "covered",
+    /// "taking") and the countdown ("" none).
+    fn set_camera(&self, frame: Option<Image>, state: &str, count: &str);
+    fn set_photo_thumbs(&self, thumbs: Vec<Image>);
+    fn on_camera_shoot(&self, f: impl Fn() + 'static);
+    fn on_photo_open(&self, f: impl Fn(usize) + 'static);
     fn on_control_opened(&self, f: impl Fn() + 'static);
     fn on_control_volume(&self, f: impl Fn(i32) + 'static);
     fn on_control_brightness(&self, f: impl Fn(i32) + 'static);
@@ -641,6 +649,13 @@ macro_rules! impl_screen {
                     no,
                     ask_executing,
                     what_short,
+                    camera,
+                    camera_shoot,
+                    camera_covered,
+                    camera_starting,
+                    photos,
+                    photos_empty,
+                    photo_delete,
                     what_title,
                     what_intro,
                     dnd,
@@ -914,6 +929,28 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_photo_shown(self, photo.is_some());
                 $m::CompanionWindow::set_photo(self, photo.unwrap_or_default());
                 $m::CompanionWindow::set_photo_caption(self, caption.into());
+            }
+            fn set_photo_deletable(&self, on: bool) {
+                $m::CompanionWindow::set_photo_deletable(self, on)
+            }
+            fn on_photo_delete(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_photo_delete(self, f)
+            }
+            fn set_camera(&self, frame: Option<Image>, state: &str, count: &str) {
+                if let Some(f) = frame {
+                    $m::CompanionWindow::set_camera_frame(self, f);
+                }
+                $m::CompanionWindow::set_camera_state(self, state.into());
+                $m::CompanionWindow::set_camera_count(self, count.into());
+            }
+            fn set_photo_thumbs(&self, thumbs: Vec<Image>) {
+                $m::CompanionWindow::set_photo_thumbs(self, model!(thumbs))
+            }
+            fn on_camera_shoot(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_camera_shoot(self, f)
+            }
+            fn on_photo_open(&self, f: impl Fn(usize) + 'static) {
+                $m::CompanionWindow::on_photo_open(self, move |i| f(i.max(0) as usize))
             }
             fn get_photo_shown(&self) -> bool {
                 $m::CompanionWindow::get_photo_shown(self)

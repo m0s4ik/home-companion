@@ -58,6 +58,7 @@ yes = ["yes", "yes please", "sure", "confirm", "go ahead", "do it"]
 no = ["no", "no thanks", "no thank you", "cancel", "never mind", "nothing"]
 repeat = ["repeat", "repeat that", "can you repeat that", "say that again", "what did you say", "come again"]
 screen_off = ["turn off the screen", "turn the screen off", "switch off the screen", "screen off"]
+take_photo = ["take a photo", "take a picture", "take a photo of me", "take a picture of me", "take my picture", "take my photo"]
 dnd_on = [
     "do not disturb",
     "don't disturb me",

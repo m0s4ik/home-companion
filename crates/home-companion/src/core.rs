@@ -33,6 +33,8 @@ use reflex::verdict::{self as rv, Verdict};
 pub enum UiEvent {
     /// A control of the screen was pressed: the soft tap sound.
     Tap,
+    /// A second of the camera's countdown: the tick (also with do not disturb: it was asked).
+    CountdownTick,
     /// A reminder or message card appeared (by day): its soft sound.
     Reminder,
     /// Back home from Home Assistant's view, by the user: its own sound.
@@ -204,6 +206,8 @@ pub enum UiCommand {
     Suspending,
     /// "Spegni lo schermo" (a reflex): the backlight off until a touch, a key or a wake word.
     ScreenOff,
+    /// "Fammi una foto" (a reflex): the camera page with its countdown.
+    TakePhoto,
     /// "Non disturbare" (a reflex): no sounds nor cards' sounds, the screen dim, until this
     /// unix time (Some) or off again (None).
     DoNotDisturb(Option<u64>),
@@ -2095,6 +2099,10 @@ impl Core {
                 after.push(UiCommand::ScreenOff);
                 String::new()
             }
+            Reflex::TakePhoto => {
+                after.push(UiCommand::TakePhoto);
+                self.reflex_text("reflex_photo", &[])
+            }
             Reflex::DoNotDisturb { .. } | Reflex::DoNotDisturbMorning | Reflex::GoodNight => {
                 let local = local_seconds_of_day(now as i64);
                 let until = match &cmd {
@@ -2129,6 +2137,8 @@ impl Core {
             Reflex::TimerCancel { .. } | Reflex::AlarmCancel => Some("cancelled"),
             // Soft and low: the screen goes dark, the evening goes quiet.
             Reflex::Silence | Reflex::No | Reflex::ScreenOff | Reflex::GoodNight => Some("silence"),
+            // The countdown ticks on the camera page.
+            Reflex::TakePhoto => None,
             // The house card shows what follows (done, with Undo).
             Reflex::Yes => None,
             Reflex::TimerLeft { .. } | Reflex::TimerList => Some("done"),
@@ -3142,6 +3152,11 @@ impl Core {
             UiEvent::AlarmDelete(id) => {
                 self.d.alarms.remove(id);
                 self.ui(UiCommand::Alarms(self.d.alarms.list().to_vec()));
+            }
+            UiEvent::CountdownTick => {
+                if !self.speaker_busy() {
+                    self.cue("tick");
+                }
             }
             UiEvent::Tap => {
                 // Not over an answer, the bell or a stream (the speaker is busy then), and not

@@ -220,6 +220,170 @@ pub fn capture(dir: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// The live picture of the camera page (a mirror: flipped left to right), small and slow
+/// enough to cost little: 640x480 RGBA at most 15 times a second.
+pub const LIVE_W: u32 = 640;
+pub const LIVE_H: u32 = 480;
+
+/// The camera live, for the camera page: gst-launch writes raw RGBA frames to a pipe, a thread
+/// keeps the newest. The sensor runs at ~75 frames a second by itself and libcamera debayers
+/// each one (~70 % of a core even when 15 are kept): once streaming, its vertical blanking is
+/// raised so it gives ~14 (~26 % of a core, measured on the device). Stopped when dropped.
+pub struct Live {
+    child: std::process::Child,
+    latest: std::sync::Arc<std::sync::Mutex<(u64, Vec<u8>)>>,
+}
+
+impl Live {
+    pub fn start() -> Result<Live, String> {
+        let mut child = Command::new("gst-launch-1.0")
+            .args([
+                "-q",
+                "libcamerasrc",
+                "!",
+                &format!("video/x-raw,width={LIVE_W},height={LIVE_H}"),
+                "!",
+                "videorate",
+                "drop-only=true",
+                "max-rate=15",
+                "!",
+                "videoflip",
+                "method=horizontal-flip",
+                "!",
+                "videoconvert",
+                "!",
+                "video/x-raw,format=RGBA",
+                "!",
+                "fdsink",
+                "fd=1",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("gst-launch-1.0: {e}"))?;
+        let mut out = child.stdout.take().ok_or("no pipe")?;
+        let latest = std::sync::Arc::new(std::sync::Mutex::new((0u64, Vec::new())));
+        let keep = latest.clone();
+        std::thread::Builder::new()
+            .name("camera-live".into())
+            .spawn(move || {
+                use std::io::Read;
+                let size = (LIVE_W * LIVE_H * 4) as usize;
+                let mut n = 0u64;
+                loop {
+                    let mut frame = vec![0u8; size];
+                    if out.read_exact(&mut frame).is_err() {
+                        break;
+                    }
+                    n += 1;
+                    if n == 10 {
+                        slow_sensor();
+                    }
+                    if let Ok(mut l) = keep.lock() {
+                        *l = (n, frame);
+                    }
+                }
+            })
+            .map_err(|e| format!("camera thread: {e}"))?;
+        log::info!(event = "camera_live", on = true; "camera: live picture on");
+        Ok(Live { child, latest })
+    }
+
+    /// The newest frame if it is newer than `after` (its number and the picture).
+    pub fn frame(&self, after: u64) -> Option<(u64, slint::SharedPixelBuffer<slint::Rgba8Pixel>)> {
+        let l = self.latest.lock().ok()?;
+        (l.0 > after && !l.1.is_empty()).then(|| {
+            (
+                l.0,
+                slint::SharedPixelBuffer::clone_from_slice(&l.1, LIVE_W, LIVE_H),
+            )
+        })
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        log::info!(event = "camera_live", on = false; "camera: live picture off");
+    }
+}
+
+const V4L2_CID_EXPOSURE: u32 = 0x0098_0911;
+const V4L2_CID_VBLANK: u32 = 0x009e_0901;
+/// The vertical blanking that slows the ThinkSmart View's S5KC505A to ~14 frames a second
+/// (from 70 lines, ~75 a second); a driver with a smaller range takes its maximum.
+const SLOW_VBLANK: i32 = 4000;
+
+#[repr(C)]
+struct V4l2Control {
+    id: u32,
+    value: i32,
+}
+
+const fn ioc_rw_v(nr: u64) -> u64 {
+    (3 << 30) | ((std::mem::size_of::<V4l2Control>() as u64) << 16) | ((b'V' as u64) << 8) | nr
+}
+
+/// Raises the vertical blanking of the camera's sensor: the sub-device that has both an
+/// exposure and a vertical blanking control. Nothing when there is none or it refuses.
+fn slow_sensor() {
+    let Ok(dir) = std::fs::read_dir("/dev") else {
+        return;
+    };
+    for e in dir.flatten() {
+        if !e.file_name().to_string_lossy().starts_with("v4l-subdev") {
+            continue;
+        }
+        let Ok(f) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(e.path())
+        else {
+            continue;
+        };
+        use std::os::fd::AsRawFd;
+        let fd = f.as_raw_fd();
+        let get = |id| {
+            let mut c = V4l2Control { id, value: 0 };
+            // SAFETY: VIDIOC_G_CTRL reads and writes one v4l2_control.
+            let r = unsafe { libc::ioctl(fd, ioc_rw_v(27) as _, &mut c) };
+            (r >= 0).then_some(c.value)
+        };
+        if get(V4L2_CID_EXPOSURE).is_none() || get(V4L2_CID_VBLANK).is_none() {
+            continue;
+        }
+        let mut c = V4l2Control {
+            id: V4L2_CID_VBLANK,
+            value: SLOW_VBLANK,
+        };
+        // SAFETY: VIDIOC_S_CTRL reads and writes one v4l2_control.
+        let r = unsafe { libc::ioctl(fd, ioc_rw_v(28) as _, &mut c) };
+        log::info!(event = "camera_live", vblank = c.value; "camera: {} slowed (vertical blanking {}{})", e.path().display(), c.value, if r < 0 { ", refused" } else { "" });
+        return;
+    }
+}
+
+/// The photos kept, newest first.
+pub fn photos(dir: &Path) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .is_some_and(|n| n.starts_with("photo-") && n.ends_with(".jpg"))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v.reverse();
+    v
+}
+
 /// The photo for the screen, decoded here (off the UI thread) and at most `w` x `h`: not with
 /// `Image::load_from_path`, whose cache by path would keep 5 MB of RGBA after the preview.
 pub fn preview(
@@ -273,6 +437,13 @@ mod tests {
             "photo-20261105-090703.jpg"
         );
         assert!(photo_name((2026, 11, 5, 9, 7, 3)) < photo_name((2026, 11, 15, 0, 0, 0)));
+    }
+
+    #[test]
+    fn v4l2_ioctl_numbers() {
+        // VIDIOC_G_CTRL and VIDIOC_S_CTRL of linux/videodev2.h.
+        assert_eq!(ioc_rw_v(27), 0xc008_561b);
+        assert_eq!(ioc_rw_v(28), 0xc008_561c);
     }
 
     #[test]

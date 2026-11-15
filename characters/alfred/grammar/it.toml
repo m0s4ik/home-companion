@@ -140,6 +140,7 @@ yes = ["sì", "sì grazie", "sì certo", "certo", "conferma", "confermo", "proce
 no = ["no", "no grazie", "annulla", "lascia stare", "non importa", "niente", "niente grazie"]
 repeat = ["ripeti", "puoi ripetere", "ripeti per favore", "cosa hai detto", "che cosa hai detto", "come hai detto", "ripetilo"]
 screen_off = ["spegni lo schermo", "spegni il display", "spegni lo schermo per favore"]
+take_photo = ["fammi una foto", "scatta una foto", "fai una foto", "facciamo una foto", "fammi una fotografia", "fai un selfie", "facciamo un selfie"]
 dnd_on = [
     "non disturbare",
     "non disturbarmi",

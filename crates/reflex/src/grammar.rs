@@ -65,6 +65,8 @@ pub enum Command {
     Repeat,
     /// The backlight off until a touch, a key or a wake word.
     ScreenOff,
+    /// A photo: the camera page with its countdown ("fammi una foto").
+    TakePhoto,
     /// Do not disturb for this long; None: the default (the body decides by the hour).
     DoNotDisturb {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -246,6 +248,7 @@ fn command(name: &str, b: Bound) -> Result<Command, String> {
         "music_previous" => plain(&b, Command::MusicPrevious)?,
         "repeat" => plain(&b, Command::Repeat)?,
         "screen_off" => plain(&b, Command::ScreenOff)?,
+        "take_photo" => plain(&b, Command::TakePhoto)?,
         "dnd_morning" => plain(&b, Command::DoNotDisturbMorning)?,
         "dnd_off" => plain(&b, Command::DoNotDisturbOff)?,
         "good_night" => plain(&b, Command::GoodNight)?,
@@ -769,6 +772,8 @@ silence = ["silenzio"]
         assert_eq!(c("ripeti"), Some(Command::Repeat));
         assert_eq!(c("cosa hai detto"), Some(Command::Repeat));
         assert_eq!(c("spegni lo schermo"), Some(Command::ScreenOff));
+        assert_eq!(c("fammi una foto"), Some(Command::TakePhoto));
+        assert_eq!(c("scatta una foto"), Some(Command::TakePhoto));
         assert_eq!(
             c("non disturbare"),
             Some(Command::DoNotDisturb { seconds: None })
@@ -867,6 +872,8 @@ silence = ["silenzio"]
         assert_eq!(c("repeat that"), Some(Command::Repeat));
         assert_eq!(c("what did you say"), Some(Command::Repeat));
         assert_eq!(c("turn off the screen"), Some(Command::ScreenOff));
+        assert_eq!(c("take a photo"), Some(Command::TakePhoto));
+        assert_eq!(c("take a picture of me"), Some(Command::TakePhoto));
         assert_eq!(
             c("do not disturb"),
             Some(Command::DoNotDisturb { seconds: None })
