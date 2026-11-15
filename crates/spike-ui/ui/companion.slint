@@ -3286,8 +3286,9 @@ export component CompanionWindow inherits Window {
             color: Theme.text-3;
             overflow: elide;
         }
+        // In the middle alone; on the left when Install takes the middle.
         BareButton {
-            x: root.slot-left;
+            x: root.update-install != "" ? root.slot-left : root.slot-mid;
             y: Grid.band-y;
             icon: Icons.refresh-48;
             label: root.t.update-check;
