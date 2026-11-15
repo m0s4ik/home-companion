@@ -268,12 +268,13 @@ impl HaCards {
 
     /// The OK of the `n`th card (0 = the oldest).
     pub fn dismiss_nth(&mut self, n: usize) -> bool {
-        if n < self.items.len() {
-            self.items.remove(n);
-            true
-        } else {
-            false
-        }
+        self.take_nth(n).is_some()
+    }
+
+    /// The OK of the `n`th card (0 = the oldest): the card that was taken away, so that its `id`
+    /// can be told to Home Assistant.
+    pub fn take_nth(&mut self, n: usize) -> Option<HaCard> {
+        (n < self.items.len()).then(|| self.items.remove(n).card)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -533,6 +534,12 @@ mod tests {
         assert!(c.dismiss_nth(0));
         assert!(!c.dismiss_nth(0));
         assert!(c.is_empty());
+        // The card taken by its OK comes back, with the id it was sent with.
+        c.apply(ha(Some("w"), "Washing", None), t0);
+        c.apply(ha(None, "No id", None), t0);
+        assert_eq!(c.take_nth(0).and_then(|k| k.id), Some("w".into()));
+        assert_eq!(c.take_nth(0).map(|k| k.id), Some(None));
+        assert!(c.take_nth(0).is_none());
         for i in 0..MAX_HA_CARDS + 3 {
             c.apply(ha(None, &i.to_string(), None), t0);
         }

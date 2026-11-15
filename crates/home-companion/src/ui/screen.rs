@@ -5283,9 +5283,20 @@ impl<S: Screen> Ui<S> {
                 .filter(|k| cards::HA_KINDS.contains(k))
                 .count()
         };
-        let gone = self.desk.borrow_mut().ha_cards.dismiss_nth(nth);
+        let taken = self.desk.borrow_mut().ha_cards.take_nth(nth);
+        let gone = taken.is_some();
         if gone {
             self.refresh_home();
+        }
+        // Told to Home Assistant (an automation may tick a task off, say): only a real OK, and
+        // only for a card that has an id; a channel send, nothing waits for it.
+        if let Some(id) = taken.and_then(|card| card.id)
+            && let Some(tx) = self.hub_tx.borrow().as_ref()
+        {
+            let _ = tx.send(HubCmd::Fire {
+                event_type: crate::ha::events::CARD_OK_EVENT.into(),
+                data: crate::ha::events::card_ok_data(&id),
+            });
         }
         gone
     }
@@ -6327,6 +6338,109 @@ mod tests {
                 WakeSensitivity::Less
             ]
         );
+        drop(ui);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The OK on one of Home Assistant's cards fires `home_companion_card_ok` with the card's id:
+    /// by day, with do not disturb on and with the night layout; never for a card without an id,
+    /// one that Home Assistant takes away, or a second tap on a card that is gone.
+    #[test]
+    fn card_ok_tells_home_assistant() {
+        use crate::ha::events::{CardEvent, HaCard};
+        let dir =
+            std::env::temp_dir().join(format!("home-companion-cardok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let prepared = super::super::renderer::prepare_fb(
+            super::super::renderer::Kind::Headless,
+            Path::new(""),
+            0,
+        )
+        .unwrap();
+        let character =
+            Rc::new(character::load(&character::repo_characters().join("alfred")).unwrap());
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let opts = UiOptions {
+            locales: locale::repo_locales(),
+            language: locale::DEFAULT.into(),
+            sample_weather: false,
+            demo: None,
+            screen: ScreenOptions {
+                animations: false,
+                ..Default::default()
+            },
+            state_dir: Some(dir.clone()),
+            ha_linked: false,
+            ha_host: None,
+            setup_at_start: false,
+            first_start: crate::settings::FirstStart {
+                language: false,
+                home_assistant: false,
+            },
+            link: None,
+        };
+        let ui = Ui::new(prepared.screen, character, opts, tx).unwrap();
+        let (hub, fired) = std::sync::mpsc::channel();
+        ui.set_hub(hub, Vec::new());
+        let show = |id: Option<&str>| {
+            HubMsg::Card(CardEvent::Show(HaCard {
+                id: id.map(String::from),
+                title: Some("Task".into()),
+                text: "Text".into(),
+                icon: None,
+                seconds: None,
+            }))
+        };
+        // The OK of the first card of Home Assistant on the home, whatever else is shown.
+        let tap = |ui: &Ui<_>| {
+            let i = ui
+                .card_kinds
+                .borrow()
+                .iter()
+                .position(|k| cards::HA_KINDS.contains(k))
+                .expect("a card of Home Assistant on the home");
+            ui.ha_card_ok(i)
+        };
+        let ids = |rx: &std::sync::mpsc::Receiver<HubCmd>| -> Vec<(String, serde_json::Value)> {
+            rx.try_iter()
+                .filter_map(|c| match c {
+                    HubCmd::Fire { event_type, data } => Some((event_type, data)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let ok = |id: &str| {
+            vec![(
+                "home_companion_card_ok".to_string(),
+                serde_json::json!({"id": id}),
+            )]
+        };
+
+        // By day: the tap takes the card away and tells Home Assistant its id.
+        ui.apply_hub(show(Some("a")));
+        assert!(tap(&ui));
+        assert_eq!(ids(&fired), ok("a"));
+        // Taken away by Home Assistant: nothing fired.
+        ui.apply_hub(show(Some("b")));
+        ui.apply_hub(HubMsg::Card(CardEvent::Dismiss("b".into())));
+        assert!(ids(&fired).is_empty());
+        // A card without an id: the tap works, no event.
+        ui.apply_hub(show(None));
+        assert!(tap(&ui));
+        assert!(ids(&fired).is_empty());
+        // Do not disturb: the tap is what counts.
+        ui.set_dnd(Some(now_unix() as u64 + 3600));
+        assert!(ui.dnd_on());
+        ui.apply_hub(show(Some("c")));
+        assert!(tap(&ui));
+        assert_eq!(ids(&fired), ok("c"));
+        ui.set_dnd(None);
+        // The night layout (dimmed): the same.
+        ui.toggle_night();
+        assert!(ui.desk.borrow().night_now);
+        ui.apply_hub(show(Some("d")));
+        assert!(tap(&ui));
+        assert_eq!(ids(&fired), ok("d"));
         drop(ui);
         let _ = std::fs::remove_dir_all(&dir);
     }
