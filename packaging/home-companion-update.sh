@@ -28,14 +28,25 @@ DEFAULT_REPO=m0s4ik/home-companion
 SETTLE=60
 
 VERSION=
+# What the screen shows (update.rs, Status): the step under way, its progress, why it stopped.
+STEP=starting
+BYTES=0
+TOTAL=0
+LEFT=0
 status() { # phase message
     tmp=$STATUS.tmp
-    printf 'phase=%s\nversion=%s\nmessage=%s\nat=%s\n' "$1" "$VERSION" "$2" "$(date +%s)" > "$tmp" &&
+    printf 'phase=%s\nstep=%s\nversion=%s\nmessage=%s\nbytes=%s\ntotal=%s\nleft=%s\nat=%s\n' \
+        "$1" "$STEP" "$VERSION" "$2" "$BYTES" "$TOTAL" "$LEFT" "$(date +%s)" > "$tmp" &&
         chown home-companion:home-companion "$tmp" 2>/dev/null
     mv -f "$tmp" "$STATUS"
-    echo "home-companion-update: $1 $VERSION $2"
+}
+step() { # phase: the step under way
+    STEP=$1
+    status "$1" ""
+    echo "home-companion-update: $1 $VERSION"
 }
 fail() {
+    echo "home-companion-update: failed during $STEP: $1"
     status failed "$1"
     rm -rf "$WORK"
     exit 1
@@ -79,12 +90,24 @@ NAME=home-companion-$VERSION-$ARCH
 BASE=https://github.com/$REPO/releases/download/$TAG
 
 # ---------------------------------------------------------------- download and check
-status downloading "$REPO"
+step downloading
 rm -rf "$WORK"
 mkdir -m 700 "$WORK" || fail "cannot create $WORK"
-curl -fsSL --max-time 900 -o "$WORK/$NAME.tar.gz" "$BASE/$NAME.tar.gz" || fail "download of $NAME.tar.gz"
+# Its size first, then the download in the background, the bytes written to the status every second.
+TOTAL=$(curl -fsSLI --max-time 30 "$BASE/$NAME.tar.gz" | tr -d '\r' |
+    awk 'tolower($1) == "content-length:" { n = $2 } END { print n + 0 }')
+curl -fsSL --max-time 900 -o "$WORK/$NAME.tar.gz" "$BASE/$NAME.tar.gz" &
+DL=$!
+while kill -0 "$DL" 2>/dev/null; do
+    BYTES=$(stat -c %s "$WORK/$NAME.tar.gz" 2>/dev/null || echo 0)
+    status downloading ""
+    sleep 1
+done
+wait "$DL" || fail "download of $NAME.tar.gz"
+BYTES=$(stat -c %s "$WORK/$NAME.tar.gz")
+status downloading ""
 curl -fsSL --max-time 60 -o "$WORK/SHA256SUMS" "$BASE/SHA256SUMS" || fail "download of SHA256SUMS"
-status checking ""
+step checking
 GOT=$(sha256sum "$WORK/$NAME.tar.gz" | cut -d' ' -f1)
 [ "$GOT" = "$SHA" ] || fail "$NAME.tar.gz has SHA-256 $GOT, not the one confirmed"
 awk -v h="$SHA" -v n="$NAME.tar.gz" 'tolower($1) == h && ($2 == n || $2 == "*" n) { f = 1 } END { exit !f }' \
@@ -114,9 +137,10 @@ restore() {
 }
 
 # ---------------------------------------------------------------- install
-status installing ""
+step installing
 if ! "$WORK/$NAME/install.sh" --yes > "$STATE/install.log" 2>&1; then
     restore
+    echo "home-companion-update: install.sh failed, the version before is back"
     status rolled-back "install.sh failed (see $STATE/install.log)"
     rm -rf "$WORK"
     exit 1
@@ -124,15 +148,29 @@ fi
 chown home-companion:home-companion "$STATE/install.log" 2>/dev/null
 
 # ---------------------------------------------------------------- does it stay up?
-status waiting ""
+step waiting
 restarts=$(systemctl show -p NRestarts --value home-companion.service)
-sleep "$SETTLE"
-if ! systemctl -q is-active home-companion.service ||
-    [ "$(systemctl show -p NRestarts --value home-companion.service)" != "$restarts" ]; then
+LEFT=$SETTLE
+stable=yes
+while [ "$LEFT" -gt 0 ]; do
+    status waiting ""
+    sleep 2
+    LEFT=$((LEFT - 2))
+    if ! systemctl -q is-active home-companion.service ||
+        [ "$(systemctl show -p NRestarts --value home-companion.service)" != "$restarts" ]; then
+        stable=no
+        break
+    fi
+done
+LEFT=0
+if [ "$stable" = no ]; then
     restore
+    echo "home-companion-update: the new version did not stay up, the version before is back"
     status rolled-back "the new version did not stay up"
     rm -rf "$WORK"
     exit 1
 fi
+STEP="done"
 status "done" ""
+echo "home-companion-update: done $VERSION"
 rm -rf "$WORK"

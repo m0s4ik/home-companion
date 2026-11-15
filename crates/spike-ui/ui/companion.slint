@@ -39,6 +39,13 @@ export { Grid } from "design/tokens.slint";
 // "answer" (the last long answer).
 // One tile of the control center: `key` picks its icon ("wifi", "bluetooth", "airplay", "mic",
 // "night", "ha"); the words come from the body (crates/home-companion/src/ui/control.rs).
+// One step of an install (update.rs): "done", "now", "todo" or "failed".
+export struct UpdateStep {
+    label: string,
+    detail: string,
+    state: string,
+}
+
 export struct ControlRow {
     key: string,
     label: string,
@@ -954,6 +961,8 @@ export component CompanionWindow inherits Window {
     in property <string> update-install;
     in property <bool> update-busy: false;
     // The confirmation before installing: the question and the bundle's SHA-256 to compare.
+    in property <[UpdateStep]> update-steps: [];
+    in property <float> update-progress: -1;
     in property <string> update-question;
     in property <string> update-confirm-text;
     callback update-check();
@@ -3155,7 +3164,92 @@ export component CompanionWindow inherits Window {
             color: Theme.text-3;
             overflow: elide;
         }
-        if root.update-notes != "": Rectangle {
+        // An install under way: its steps, each with its sign; the one under way turns, the
+        // download has its bar.
+        if root.update-steps.length > 0: Rectangle {
+            x: Grid.col-x;
+            y: update-facts-text.y + update-facts-text.preferred-height + 16px;
+            width: Grid.col-width;
+            height: root.update-steps.length * 76px + 16px;
+            border-radius: 16px;
+            background: Theme.surface;
+            for st[i] in root.update-steps: Rectangle {
+                y: 8px + i * 76px;
+                height: 76px;
+                width: parent.width;
+                // The sign: done, under way (turning), to do, failed.
+                if st.state == "done": Icon {
+                    x: 24px;
+                    y: 22px;
+                    width: 32px;
+                    height: 32px;
+                    source: Icons.check-circle-32;
+                    color: Theme.accent;
+                }
+                if st.state == "now": Icon {
+                    x: 26px;
+                    y: 24px;
+                    width: 28px;
+                    height: 28px;
+                    source: Icons.sync-28;
+                    color: Theme.text;
+                    transform-rotation: -mod(animation-tick() / 1ms, 1400) / 1400 * 360deg;
+                }
+                if st.state == "todo": Rectangle {
+                    x: 32px;
+                    y: 30px;
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 8px;
+                    border-width: 2px;
+                    border-color: Theme.text-3;
+                }
+                if st.state == "failed": Icon {
+                    x: 24px;
+                    y: 22px;
+                    width: 32px;
+                    height: 32px;
+                    source: Icons.alert-circle-32;
+                    color: Theme.danger;
+                }
+                Text {
+                    x: 80px;
+                    y: st.detail != "" ? 12px : 0px;
+                    width: parent.width - 104px;
+                    height: st.detail != "" ? 30px : parent.height;
+                    text: st.label;
+                    font-size: 22px;
+                    color: st.state == "todo" ? Theme.text-3 : st.state == "failed" ? Theme.danger : Theme.text;
+                    vertical-alignment: center;
+                }
+                if st.detail != "": Text {
+                    x: 80px;
+                    y: 42px;
+                    width: parent.width - 104px - (st.state == "now" && i == 0 && root.update-progress >= 0 ? 280px : 0px);
+                    text: st.detail;
+                    font-size: 17px;
+                    color: Theme.text-2;
+                    overflow: elide;
+                }
+                // The download's bar, on the right of its detail.
+                if st.state == "now" && i == 0 && root.update-progress >= 0: Rectangle {
+                    x: parent.width - 24px - 256px;
+                    y: 48px;
+                    width: 256px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: Theme.surface-2;
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * root.update-progress;
+                        height: parent.height;
+                        border-radius: 4px;
+                        background: Theme.accent;
+                    }
+                }
+            }
+        }
+        if root.update-steps.length == 0 && root.update-notes != "": Rectangle {
             x: Grid.col-x;
             y: update-facts-text.y + update-facts-text.preferred-height + 16px;
             width: Grid.col-width;

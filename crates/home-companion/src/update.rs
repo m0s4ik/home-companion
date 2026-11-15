@@ -488,8 +488,15 @@ pub fn request(state_dir: &Path, tag: &str, sha256: &str) -> std::io::Result<()>
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Status {
     pub phase: String,
+    /// The step under way (the one that failed, for `failed`).
+    pub step: String,
     pub version: String,
     pub message: String,
+    /// The download: bytes so far and in all (0 = not known).
+    pub bytes: u64,
+    pub total: u64,
+    /// Seconds left of the check that the new version stays up.
+    pub left: u64,
     /// Seconds since the epoch, when it was written.
     pub at: i64,
 }
@@ -503,6 +510,10 @@ pub fn parse_status(text: &str) -> Option<Status> {
         let v = v.trim().to_string();
         match k.trim() {
             "phase" => s.phase = v,
+            "step" => s.step = v,
+            "bytes" => s.bytes = v.parse().unwrap_or(0),
+            "total" => s.total = v.parse().unwrap_or(0),
+            "left" => s.left = v.parse().unwrap_or(0),
             "version" => s.version = v,
             "message" => s.message = v,
             "at" => s.at = v.parse().unwrap_or(0),
@@ -516,6 +527,58 @@ pub fn status(state_dir: &Path) -> Option<Status> {
     std::fs::read_to_string(dir(state_dir).join("status"))
         .ok()
         .and_then(|t| parse_status(&t))
+}
+
+/// One step of an install as the screen shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepState {
+    Done,
+    Now,
+    Todo,
+    Failed,
+}
+
+/// The steps of an install, in order: download, check, install, the check that it stays up,
+/// done.
+pub const STEPS: [&str; 5] = ["downloading", "checking", "installing", "waiting", "done"];
+
+/// The state of each step for what the service said (None: an install asked, not started yet).
+pub fn steps(status: Option<&Status>) -> [StepState; 5] {
+    let mut out = [StepState::Todo; 5];
+    let Some(s) = status else {
+        out[0] = StepState::Now;
+        return out;
+    };
+    let (at, failed) = match s.phase.as_str() {
+        "done" => {
+            return [StepState::Done; 5];
+        }
+        "failed" => (s.step.as_str(), true),
+        // Put back after the install or its check: that step failed.
+        "rolled-back" => (
+            if s.step == "waiting" {
+                "waiting"
+            } else {
+                "installing"
+            },
+            true,
+        ),
+        p => (p, false),
+    };
+    let i = STEPS
+        .iter()
+        .position(|x| *x == at)
+        .unwrap_or(0)
+        .min(STEPS.len() - 2);
+    for (k, o) in out.iter_mut().enumerate() {
+        *o = match k.cmp(&i) {
+            std::cmp::Ordering::Less => StepState::Done,
+            std::cmp::Ordering::Equal if failed => StepState::Failed,
+            std::cmp::Ordering::Equal => StepState::Now,
+            std::cmp::Ordering::Greater => StepState::Todo,
+        };
+    }
+    out
 }
 
 /// An install asked and not yet picked up by the service.
@@ -652,7 +715,51 @@ mod tests {
     }
 
     #[test]
+    fn steps_follow_the_service() {
+        use StepState::*;
+        let st = |phase: &str, step: &str| Status {
+            phase: phase.into(),
+            step: step.into(),
+            ..Default::default()
+        };
+        assert_eq!(steps(None), [Now, Todo, Todo, Todo, Todo]);
+        assert_eq!(
+            steps(Some(&st("downloading", "downloading"))),
+            [Now, Todo, Todo, Todo, Todo]
+        );
+        assert_eq!(
+            steps(Some(&st("installing", "installing"))),
+            [Done, Done, Now, Todo, Todo]
+        );
+        assert_eq!(
+            steps(Some(&st("waiting", "waiting"))),
+            [Done, Done, Done, Now, Todo]
+        );
+        assert_eq!(steps(Some(&st("done", "done"))), [Done; 5]);
+        assert_eq!(
+            steps(Some(&st("failed", "checking"))),
+            [Done, Failed, Todo, Todo, Todo]
+        );
+        assert_eq!(
+            steps(Some(&st("rolled-back", "waiting"))),
+            [Done, Done, Done, Failed, Todo]
+        );
+        assert_eq!(
+            steps(Some(&st("rolled-back", "installing"))),
+            [Done, Done, Failed, Todo, Todo]
+        );
+    }
+
+    #[test]
     fn status_lines() {
+        let s = parse_status(
+            "phase=downloading\nstep=downloading\nversion=0.3.1\nmessage=\nbytes=1200\ntotal=4800\nleft=0\nat=1794700000\n",
+        )
+        .unwrap();
+        assert_eq!(
+            (s.step.as_str(), s.bytes, s.total),
+            ("downloading", 1200, 4800)
+        );
         let s = parse_status("phase=installing\nversion=0.3.1\nmessage=\nat=1794700000\n").unwrap();
         assert_eq!(
             (s.phase.as_str(), s.version.as_str(), s.at),

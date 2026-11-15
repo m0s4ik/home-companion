@@ -1488,6 +1488,21 @@ impl<S: Screen> Ui<S> {
             this: RefCell::new(Weak::new()),
         });
         *ui.this.borrow_mut() = Rc::downgrade(&ui);
+        // Back after an update's restart: its page again, to see the end (Andrea, 2026-11-15).
+        if let Some(dir) = ui.opts.state_dir.clone().filter(|_| ui.updater.is_some()) {
+            let w = Rc::downgrade(&ui);
+            Timer::single_shot(Duration::from_secs(2), move || {
+                let going = crate::update::status(&dir).is_some_and(|s| {
+                    matches!(s.phase.as_str(), "installing" | "waiting")
+                        && now_unix() as i64 - s.at < 600
+                });
+                if going && let Some(ui) = w.upgrade() {
+                    log::info!(event = "update"; "update: back after the restart, its page");
+                    ui.screen.set_page("update");
+                    ui.on_page("update");
+                }
+            });
+        }
         ui.set_welcome();
         ui.wire();
         ui.start_wifi();
@@ -3140,6 +3155,8 @@ impl<S: Screen> Ui<S> {
                 busy: false,
                 question: l.text("update_question").replace("{v}", "0.3.1"),
                 confirm: l.text("update_confirm").into(),
+                steps: Vec::new(),
+                progress: -1.0,
             });
         }
         // Sample use for the Home Assistant page's row and the use page.
@@ -3853,6 +3870,7 @@ impl<S: Screen> Ui<S> {
             return UpdateView {
                 facts: l.text("update_facts_off").replace("{v}", current),
                 state: l.text("update_off").into(),
+                progress: -1.0,
                 ..Default::default()
             };
         };
@@ -3884,16 +3902,31 @@ impl<S: Screen> Ui<S> {
             )
         };
         let busy = requested || recent.as_ref().is_some_and(working);
+        // An install under way, or just over (ten minutes): its steps.
+        let shown_steps = if requested {
+            Some(None)
+        } else {
+            recent
+                .as_ref()
+                .filter(|s| now - s.at < 600 || working(s))
+                .filter(|s| {
+                    working(s) || matches!(s.phase.as_str(), "done" | "failed" | "rolled-back")
+                })
+                .map(Some)
+        };
+        let target = recent
+            .as_ref()
+            .map(|s| s.version.clone())
+            .filter(|v| !v.is_empty())
+            .or_else(|| st.latest.as_ref().map(|r| r.version.clone()))
+            .unwrap_or_default();
+        let (steps, progress) = match shown_steps {
+            Some(s) => self.update_steps(&l, s, &target),
+            None => (Vec::new(), -1.0),
+        };
         let (state, attention) = match &recent {
-            _ if requested => (l.text("update_starting").to_string(), false),
-            Some(s) if s.phase == "downloading" => (
-                l.text("update_downloading").replace("{v}", &s.version),
-                false,
-            ),
-            Some(s) if working(s) => (
-                l.text("update_installing").replace("{v}", &s.version),
-                false,
-            ),
+            _ if requested => (l.text("update_progress").replace("{v}", &target), false),
+            Some(s) if working(s) => (l.text("update_progress").replace("{v}", &s.version), false),
             // The service's reason is for the log (English, technical); the screen says what happened.
             Some(s) if s.phase == "failed" => (l.text("update_failed").into(), true),
             Some(s) if s.phase == "rolled-back" => (l.text("update_rolled_back").into(), true),
@@ -3940,7 +3973,70 @@ impl<S: Screen> Ui<S> {
             busy,
             question,
             confirm: l.text("update_confirm").into(),
+            steps,
+            progress,
         }
+    }
+
+    /// The five steps of an install for the page, and the download's progress (-1: none).
+    fn update_steps(
+        &self,
+        l: &Locale,
+        s: Option<&crate::update::Status>,
+        version: &str,
+    ) -> (Vec<super::UpdateStepView>, f32) {
+        use crate::update::StepState;
+        let states = crate::update::steps(s);
+        let mb = |b: u64| {
+            format!("{:.1}", b as f64 / 1_000_000.0).replace('.', l.text("decimal_separator"))
+        };
+        let mut progress = -1.0;
+        let rows = crate::update::STEPS
+            .iter()
+            .zip(states)
+            .map(|(step, state)| {
+                let label = match *step {
+                    "downloading" => l.text("update_step_download").replace("{v}", version),
+                    "checking" => l.text("update_step_check").to_string(),
+                    "installing" => l.text("update_step_install").to_string(),
+                    "waiting" => l.text("update_step_verify").to_string(),
+                    _ => l.text("update_step_done").replace("{v}", version),
+                };
+                let detail = match (*step, state, s) {
+                    ("downloading", StepState::Now, None) => {
+                        l.text("update_step_starting").to_string()
+                    }
+                    ("downloading", StepState::Now, Some(st)) if st.total > 0 => {
+                        progress = (st.bytes as f32 / st.total as f32).clamp(0.0, 1.0);
+                        l.text("update_mb_of")
+                            .replace("{a}", &mb(st.bytes))
+                            .replace("{b}", &mb(st.total))
+                    }
+                    ("downloading", StepState::Now, Some(st)) => {
+                        l.text("update_mb").replace("{a}", &mb(st.bytes))
+                    }
+                    ("installing", StepState::Now, _) => {
+                        l.text("update_step_install_detail").to_string()
+                    }
+                    // A service before 0.3.0 does not say how long is left.
+                    ("waiting", StepState::Now, Some(st)) if st.left > 0 => l
+                        .text("update_step_verify_left")
+                        .replace("{s}", &st.left.to_string()),
+                    _ => String::new(),
+                };
+                super::UpdateStepView {
+                    label,
+                    detail,
+                    state: match state {
+                        StepState::Done => "done",
+                        StepState::Now => "now",
+                        StepState::Todo => "todo",
+                        StepState::Failed => "failed",
+                    },
+                }
+            })
+            .collect();
+        (rows, progress)
     }
 
     /// Install: the request to the root service (update.rs); the page follows its status.

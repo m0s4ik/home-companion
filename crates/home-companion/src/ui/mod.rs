@@ -105,6 +105,18 @@ pub struct UpdateView {
     /// The confirmation: the question and one line.
     pub question: String,
     pub confirm: String,
+    /// An install under way (or just over): its steps, and the download's progress (-1: none).
+    pub steps: Vec<UpdateStepView>,
+    pub progress: f32,
+}
+
+/// One step of an install: what it is, a detail ("12.3 of 44.9 MB"), "done", "now", "todo" or
+/// "failed".
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UpdateStepView {
+    pub label: String,
+    pub detail: String,
+    pub state: &'static str,
 }
 
 /// A check of Settings → Home Assistant, in the screen's words.
@@ -976,6 +988,17 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_update_busy(self, u.busy);
                 $m::CompanionWindow::set_update_question(self, u.question.as_str().into());
                 $m::CompanionWindow::set_update_confirm_text(self, u.confirm.as_str().into());
+                let steps: Vec<$m::UpdateStep> = u
+                    .steps
+                    .iter()
+                    .map(|s| $m::UpdateStep {
+                        label: s.label.as_str().into(),
+                        detail: s.detail.as_str().into(),
+                        state: s.state.into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_update_steps(self, model!(steps));
+                $m::CompanionWindow::set_update_progress(self, u.progress);
             }
             fn on_update_check(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_update_check(self, f)
