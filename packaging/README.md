@@ -94,11 +94,12 @@ packages it installed stay.
 | `/opt/home-companion/reflex/<lang>/` | the Vosk model of each language with reflexes: `it` = [vosk-model-small-it-0.22](https://alphacephei.com/vosk/models), `en` = vosk-model-small-en-us-0.15, `nl` = vosk-model-small-nl-0.22, `de` = vosk-model-small-de-0.15, all Apache-2.0, slimmed (`graph/Gr.fst` goes, its word table stays as `graph/words.txt`). A language without a model has no reflexes (one log line); `[reflexes] enabled = false` turns them off |
 | `/opt/home-companion/home-companion-web`, `/etc/systemd/system/home-companion-web.service` | optional, for "Casa": the web helper (`web/home-companion-web`) and [its unit](home-companion-web.service); its profile in `/var/lib/home-companion-web`, cache in `/var/cache/home-companion-web` (`StateDirectory`, `CacheDirectory`) |
 | `/opt/home-companion/home-companion-brain`, `/etc/home-companion/brain.toml`, `/etc/systemd/system/home-companion-brain.service` | the brain (below); memory in `/var/lib/home-companion-brain` |
+| `/opt/home-companion/home-companion-update.sh`, `/etc/systemd/system/home-companion-update.{path,service}` | updates from the screen (Settings → Info): the body writes a release tag and its SHA-256 to `/var/lib/home-companion/update/request`, the path unit starts [the script](home-companion-update.sh) as root; the repository comes from `[update] repo` in `/etc/home-companion/home-companion.toml` only. What ran before is kept in `/var/lib/home-companion-update/previous` and put back if the new body does not stay up |
 
 ## How it runs
 
-home-companion runs as the `home-companion` user, not root: `audio` for ALSA, `video` for `/dev/dri`, the framebuffer and (with the udev
-rule) the backlight, `input` for touch and keys, `tty` plus `CAP_SYS_TTY_CONFIG` to switch the console to graphics
+home-companion runs as the `home-companion` user, not root: `audio` for ALSA, `video` for `/dev/dri`, the framebuffer, the camera and (with
+the udev rule) the backlight, `render` for the camera's debayering on the GPU, `input` for touch and keys, `tty` plus `CAP_SYS_TTY_CONFIG` to switch the console to graphics
 mode while it draws. The accelerometer (`/sys/bus/iio/devices/*/in_accel_*_raw`) is readable by everybody.
 Settings → Suspend puts the whole device to sleep (s2idle; Vol+ or Vol− wakes it, touch does not): the body writes
 `mem` to `/sys/power/state` itself, and before that `+N` to `/sys/class/rtc/rtc0/wakealarm` when a timer is pending,

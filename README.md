@@ -405,7 +405,7 @@ Cross-compiled from an amd64 Debian 13 with the arm64 multiarch libraries:
 ```sh
 cargo build --release --target aarch64-unknown-linux-gnu -p home-companion --no-default-features --features fbdev,gpu
 cargo run -p home-companion -- --simulator          # the screen in a window on a laptop
-tools/release/build-bundle.sh 0.2.0                 # the release bundle
+tools/release/build-bundle.sh 0.3.0                 # the release bundle
 ```
 
 Contributing, with or without a coding assistant: [AGENTS.md](AGENTS.md).
