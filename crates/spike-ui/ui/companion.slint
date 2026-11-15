@@ -264,6 +264,7 @@ export struct Words {
     photos: string,
     photos_empty: string,
     photo_delete: string,
+    photo_delete_question: string,
     what_title: string,
     what_intro: string,
     dnd: string,
@@ -511,6 +512,70 @@ component MirrorHomeButton inherits Rectangle {
         clicked => {
             Feedback.back();
             root.clicked();
+        }
+    }
+}
+
+// The camera's frame (4:3, the photo's shape): the live mirror or a photo, a notice instead
+// when there is no picture, the countdown's number over it, the shot's flash, a line on it.
+component PhotoFrame inherits Rectangle {
+    in property <image> picture;
+    in property <bool> shown;
+    in property <string> notice;
+    in property <string> count;
+    in property <bool> flash;
+    in property <string> caption;
+    width: 640px;
+    height: 480px;
+    border-radius: 20px;
+    clip: true;
+    background: Theme.surface;
+    if root.shown: Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.picture;
+        image-fit: cover;
+    }
+    if root.notice != "": Text {
+        x: 32px;
+        width: parent.width - 64px;
+        height: parent.height;
+        text: root.notice;
+        font-size: 26px;
+        color: Theme.text-2;
+        wrap: word-wrap;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    if root.count != "": Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.count;
+        font-size: 220px;
+        font-weight: 700;
+        color: Theme.text;
+        stroke: Theme.bg.with-alpha(0.6);
+        stroke-width: 4px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    if root.flash: Rectangle {
+        background: #ffffffcc;
+    }
+    if root.caption != "": Rectangle {
+        y: parent.height - self.height - 20px;
+        x: (parent.width - self.width) / 2;
+        height: 48px;
+        width: caption-text.preferred-width + 40px;
+        border-radius: 24px;
+        background: Theme.bg.with-alpha(0.75);
+        caption-text := Text {
+            x: 20px;
+            height: parent.height;
+            text: root.caption;
+            font-size: 20px;
+            color: Theme.text;
+            vertical-alignment: center;
         }
     }
 }
@@ -866,18 +931,17 @@ export component CompanionWindow inherits Window {
     callback control-volume(int);
     callback control-brightness(int);
     callback control-brightness-auto();
-    // The photo just taken, or one of the gallery (deletable), over everything, and its line.
-    in property <bool> photo-shown: false;
+    // One photo of the gallery (its own page) and its date.
     in property <image> photo;
     in property <string> photo-caption;
-    in property <bool> photo-deletable: false;
-    callback photo-closed();
     callback photo-delete();
     // The camera page (camera.rs): the live mirror, "live" / "starting" / "covered" / "taking",
     // the countdown's number ("" none), and the gallery's thumbnails, newest first.
     in property <image> camera-frame;
     in property <string> camera-state: "starting";
     in property <string> camera-count;
+    // Under the picture after a shot ("Saved · 16:34"), while the photo is shown in the frame.
+    in property <string> camera-caption;
     in property <[image]> photo-thumbs: [];
     callback camera-shoot();
     // Settings → Info, updates (update.rs): the version running, where updates come from, the
@@ -1970,7 +2034,8 @@ export component CompanionWindow inherits Window {
     }
 
     // ---- The camera: the live picture as a mirror in the column (Alfred stays on his third),
-    // a countdown over it, Shoot in the middle of the band, the gallery on its left.
+    // a countdown over it, Shoot in the middle of the band, the gallery on its left. The photo
+    // just taken shows in the same frame for a moment, its line on it.
     if root.desk && root.desk-page == "camera": Rectangle {
         PageHeader {
             x: Grid.col-x;
@@ -1981,49 +2046,17 @@ export component CompanionWindow inherits Window {
                 root.page = "home";
             }
         }
-        Rectangle {
-            width: 704px;
-            height: 528px;
+        PhotoFrame {
             x: Grid.col-x + (Grid.col-width - self.width) / 2;
-            y: Grid.page-y - 8px;
-            border-radius: 20px;
-            clip: true;
-            background: Theme.surface;
-            if root.camera-state == "live" || root.camera-state == "taking": Image {
-                width: parent.width;
-                height: parent.height;
-                source: root.camera-frame;
-                image-fit: cover;
-            }
-            if root.camera-state != "live": Text {
-                width: parent.width - 64px;
-                x: 32px;
-                height: parent.height;
-                text: root.camera-state == "covered" ? root.t.camera-covered
-                    : root.camera-state == "taking" ? "" : root.t.camera-starting;
-                font-size: 26px;
-                color: Theme.text-2;
-                wrap: word-wrap;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-            // The countdown: a big number over the picture.
-            if root.camera-count != "": Text {
-                width: parent.width;
-                height: parent.height;
-                text: root.camera-count;
-                font-size: 220px;
-                font-weight: 700;
-                color: Theme.text;
-                stroke: Theme.bg.with-alpha(0.6);
-                stroke-width: 4px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-            // The shot: a white flash.
-            if root.camera-state == "taking": Rectangle {
-                background: #ffffffcc;
-            }
+            y: Grid.page-y;
+            picture: root.camera-frame;
+            shown: root.camera-state == "live" || root.camera-state == "taking" || root.camera-state == "photo";
+            notice: root.camera-state == "covered" ? root.t.camera-covered
+                : root.camera-state == "failed" ? root.camera-caption
+                : root.camera-state == "starting" ? root.t.camera-starting : "";
+            count: root.camera-count;
+            flash: root.camera-state == "taking";
+            caption: root.camera-state == "photo" ? root.camera-caption : "";
         }
         BareButton {
             x: root.slot-left;
@@ -2037,11 +2070,41 @@ export component CompanionWindow inherits Window {
         PrimaryButton {
             x: root.slot-mid;
             y: Grid.band-y;
-            icon: Icons.camera-44;
-            label: root.t.camera-shoot;
-            enabled: root.camera-state == "live" && root.camera-count == "";
+            // During the countdown it stops it.
+            icon: root.camera-count != "" ? Icons.close-48 : Icons.camera-44;
+            label: root.camera-count != "" ? root.t.cancel : root.t.camera-shoot;
+            enabled: root.camera-state == "live";
             clicked => {
                 root.camera-shoot();
+            }
+        }
+    }
+
+    // ---- One photo of the gallery: the same frame as the camera, its date as the title, Delete
+    // in the middle of the band (asked first).
+    if root.desk && root.desk-page == "photo": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.photo-caption;
+            clock: root.clock;
+            back => {
+                root.page = "photos";
+            }
+        }
+        PhotoFrame {
+            x: Grid.col-x + (Grid.col-width - self.width) / 2;
+            y: Grid.page-y;
+            picture: root.photo;
+            shown: true;
+        }
+        BareButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.delete-48;
+            label: root.t.photo-delete;
+            clicked => {
+                root.dialog = "photo-delete";
             }
         }
     }
@@ -3802,6 +3865,18 @@ export component CompanionWindow inherits Window {
             }
         }
     }
+    if root.dialog == "photo-delete": Dialog {
+        icon: Icons.delete-48;
+        title: root.t.photo-delete-question;
+        cancel: root.t.cancel;
+        confirm: root.t.photo-delete;
+        answered(yes) => {
+            root.dialog = "";
+            if (yes) {
+                root.photo-delete();
+            }
+        }
+    }
     if root.dialog == "unlink": Dialog {
         icon: Icons.close-48;
         title: root.t.ha-unlink-question;
@@ -4684,59 +4759,5 @@ export component CompanionWindow inherits Window {
         icon-color: root.mic-hud-on ? Theme.text : Theme.danger;
         border: root.mic-hud-on ? Theme.line : Theme.danger;
         title: root.mic-hud-text;
-    }
-
-    // ---- The photo just taken: over everything, the picture whole with its line under it; a
-    // tap anywhere closes it (else it goes by itself after 10 s).
-    if root.photo-shown: Rectangle {
-        background: Theme.bg;
-        TouchArea {
-            clicked => {
-                root.photo-closed();
-            }
-        }
-        Rectangle {
-            x: (parent.width - self.width) / 2;
-            y: 48px;
-            width: min(parent.width - 96px, (parent.height - 160px) * 4 / 3);
-            height: self.width * 3 / 4;
-            border-radius: 16px;
-            clip: true;
-            Image {
-                width: parent.width;
-                height: parent.height;
-                source: root.photo;
-                image-fit: contain;
-            }
-        }
-        if root.photo-deletable: BareButton {
-            x: 32px;
-            y: parent.height - 136px;
-            icon: Icons.delete-48;
-            label: root.t.photo-delete;
-            clicked => {
-                root.photo-delete();
-            }
-        }
-        if root.photo-deletable: BareButton {
-            x: parent.width - 32px - self.width;
-            y: parent.height - 136px;
-            icon: Icons.close-48;
-            label: root.t.close;
-            clicked => {
-                root.photo-closed();
-            }
-        }
-        Text {
-            x: 0;
-            y: parent.height - 88px;
-            width: parent.width;
-            height: 40px;
-            text: root.photo-caption;
-            font-size: 24px;
-            color: Theme.text;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
     }
 }

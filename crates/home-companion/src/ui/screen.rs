@@ -880,8 +880,8 @@ pub const CAMERA_IDLE: Duration = Duration::from_secs(120);
 /// The countdown before a photo (seconds).
 pub const COUNTDOWN: u64 = 3;
 
-/// How long the photo just taken stays on the screen (a tap closes it sooner).
-pub const PHOTO_SHOWN: Duration = Duration::from_secs(10);
+/// How long the photo just taken stays in the camera's frame before the mirror comes back.
+pub const SHOT_SHOWN: Duration = Duration::from_secs(4);
 /// The "Annulla" chip after a timer or an alarm is removed.
 pub const UNDO: Duration = Duration::from_secs(5);
 /// The last long answer stays as a card this long.
@@ -1122,6 +1122,8 @@ pub struct Ui<S: Screen> {
     cam_timer: Timer,
     cam_seq: Cell<u64>,
     cam_count: Cell<Option<(Instant, u64)>>,
+    /// A countdown asked (by voice) that starts once the conversation is over and the mirror shows.
+    cam_count_wanted: Cell<bool>,
     cam_used: Cell<Instant>,
     /// The gallery: the photos listed (newest first), their thumbnails coming from a thread, the
     /// one shown whole.
@@ -1452,6 +1454,7 @@ impl<S: Screen> Ui<S> {
             cam_timer: Timer::default(),
             cam_seq: Cell::new(0),
             cam_count: Cell::new(None),
+            cam_count_wanted: Cell::new(false),
             cam_used: Cell::new(Instant::now()),
             updater: opts_update
                 .as_ref()
@@ -1700,12 +1703,6 @@ impl<S: Screen> Ui<S> {
                     ui.on_page(&ui.screen.get_page());
                 }
                 _ => {}
-            }
-        });
-        let ui = Rc::downgrade(self);
-        self.screen.on_photo_closed(move || {
-            if let Some(ui) = ui.upgrade() {
-                ui.photo_hide();
             }
         });
         let ui = Rc::downgrade(self);
@@ -2157,13 +2154,6 @@ impl<S: Screen> Ui<S> {
     /// Shows a phase: screen state, pose, idle phrase, animation, backlight.
     pub fn show(&self, p: Phase) {
         let prev = self.view.replace(p);
-        // A conversation or a ringing timer is not hidden under the photo just taken.
-        if p != Phase::Home && p != Phase::Offline && self.screen.get_photo_shown() {
-            self.photo_timer.stop();
-            self.viewing.borrow_mut().take();
-            self.screen.set_photo_deletable(false);
-            self.screen.set_photo(None, "");
-        }
         let now = Instant::now();
         {
             let mut m = self.motion.borrow_mut();
@@ -3766,7 +3756,7 @@ impl<S: Screen> Ui<S> {
     }
 
     /// The camera tile: a photo in a thread (about 2 s), then shown over everything for
-    /// [`PHOTO_SHOWN`] and kept in `<state>/photos` (Andrea, 2026-11-15: for now a preview).
+    /// [`SHOT_SHOWN`] in the camera's frame and kept in `<state>/photos` (Andrea, 2026-11-15).
     fn take_photo(self: &Rc<Self>) {
         if !self.camera || self.photo_rx.borrow().is_some() {
             return;
@@ -3829,29 +3819,21 @@ impl<S: Screen> Ui<S> {
         };
         drop(l);
         self.screen.set_control_open(false);
-        // A failure: the line alone, on the same sheet.
-        let shown = img.unwrap_or_else(|| Image::from_rgba8(SharedPixelBuffer::new(1, 1)));
-        self.screen.set_photo_deletable(false);
-        self.screen.set_photo(Some(shown), &caption);
+        // Shown where the mirror was, the same frame (Andrea, 2026-11-15), then the mirror again.
+        self.screen.set_camera_caption(&caption);
+        match img {
+            Some(img) => self.screen.set_camera(Some(img), "photo", ""),
+            None => self.screen.set_camera(None, "failed", ""),
+        }
         let ui = Rc::downgrade(self);
         self.photo_timer
-            .start(TimerMode::SingleShot, PHOTO_SHOWN, move || {
-                if let Some(ui) = ui.upgrade() {
-                    ui.photo_hide();
+            .start(TimerMode::SingleShot, SHOT_SHOWN, move || {
+                if let Some(ui) = ui.upgrade()
+                    && ui.screen.get_page() == "camera"
+                {
+                    ui.camera_start();
                 }
             });
-    }
-
-    /// The photo over everything goes; on the camera page the live picture comes back.
-    fn photo_hide(self: &Rc<Self>) {
-        self.photo_timer.stop();
-        self.viewing.borrow_mut().take();
-        self.screen.set_photo_deletable(false);
-        self.screen.set_photo(None, "");
-        self.cam_used.set(Instant::now());
-        if self.screen.get_page() == "camera" && self.photo_rx.borrow().is_none() {
-            self.camera_start();
-        }
     }
 
     /// Settings → Info: what the check found and what the update service says.
@@ -3993,9 +3975,9 @@ impl<S: Screen> Ui<S> {
             self.screen.set_page("camera");
             self.on_page("camera");
         }
-        if countdown {
-            self.camera_countdown();
-        }
+        // Not yet: Alfred may still be answering, and the mirror is not on. camera_tick starts it
+        // when both are true (Andrea, 2026-11-15: always see yourself first, always able to stop).
+        self.cam_count_wanted.set(countdown);
     }
 
     /// The live picture on (or the cover's notice), with the page's timer.
@@ -4029,14 +4011,22 @@ impl<S: Screen> Ui<S> {
     fn camera_stop(&self) {
         self.cam_timer.stop();
         self.cam_count.set(None);
+        self.cam_count_wanted.set(false);
         if self.cam_live.borrow_mut().take().is_some() {
             self.cam_seq.set(0);
         }
     }
 
-    /// Shoot (the button, or the voice): 3, 2, 1, then the photo.
+    /// Shoot (the button, or the voice): 3, 2, 1, then the photo. Pressed again during the
+    /// countdown (the button says Cancel then): no photo.
     fn camera_countdown(self: &Rc<Self>) {
-        if self.cam_count.get().is_some() || self.photo_rx.borrow().is_some() {
+        if self.cam_count.get().is_some() {
+            log::info!(event = "camera_photo"; "camera: countdown cancelled");
+            self.cam_count.set(None);
+            self.cam_used.set(Instant::now());
+            return;
+        }
+        if self.photo_rx.borrow().is_some() {
             return;
         }
         self.cam_used.set(Instant::now());
@@ -4050,6 +4040,15 @@ impl<S: Screen> Ui<S> {
             return;
         }
         let now = Instant::now();
+        // A countdown asked by voice: once the conversation is over and the mirror has been on a
+        // second.
+        if self.cam_count_wanted.get()
+            && matches!(self.view.get(), Phase::Home | Phase::Offline)
+            && self.cam_seq.get() >= 12
+        {
+            self.cam_count_wanted.set(false);
+            self.camera_countdown();
+        }
         // The countdown: a number and a tick each second, then the photo.
         let mut count = String::new();
         if let Some((t0, last)) = self.cam_count.get() {
@@ -4183,7 +4182,7 @@ impl<S: Screen> Ui<S> {
         }
     }
 
-    /// One photo of the gallery whole, with Delete and Close.
+    /// One photo of the gallery on its page, with Delete.
     fn photo_open(self: &Rc<Self>, i: usize) {
         let Some(p) = self.gallery.borrow().get(i).cloned() else {
             return;
@@ -4196,10 +4195,8 @@ impl<S: Screen> Ui<S> {
             .map(|s| photo_caption(&s.to_string_lossy()))
             .unwrap_or_default();
         *self.viewing.borrow_mut() = Some(p);
-        self.photo_timer.stop();
-        self.screen.set_photo_deletable(true);
-        self.screen
-            .set_photo(Some(Image::from_rgba8(buf)), &caption);
+        self.screen.set_photo(Image::from_rgba8(buf), &caption);
+        self.screen.set_page("photo");
     }
 
     fn photo_delete(self: &Rc<Self>) {
@@ -4209,8 +4206,8 @@ impl<S: Screen> Ui<S> {
                 Err(e) => log::warn!(event = "camera_photo"; "camera: {}: {e}", p.display()),
             }
         }
-        self.photo_hide();
-        self.refresh_photos();
+        self.screen.set_page("photos");
+        self.on_page("photos");
     }
 
     /// The control center comes down (the pull from the top, here or over "Casa").

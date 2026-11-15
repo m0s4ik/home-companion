@@ -148,10 +148,14 @@ pub fn capture(dir: &Path) -> Result<PathBuf, String> {
             "-q",
             "libcamerasrc",
             "!",
-            "video/x-raw,width=1280,height=960",
+            &format!("video/x-raw,width={PHOTO_W},height={PHOTO_H}"),
             "!",
             "identity",
             &format!("eos-after={FRAMES}"),
+            "!",
+            // Kept as the mirror showed it.
+            "videoflip",
+            "method=horizontal-flip",
             "!",
             "videoconvert",
             "!",
@@ -224,11 +228,15 @@ pub fn capture(dir: &Path) -> Result<PathBuf, String> {
 /// enough to cost little: 640x480 RGBA at most 15 times a second.
 pub const LIVE_W: u32 = 640;
 pub const LIVE_H: u32 = 480;
+/// The photo's size; the live picture is the same frame, scaled.
+pub const PHOTO_W: u32 = 1280;
+pub const PHOTO_H: u32 = 960;
 
 /// The camera live, for the camera page: gst-launch writes raw RGBA frames to a pipe, a thread
 /// keeps the newest. The sensor runs at ~75 frames a second by itself and libcamera debayers
 /// each one (~70 % of a core even when 15 are kept): once streaming, its vertical blanking is
-/// raised so it gives ~14 (~26 % of a core, measured on the device). Stopped when dropped.
+/// raised so it gives ~14; with the photo-size frames scaled down, ~40 % of a core while the page is open
+/// (measured on the device). Stopped when dropped.
 pub struct Live {
     child: std::process::Child,
     latest: std::sync::Arc<std::sync::Mutex<(u64, Vec<u8>)>>,
@@ -241,11 +249,18 @@ impl Live {
                 "-q",
                 "libcamerasrc",
                 "!",
-                &format!("video/x-raw,width={LIVE_W},height={LIVE_H}"),
+                // The photo's own size, scaled down here: libcamera crops a smaller request,
+                // and the mirror must show exactly what the photo will be (Andrea, 2026-11-15).
+                &format!("video/x-raw,width={PHOTO_W},height={PHOTO_H}"),
                 "!",
                 "videorate",
                 "drop-only=true",
                 "max-rate=15",
+                "!",
+                "videoscale",
+                "method=nearest-neighbour",
+                "!",
+                &format!("video/x-raw,width={LIVE_W},height={LIVE_H}"),
                 "!",
                 "videoflip",
                 "method=horizontal-flip",

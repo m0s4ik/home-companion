@@ -260,14 +260,13 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_music_cover(&self, cover: Option<Image>, paused: bool);
     fn on_control_tile(&self, f: impl Fn(String) + 'static);
     /// The photo just taken over everything (None: hidden), with its line ("Saved · 12:47").
-    fn set_photo(&self, photo: Option<Image>, caption: &str);
-    fn on_photo_closed(&self, f: impl Fn() + 'static);
-    fn get_photo_shown(&self) -> bool;
-    fn set_photo_deletable(&self, on: bool);
+    /// One photo of the gallery (its page) and its date.
+    fn set_photo(&self, photo: Image, caption: &str);
     fn on_photo_delete(&self, f: impl Fn() + 'static);
     /// The camera page: the live picture (None: keep), its state ("live", "starting", "covered",
     /// "taking") and the countdown ("" none).
     fn set_camera(&self, frame: Option<Image>, state: &str, count: &str);
+    fn set_camera_caption(&self, caption: &str);
     fn set_photo_thumbs(&self, thumbs: Vec<Image>);
     /// Settings → Info: the page of updates.
     fn set_update(&self, u: &UpdateView);
@@ -683,6 +682,7 @@ macro_rules! impl_screen {
                     photos,
                     photos_empty,
                     photo_delete,
+                    photo_delete_question,
                     what_title,
                     what_intro,
                     dnd,
@@ -952,13 +952,9 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_music_cover(self, cover.unwrap_or_default());
                 $m::CompanionWindow::set_music_paused(self, paused);
             }
-            fn set_photo(&self, photo: Option<Image>, caption: &str) {
-                $m::CompanionWindow::set_photo_shown(self, photo.is_some());
-                $m::CompanionWindow::set_photo(self, photo.unwrap_or_default());
+            fn set_photo(&self, photo: Image, caption: &str) {
+                $m::CompanionWindow::set_photo(self, photo);
                 $m::CompanionWindow::set_photo_caption(self, caption.into());
-            }
-            fn set_photo_deletable(&self, on: bool) {
-                $m::CompanionWindow::set_photo_deletable(self, on)
             }
             fn on_photo_delete(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_photo_delete(self, f)
@@ -987,6 +983,9 @@ macro_rules! impl_screen {
             fn on_update_install(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_update_install_clicked(self, f)
             }
+            fn set_camera_caption(&self, caption: &str) {
+                $m::CompanionWindow::set_camera_caption(self, caption.into())
+            }
             fn set_photo_thumbs(&self, thumbs: Vec<Image>) {
                 $m::CompanionWindow::set_photo_thumbs(self, model!(thumbs))
             }
@@ -995,12 +994,6 @@ macro_rules! impl_screen {
             }
             fn on_photo_open(&self, f: impl Fn(usize) + 'static) {
                 $m::CompanionWindow::on_photo_open(self, move |i| f(i.max(0) as usize))
-            }
-            fn get_photo_shown(&self) -> bool {
-                $m::CompanionWindow::get_photo_shown(self)
-            }
-            fn on_photo_closed(&self, f: impl Fn() + 'static) {
-                $m::CompanionWindow::on_photo_closed(self, f)
             }
             fn on_control_tile(&self, f: impl Fn(String) + 'static) {
                 $m::CompanionWindow::on_control_tile(self, move |k| f(k.into()))

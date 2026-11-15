@@ -1891,10 +1891,11 @@ impl Brain {
         });
         v.push(ToolSpec {
             name: "take_photo",
-            description: "Take a photo with the device's own camera: its screen shows the camera \
-                          with a 3-second countdown, then the photo, kept on the device (its Photos \
-                          page). 'fammi una foto', 'scatta una foto', 'take a picture of me'. Nothing \
-                          leaves the device.",
+            description: "Open the device's camera for a photo: 'fammi una foto', 'scatta una \
+                          foto', 'take a picture of me'. Its screen shows the camera, then counts \
+                          down 3 seconds once the conversation is over, and the user can cancel; the \
+                          photo stays on the device. Say only that the camera is open (one short \
+                          sentence), never that the photo was taken.",
             parameters: obj(json!({}), &[]),
         });
         if self.ha().is_some() {
@@ -2426,7 +2427,11 @@ impl Brain {
             Some(h) if h.subscribers() > 0 => {
                 h.broadcast(&[crate::events::take_photo()]);
                 log::info!(event = "brain_take_photo"; "photo asked on the device");
-                Ok(json!({"countdown_s": 3, "kept_on": "the device's Photos page"}))
+                Ok(json!({
+                    "camera": "open on the screen",
+                    "photo": "not taken yet: a 3-second countdown starts when the conversation ends, and the user can cancel it",
+                    "say": "only that the camera is open"
+                }))
             }
             _ => Err("the device's screen is not connected: no photo".into()),
         }

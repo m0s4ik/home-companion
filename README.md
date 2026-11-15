@@ -98,9 +98,9 @@ says what was done, with Undo. Locks, alarms, doors and gates are never moved by
 A pull from the top edge opens the control centre: Wi-Fi, AirPlay, the microphone, night mode, do not disturb and
 the link to Home Assistant, each a tile that says how it stands; under them the volume, the brightness (by hand or
 automatic) and what is playing. On a device with a camera (thinksmart-view-debian with `CAMERA=1`) a **Camera**
-tile opens the camera as a mirror: **Shoot** counts 3-2-1 and takes a photo, and **Photos** shows the ones kept
-on the device (the last 20; each can be deleted). "Okay Alfred, take a photo" opens it with the countdown already
-going. With the lens cover closed it says so instead.
+tile opens the camera as a mirror, framed exactly as the photo will be: **Shoot** counts 3-2-1 (Cancel meanwhile)
+and takes it, and **Photos** shows the ones kept on the device (the last 20; each can be deleted). "Okay Alfred, take
+a photo" opens the camera and starts the countdown once he has answered. With the lens cover closed it says so.
 
 **Do not disturb**, from its tile or by voice ("do not disturb for an hour", "good night"), silences the cards'
 sounds and the announcements; timers and alarms still ring. A bell asleep on a cushion at Alfred's feet shows it
