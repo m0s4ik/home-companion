@@ -6378,6 +6378,7 @@ mod tests {
                 home_assistant: false,
             },
             link: None,
+            update: None,
         };
         let ui = Ui::new(prepared.screen, character, opts, tx).unwrap();
         let (hub, fired) = std::sync::mpsc::channel();
