@@ -379,7 +379,7 @@ language → Home Assistant (found on the network) → QR code. Options (`--lang
 **Updating**, from 0.3.0 on: Settings → Info says when a newer release is out, and **Install** installs it (the
 device restarts by itself, its settings stay; if the new version does not start, the one before comes back). It
 looks once a day at the releases of `[update] repo` in `/etc/home-companion/home-companion.toml`, this repository by
-default: point it at your fork to get your own builds, and set `prerelease = true` for release candidates. The
+default: point it at your fork to get your own builds. Release candidates are offered too with the switch on the same page. The
 repository is read from that root-owned file only, never from the screen. By hand it is the same three lines with
 the new version.
 
