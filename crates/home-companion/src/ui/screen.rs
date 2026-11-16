@@ -4145,13 +4145,22 @@ impl<S: Screen> Ui<S> {
         *self.update_result_shown.borrow_mut() = key;
         self.wake(WakeSource::Touch);
         self.screen.show_update_result(&title, &text, ok);
+        // Done: the character's bow and the success sound, as for a house command.
+        if ok {
+            self.motion.borrow_mut().seq.done(Instant::now());
+            self.send(UiEvent::Success);
+        }
     }
 
-    /// OK on how the install ended: not said again.
+    /// OK on how the install ended: not said again, and home.
     fn update_result_seen(&self) {
         let key = self.update_result_shown.borrow().clone();
         if let Some(dir) = self.opts.state_dir.as_deref() {
             let _ = std::fs::write(crate::update::dir(dir).join("seen"), format!("{key}\n"));
+        }
+        if let Some(me) = self.this.borrow().upgrade() {
+            me.screen.set_page("home");
+            me.on_page("home");
         }
     }
 
