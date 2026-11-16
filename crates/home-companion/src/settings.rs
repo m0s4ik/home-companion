@@ -192,6 +192,16 @@ impl Settings {
         self.save_logged("home_compact", on.into());
     }
 
+    /// Updates (Settings → Info): offer the release candidates too; None = as the configuration
+    /// says (`[update] prerelease`).
+    pub fn update_prerelease(&self) -> Option<bool> {
+        self.flag("update_prerelease")
+    }
+
+    pub fn save_update_prerelease(&self, on: bool) {
+        self.save_logged("update_prerelease", on.into());
+    }
+
     /// The control center's microphone switch: muted, the wake word is not listened for.
     pub fn mic_muted(&self) -> bool {
         self.flag("mic_muted").unwrap_or(false)

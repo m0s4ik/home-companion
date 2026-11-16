@@ -289,6 +289,8 @@ pub struct Checker {
     state: Arc<Mutex<State>>,
     poke: Sender<()>,
     pub repo: String,
+    /// Release candidates offered too (the switch on the Updates page).
+    prerelease: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Checker {
@@ -301,11 +303,12 @@ impl Checker {
             log::warn!(event = "update"; "update: [update] repo {:?} is not owner/name: {DEFAULT_REPO}", cfg.repo);
             DEFAULT_REPO.to_string()
         };
+        let prerelease = Arc::new(std::sync::atomic::AtomicBool::new(cfg.prerelease));
         let (st, r, cur, pre, auto) = (
             state.clone(),
             repo.clone(),
             current.to_string(),
-            cfg.prerelease,
+            prerelease.clone(),
             cfg.check,
         );
         let spawned = std::thread::Builder::new()
@@ -314,7 +317,23 @@ impl Checker {
         if let Err(e) = spawned {
             log::warn!(event = "update"; "update thread: {e}");
         }
-        Checker { state, poke, repo }
+        Checker {
+            state,
+            poke,
+            repo,
+            prerelease,
+        }
+    }
+
+    pub fn prerelease(&self) -> bool {
+        self.prerelease.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The switch: release candidates offered or not, and a check at once.
+    pub fn set_prerelease(&self, on: bool) {
+        self.prerelease
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+        self.check_now();
     }
 
     pub fn state(&self) -> State {
@@ -335,7 +354,7 @@ fn run(
     poke: Receiver<()>,
     repo: &str,
     current: &str,
-    pre: bool,
+    pre: Arc<std::sync::atomic::AtomicBool>,
     auto: bool,
 ) {
     let mut wait = FIRST_CHECK;
@@ -353,7 +372,10 @@ fn run(
             s.checking = true;
         }
         let got = fetch(repo)
-            .map(|v| pick(&v, current, pre, arch()))
+            .map(|v| {
+                let allow_pre = pre.load(std::sync::atomic::Ordering::Relaxed);
+                pick(&v, current, allow_pre, arch())
+            })
             .map(|r| {
                 r.map(|mut r| {
                     match fetch_sha256(repo, &r) {

@@ -108,6 +108,8 @@ pub struct UpdateView {
     /// An install under way (or just over): its steps, and the download's progress (-1: none).
     pub steps: Vec<UpdateStepView>,
     pub progress: f32,
+    /// The release-candidates switch (None: no checking on this device, no switch).
+    pub prerelease: Option<bool>,
 }
 
 /// One step of an install: what it is, a detail ("12.3 of 44.9 MB"), "done", "now", "todo" or
@@ -284,6 +286,7 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_update(&self, u: &UpdateView);
     fn on_update_check(&self, f: impl Fn() + 'static);
     fn on_update_install(&self, f: impl Fn() + 'static);
+    fn on_update_prerelease(&self, f: impl Fn(bool) + 'static);
     /// How an update ended: shown as a dialog until OK.
     fn show_update_result(&self, title: &str, text: &str, ok: bool);
     fn on_update_result_seen(&self, f: impl Fn() + 'static);
@@ -690,6 +693,7 @@ macro_rules! impl_screen {
                     what_short,
                     update_title,
                     update_check,
+                    update_prerelease,
                     camera,
                     camera_shoot,
                     camera_covered,
@@ -1002,12 +1006,17 @@ macro_rules! impl_screen {
                     .collect();
                 $m::CompanionWindow::set_update_steps(self, model!(steps));
                 $m::CompanionWindow::set_update_progress(self, u.progress);
+                $m::CompanionWindow::set_update_switch_shown(self, u.prerelease.is_some());
+                $m::CompanionWindow::set_update_prerelease(self, u.prerelease.unwrap_or(false));
             }
             fn on_update_check(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_update_check(self, f)
             }
             fn on_update_install(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_update_install_clicked(self, f)
+            }
+            fn on_update_prerelease(&self, f: impl Fn(bool) + 'static) {
+                $m::CompanionWindow::on_update_prerelease_changed(self, f)
             }
             fn show_update_result(&self, title: &str, text: &str, ok: bool) {
                 $m::CompanionWindow::set_update_result_title(self, title.into());

@@ -1417,7 +1417,13 @@ impl<S: Screen> Ui<S> {
         let opts_linked = opts.ha_linked;
         let opts_first = opts.first_start;
         let has_camera = !demo && super::camera::present();
-        let opts_update = opts.update.clone();
+        // The switch on the Updates page wins over the configuration's `prerelease`.
+        let opts_update = opts.update.clone().map(|mut c| {
+            if let Some(p) = settings.as_ref().and_then(|s| s.update_prerelease()) {
+                c.prerelease = p;
+            }
+            c
+        });
         let ui = Rc::new(Ui {
             screen,
             mirror: RefCell::new(None),
@@ -1753,6 +1759,19 @@ impl<S: Screen> Ui<S> {
             if let Some(ui) = ui.upgrade() {
                 if let Some(u) = &ui.updater {
                     u.check_now();
+                }
+                ui.refresh_update();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_update_prerelease(move |on| {
+            if let Some(ui) = ui.upgrade() {
+                if let Some(s) = &ui.settings {
+                    s.save_update_prerelease(on);
+                }
+                if let Some(u) = &ui.updater {
+                    log::info!(event = "update", prerelease = on; "update: release candidates {}", if on { "offered" } else { "not offered" });
+                    u.set_prerelease(on);
                 }
                 ui.refresh_update();
             }
@@ -3179,6 +3198,7 @@ impl<S: Screen> Ui<S> {
                 confirm: l.text("update_confirm").into(),
                 steps: Vec::new(),
                 progress: -1.0,
+                prerelease: Some(false),
             });
         }
         // Sample use for the Home Assistant page's row and the use page.
@@ -3998,6 +4018,7 @@ impl<S: Screen> Ui<S> {
             confirm: l.text("update_confirm").into(),
             steps,
             progress,
+            prerelease: Some(u.prerelease()),
         }
     }
 
