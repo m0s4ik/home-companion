@@ -110,6 +110,8 @@ export struct JobRow {
 export struct ShopRow {
     uid: string,
     text: string,
+    // Tapped: ticked for a few seconds, a second tap takes it back (then it is bought).
+    ticked: bool,
 }
 
 // A check of Settings → Home Assistant: level 0 ok, 1 warn, 2 bad, 3 skipped, 4 not checked;
@@ -262,6 +264,7 @@ export struct Words {
     no: string,
     ask_executing: string,
     what_short: string,
+    shop_undo_hint: string,
     update_title: string,
     update_check: string,
     update_prerelease: string,
@@ -435,9 +438,12 @@ component ConfirmRow inherits Rectangle {
     }
 }
 
-// An item of the shopping list: a tap ticks it (bought).
+// An item of the shopping list: a tap ticks it; for a few seconds a second tap takes the tick
+// back (Andrea, 2026-11-16: a tap by mistake), then it is bought and goes.
 component ShopItem inherits Rectangle {
     in property <string> text;
+    in property <bool> ticked;
+    in property <string> undo-hint;
     callback done();
     height: max(76px, label.preferred-height + 28px);
     border-radius: 16px;
@@ -449,16 +455,33 @@ component ShopItem inherits Rectangle {
         height: 32px;
         border-radius: 16px;
         border-width: 2px;
-        border-color: Theme.text-2;
+        border-color: root.ticked ? Theme.accent : Theme.text-2;
+        background: root.ticked ? Theme.accent : transparent;
+        if root.ticked: Icon {
+            x: 4px;
+            y: 4px;
+            width: 24px;
+            height: 24px;
+            source: Icons.check-28;
+            color: Theme.bg;
+        }
     }
     label := Text {
         x: 80px;
         y: (parent.height - self.preferred-height) / 2;
-        width: parent.width - 104px;
+        width: parent.width - 104px - (root.ticked ? hint.preferred-width + 16px : 0px);
         text: root.text;
         font-size: 26px;
-        color: Theme.text;
+        color: root.ticked ? Theme.text-3 : Theme.text;
         wrap: word-wrap;
+    }
+    hint := Text {
+        x: parent.width - 24px - self.preferred-width;
+        y: (parent.height - self.preferred-height) / 2;
+        visible: root.ticked;
+        text: root.undo-hint;
+        font-size: 18px;
+        color: Theme.text-3;
     }
     touch := TouchArea {
         clicked => {
@@ -3093,6 +3116,8 @@ export component CompanionWindow inherits Window {
                     }
                     if item.uid != "": ShopItem {
                         text: item.text;
+                        ticked: item.ticked;
+                        undo-hint: root.t.shop-undo-hint;
                         done => {
                             root.shop-done(item.uid);
                         }

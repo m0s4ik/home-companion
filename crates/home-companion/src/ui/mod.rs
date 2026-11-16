@@ -370,7 +370,8 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// profile, notes, facts (id, text, date), reminders (id, when, text).
     fn set_memories(&self, m: &MemoriesView);
     /// The shopping list: configured, open items (uid, text), the tile's line.
-    fn set_shopping(&self, on: bool, items: &[(String, String)], tile: &str);
+    /// The shopping list's rows: (uid, text, ticked and waiting a few seconds).
+    fn set_shopping(&self, on: bool, items: &[(String, String, bool)], tile: &str);
     fn on_memory_delete(&self, f: impl Fn(i64) + 'static);
     /// "Right" on a fact to confirm.
     fn on_memory_confirm(&self, f: impl Fn(i64) + 'static);
@@ -691,6 +692,7 @@ macro_rules! impl_screen {
                     no,
                     ask_executing,
                     what_short,
+                    shop_undo_hint,
                     update_title,
                     update_check,
                     update_prerelease,
@@ -1253,14 +1255,15 @@ macro_rules! impl_screen {
                     .collect();
                 $m::CompanionWindow::set_event_rows(self, model!(e));
             }
-            fn set_shopping(&self, on: bool, items: &[(String, String)], tile: &str) {
+            fn set_shopping(&self, on: bool, items: &[(String, String, bool)], tile: &str) {
                 $m::CompanionWindow::set_shopping_on(self, on);
                 $m::CompanionWindow::set_tile_shopping(self, tile.into());
                 let v: Vec<$m::ShopRow> = items
                     .iter()
-                    .map(|(u, t)| $m::ShopRow {
+                    .map(|(u, t, k)| $m::ShopRow {
                         uid: u.into(),
                         text: t.into(),
+                        ticked: *k,
                     })
                     .collect();
                 $m::CompanionWindow::set_shop_rows(self, model!(v));

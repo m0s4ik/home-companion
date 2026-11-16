@@ -875,6 +875,8 @@ pub const PAGE_IDLE: Duration = Duration::from_secs(60);
 type PhotoRx = std::sync::mpsc::Receiver<Result<SharedPixelBuffer<Rgba8Pixel>, String>>;
 /// The gallery's thumbnails, from their thread.
 type ThumbsRx = std::sync::mpsc::Receiver<Vec<SharedPixelBuffer<Rgba8Pixel>>>;
+/// A shopping item tapped stays ticked this long, and a second tap takes it back.
+pub const SHOP_UNDO: Duration = Duration::from_secs(5);
 /// The camera page goes home after this long without a touch or a photo.
 pub const CAMERA_IDLE: Duration = Duration::from_secs(120);
 /// The countdown before a photo (seconds).
@@ -1133,6 +1135,9 @@ pub struct Ui<S: Screen> {
     /// Watches how an install ends, to say it in a dialog until OK; the end shown (its status
     /// line), so it is said once.
     update_watch: Timer,
+    /// Shopping items tapped and waiting [`SHOP_UNDO`] before they are bought, and their timer.
+    shop_ticks: RefCell<HashMap<String, Instant>>,
+    shop_timer: Timer,
     update_result_shown: RefCell<String>,
     gallery: RefCell<Vec<PathBuf>>,
     thumbs_rx: RefCell<Option<ThumbsRx>>,
@@ -1471,6 +1476,8 @@ impl<S: Screen> Ui<S> {
                 .map(|c| crate::update::Checker::spawn(c, env!("CARGO_PKG_VERSION"))),
             update_timer: Timer::default(),
             update_watch: Timer::default(),
+            shop_ticks: RefCell::new(HashMap::new()),
+            shop_timer: Timer::default(),
             update_result_shown: RefCell::new(String::new()),
             gallery: RefCell::new(Vec::new()),
             thumbs_rx: RefCell::new(None),
@@ -3038,11 +3045,11 @@ impl<S: Screen> Ui<S> {
                     Vec::new()
                 },
             });
-            let items: Vec<(String, String)> = l
+            let items: Vec<(String, String, bool)> = l
                 .sample("shop_items")
                 .split('|')
                 .enumerate()
-                .map(|(i, t)| (i.to_string(), t.to_string()))
+                .map(|(i, t)| (i.to_string(), t.to_string(), false))
                 .collect();
             self.screen.set_shopping(
                 true,
@@ -5545,19 +5552,63 @@ impl<S: Screen> Ui<S> {
         self.screen.set_choices(&todo, &cal);
     }
 
-    /// A tick on the page: gone from the screen at once, completed in Home Assistant.
+    /// A tap on an item: ticked for [`SHOP_UNDO`], then bought (completed in Home Assistant, gone
+    /// from the list); a tap meanwhile takes the tick back (Andrea, 2026-11-16).
     fn shop_done(&self, uid: String) {
-        let Some((list, item)) = lists::split_uid(&uid) else {
+        if lists::split_uid(&uid).is_none() {
             return;
-        };
-        if let Some(v) = self.desk.borrow_mut().shopping.as_mut() {
-            lists::remove(v, list, item);
         }
-        if let Some(tx) = self.hub_tx.borrow().as_ref() {
-            let _ = tx.send(HubCmd::Done {
-                list: list.to_string(),
-                uid: item.to_string(),
-            });
+        {
+            let mut t = self.shop_ticks.borrow_mut();
+            if t.remove(&uid).is_none() {
+                t.insert(uid, Instant::now());
+            }
+        }
+        self.render_shopping();
+        if !self.shop_ticks.borrow().is_empty() && !self.shop_timer.running() {
+            let w = self.this.borrow().clone();
+            self.shop_timer
+                .start(TimerMode::Repeated, Duration::from_millis(500), move || {
+                    if let Some(ui) = w.upgrade() {
+                        ui.shop_commit(false);
+                    }
+                });
+        }
+    }
+
+    /// The ticks whose time is over (all of them with `all`): bought.
+    fn shop_commit(&self, all: bool) {
+        let due: Vec<String> = {
+            let mut t = self.shop_ticks.borrow_mut();
+            let due: Vec<String> = t
+                .iter()
+                .filter(|(_, at)| all || at.elapsed() >= SHOP_UNDO)
+                .map(|(u, _)| u.clone())
+                .collect();
+            for u in &due {
+                t.remove(u);
+            }
+            due
+        };
+        if self.shop_ticks.borrow().is_empty() {
+            self.shop_timer.stop();
+        }
+        if due.is_empty() {
+            return;
+        }
+        for uid in due {
+            let Some((list, item)) = lists::split_uid(&uid) else {
+                continue;
+            };
+            if let Some(v) = self.desk.borrow_mut().shopping.as_mut() {
+                lists::remove(v, list, item);
+            }
+            if let Some(tx) = self.hub_tx.borrow().as_ref() {
+                let _ = tx.send(HubCmd::Done {
+                    list: list.to_string(),
+                    uid: item.to_string(),
+                });
+            }
         }
         self.render_shopping();
         self.refresh_home();
@@ -5569,7 +5620,13 @@ impl<S: Screen> Ui<S> {
         match &d.shopping {
             Some(v) => self.screen.set_shopping(
                 true,
-                &lists::rows(v),
+                &lists::rows(v)
+                    .into_iter()
+                    .map(|(u, t)| {
+                        let k = self.shop_ticks.borrow().contains_key(&u);
+                        (u, t, k)
+                    })
+                    .collect::<Vec<_>>(),
                 &l.text("tile_shopping")
                     .replace("{n}", &lists::count(v).to_string()),
             ),
