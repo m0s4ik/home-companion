@@ -366,9 +366,9 @@ v0.5** (v0.3-rc3 or later works), built with `WEB=1` (the Home Assistant view), 
 system image is where the Wi-Fi and your ssh key are set. Then, on the device:
 
 ```sh
-curl -LO https://github.com/m0s4ik/home-companion/releases/download/v0.3.0/home-companion-0.3.0-arm64.tar.gz
-tar xzf home-companion-0.3.0-arm64.tar.gz
-cd home-companion-0.3.0-arm64 && ./install.sh
+curl -LO https://github.com/m0s4ik/home-companion/releases/download/v0.3.1/home-companion-0.3.1-arm64.tar.gz
+tar xzf home-companion-0.3.1-arm64.tar.gz
+cd home-companion-0.3.1-arm64 && ./install.sh
 ```
 
 The installer asks nothing: it checks the system (it never lets apt replace the image's Mesa), installs the
@@ -405,7 +405,7 @@ Cross-compiled from an amd64 Debian 13 with the arm64 multiarch libraries:
 ```sh
 cargo build --release --target aarch64-unknown-linux-gnu -p home-companion --no-default-features --features fbdev,gpu
 cargo run -p home-companion -- --simulator          # the screen in a window on a laptop
-tools/release/build-bundle.sh 0.3.0                 # the release bundle
+tools/release/build-bundle.sh 0.3.1                 # the release bundle
 ```
 
 Contributing, with or without a coding assistant: [AGENTS.md](AGENTS.md).
