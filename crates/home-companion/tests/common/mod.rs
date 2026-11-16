@@ -246,6 +246,7 @@ impl home_companion::reflex::ReflexLink for ScriptReflex {
                     }));
                 }
             }
+            Request::Verify { .. } => {}
         }
         true
     }

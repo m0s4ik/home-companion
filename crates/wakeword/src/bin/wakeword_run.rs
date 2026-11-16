@@ -12,7 +12,7 @@ use wakeword::{Detector, DetectorConfig, Model, SAMPLE_RATE, wav};
 
 const USAGE: &str = "usage: wakeword-run --manifest M.json [FILE.wav...] [--positives FILE.wav...] \
 [--negatives FILE.wav...] [--cutoff X] [--window N] [--arena BYTES] [--cooloff-s S] [--refractory-s S] \
-[--channel N] [--frame SAMPLES] [--realtime] [--json]";
+[--channel N] [--frame SAMPLES] [--realtime] [--json] [--trace]";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Expect {
@@ -30,6 +30,8 @@ struct Opts {
     /// Feed the frames at the audio rate (as home-companion does), not as fast as possible.
     realtime: bool,
     json: bool,
+    /// With --json: every invocation's probability (0..=255), to study cutoffs and windows offline.
+    trace: bool,
 }
 
 fn parse() -> Result<Opts, String> {
@@ -39,6 +41,7 @@ fn parse() -> Result<Opts, String> {
     let mut channel = None;
     let mut frame = 320usize;
     let mut json = false;
+    let mut trace = false;
     let mut realtime = false;
     let mut list = Expect::Any;
     let mut it = std::env::args().skip(1);
@@ -63,6 +66,7 @@ fn parse() -> Result<Opts, String> {
             "--channel" => channel = Some(value(&a, it.next())?),
             "--frame" => frame = value::<usize>(&a, it.next())?.max(1),
             "--json" => json = true,
+            "--trace" => trace = true,
             "--realtime" => realtime = true,
             "-h" | "--help" => return Err(String::new()),
             s if s.starts_with("--") => return Err(format!("unknown option {s}")),
@@ -81,6 +85,7 @@ fn parse() -> Result<Opts, String> {
         frame,
         realtime,
         json,
+        trace,
     })
 }
 
@@ -119,6 +124,8 @@ fn run(o: &Opts) -> Result<bool, wakeword::Error> {
         let start = before.samples;
         let mut times = Vec::new();
         let mut max_prob = 0.0f32;
+        let mut probs: Vec<u8> = Vec::new();
+        let mut seen = before.invocations;
         let t0 = std::time::Instant::now();
         for (n, chunk) in audio.chunks(o.frame).enumerate() {
             if o.realtime {
@@ -132,6 +139,10 @@ fn run(o: &Opts) -> Result<bool, wakeword::Error> {
                 times.push((d.at_samples - start) as f64 / SAMPLE_RATE as f64);
             }
             max_prob = max_prob.max(det.last_probability());
+            if o.trace && det.stats().invocations != seen {
+                seen = det.stats().invocations;
+                probs.push((det.last_probability() * 255.0).round() as u8);
+            }
         }
         let s = det.stats();
         let audio_s = audio.len() as f64 / SAMPLE_RATE as f64;
@@ -171,6 +182,7 @@ fn run(o: &Opts) -> Result<bool, wakeword::Error> {
                     "arena_used": det.arena_used(),
                     "arena_size": det.arena_size(),
                     "stride": det.stride(),
+                    "probs": if o.trace { Some(&probs) } else { None },
                 })
             );
         } else {

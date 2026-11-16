@@ -40,6 +40,14 @@ pub enum ReflexEvent {
         words: Vec<Word>,
         ms: f64,
     },
+    /// The wake check's answer (reflex::wake_check): what the phrase's grammar heard; `known`
+    /// false when the phrase is not in the model's vocabulary (no check possible).
+    Verify {
+        id: u64,
+        text: String,
+        known: bool,
+        ms: f64,
+    },
 }
 
 /// The helper as the core sees it (a fake one in the tests).
@@ -296,6 +304,17 @@ fn run_once(
                 id,
                 text,
                 audio_s: audio_s as f32,
+            }),
+            Ok(Reply::Verify {
+                id,
+                text,
+                known,
+                ms,
+            }) => emit(ReflexEvent::Verify {
+                id,
+                text,
+                known,
+                ms,
             }),
             Ok(Reply::Error { message }) => log::warn!("reflexes: helper: {message}"),
             Err(e) => log::warn!("reflexes: {e}"),

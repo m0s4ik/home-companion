@@ -18,6 +18,9 @@ use crate::core::{CoreEvent, MicControl, MicMode};
 /// Frames of audio from before a detection sent with the utterance (8 x 20 ms).
 const PRE_ROLL_FRAMES: usize = 8;
 
+/// Samples before a detection handed to the core for the wake check (reflex::wake_check).
+const CHECK_SAMPLES: usize = (reflex::wake_check::AUDIO_S * audio::CAPTURE_RATE as f32) as usize;
+
 pub fn spawn(
     frames: Receiver<CaptureFrame>,
     mut detector: Option<wakeword::Detector>,
@@ -34,9 +37,12 @@ pub fn spawn(
             // The last frames heard by the detector: sent after a detection, so the phrase keeps
             // a first word said without a pause (the detector fires a little after "Alfred").
             let mut recent: VecDeque<CaptureFrame> = VecDeque::with_capacity(PRE_ROLL_FRAMES + 1);
+            // The last CHECK_SAMPLES heard by the detector, for the wake check.
+            let mut heard: VecDeque<i16> = VecDeque::with_capacity(CHECK_SAMPLES + 1024);
             // Ends when the audio subsystem stops (its sender is dropped).
             while let Ok(frame) = frames.recv() {
                 if mic.take_reset() {
+                    heard.clear();
                     if let Some(d) = &mut detector {
                         d.reset();
                     }
@@ -80,6 +86,10 @@ pub fn spawn(
                     MicMode::Wake => {
                         let Some(d) = &mut detector else { continue };
                         let result = d.feed(&frame.samples);
+                        heard.extend(frame.samples.iter().copied());
+                        if heard.len() > CHECK_SAMPLES {
+                            heard.drain(..heard.len() - CHECK_SAMPLES);
+                        }
                         recent.push_back(frame);
                         if recent.len() > PRE_ROLL_FRAMES {
                             recent.pop_front();
@@ -92,7 +102,8 @@ pub fn spawn(
                                 // first word of "che ore sono"). The core puts the mode back to
                                 // Wake if it does not start one.
                                 mic.set(MicMode::Stream);
-                                if core.send(CoreEvent::WakeWord(det)).is_err() {
+                                let audio = heard.drain(..).collect();
+                                if core.send(CoreEvent::WakeWord(det, audio)).is_err() {
                                     break;
                                 }
                                 let mut gone = false;
@@ -112,11 +123,15 @@ pub fn spawn(
                     }
                     MicMode::Stream => {
                         recent.clear();
+                        heard.clear();
                         if core.send(CoreEvent::MicFrame(frame)).is_err() {
                             break;
                         }
                     }
-                    MicMode::Off => recent.clear(),
+                    MicMode::Off => {
+                        recent.clear();
+                        heard.clear();
+                    }
                 }
                 if last_stats.elapsed() >= Duration::from_secs(1) {
                     last_stats = Instant::now();

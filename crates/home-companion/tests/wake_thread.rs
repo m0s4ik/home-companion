@@ -128,7 +128,7 @@ fn the_stop_word_is_heard_only_when_asked() {
             .count();
         let wakes = ev
             .iter()
-            .filter(|e| matches!(e, CoreEvent::WakeWord(_)))
+            .filter(|e| matches!(e, CoreEvent::WakeWord(..)))
             .count();
         (stops, wakes)
     };
@@ -136,4 +136,53 @@ fn the_stop_word_is_heard_only_when_asked() {
     let (stops, wakes) = run(true);
     assert!(stops >= 1, "the stop word is heard while asked for");
     assert_eq!(wakes, 0);
+}
+
+/// A detection comes with the audio heard just before it, for the wake check: the last
+/// reflex::wake_check::AUDIO_S seconds up to the frame that fired, as the microphone gave them.
+#[test]
+fn a_detection_carries_the_audio_before_it() {
+    let model = wakeword::Model::load(
+        &character::repo_characters().join("alfred/wakeword/okay_alfred.json"),
+    )
+    .unwrap();
+    let detector = wakeword::Detector::new(&model, &wakeword::DetectorConfig::default()).unwrap();
+    let wav = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("fixtures/e2e-okay-alfred-what-time.wav");
+    let mut r = hound::WavReader::open(&wav).unwrap();
+    let samples: Vec<i16> = r.samples::<i16>().map(|s| s.unwrap()).collect();
+    let (tx, rx) = mpsc::sync_channel(samples.len() / FRAME_SAMPLES + 1);
+    for (i, c) in samples.chunks_exact(FRAME_SAMPLES).enumerate() {
+        tx.send(CaptureFrame {
+            samples: c.to_vec().into(),
+            index: i as u64,
+            level: Level::of(c),
+        })
+        .unwrap();
+    }
+    drop(tx);
+    let mic = Arc::new(MicControl::default());
+    mic.set(MicMode::Wake);
+    let (core_tx, core_rx) = mpsc::channel::<CoreEvent>();
+    let h = home_companion::wake_thread::spawn(
+        rx,
+        Some(detector),
+        Vec::new(),
+        mic,
+        core_tx,
+        Arc::new(Mutex::new(None)),
+    )
+    .unwrap();
+    h.join().unwrap();
+    let (det, audio) = core_rx
+        .try_iter()
+        .find_map(|e| match e {
+            CoreEvent::WakeWord(d, a) => Some((d, a)),
+            _ => None,
+        })
+        .expect("the fixture says okay alfred");
+    let end = (det.at_samples as usize).div_ceil(FRAME_SAMPLES) * FRAME_SAMPLES;
+    let want = ((reflex::wake_check::AUDIO_S * 16_000.0) as usize).min(end);
+    assert_eq!(audio.len(), want);
+    assert_eq!(audio[..], samples[end - want..end]);
 }

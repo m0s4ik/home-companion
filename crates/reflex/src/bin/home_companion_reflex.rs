@@ -8,6 +8,8 @@
 //!
 //!   home-companion-reflex --model DIR --grammar FILE
 //!   home-companion-reflex --model DIR --grammar FILE --wav F.wav...   (decode files, print one result each)
+//!   home-companion-reflex --model DIR --grammar FILE --verify "okay alfred" --wav F.wav...
+//!       (the wake check of each file's last reflex::wake_check::AUDIO_S seconds, one `verify` each)
 //!   home-companion-reflex --model DIR --grammar FILE --eval LIST.tsv [--thresholds 0.8,0.9,...]
 //!   home-companion-reflex --model DIR --grammar FILE --bench LIST.tsv [--threshold 0.8] [--out DIR]
 //!
@@ -31,7 +33,7 @@ use std::time::Instant;
 
 use reflex::proto::{Reply, Request};
 use reflex::vad::Vad;
-use reflex::{Grammar, Word};
+use reflex::{Grammar, Word, wake_check};
 
 #[derive(serde::Deserialize, Default)]
 struct VoskResult {
@@ -89,6 +91,15 @@ fn main() -> ExitCode {
     }
     if let Some(list) = eval {
         return match evaluate(&model, &grammar, &list, &thresholds) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("home-companion-reflex: {e}");
+                ExitCode::from(65)
+            }
+        };
+    }
+    if let Some(phrase) = get("--verify") {
+        return match verify_files(&model, &phrase, &wavs) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("home-companion-reflex: {e}");
@@ -159,6 +170,9 @@ fn run(model_dir: &str, grammar_path: &str, wavs: &[String]) -> Result<(), Strin
     let mut offset = 0f32;
     // The last partial sent for this utterance.
     let mut partial = String::new();
+    // The wake check's recognizer (reflex::wake_check), made for the first phrase asked about.
+    let vocabulary = Vocabulary::load(Path::new(model_dir));
+    let mut wake: Option<(String, Option<vosk::Recognizer>)> = None;
     loop {
         let req = match Request::read(&mut input) {
             Ok(Some(r)) => r,
@@ -215,6 +229,44 @@ fn run(model_dir: &str, grammar_path: &str, wavs: &[String]) -> Result<(), Strin
                     }
                 }
             }
+            Request::Verify {
+                id,
+                phrase,
+                samples: audio,
+            } => {
+                let t = Instant::now();
+                if wake.as_ref().is_none_or(|(p, _)| *p != phrase) {
+                    let known = wake_check::known(&phrase, |w| vocabulary.has(w));
+                    let r = if known {
+                        Some(vosk::Recognizer::with_grammar(
+                            &model,
+                            16_000.0,
+                            &wake_check::grammar_json(&phrase),
+                        )?)
+                    } else {
+                        None
+                    };
+                    wake = Some((phrase.clone(), r));
+                }
+                let (text, known) = match wake.as_mut().and_then(|(_, r)| r.as_mut()) {
+                    Some(r) => {
+                        r.reset();
+                        r.accept(&audio);
+                        let v: VoskResult =
+                            serde_json::from_str(&r.final_result()).unwrap_or_default();
+                        (v.text, true)
+                    }
+                    None => (String::new(), false),
+                };
+                Reply::Verify {
+                    id,
+                    text,
+                    known,
+                    ms: t.elapsed().as_secs_f64() * 1000.0,
+                }
+                .write(&mut out)
+                .map_err(|e| format!("writing to the body: {e}"))?;
+            }
             Request::End(id) => {
                 if !done && current == Some(id) {
                     let t = Instant::now();
@@ -229,6 +281,65 @@ fn run(model_dir: &str, grammar_path: &str, wavs: &[String]) -> Result<(), Strin
                 }
             }
         }
+    }
+}
+
+/// `--verify`: the wake check of each file, as the body asks for it after a detection.
+fn verify_files(model_dir: &str, phrase: &str, wavs: &[String]) -> Result<(), String> {
+    vosk::set_log_level(-1);
+    let model = vosk::Model::new(model_dir)?;
+    let vocabulary = Vocabulary::load(Path::new(model_dir));
+    let known = wake_check::known(phrase, |w| vocabulary.has(w));
+    let mut rec =
+        vosk::Recognizer::with_grammar(&model, 16_000.0, &wake_check::grammar_json(phrase))?;
+    let mut out = std::io::stdout().lock();
+    let keep = (wake_check::AUDIO_S * 16_000.0) as usize;
+    for (i, w) in wavs.iter().enumerate() {
+        let samples = read_wav(w)?;
+        let tail = &samples[samples.len().saturating_sub(keep)..];
+        let t = Instant::now();
+        rec.reset();
+        rec.accept(tail);
+        let v: VoskResult = serde_json::from_str(&rec.final_result()).unwrap_or_default();
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        eprintln!(
+            "{w}: {:?} {}",
+            v.text,
+            if wake_check::heard_name(phrase, &v.text) {
+                "kept"
+            } else {
+                "dropped"
+            }
+        );
+        Reply::Verify {
+            id: i as u64,
+            text: v.text,
+            known,
+            ms,
+        }
+        .write(&mut out)
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// The model's words (`graph/words.txt`, also what a model slimmed by tools/slim-vosk-model.py
+/// keeps); none known when the file is missing (then every word is taken as known).
+struct Vocabulary(Option<std::collections::HashSet<String>>);
+
+impl Vocabulary {
+    fn load(model_dir: &Path) -> Vocabulary {
+        let words = std::fs::read_to_string(model_dir.join("graph").join("words.txt")).ok();
+        Vocabulary(words.map(|t| {
+            t.lines()
+                .filter_map(|l| l.split_whitespace().next())
+                .map(str::to_string)
+                .collect()
+        }))
+    }
+
+    fn has(&self, word: &str) -> bool {
+        self.0.as_ref().is_none_or(|v| v.contains(word))
     }
 }
 

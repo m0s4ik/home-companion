@@ -531,6 +531,12 @@ fn go<S: Screen>(
     // The core.
     let core_cfg = CoreConfig {
         wake_name: model.name.clone(),
+        wake_check: (cfg.wake_word.verify && cfg.reflexes.enabled).then(|| {
+            home_companion::core::WakeCheckCfg {
+                phrase: model.manifest.wake_word.clone(),
+                timeout: Duration::from_millis(cfg.wake_word.verify_timeout_ms as u64),
+            }
+        }),
         bell_repeats: cfg.timers.bell_repeats,
         bell_gap: Duration::from_secs_f32(cfg.timers.bell_gap_seconds.max(0.0)),
         fps: cfg.ui.fps,

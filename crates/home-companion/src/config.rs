@@ -141,6 +141,13 @@ pub struct WakeWordCfg {
     pub cutoff: f32,
     pub refractory_seconds: f32,
     pub cooloff_seconds: f32,
+    /// The wake check (reflex::wake_check): before answering a detection, the reflex helper
+    /// decodes its last seconds against the wake phrase alone, and a detection without the name
+    /// in it is dropped (the wake word model also fires on ordinary speech). Needs the reflexes;
+    /// without them, or with the helper down, every detection stands as before.
+    pub verify: bool,
+    /// Longest wait for the check; past it the detection stands.
+    pub verify_timeout_ms: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -319,6 +326,8 @@ impl Default for WakeWordCfg {
             stop_model: String::new(),
             refractory_seconds: 2.0,
             cooloff_seconds: 1.0,
+            verify: true,
+            verify_timeout_ms: 800,
         }
     }
 }

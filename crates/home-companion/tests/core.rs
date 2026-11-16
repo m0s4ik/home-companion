@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use common::*;
 use home_companion::core::{
-    Core, CoreConfig, CoreEvent, Deps, MicControl, Phase, Summary, UiCommand, UiEvent,
+    Core, CoreConfig, CoreEvent, Deps, MicControl, MicMode, Phase, Summary, UiCommand, UiEvent,
 };
 use home_companion::timers::Timers;
 use wyoming::fake_ha::{self, Scenario, Step};
@@ -797,4 +797,194 @@ fn repeat_plays_the_last_answer_again() {
     );
     // The announcement had no words: the replay shows none (not "nothing to repeat").
     assert_eq!(r.summary.conversations[1].answer, "");
+}
+
+/// A reflex helper that answers the wake check with `answer` (text, phrase known), or never.
+struct CheckingReflex {
+    tx: Mutex<Sender<CoreEvent>>,
+    sent: Arc<Mutex<Vec<reflex::proto::Request>>>,
+    answer: Option<(&'static str, bool)>,
+}
+
+impl home_companion::reflex::ReflexLink for CheckingReflex {
+    fn ready(&self) -> bool {
+        true
+    }
+    fn send(&self, r: reflex::proto::Request) -> bool {
+        if let (reflex::proto::Request::Verify { id, .. }, Some((text, known))) = (&r, self.answer)
+        {
+            let _ = self.tx.lock().unwrap().send(CoreEvent::Reflex(
+                home_companion::reflex::ReflexEvent::Verify {
+                    id: *id,
+                    text: text.into(),
+                    known,
+                    ms: 40.0,
+                },
+            ));
+        }
+        self.sent.lock().unwrap().push(r);
+        true
+    }
+    fn set_language(&self, _: &str) {}
+}
+
+struct CheckRun {
+    ui: Vec<UiCommand>,
+    sent: Vec<reflex::proto::Request>,
+    mic: MicMode,
+}
+
+/// A wake word detection (with the wake check on, 200 ms at most) and 10 frames after it, the
+/// helper answering the check with `answer`.
+fn wake_check_run(answer: Option<(&'static str, bool)>) -> CheckRun {
+    let (core_tx, core_rx) = mpsc::channel::<CoreEvent>();
+    let (ui_tx, ui_rx) = mpsc::channel();
+    let tx = core_tx.clone();
+    let acfg = audio::AudioConfig {
+        backend: audio::Backend::Null,
+        realtime: false,
+        ..Default::default()
+    };
+    let audio = audio::Audio::start(
+        &acfg,
+        Box::new(move |e| {
+            let _ = tx.send(CoreEvent::Audio(e));
+        }),
+    )
+    .unwrap();
+    let server = wyoming::Server::start(
+        wyoming::ServerConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            ..Default::default()
+        },
+        Box::new(|_| {}),
+    )
+    .unwrap();
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let reflexes = home_companion::reflex::Reflexes::new(
+        Box::new(CheckingReflex {
+            tx: Mutex::new(core_tx.clone()),
+            sent: sent.clone(),
+            answer,
+        }),
+        &home_companion::config::ReflexesCfg::default(),
+        repo.join("characters/alfred/grammar"),
+        repo.join("locales"),
+        "it",
+    );
+    let mic = Arc::new(MicControl::default());
+    let deps = Deps {
+        sender: server.sender(),
+        player: audio.player(),
+        recorder: None,
+        ui: ui_tx,
+        mic: mic.clone(),
+        audio: Some(audio),
+        server: Some(server),
+        timers: Timers::in_memory(),
+        alarms: home_companion::alarms::Alarms::in_memory(),
+        settings: None,
+        volume: None,
+        wake_stats: Arc::new(Mutex::new(None)),
+        stop_flag: None,
+        reflexes: Some(reflexes),
+        music: None,
+        voice: None,
+        brain: None,
+    };
+    let cfg = CoreConfig {
+        wake_check: Some(home_companion::core::WakeCheckCfg {
+            phrase: "okay alfred".into(),
+            timeout: Duration::from_millis(200),
+        }),
+        ..Default::default()
+    };
+    let core = std::thread::spawn(move || Core::new(cfg, deps).run(core_rx));
+    // As the wake thread does: streaming from the detection on.
+    mic.set(MicMode::Stream);
+    core_tx
+        .send(CoreEvent::WakeWord(
+            wakeword::Detection {
+                name: "okay_alfred".into(),
+                probability: 0.98,
+                at_samples: 32_000,
+                at: Duration::from_secs(2),
+            },
+            vec![7; 32_000],
+        ))
+        .unwrap();
+    for i in 0..10u64 {
+        core_tx.send(frame(i, 0.05)).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let mode = mic.mode();
+    core_tx.send(CoreEvent::Quit).unwrap();
+    core.join().unwrap();
+    let ui = ui_rx.try_iter().collect();
+    let sent = sent.lock().unwrap().clone();
+    CheckRun {
+        ui,
+        sent,
+        mic: mode,
+    }
+}
+
+fn verify_asked(r: &CheckRun) -> bool {
+    r.sent.iter().any(|q| {
+        matches!(q, reflex::proto::Request::Verify { phrase, samples, .. }
+            if phrase == "okay alfred" && samples.len() == 32_000)
+    })
+}
+
+fn listened(r: &CheckRun) -> bool {
+    r.ui.contains(&UiCommand::View(Phase::Listening))
+}
+
+/// The frames heard while the check ran, then given to the conversation.
+fn audio_fed(r: &CheckRun) -> usize {
+    r.sent
+        .iter()
+        .filter(|q| matches!(q, reflex::proto::Request::Audio(_)))
+        .count()
+}
+
+#[test]
+fn a_wake_with_the_name_heard_starts_a_conversation_with_the_frames_meanwhile() {
+    let r = wake_check_run(Some(("okay alfred", true)));
+    assert!(verify_asked(&r));
+    assert!(listened(&r), "{:?}", r.ui);
+    assert!(
+        r.sent
+            .iter()
+            .any(|q| matches!(q, reflex::proto::Request::Start(_)))
+    );
+    assert_eq!(
+        audio_fed(&r),
+        10,
+        "every frame after the detection reaches the reflexes"
+    );
+}
+
+#[test]
+fn a_wake_without_the_name_is_dropped_in_silence() {
+    let r = wake_check_run(Some(("[unk]", true)));
+    assert!(verify_asked(&r));
+    assert!(!listened(&r), "{:?}", r.ui);
+    assert!(
+        !r.sent
+            .iter()
+            .any(|q| matches!(q, reflex::proto::Request::Start(_)))
+    );
+    assert_eq!(r.mic, MicMode::Wake, "back to the detector");
+}
+
+#[test]
+fn a_wake_stands_when_the_check_does_not_answer_or_cannot_check() {
+    for answer in [None, Some(("", false))] {
+        let r = wake_check_run(answer);
+        assert!(verify_asked(&r));
+        assert!(listened(&r), "{answer:?}: {:?}", r.ui);
+        assert_eq!(audio_fed(&r), 10, "{answer:?}");
+    }
 }

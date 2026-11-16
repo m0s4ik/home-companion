@@ -110,7 +110,8 @@ pub enum UiEvent {
 
 pub enum CoreEvent {
     Server(ServerEvent),
-    WakeWord(wakeword::Detection),
+    /// A detection and the audio before it (wake_thread::CHECK_SAMPLES), for the wake check.
+    WakeWord(wakeword::Detection, Vec<i16>),
     /// The stop word ("basta", "stop"), while the character thinks, speaks or rings.
     StopWord(wakeword::Detection),
     /// Only while streaming to Home Assistant.
@@ -338,10 +339,32 @@ impl HaLink {
     }
 }
 
+/// The wake check (reflex::wake_check): the phrase to hear in a detection's audio, and the
+/// longest wait for the reflex helper's answer.
+#[derive(Debug, Clone)]
+pub struct WakeCheckCfg {
+    pub phrase: String,
+    pub timeout: Duration,
+}
+
+/// A detection waiting for the wake check: the frames heard meanwhile are kept for the
+/// conversation (people go on speaking right after the name).
+struct WakeChecking {
+    id: u64,
+    det: wakeword::Detection,
+    frames: Vec<CaptureFrame>,
+    asked: Instant,
+}
+
+/// Frames kept while a wake check runs (the check takes well under a second).
+const CHECK_FRAMES: usize = 150;
+
 #[derive(Debug, Clone)]
 pub struct CoreConfig {
     /// The wake model's id (`detection.name`, must match `Info`).
     pub wake_name: String,
+    /// None: every detection starts a conversation at once.
+    pub wake_check: Option<WakeCheckCfg>,
     pub bell_repeats: u32,
     pub bell_gap: Duration,
     pub listen_timeout: Duration,
@@ -361,6 +384,7 @@ impl Default for CoreConfig {
     fn default() -> Self {
         CoreConfig {
             wake_name: "okay_alfred".into(),
+            wake_check: None,
             bell_repeats: 6,
             bell_gap: Duration::from_secs(1),
             listen_timeout: Duration::from_secs(20),
@@ -631,6 +655,9 @@ pub struct Core {
     /// "Falso allarme"; when the conversation began (unix seconds).
     last_recording: Option<PathBuf>,
     last_wake: Option<(String, f32)>,
+    /// A detection waiting for the wake check, and the next check's id.
+    checking: Option<WakeChecking>,
+    next_check_id: u64,
     conv_started_wall: Option<u64>,
     /// When the character's own phrase began to play, and how long it lasts.
     speaking_since: Option<Instant>,
@@ -829,6 +856,8 @@ impl Core {
             speaking_text: String::new(),
             last_recording: None,
             last_wake: None,
+            checking: None,
+            next_check_id: 1,
             conv_started_wall: None,
             speaking_since: None,
             speaking_len: None,
@@ -873,6 +902,9 @@ impl Core {
             if let Some(w) = &self.voice_wait {
                 until = until.min(w.deadline);
             }
+            if let Some(d) = self.check_deadline() {
+                until = until.min(d);
+            }
             match rx.recv_timeout(
                 until
                     .saturating_duration_since(now)
@@ -889,6 +921,9 @@ impl Core {
             let now = Instant::now();
             if self.voice_wait.as_ref().is_some_and(|w| now >= w.deadline) {
                 self.voice_late();
+            }
+            if self.check_deadline().is_some_and(|d| now >= d) {
+                self.on_wake_checked(None, 0.0, "no answer in time");
             }
             if self.ring_wait.is_some_and(|(_, until)| now >= until) {
                 log::info!(event = "ring_voice", voiced = false; "no voice in time for the ringing: the bell");
@@ -918,7 +953,7 @@ impl Core {
     pub fn handle(&mut self, ev: CoreEvent) {
         match ev {
             CoreEvent::Server(e) => self.on_server(e),
-            CoreEvent::WakeWord(d) => self.on_wake(d),
+            CoreEvent::WakeWord(d, audio) => self.on_wake(d, audio),
             CoreEvent::StopWord(d) => self.on_stop_word(d),
             CoreEvent::MicFrame(f) => self.on_mic(f),
             CoreEvent::Audio(e) => self.on_audio(e),
@@ -1240,6 +1275,8 @@ impl Core {
 
     /// A new conversation; `answering`: the brain's question it hears the answer to.
     fn start_conversation_for(&mut self, trigger: Trigger, answering: Option<i64>) {
+        // Talk pressed while a detection was being checked: the button wins.
+        self.checking = None;
         // With the reflex helper up, the utterance is held back and decoded locally first; Home
         // Assistant is not needed for a reflex (Wi-Fi off, Home Assistant down).
         self.speaking_text.clear();
@@ -1507,9 +1544,130 @@ impl Core {
         log::info!(event = "false_wake", saved = true, files = copied, dir = dir.display().to_string().as_str(); "false alarm: {copied} files kept in {}", dir.display());
     }
 
-    fn on_wake(&mut self, d: wakeword::Detection) {
-        self.last_wake = Some((d.name.clone(), d.probability));
+    fn on_wake(&mut self, d: wakeword::Detection, audio: Vec<i16>) {
         log::info!(event = "wake_word", name = d.name.as_str(), probability = d.probability as f64, at_s = d.at.as_secs_f64(); "wake word {} ({:.3})", d.name, d.probability);
+        let answers = matches!(
+            self.phase,
+            Phase::Home | Phase::Offline | Phase::Error | Phase::Ringing
+        );
+        // The wake check: asked to the reflex helper, the detection waits for its answer
+        // (on_wake_checked) with the frames that follow; nothing on the screen meanwhile.
+        if answers && self.checking.is_none() {
+            let phrase = self.cfg.wake_check.as_ref().map(|c| c.phrase.clone());
+            if let (Some(phrase), Some(r)) = (phrase, self.d.reflexes.as_ref())
+                && r.link.ready()
+                && !audio.is_empty()
+            {
+                let id = self.next_check_id;
+                if r.link.send(ReflexRequest::Verify {
+                    id,
+                    phrase,
+                    samples: audio,
+                }) {
+                    self.next_check_id += 1;
+                    self.checking = Some(WakeChecking {
+                        id,
+                        det: d,
+                        frames: Vec::new(),
+                        asked: Instant::now(),
+                    });
+                    return;
+                }
+            }
+        }
+        self.wake_accepted(d, Vec::new());
+    }
+
+    /// The wake check's answer (or none in time: `heard` None): the detection stands when the
+    /// name is heard, the phrase cannot be checked or the check did not answer.
+    fn on_wake_checked(&mut self, heard: Option<(&str, bool)>, ms: f64, why: &str) {
+        let Some(c) = self.checking.take() else {
+            return;
+        };
+        let phrase = self
+            .cfg
+            .wake_check
+            .as_ref()
+            .map_or("", |w| w.phrase.as_str());
+        let waited_ms = c.asked.elapsed().as_secs_f64() * 1000.0;
+        let (text, known) = heard.unwrap_or(("", false));
+        let keep = heard.is_none() || !known || reflex::wake_check::heard_name(phrase, text);
+        log::info!(
+            event = "wake_check", kept = keep, heard = text, known = known, why = why,
+            probability = c.det.probability as f64, helper_ms = ms, waited_ms = waited_ms;
+            "wake check: {} ({why}: {text:?}, {waited_ms:.0} ms)", if keep { "kept" } else { "dropped" }
+        );
+        if keep {
+            self.wake_accepted(c.det, c.frames);
+            return;
+        }
+        self.save_dropped_wake(&c.det, text);
+        self.mic_idle();
+        self.d.mic.request_reset();
+    }
+
+    /// Until when the running wake check is waited for.
+    fn check_deadline(&self) -> Option<Instant> {
+        let (c, w) = self.checking.as_ref().zip(self.cfg.wake_check.as_ref())?;
+        Some(c.asked + w.timeout)
+    }
+
+    /// A detection dropped by the wake check: the microphone's last seconds (what woke the
+    /// character) kept in `false-wakes/` like a "Falso allarme", with `"via": "check"`, for
+    /// training the wake word again. Only with the recordings on.
+    fn save_dropped_wake(&self, d: &wakeword::Detection, heard: &str) {
+        let Some(path) = self
+            .d
+            .recorder
+            .as_ref()
+            .and_then(|r| r.save_context("wake"))
+        else {
+            return;
+        };
+        let Some(dir) = path
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("false-wakes"))
+        else {
+            return;
+        };
+        let stem = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .trim_end_matches("-wake")
+            .to_string();
+        let to = dir.join(format!("{stem}-wake.wav"));
+        let moved = std::fs::create_dir_all(&dir).and_then(|()| {
+            std::fs::rename(&path, &to).or_else(|_| {
+                std::fs::copy(&path, &to)?;
+                std::fs::remove_file(&path)
+            })
+        });
+        if let Err(e) = moved {
+            log::warn!("{}: {e}", to.display());
+            return;
+        }
+        let info = serde_json::json!({
+            "false_wake": true,
+            "via": "check",
+            "wake_word": d.name,
+            "probability": d.probability,
+            "check_heard": heard,
+            "conversation_started_unix": serde_json::Value::Null,
+            "detected_unix": now_unix(),
+            "files": stem,
+            "audio": "the microphone's last seconds, ending a moment after the detection",
+        });
+        let _ = std::fs::write(
+            dir.join(format!("{stem}-false.json")),
+            format!("{info:#}\n"),
+        );
+    }
+
+    /// A detection that stands: a conversation, with the frames heard while it was checked.
+    fn wake_accepted(&mut self, d: wakeword::Detection, frames: Vec<CaptureFrame>) {
+        self.last_wake = Some((d.name.clone(), d.probability));
         match self.phase {
             Phase::Home | Phase::Offline | Phase::Error => self.start_conversation(Trigger::Wake),
             Phase::Ringing => {
@@ -1523,10 +1681,20 @@ impl Core {
         if self.phase != Phase::Listening {
             self.mic_idle();
             self.d.mic.request_reset();
+            return;
+        }
+        for f in frames {
+            self.on_mic(f);
         }
     }
 
     fn on_mic(&mut self, f: CaptureFrame) {
+        if let Some(c) = &mut self.checking {
+            if c.frames.len() < CHECK_FRAMES {
+                c.frames.push(f);
+            }
+            return;
+        }
         if self.phase != Phase::Listening {
             return;
         }
@@ -1602,7 +1770,23 @@ impl Core {
         match e {
             ReflexEvent::Ready { .. } => {}
             ReflexEvent::Lost => {
+                self.on_wake_checked(None, 0.0, "helper lost");
                 self.judge(Seen::Lost);
+            }
+            ReflexEvent::Verify {
+                id,
+                text,
+                known,
+                ms,
+            } => {
+                if self.checking.as_ref().is_some_and(|c| c.id == id) {
+                    let why = if known {
+                        "checked"
+                    } else {
+                        "phrase not in the vocabulary"
+                    };
+                    self.on_wake_checked(Some((&text, known)), ms, why);
+                }
             }
             ReflexEvent::Partial { id, text, audio_s } => {
                 let Some(g) = self.gate.as_mut().filter(|g| ours(g, id)) else {
