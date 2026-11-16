@@ -58,7 +58,7 @@ enabled = false
 # Updates from the releases of this GitHub repository (Settings -> Info). The update service reads
 # it from here as root: change it only here.
 repo = "m0s4ik/home-companion"
-# Offer release candidates too
+# Offer release candidates too (the switch on the Updates page wins over this)
 prerelease = false
 
 [paths]

@@ -1130,6 +1130,10 @@ pub struct Ui<S: Screen> {
     /// Updates (update.rs): the checking thread (None: no checking) and the page's timer.
     updater: Option<crate::update::Checker>,
     update_timer: Timer,
+    /// Watches how an install ends, to say it in a dialog until OK; the end shown (its status
+    /// line), so it is said once.
+    update_watch: Timer,
+    update_result_shown: RefCell<String>,
     gallery: RefCell<Vec<PathBuf>>,
     thumbs_rx: RefCell<Option<ThumbsRx>>,
     viewing: RefCell<Option<PathBuf>>,
@@ -1413,7 +1417,13 @@ impl<S: Screen> Ui<S> {
         let opts_linked = opts.ha_linked;
         let opts_first = opts.first_start;
         let has_camera = !demo && super::camera::present();
-        let opts_update = opts.update.clone();
+        // The switch on the Updates page wins over the configuration's `prerelease`.
+        let opts_update = opts.update.clone().map(|mut c| {
+            if let Some(p) = settings.as_ref().and_then(|s| s.update_prerelease()) {
+                c.prerelease = p;
+            }
+            c
+        });
         let ui = Rc::new(Ui {
             screen,
             mirror: RefCell::new(None),
@@ -1460,6 +1470,8 @@ impl<S: Screen> Ui<S> {
                 .as_ref()
                 .map(|c| crate::update::Checker::spawn(c, env!("CARGO_PKG_VERSION"))),
             update_timer: Timer::default(),
+            update_watch: Timer::default(),
+            update_result_shown: RefCell::new(String::new()),
             gallery: RefCell::new(Vec::new()),
             thumbs_rx: RefCell::new(None),
             viewing: RefCell::new(None),
@@ -1488,6 +1500,22 @@ impl<S: Screen> Ui<S> {
             this: RefCell::new(Weak::new()),
         });
         *ui.this.borrow_mut() = Rc::downgrade(&ui);
+        // How an install ends: a dialog with OK over any page, once (Andrea, 2026-11-16).
+        if ui.updater.is_some() && ui.opts.state_dir.is_some() {
+            let w = Rc::downgrade(&ui);
+            ui.update_watch
+                .start(TimerMode::Repeated, Duration::from_secs(3), move || {
+                    if let Some(ui) = w.upgrade() {
+                        ui.update_result_check();
+                    }
+                });
+            let w = Rc::downgrade(&ui);
+            ui.screen.on_update_result_seen(move || {
+                if let Some(ui) = w.upgrade() {
+                    ui.update_result_seen();
+                }
+            });
+        }
         // Back after an update's restart: its page again, to see the end (Andrea, 2026-11-15).
         if let Some(dir) = ui.opts.state_dir.clone().filter(|_| ui.updater.is_some()) {
             let w = Rc::downgrade(&ui);
@@ -1731,6 +1759,19 @@ impl<S: Screen> Ui<S> {
             if let Some(ui) = ui.upgrade() {
                 if let Some(u) = &ui.updater {
                     u.check_now();
+                }
+                ui.refresh_update();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_update_prerelease(move |on| {
+            if let Some(ui) = ui.upgrade() {
+                if let Some(s) = &ui.settings {
+                    s.save_update_prerelease(on);
+                }
+                if let Some(u) = &ui.updater {
+                    log::info!(event = "update", prerelease = on; "update: release candidates {}", if on { "offered" } else { "not offered" });
+                    u.set_prerelease(on);
                 }
                 ui.refresh_update();
             }
@@ -3157,6 +3198,7 @@ impl<S: Screen> Ui<S> {
                 confirm: l.text("update_confirm").into(),
                 steps: Vec::new(),
                 progress: -1.0,
+                prerelease: Some(false),
             });
         }
         // Sample use for the Home Assistant page's row and the use page.
@@ -3668,6 +3710,7 @@ impl<S: Screen> Ui<S> {
             && page != "welcome"
             && page != "find-ha"
             && page != super::mirror::PAGE
+            && !(page == "update" && self.update_going())
             && self.screen.get_dialog().is_empty()
             && touched.is_none_or(|t| now.duration_since(t) >= PAGE_IDLE)
         {
@@ -3975,6 +4018,7 @@ impl<S: Screen> Ui<S> {
             confirm: l.text("update_confirm").into(),
             steps,
             progress,
+            prerelease: Some(u.prerelease()),
         }
     }
 
@@ -4037,6 +4081,78 @@ impl<S: Screen> Ui<S> {
             })
             .collect();
         (rows, progress)
+    }
+
+    /// An install asked or under way (the Updates page does not go home by itself then).
+    fn update_going(&self) -> bool {
+        let Some(dir) = self.opts.state_dir.as_deref() else {
+            return false;
+        };
+        crate::update::requested(dir)
+            || crate::update::status(dir).is_some_and(|s| {
+                matches!(
+                    s.phase.as_str(),
+                    "downloading" | "checking" | "installing" | "waiting"
+                ) && now_unix() as i64 - s.at < 3_600
+            })
+    }
+
+    /// How the last install ended, if it is recent and not acknowledged yet: a dialog with OK.
+    fn update_result_check(&self) {
+        let Some(dir) = self.opts.state_dir.as_deref() else {
+            return;
+        };
+        let Some(s) = crate::update::status(dir) else {
+            return;
+        };
+        if !matches!(s.phase.as_str(), "done" | "failed" | "rolled-back")
+            || now_unix() as i64 - s.at > 86_400
+        {
+            return;
+        }
+        let key = format!("{} {} {}", s.phase, s.version, s.at);
+        let seen =
+            std::fs::read_to_string(crate::update::dir(dir).join("seen")).unwrap_or_default();
+        if seen.trim() == key || *self.update_result_shown.borrow() == key {
+            return;
+        }
+        if !self.screen.get_dialog().is_empty() {
+            return;
+        }
+        let l = self.locale.borrow();
+        let current = env!("CARGO_PKG_VERSION");
+        let (title, text, ok) = match s.phase.as_str() {
+            "done" => (
+                l.text("update_result_done_title").to_string(),
+                l.text("update_result_done_text").replace("{v}", current),
+                true,
+            ),
+            "rolled-back" => (
+                l.text("update_result_failed_title").to_string(),
+                l.text("update_result_rolled_text")
+                    .replace("{new}", &s.version)
+                    .replace("{v}", current),
+                false,
+            ),
+            _ => (
+                l.text("update_result_failed_title").to_string(),
+                l.text("update_result_failed_text").replace("{v}", current),
+                false,
+            ),
+        };
+        drop(l);
+        log::info!(event = "update", phase = s.phase.as_str(); "update: the end said on the screen ({})", s.phase);
+        *self.update_result_shown.borrow_mut() = key;
+        self.wake(WakeSource::Touch);
+        self.screen.show_update_result(&title, &text, ok);
+    }
+
+    /// OK on how the install ended: not said again.
+    fn update_result_seen(&self) {
+        let key = self.update_result_shown.borrow().clone();
+        if let Some(dir) = self.opts.state_dir.as_deref() {
+            let _ = std::fs::write(crate::update::dir(dir).join("seen"), format!("{key}\n"));
+        }
     }
 
     /// Install: the request to the root service (update.rs); the page follows its status.
