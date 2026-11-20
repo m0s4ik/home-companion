@@ -4,7 +4,7 @@
 //! Home Assistant's WebSocket API (`/api/websocket`), for what Wyoming does not carry. Today
 //! only the weather of the home screen: one thread keeps a connection, authenticates with a
 //! token from [`auth::Auth`] (the QR-code link's, refreshed, or `home_assistant.token_file`),
-//! subscribes to the weather entity and its daily forecast, and sends the UI what to show
+//! subscribes to the weather entity and its daily and hourly forecasts, and sends the UI what to show
 //! (`None` = no real data: the weather box is hidden). It reconnects with a growing pause and
 //! never touches the UI or the audio threads.
 //!
@@ -349,16 +349,21 @@ fn session(
     };
     let entities_id = take_id();
     let forecast_id = take_id();
-    let mut model = WeatherModel::new(&cfg.entity, entities_id, forecast_id);
-    let subscribe_forecast = |id: u64| {
+    let hourly_id = take_id();
+    let mut model = WeatherModel::new(&cfg.entity, entities_id, forecast_id).with_hourly(hourly_id);
+    let subscribe = |id: u64, kind: &str| {
         json!({"id": id, "type": "weather/subscribe_forecast", "entity_id": cfg.entity,
-               "forecast_type": "daily"})
+               "forecast_type": kind})
         .to_string()
     };
+    let subscribe_forecast = |id: u64| subscribe(id, "daily");
+    // The home widget's next hours; refused by integrations without them (not an error).
+    let subscribe_hourly = |id: u64| subscribe(id, "hourly");
     let subs = [
         json!({"id": entities_id, "type": "subscribe_entities", "entity_ids": [cfg.entity]})
             .to_string(),
         subscribe_forecast(forecast_id),
+        subscribe_hourly(hourly_id),
     ];
     for s in subs {
         if let Err(e) = ws.send_text(&s) {
@@ -414,6 +419,15 @@ fn session(
                 if h.resubscribe_forecast {
                     model.forecast_id = take_id();
                     if let Err(e) = ws.send_text(&subscribe_forecast(model.forecast_id)) {
+                        return lost(e);
+                    }
+                }
+                if let Some(why) = &h.hourly_refused {
+                    log::info!(event = "ha_weather"; "weather: no hourly forecast ({why}): the widget shows days");
+                }
+                if h.resubscribe_hourly {
+                    model.hourly_id = take_id();
+                    if let Err(e) = ws.send_text(&subscribe_hourly(model.hourly_id)) {
                         return lost(e);
                     }
                 }
@@ -525,7 +539,7 @@ mod tests {
         s.write_all(&f).unwrap();
     }
 
-    /// Upgrade, authenticate, check the two subscriptions; returns the stream and leftovers.
+    /// Upgrade, authenticate, check the three subscriptions; returns the stream and leftovers.
     fn accept(l: &TcpListener, token: &str) -> (TcpStream, Vec<u8>) {
         let (mut s, _) = l.accept().unwrap();
         s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
@@ -556,6 +570,10 @@ mod tests {
         assert_eq!(fc["type"], "weather/subscribe_forecast");
         assert_eq!(fc["id"], 2);
         assert_eq!(fc["forecast_type"], "daily");
+        let hourly: Value = serde_json::from_str(&read_frame(&mut s, &mut buf)).unwrap();
+        assert_eq!(hourly["type"], "weather/subscribe_forecast");
+        assert_eq!(hourly["id"], 3);
+        assert_eq!(hourly["forecast_type"], "hourly");
         (s, buf)
     }
 
@@ -600,11 +618,12 @@ mod tests {
         );
         let w = rx.recv_timeout(wait).unwrap().unwrap();
         assert_eq!((w.condition.as_str(), w.temperature), ("sunny", 21.5));
-        // The entity is back: the forecast is asked again, with a new id.
+        // The entity is back: the forecast is asked again, with a new id (the hourly one was
+        // never answered: not asked again).
         let mut buf = Vec::new();
         let again: Value = serde_json::from_str(&read_frame(&mut s, &mut buf)).unwrap();
         assert_eq!(again["type"], "weather/subscribe_forecast");
-        assert_eq!(again["id"], 3);
+        assert_eq!(again["id"], 4);
         // Unavailable again: hidden.
         send(
             &mut s,

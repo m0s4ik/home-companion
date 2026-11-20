@@ -180,15 +180,41 @@ fn short_day(date: &str, l: &Locale) -> String {
     format!("{name} {dom}")
 }
 
-/// The home widget's weather columns (widgets.rs: `left` the day, `note` the condition, `text`
-/// the high): the days after `today` ("2026-11-08"), at most four.
-pub fn widget_columns(w: &Weather, l: &Locale, today: &str) -> Vec<super::widgets::WidgetRow> {
+/// The home widget's weather columns (widgets.rs: `left` the hour or the day, `note` the
+/// condition, `text` the temperature): the next five hours from the one going on (`now`,
+/// seconds since the epoch; `hm` writes a time "15:00"); without an hourly forecast the days
+/// after `today` ("2026-11-08"), at most four, with their high.
+pub fn widget_columns(
+    w: &Weather,
+    l: &Locale,
+    today: &str,
+    now: i64,
+    hm: &dyn Fn(i64) -> String,
+) -> Vec<super::widgets::WidgetRow> {
+    use super::widgets::WidgetRow;
+    let hours: Vec<WidgetRow> = w
+        .hours
+        .iter()
+        .filter(|h| h.at + 3600 > now)
+        .filter_map(|h| {
+            Some(WidgetRow {
+                left: hm(h.at),
+                text: format!("{}°", h.temperature?.round() as i64),
+                right: String::new(),
+                note: h.condition.clone(),
+            })
+        })
+        .take(5)
+        .collect();
+    if hours.len() >= 2 {
+        return hours;
+    }
     w.today
         .iter()
         .chain(&w.next_days)
         .filter(|d| d.date.as_str() > today)
         .filter_map(|d| {
-            Some(super::widgets::WidgetRow {
+            Some(WidgetRow {
                 left: short_day(&d.date, l),
                 text: format!("{}°", d.high?.round() as i64),
                 right: String::new(),
@@ -314,7 +340,8 @@ mod tests {
     #[test]
     fn widget_columns_are_the_next_four_days() {
         let w = Weather::sample_week("2026-11-03");
-        let c = widget_columns(&w, &locale("it"), "2026-11-03");
+        let hm = |t: i64| format!("{:02}:00", t.rem_euclid(86400) / 3600);
+        let c = widget_columns(&w, &locale("it"), "2026-11-03", 0, &hm);
         let got: Vec<(&str, &str, &str)> = c
             .iter()
             .map(|r| (r.left.as_str(), r.note.as_str(), r.text.as_str()))
@@ -329,6 +356,27 @@ mod tests {
             ]
         );
         // Without a forecast: no columns (the page leaves the turn).
-        assert!(widget_columns(&Weather::sample(), &locale("en"), "2026-11-03").is_empty());
+        assert!(widget_columns(&Weather::sample(), &locale("en"), "2026-11-03", 0, &hm).is_empty());
+        // With the hours: the next five from the one going on (14:25 → from 14:00).
+        let start = 20 * 86400 + 14 * 3600;
+        let w = w.with_sample_hours(start - 3600);
+        let c = widget_columns(&w, &locale("it"), "2026-11-03", start + 25 * 60, &hm);
+        let got: Vec<(&str, &str, &str)> = c
+            .iter()
+            .map(|r| (r.left.as_str(), r.note.as_str(), r.text.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("14:00", "partlycloudy", "14°"),
+                ("15:00", "cloudy", "13°"),
+                ("16:00", "rainy", "12°"),
+                ("17:00", "rainy", "11°"),
+                ("18:00", "cloudy", "10°"),
+            ]
+        );
+        // One hour left only: the days again.
+        let late = widget_columns(&w, &locale("it"), "2026-11-03", start + 4 * 3600, &hm);
+        assert_eq!(late[0].left, "Mer 4");
     }
 }

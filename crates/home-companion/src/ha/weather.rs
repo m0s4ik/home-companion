@@ -14,6 +14,8 @@
 //! - `weather/subscribe_forecast` with `forecast_type: "daily"`: events `{"type": "daily",
 //!   "forecast": [{"datetime", "condition", "temperature", "templow"}, ...]}` (`forecast` may be
 //!   null while the integration has no data).
+//! - the same with `forecast_type: "hourly"` (the home widget's next hours): many integrations
+//!   have no hourly forecast and refuse it; that is not an error, the widget then shows days.
 
 use serde_json::{Map, Value};
 
@@ -31,6 +33,15 @@ pub struct ForecastDay {
     pub precipitation_probability: Option<f64>,
 }
 
+/// An hour of the hourly forecast.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForecastHour {
+    /// Its start, seconds since the epoch.
+    pub at: i64,
+    pub condition: String,
+    pub temperature: Option<f64>,
+}
+
 /// What the home screen shows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Weather {
@@ -43,6 +54,8 @@ pub struct Weather {
     pub today: Option<ForecastDay>,
     /// The following days (for the dashboard to come).
     pub next_days: Vec<ForecastDay>,
+    /// The hourly forecast, soonest first (empty when the integration has none).
+    pub hours: Vec<ForecastHour>,
 }
 
 impl Weather {
@@ -61,6 +74,7 @@ impl Weather {
                 precipitation_probability: None,
             }),
             next_days: Vec::new(),
+            hours: Vec::new(),
         }
     }
 }
@@ -90,6 +104,28 @@ impl Weather {
         ];
         w
     }
+
+    /// The demos' afternoon, hour by hour from `start` (seconds since the epoch, a whole hour).
+    pub fn with_sample_hours(mut self, start: i64) -> Weather {
+        let hours = [
+            ("partlycloudy", 14.0),
+            ("partlycloudy", 14.0),
+            ("cloudy", 13.0),
+            ("rainy", 12.0),
+            ("rainy", 11.0),
+            ("cloudy", 10.0),
+        ];
+        self.hours = hours
+            .iter()
+            .enumerate()
+            .map(|(i, (c, t))| ForecastHour {
+                at: start + i as i64 * 3600,
+                condition: c.to_string(),
+                temperature: Some(*t),
+            })
+            .collect();
+        self
+    }
 }
 
 /// The states that mean "no data".
@@ -112,6 +148,11 @@ pub struct Handled {
     /// The forecast subscription should be sent again (it failed while the entity was missing
     /// or unavailable, and the entity is back).
     pub resubscribe_forecast: bool,
+    /// The same for the hourly one.
+    pub resubscribe_hourly: bool,
+    /// The hourly forecast was refused (said once in the log, never an error: many integrations
+    /// have none).
+    pub hourly_refused: Option<String>,
     /// A subscription was refused: (id, Home Assistant's error message).
     pub error: Option<(u64, String)>,
 }
@@ -123,9 +164,13 @@ pub struct WeatherModel {
     pub entities_id: u64,
     /// The current `weather/subscribe_forecast` message id.
     pub forecast_id: u64,
+    /// The current hourly `weather/subscribe_forecast` message id (0: not asked).
+    pub hourly_id: u64,
     entity: Option<EntityState>,
     forecast: Vec<ForecastDay>,
     forecast_failed: bool,
+    hourly: Vec<ForecastHour>,
+    hourly_failed: bool,
 }
 
 fn number(v: Option<&Value>) -> Option<f64> {
@@ -135,6 +180,26 @@ fn number(v: Option<&Value>) -> Option<f64> {
 /// The date part of an ISO 8601 date-time.
 fn date_of(datetime: &str) -> String {
     datetime.get(..10).unwrap_or(datetime).to_string()
+}
+
+/// The hourly forecast; entries without a readable time are left out.
+pub fn parse_hours(v: &Value) -> Vec<ForecastHour> {
+    let Some(list) = v.as_array() else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|h| {
+            Some(ForecastHour {
+                at: crate::usage::parse_time(h.get("datetime")?.as_str()?)?,
+                condition: h
+                    .get("condition")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                temperature: number(h.get("temperature")),
+            })
+        })
+        .collect()
 }
 
 pub fn parse_forecast(v: &Value) -> Vec<ForecastDay> {
@@ -165,10 +230,19 @@ impl WeatherModel {
             entity_id: entity_id.to_string(),
             entities_id,
             forecast_id,
+            hourly_id: 0,
             entity: None,
             forecast: Vec::new(),
             forecast_failed: false,
+            hourly: Vec::new(),
+            hourly_failed: false,
         }
+    }
+
+    /// Also the hourly forecast, on subscription `id`.
+    pub fn with_hourly(mut self, id: u64) -> WeatherModel {
+        self.hourly_id = id;
+        self
     }
 
     fn available(&self) -> bool {
@@ -200,6 +274,14 @@ impl WeatherModel {
                         .and_then(Value::as_str)
                         .unwrap_or("refused")
                         .to_string();
+                    if id.is_some() && id == Some(self.hourly_id) {
+                        self.hourly_failed = true;
+                        if !self.hourly.is_empty() {
+                            self.hourly.clear();
+                            out.changed = true;
+                        }
+                        out.hourly_refused = Some(why.clone());
+                    }
                     if id == Some(self.forecast_id) {
                         self.forecast_failed = true;
                         if !self.forecast.is_empty() {
@@ -222,6 +304,20 @@ impl WeatherModel {
                 if self.forecast_failed && !was_available && self.available() {
                     self.forecast_failed = false;
                     out.resubscribe_forecast = true;
+                }
+                if self.hourly_failed && !was_available && self.available() {
+                    self.hourly_failed = false;
+                    out.resubscribe_hourly = true;
+                }
+            }
+            Some("event") if id.is_some() && id == Some(self.hourly_id) => {
+                let hours = msg
+                    .pointer("/event/forecast")
+                    .map(parse_hours)
+                    .unwrap_or_default();
+                if hours != self.hourly {
+                    self.hourly = hours;
+                    out.changed = true;
                 }
             }
             Some("event") if id == Some(self.forecast_id) => {
@@ -312,6 +408,7 @@ impl WeatherModel {
             unit,
             today: today_fc,
             next_days,
+            hours: self.hourly.clone(),
         })
     }
 }
@@ -400,6 +497,39 @@ mod tests {
         let w = m.view("2026-11-02").unwrap();
         assert!(w.today.is_none());
         assert_eq!(w.next_days.len(), 4);
+    }
+
+    #[test]
+    fn hourly_forecast_for_the_widget() {
+        let mut m = WeatherModel::new("weather.home", 1, 2).with_hourly(3);
+        let out = feed(&mut m, &fixture("weather-hourly.jsonl"));
+        assert!(
+            out.iter()
+                .all(|h| h.error.is_none() && h.hourly_refused.is_none())
+        );
+        let w = m.view("2026-11-04").unwrap();
+        // Six hours (the one without a readable time left out), with their times.
+        assert_eq!(w.hours.len(), 6);
+        assert_eq!(
+            w.hours[0].at,
+            crate::usage::parse_time("2026-11-04T14:00:00Z").unwrap()
+        );
+        assert_eq!(w.hours[1].condition, "rainy");
+        assert_eq!(w.hours[4].temperature, Some(10.4));
+        assert_eq!(w.today.as_ref().map(|d| d.high), Some(Some(15.2)));
+    }
+
+    #[test]
+    fn no_hourly_forecast_is_not_an_error() {
+        let mut m = WeatherModel::new("weather.home", 1, 2).with_hourly(3);
+        let out = feed(&mut m, &fixture("weather-no-hourly.jsonl"));
+        // Refused: said once, never an error (the weather stays on, with days).
+        assert!(out.iter().all(|h| h.error.is_none()));
+        assert_eq!(out.iter().filter(|h| h.hourly_refused.is_some()).count(), 1);
+        let w = m.view("2026-11-04").unwrap();
+        assert!(w.hours.is_empty());
+        assert_eq!(w.condition, "sunny");
+        assert_eq!(w.next_days.len(), 1);
     }
 
     #[test]

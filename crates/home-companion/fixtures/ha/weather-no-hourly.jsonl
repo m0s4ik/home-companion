@@ -1,0 +1,5 @@
+{"id":1,"type":"result","success":true,"result":null}
+{"id":1,"type":"event","event":{"a":{"weather.home":{"s":"sunny","a":{"temperature":9.5,"temperature_unit":"°C","friendly_name":"Forecast Home","supported_features":1}}}}}
+{"id":2,"type":"result","success":true,"result":null}
+{"id":2,"type":"event","event":{"type":"daily","forecast":[{"condition":"sunny","datetime":"2026-11-04T11:00:00+00:00","temperature":12.0,"templow":3.1},{"condition":"rainy","datetime":"2026-11-05T11:00:00+00:00","temperature":10.5,"templow":4.0}]}}
+{"id":3,"type":"result","success":false,"error":{"code":"forecast_not_supported","message":"Weather entity does not support 'hourly' forecast"}}

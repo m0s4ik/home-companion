@@ -2853,7 +2853,9 @@ impl<S: Screen> Ui<S> {
             );
         }
         drop(desk);
-        *self.weather.borrow_mut() = Some(Weather::sample_week(DEMO_DATE));
+        // The afternoon hour by hour, from the hour going on (14:00).
+        let hour = DEMO_NOW as i64 - DEMO_NOW as i64 % 3600;
+        *self.weather.borrow_mut() = Some(Weather::sample_week(DEMO_DATE).with_sample_hours(hour));
     }
 
     fn show_demo(&self, d: Demo) {
@@ -3795,6 +3797,8 @@ impl<S: Screen> Ui<S> {
         }
         *self.weather.borrow_mut() = w;
         self.render_weather();
+        // The widget's weather page: new hours show when the page comes back.
+        self.refresh_widget();
     }
 
     fn render_weather(&self) {
@@ -5243,7 +5247,7 @@ impl<S: Screen> Ui<S> {
             .weather
             .borrow()
             .as_ref()
-            .map(|w| super::weather::widget_columns(w, &l, &today))
+            .map(|w| super::weather::widget_columns(w, &l, &today, now, &|t| local_hm(t).0))
             .unwrap_or_default();
         let words = widgets::Words {
             next: l.text("widget_next"),

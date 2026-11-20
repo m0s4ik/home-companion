@@ -31,13 +31,14 @@ The words quoted below are the English locale's (`locales/en.toml`); every langu
 
 The panel is 1280 x 800 (landscape).
 
-- **Stage** x 0-512: the pose 740 px tall, top 30, centred at x 256. A tap wakes the screen; a double tap on the
-  mouth opens the settings.
-- **Desk column** x 560-1232: 672 px, centre 896; 48 px from the right edge and from the stage.
+- **Stage** x 0-424 (a third of the screen, `Grid.stage-width`): the character's own, nothing is drawn over it. A
+  tap wakes the screen; a double tap on the mouth opens the settings.
+- **Desk column** x 424-1232: 808 px, centre 828 (`Grid.col-x`, `col-width`, `col-cx`); 48 px from the right edge.
 - **Bands** (y): page header 32-96 (back chevron + title, the time small at the right); home time band 48-290 (clock
   at 48, date line at 240); **middle band 312-600** (home: three 88 px cards, 12 px apart; pages: 112-608, their
   content **scrolls inside the band**, the header and the action band never move); **action band 640-776**: three
-  160 x 136 slots centred at x 696, 896, 1096.
+  160 x 136 slots centred at x 628, 828, 1028. The compact home (Settings → Screen) moves the clock up and the
+  middle band to 228-616 (four cards), the action band to 656-792.
 - Screen-level actions only in the action band; actions on an item inside its card or row. A slot without a job
   stays empty. 8 px grid, whole-pixel positions (icons are drawn 1:1). Dialogs sit on the desk, or in the middle of
   the screen over Home Assistant's view.
@@ -107,6 +108,25 @@ its ring and the gold fill) and No stays a target that wins.
   two (more become one "+N timers" card that opens the timers page), (4) the next alarm within a day, (5) the next
   reminder, (6) the shopping list, (7) what plays, (8) the last long answer for a few minutes (opens Conversations).
   A tap on a card opens what it belongs to.
+- **Widget** (`crates/home-companion/src/ui/widgets.rs`, `WidgetPanel`): one panel under the cards that turns
+  through what is around the house: **Coming up** (reminders and calendar events of today and tomorrow: the time in
+  gold on the left, "tomorrow" with the time on the right), **Weather** (five columns, the next hours: hour, sky,
+  temperature; without an hourly forecast the next four days with their high) and **Shopping** ("4 to buy" in the
+  header, one item a row). It takes **the slots the cards leave free**, one rule for every case: 3 free (4 on the
+  compact home) = a header (icon 28, the name in 20 Medium `text-3`, at the right a count or the time of old data)
+  and 4 rows of 52 px (6), 2 = a header and 2 rows, 1 = one row as tall as a card without header, 0 = no widget.
+  Rows that do not fit are cut, never shrunk; text never under 20 px, rows in 28. **Cards and widget**: with its
+  page on, the next reminder and the shopping list are pages of the widget, not cards; everything that asks for
+  attention or a gesture stays a card and wins its slot. A page with nothing to say is not in the turn (no "No
+  events today"); one page: no dots, no turn. The invitation shows only with neither a card nor a widget.
+  **The turn**: every 20 s (Settings → Screen → Widgets: 20 s, 30 s, 1 min or by hand), driven by the body's
+  one-second tick, never by an animation of the screen; it stands still while the home is not what is on screen
+  (another page, Home Assistant's view, a mirrored screen, a conversation, a ring, a reminder full screen, the
+  night, the screen off, the control centre, a dialog) and the page stays a whole interval when the home is back.
+  The page on screen is a photograph: new data shows when it comes back, or at the minute. A swipe across turns it,
+  a tap opens its own page (Reminders, Weather, Shopping); after either the turn waits a minute. Dots of 6 px, 16
+  apart, in the band's last 16 px (the current one `accent`, the others `line`). Not at night. Settings → Screen →
+  Widgets: a switch per page (all on by default) and the interval; saved as `[widgets]` in settings.toml.
 - **Offline** (Home Assistant not connected): the offline pose, the status card, HA dimmed to 35 %; Talk still works
   for the local reflexes.
 - **Conversation**: the wave (72 bars, the state colour), the phrase 48, the heard sentence while thinking and small
@@ -260,8 +280,10 @@ the swipe pushes it out, backwards; the character's own screen steps back under 
 veil, and is not drawn while the view covers it; after a swipe it goes on from where the finger left it), the
 mirrored screen coming in and going out (the same 400 ms curve, up from the bottom edge, the home stepping back under
 it, the video growing its last tenth), the "Okay Alfred" bar over it (down from the top, 180 ms), the timer ring
-(1 Hz), the ringing ring (alpha, 1.6 s), the start-up line. Not allowed: blur, shadows, full-screen alpha animations
-(a static scrim behind a dialog is fine), animated font sizes, anything moving on the idle home but the character.
+(1 Hz), the ringing ring (alpha, 1.6 s), the start-up line, the widget's new page fading in (180 ms, once a
+turn: about ten frames every 20 s; nothing moves between two turns). Not allowed: blur, shadows, full-screen alpha animations
+(a static scrim behind a dialog is fine), animated font sizes, anything moving on the idle home but the character
+(and the widget's fade, once a turn).
 The night pose is dimmed once in Rust (no opacity layer).
 
 Build: the screen is compiled once for both renderers with fonts and icons embedded as files; the software renderer
