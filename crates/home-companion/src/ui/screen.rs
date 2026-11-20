@@ -1280,6 +1280,9 @@ pub struct Ui<S: Screen> {
     /// browser panel last had the catalogue asked again.
     ha_quiet: Cell<Option<bool>>,
     pub(super) catalog_asked: Cell<Option<Instant>>,
+    /// The local hour the night's schedule reads instead of the clock (the tests, so that their
+    /// outcome never depends on when they run; None: the clock).
+    hour_for_tests: Cell<Option<u32>>,
     /// The sensors' last 24 hours, by entity.
     ha_curves: RefCell<HashMap<String, crate::ha::widgets::Curve>>,
     /// The board's notes (the brain's `notes` event), oldest first.
@@ -2071,6 +2074,9 @@ impl<S: Screen> Ui<S> {
             ha_curves: RefCell::new(HashMap::new()),
             ha_quiet: Cell::new(None),
             catalog_asked: Cell::new(None),
+            // The lib's tests live at noon from the start, whatever the clock says (the night's
+            // schedule changes what shows and what may be asked between 23:00 and 07:00).
+            hour_for_tests: Cell::new(if cfg!(test) { Some(12) } else { None }),
             widget_quotes: RefCell::new(widget_quotes),
             widget_currency: RefCell::new(widget_currency),
             widget_cities: RefCell::new(widget_cities),
@@ -4522,7 +4528,9 @@ impl<S: Screen> Ui<S> {
         }
         let (on, start, end) = self.desk.borrow().night;
         let t = now_unix() as i64;
-        let hour = |dt: i64| local_hm(t + dt).0[..2].parse::<u32>().unwrap_or(0);
+        let fixed = self.hour_for_tests.get();
+        let hour =
+            |dt: i64| fixed.unwrap_or_else(|| local_hm(t + dt).0[..2].parse::<u32>().unwrap_or(0));
         let want = [-NIGHT_MARGIN_S, 0, NIGHT_MARGIN_S]
             .iter()
             .any(|dt| is_night(hour(*dt), on, start, end));
@@ -5245,7 +5253,10 @@ impl<S: Screen> Ui<S> {
 
     fn update_night(&self, now: Instant) -> bool {
         let (on, start, end) = self.desk.borrow().night;
-        let hour = local_now().3 as u32;
+        let hour = self
+            .hour_for_tests
+            .get()
+            .unwrap_or_else(|| local_now().3 as u32);
         let scheduled = self.opts.demo.is_none() && is_night(hour, on, start, end);
         let night = {
             let mut d = self.desk.borrow_mut();
