@@ -104,7 +104,28 @@ fn pages_and_their_headers() {
         assert_eq!(header(&r, "x-content-type-options"), Some("nosniff"));
         assert_eq!(header(&r, "referrer-policy"), Some("no-referrer"));
         assert!(header(&r, "access-control-allow-origin").is_none());
+        assert_eq!(header(&r, "cache-control"), Some("no-store"));
     }
+    // The previews' letters: the screen's Inter, kept a day, and nothing else of the disk.
+    for (path, len) in [
+        ("/inter-400.ttf", FONT_REGULAR.len()),
+        ("/inter-500.ttf", FONT_MEDIUM.len()),
+    ] {
+        let r = p.route(&req("GET", path, &[], ""), lan(), Instant::now());
+        assert_eq!((r.status, r.body.len()), (200, len));
+        assert_eq!(header(&r, "content-type"), Some("font/ttf"));
+        assert_eq!(header(&r, "cache-control"), Some("public, max-age=86400"));
+        assert!(
+            header(&r, "content-security-policy")
+                .unwrap()
+                .contains("font-src 'self'")
+        );
+    }
+    assert!(FONT_REGULAR.starts_with(&[0, 1, 0, 0]) && FONT_MEDIUM.starts_with(&[0, 1, 0, 0]));
+    assert_eq!(status(&p, &req("GET", "/inter-700.ttf", &[], "")), 404);
+    // An answer of the body is never kept.
+    let r = p.route(&req("GET", "/api/hello", &[], ""), lan(), Instant::now());
+    assert_eq!(header(&r, "cache-control"), Some("no-store"));
     assert_eq!(status(&p, &req("GET", "/etc/passwd", &[], "")), 404);
     assert_eq!(status(&p, &req("PUT", "/api/set", &[], "")), 405);
 }
@@ -404,8 +425,11 @@ fn over_sockets_and_idle() {
 /// The pages are small (they are in the binary) and draw text only as text.
 #[test]
 fn pages_are_light() {
+    // About 60 KB since the widget's previews are drawn here (panel v2); the fonts apart.
     let total = INDEX.len() + CSS.len() + JS.len();
-    assert!(total < 45 * 1024, "{total} bytes");
+    assert!(total < 72 * 1024, "{total} bytes");
+    // No style or script in the page itself, none set from the script as an attribute.
+    assert!(!JS.contains("setAttribute('style'") && !JS.contains(".style."));
     assert!(
         !JS.contains("innerHTML")
             && !JS.contains("outerHTML")
@@ -500,6 +524,16 @@ fn the_widgets_routes() {
     }
     assert_eq!(status(&p, &get("/api/notes")), 200);
     assert_eq!(last(&p)["op"], "notes.list");
+    assert_eq!(status(&p, &get("/api/widgets/samples")), 200);
+    assert_eq!(last(&p)["op"], "widgets.samples");
+    assert_eq!(
+        status(&p, &post("/api/undo", r#"{"ref":"x","op":"set"}"#, &[])),
+        200
+    );
+    let a = last(&p);
+    assert_eq!(a["op"], "undo");
+    assert!(a.get("ref").is_none());
+    assert_eq!(status(&p, &get("/api/undo")), 404);
     assert_eq!(status(&p, &post("/api/notes/clear", "{}", &[])), 404);
     // Without the same origin: refused before the body hears of it.
     let n = p.body.asked.lock().unwrap().len();

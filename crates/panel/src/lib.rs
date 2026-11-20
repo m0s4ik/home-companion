@@ -17,7 +17,8 @@
 //! - the session's token lives only in a cookie `HttpOnly; SameSite=Strict`: the pages' script
 //!   never sees it, and the body's answers carrying it are stripped before they leave;
 //! - every answer has a strict Content-Security-Policy (no inline script), `nosniff`,
-//!   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`.
+//!   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store` (the two
+//!   font files, the screen's Inter for the widget's previews: kept a day).
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -46,9 +47,16 @@ const COOKIE_AGE: u64 = 30 * 86400;
 pub const INDEX: &str = include_str!("../web/index.html");
 pub const CSS: &str = include_str!("../web/panel.css");
 pub const JS: &str = include_str!("../web/panel.js");
+/// Inter (SIL OFL 1.1, crates/spike-ui/fixtures/fonts), the screen's own subsets: the widget's
+/// previews are drawn with the screen's letters, so they take the same room.
+pub const FONT_REGULAR: &[u8] =
+    include_bytes!("../../spike-ui/fixtures/fonts/Inter-Regular-subset.ttf");
+pub const FONT_MEDIUM: &[u8] =
+    include_bytes!("../../spike-ui/fixtures/fonts/Inter-Medium-subset.ttf");
 
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
-                   connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+                   font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; \
+                   frame-ancestors 'none'";
 
 /// Asks the body: one JSON line out, one back (None: no answer).
 pub trait Body {
@@ -207,11 +215,21 @@ fn is_hex(s: &str, n: usize) -> bool {
 
 /// The headers every answer has.
 fn secure(r: Response) -> Response {
+    // The fonts never change within a version: kept a day (everything else: never kept).
+    let cache = if r
+        .headers
+        .iter()
+        .any(|(n, v)| n == "Content-Type" && v == "font/ttf")
+    {
+        "public, max-age=86400"
+    } else {
+        "no-store"
+    };
     r.header("Content-Security-Policy", CSP)
         .header("X-Content-Type-Options", "nosniff")
         .header("X-Frame-Options", "DENY")
         .header("Referrer-Policy", "no-referrer")
-        .header("Cache-Control", "no-store")
+        .header("Cache-Control", cache)
         .header("Cross-Origin-Opener-Policy", "same-origin")
         .header("Cross-Origin-Resource-Policy", "same-origin")
 }
@@ -323,6 +341,8 @@ impl<B: Body> Panel<B> {
             (false, "/") => Response::new(200).body("text/html; charset=utf-8", INDEX),
             (false, "/panel.css") => Response::new(200).body("text/css; charset=utf-8", CSS),
             (false, "/panel.js") => Response::new(200).body("text/javascript; charset=utf-8", JS),
+            (false, "/inter-400.ttf") => Response::new(200).body("font/ttf", FONT_REGULAR),
+            (false, "/inter-500.ttf") => Response::new(200).body("font/ttf", FONT_MEDIUM),
             (false, p) if p.starts_with("/q/") => {
                 // The QR code's ticket: let in at once, then the page.
                 let ticket = &p[3..];
@@ -357,6 +377,7 @@ impl<B: Body> Panel<B> {
             (false, "/api/sessions") => relay(ask("sessions.list", json!({}))),
             (false, "/api/widgets") => relay(ask("widgets.get", json!({}))),
             (false, "/api/notes") => relay(ask("notes.list", json!({}))),
+            (false, "/api/widgets/samples") => relay(ask("widgets.samples", json!({}))),
             (false, p) if p.starts_with("/api/search/") => {
                 let id = &p["/api/search/".len()..];
                 if !is_hex(id, 32) {
@@ -409,6 +430,7 @@ impl<B: Body> Panel<B> {
                 json!({"search": field("search"), "ref": field("ref")}),
             )),
             (true, "/api/people") => relay(ask("people.set", json!({"refs": field("refs")}))),
+            (true, "/api/undo") => relay(ask("undo", json!({}))),
             (true, p)
                 if p.starts_with("/api/quotes/")
                     || p.starts_with("/api/cities/")
