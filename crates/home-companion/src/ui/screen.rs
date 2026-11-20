@@ -1234,6 +1234,11 @@ pub struct Ui<S: Screen> {
     widget_every: Cell<Option<Duration>>,
     /// The data of the pages chosen from the browser and of Home Assistant's (feeds/, ha/).
     widget_data: RefCell<widgets::Data>,
+    /// The markets chosen from the browser (settings.toml), in their order.
+    widget_quotes: RefCell<Vec<crate::feeds::QuoteChoice>>,
+    /// The feeds' thread (feeds/) and the revision of its data last shown.
+    feeds: RefCell<crate::feeds::Feeds>,
+    feeds_rev: Cell<u64>,
     /// The first start's welcome page is still to be answered.
     language_pending: Cell<bool>,
     /// The first start's search for Home Assistant on the network, while it runs.
@@ -1687,6 +1692,12 @@ impl<S: Screen> Ui<S> {
             (None, Some(s)) => s.widget_order(),
             _ => WidgetKind::ALL.to_vec(),
         };
+        let widget_quotes = match (&opts.demo, &settings) {
+            (None, Some(s)) => s.quotes(),
+            _ => Vec::new(),
+        };
+        // The demos never ask the internet (no cache, nothing chosen).
+        let feeds = crate::feeds::Feeds::new(if demo { None } else { opts.state_dir.clone() });
         let opts_auto = opts.screen.auto.filter(|_| !demo).map(Auto::new);
         let opts_linked = opts.ha_linked;
         let opts_state_dir = opts.state_dir.clone();
@@ -1773,6 +1784,9 @@ impl<S: Screen> Ui<S> {
             widget_on: RefCell::new(widget_on),
             widget_order: RefCell::new(widget_order),
             widget_data: RefCell::new(widgets::Data::default()),
+            widget_quotes: RefCell::new(widget_quotes),
+            feeds: RefCell::new(feeds),
+            feeds_rev: Cell::new(0),
             widget_every: Cell::new(
                 (widget_every > 0).then(|| Duration::from_secs(widget_every as u64)),
             ),
@@ -1790,6 +1804,7 @@ impl<S: Screen> Ui<S> {
             this: RefCell::new(Weak::new()),
         });
         *ui.this.borrow_mut() = Rc::downgrade(&ui);
+        ui.configure_feeds();
         // How an install ends: a dialog with OK over any page, once (Andrea, 2026-11-16).
         if ui.updater.is_some() && ui.opts.state_dir.is_some() {
             let w = Rc::downgrade(&ui);
@@ -5537,7 +5552,7 @@ impl<S: Screen> Ui<S> {
     fn widget_chosen(&self, kind: WidgetKind) -> usize {
         let d = self.widget_data.borrow();
         match kind {
-            WidgetKind::Quotes => d.quotes.len(),
+            WidgetKind::Quotes => self.widget_quotes.borrow().len(),
             WidgetKind::Cities => d.cities.len(),
             WidgetKind::Sensors => d.sensors.len(),
             _ => 0,
@@ -5679,9 +5694,73 @@ impl<S: Screen> Ui<S> {
             || !self.screen.get_dialog().is_empty()
     }
 
+    /// What the feeds fetch: the choices as they are now.
+    fn configure_feeds(&self) {
+        let config = crate::feeds::FeedsConfig {
+            quotes: self.widget_quotes.borrow().clone(),
+        };
+        self.feeds.borrow_mut().configure(config);
+    }
+
+    /// The feeds' second: whether they may ask the internet now (their page on, not the night,
+    /// the screen on), and their new data into the widget (shown when its page comes back).
+    fn tick_feeds(&self) {
+        let (night, off) = (self.desk.borrow().night_now, super::backlight::screen_off());
+        let on = self.widget_on.borrow().contains(&WidgetKind::Quotes);
+        let rev = {
+            let mut f = self.feeds.borrow_mut();
+            f.set_active(crate::feeds::plan::active(
+                on,
+                !self.widget_quotes.borrow().is_empty(),
+                night,
+                !off,
+            ));
+            f.rev()
+        };
+        if rev != self.feeds_rev.get() {
+            self.feeds_rev.set(rev);
+            self.apply_feeds();
+        }
+    }
+
+    /// The feeds' data in the screen's terms, for the chosen items in their order.
+    fn apply_feeds(&self) {
+        let snap = self.feeds.borrow().snapshot();
+        let quotes: Vec<widgets::Trend> = self
+            .widget_quotes
+            .borrow()
+            .iter()
+            .filter_map(|c| {
+                let q = snap.quote(&c.key())?;
+                let interval = if q.market_open {
+                    crate::feeds::plan::YAHOO_OPEN
+                } else {
+                    crate::feeds::plan::YAHOO_CLOSED
+                };
+                Some(widgets::Trend {
+                    name: c.name.clone(),
+                    value: q.price,
+                    decimals: q.decimals,
+                    unit: q.unit.clone(),
+                    prev: q.prev,
+                    pct: true,
+                    points: q.points.clone(),
+                    low: q.low,
+                    high: q.high,
+                    at: q.at,
+                    fresh: 2 * interval as i64,
+                    max_age: 48 * 3600,
+                })
+            })
+            .collect();
+        self.widget_data.borrow_mut().quotes = quotes;
+        self.refresh_widget();
+    }
+
     /// The widget's second: its turn, and at a new minute the page on screen with fresh data
     /// (what is over leaves Next).
     fn tick_widget(&self, now: Instant, minute: bool) {
+        self.tick_feeds();
         if self.widget_on.borrow().is_empty() {
             return;
         }

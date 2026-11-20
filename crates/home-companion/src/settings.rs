@@ -283,6 +283,40 @@ impl Settings {
         (on, every)
     }
 
+    /// The markets chosen from the browser (`[[widgets.quotes]]`): malformed entries, invalid
+    /// ids and repeats left out, names cleaned, at most [`crate::feeds::MAX_QUOTES`].
+    pub fn quotes(&self) -> Vec<crate::feeds::QuoteChoice> {
+        use crate::feeds::{MAX_QUOTES, QuoteChoice, clean_name};
+        let mut out: Vec<QuoteChoice> = Vec::new();
+        let t = self.widgets_table();
+        for v in t
+            .get("quotes")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let Ok(mut q) = v.clone().try_into::<QuoteChoice>() else {
+                continue;
+            };
+            q.name = clean_name(&q.name);
+            if q.valid() && !out.iter().any(|o| o.key() == q.key()) {
+                out.push(q);
+            }
+        }
+        out.truncate(MAX_QUOTES);
+        out
+    }
+
+    pub fn save_quotes(&self, quotes: &[crate::feeds::QuoteChoice]) {
+        let list: Vec<toml::Value> = quotes
+            .iter()
+            .filter_map(|q| toml::Value::try_from(q).ok())
+            .collect();
+        self.save_widgets_keys(|t| {
+            t.insert("quotes".into(), list.into());
+        });
+    }
+
     /// The pages on and the interval; every page is then `seen` (its default never applies
     /// again).
     pub fn save_widgets(&self, on: &[crate::ui::widgets::Kind], every: u32) {
@@ -549,6 +583,41 @@ mod tests {
         assert_eq!(WakeSensitivity::from_step(-5), Less);
         assert_eq!(WakeSensitivity::from_step(7), More);
         assert_eq!(WakeSensitivity::from_key("loud"), None);
+    }
+
+    #[test]
+    fn quotes_read_tolerantly() {
+        use crate::feeds::{QuoteChoice, Source};
+        let dir =
+            std::env::temp_dir().join(format!("home-companion-quotes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = Settings::in_dir(&dir);
+        assert!(s.quotes().is_empty());
+        let q = |src, id: &str| QuoteChoice {
+            source: src,
+            id: id.into(),
+            name: format!(" {id}\n"),
+        };
+        s.save_quotes(&[q(Source::Yahoo, "AAPL"), q(Source::Coingecko, "bitcoin")]);
+        s.save_widgets(&[crate::ui::widgets::Kind::Quotes], 20);
+        let back = s.quotes();
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].name, "AAPL");
+        assert_eq!(back[1].key(), "coingecko:bitcoin");
+        std::fs::write(
+            &s.path,
+            "[widgets]\nquotes = [{source = \"yahoo\", id = \"AAPL\", name = \"A\"}, \
+             {source = \"yahoo\", id = \"AAPL\", name = \"again\"}, {source = \"ftp\", id = \"x\", name = \"\"}, \
+             {source = \"yahoo\", id = \"../etc\", name = \"\"}, 7]\n",
+        )
+        .unwrap();
+        assert_eq!(s.quotes().len(), 1);
+        let many: Vec<QuoteChoice> = (0..12)
+            .map(|i| q(Source::Yahoo, &format!("S{i}")))
+            .collect();
+        s.save_quotes(&many);
+        assert_eq!(s.quotes().len(), crate::feeds::MAX_QUOTES);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -13,6 +13,7 @@ pub mod config;
 pub mod conversation;
 pub mod core;
 pub mod cues;
+pub mod feeds;
 pub mod ha;
 pub mod history;
 pub mod logger;
