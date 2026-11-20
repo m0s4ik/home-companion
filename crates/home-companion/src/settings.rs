@@ -317,6 +317,42 @@ impl Settings {
         });
     }
 
+    /// The other cities chosen from the browser (`[[widgets.cities]]`): as the markets, at most
+    /// [`crate::feeds::MAX_CITIES`], coordinates checked.
+    pub fn cities(&self) -> Vec<crate::feeds::CityChoice> {
+        use crate::feeds::{CityChoice, MAX_CITIES, clean_name};
+        let mut out: Vec<CityChoice> = Vec::new();
+        let t = self.widgets_table();
+        for v in t
+            .get("cities")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let Ok(mut c) = v.clone().try_into::<CityChoice>() else {
+                continue;
+            };
+            c.name = clean_name(&c.name);
+            c.region = clean_name(&c.region);
+            c.country = clean_name(&c.country);
+            if c.valid() && !c.name.is_empty() && !out.iter().any(|o| o.id == c.id) {
+                out.push(c);
+            }
+        }
+        out.truncate(MAX_CITIES);
+        out
+    }
+
+    pub fn save_cities(&self, cities: &[crate::feeds::CityChoice]) {
+        let list: Vec<toml::Value> = cities
+            .iter()
+            .filter_map(|c| toml::Value::try_from(c).ok())
+            .collect();
+        self.save_widgets_keys(|t| {
+            t.insert("cities".into(), list.into());
+        });
+    }
+
     /// The currency of the coins (`[widgets] currency`): "usd" unless one of the choices.
     pub fn widget_currency(&self) -> String {
         self.widgets_table()
@@ -639,6 +675,23 @@ mod tests {
         assert_eq!(s.widget_currency(), "chf");
         s.save_widget_currency("btc");
         assert_eq!(s.widget_currency(), "usd");
+        // The cities, the same way.
+        let city = |id: u64, lat: f64| crate::feeds::CityChoice {
+            id,
+            name: "Berlin".into(),
+            region: "Berlin".into(),
+            country: "DE".into(),
+            lat,
+            lon: 13.41,
+        };
+        s.save_cities(&[city(1, 52.52), city(1, 52.52), city(2, 95.0), city(3, -1.0)]);
+        let back = s.cities();
+        assert_eq!(back.iter().map(|c| c.id).collect::<Vec<_>>(), [1, 3]);
+        assert_eq!(
+            s.quotes().len(),
+            crate::feeds::MAX_QUOTES,
+            "the markets are kept"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

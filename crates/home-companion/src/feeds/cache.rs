@@ -72,6 +72,7 @@ mod tests {
                 market_open: false,
                 at: 7,
             }],
+            ..Default::default()
         };
         write(&path, &s);
         assert_eq!(read(&path), s);

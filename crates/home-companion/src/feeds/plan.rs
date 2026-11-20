@@ -4,10 +4,12 @@
 //! When each request of the feeds is due: pure, on a clock passed in (seconds, monotonic), so
 //! every rule is a test. One [`Job`] per thing fetched (a Yahoo symbol; all the coins; all the
 //! cities): it waits its interval after a success, doubles it after each error up to six
-//! hours, honours a `Retry-After`, and always takes ±10% so that a room full of devices does
+//! hours (the first error retries within five minutes), honours a `Retry-After`, and always takes ±10% so that a room full of devices does
 //! not ask at the same second. While the feeds are not needed (the page off, the night, the
 //! screen off) nothing is asked; when they are needed again what is overdue goes within 20 s.
 
+/// After a first error, again within this.
+pub const FIRST_RETRY: f64 = 5.0 * 60.0;
 /// The longest wait, whatever the errors or the server say.
 pub const MAX_WAIT: f64 = 6.0 * 3600.0;
 /// Yahoo: every 15 minutes while its market is open, every hour while it is closed.
@@ -60,7 +62,13 @@ impl Job {
     /// `Retry-After` wins, but never shorter than the interval nor longer than the maximum.
     pub fn failure(&mut self, now: f64, interval: f64, retry_after: Option<f64>, jitter: f64) {
         self.errors = self.errors.saturating_add(1);
-        let backoff = (interval * 2f64.powi(self.errors.min(16) as i32)).min(MAX_WAIT);
+        // The first error may be a moment's (a name not resolved at start, a timeout): again in
+        // five minutes at most; then the interval doubled per error.
+        let backoff = if self.errors == 1 {
+            interval.min(FIRST_RETRY)
+        } else {
+            (interval * 2f64.powi((self.errors - 1).min(16) as i32)).min(MAX_WAIT)
+        };
         let wait = match retry_after {
             Some(r) => r.clamp(interval, MAX_WAIT),
             None => backoff,
@@ -161,8 +169,8 @@ mod tests {
             j.failure(0.0, 900.0, None, 0.0);
             waits.push(j.due);
         }
-        assert_eq!(&waits[..4], [1800.0, 3600.0, 7200.0, 14400.0]);
-        assert!(waits[4..].iter().all(|w| *w == MAX_WAIT));
+        assert_eq!(&waits[..5], [300.0, 1800.0, 3600.0, 7200.0, 14400.0]);
+        assert!(waits[5..].iter().all(|w| *w == MAX_WAIT));
         j.success(0.0, 900.0, 0.0);
         assert_eq!((j.due, j.errors), (900.0, 0));
     }

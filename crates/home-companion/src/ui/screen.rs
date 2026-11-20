@@ -498,7 +498,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 86] = [
+pub const DEMO_STATES: [&str; 87] = [
     "home",
     "cards",
     "cards-setup",
@@ -581,6 +581,7 @@ pub const DEMO_STATES: [&str; 86] = [
     "widget-compact",
     "widget-quotes",
     "widget-quotes-line",
+    "widget-cities",
     "settings-widgets",
     "settings-panel",
     "panel-ask",
@@ -814,11 +815,12 @@ impl Demo {
                 ..home.clone()
             },
             "widget" | "widget-weather" | "widget-shopping" | "widget-medium" | "widget-line"
-            | "widget-compact" | "widget-quotes" | "widget-quotes-line" => Demo {
+            | "widget-compact" | "widget-quotes" | "widget-quotes-line" | "widget-cities" => Demo {
                 widget: Some(match s {
                     "widget-weather" => WidgetKind::Weather,
                     "widget-shopping" => WidgetKind::Shopping,
                     "widget-quotes" | "widget-quotes-line" => WidgetKind::Quotes,
+                    "widget-cities" => WidgetKind::Cities,
                     _ => WidgetKind::Next,
                 }),
                 widget_cards: match s {
@@ -1238,6 +1240,9 @@ pub struct Ui<S: Screen> {
     /// currency.
     widget_quotes: RefCell<Vec<crate::feeds::QuoteChoice>>,
     widget_currency: RefCell<String>,
+    /// The other cities chosen from the browser, and their weather as last fetched.
+    widget_cities: RefCell<Vec<crate::feeds::CityChoice>>,
+    city_weather: RefCell<Vec<crate::feeds::openmeteo::CityWeather>>,
     /// The feeds' thread (feeds/) and the revision of its data last shown.
     feeds: RefCell<crate::feeds::Feeds>,
     feeds_rev: Cell<u64>,
@@ -1529,6 +1534,79 @@ fn demo_quotes() -> Vec<widgets::Trend> {
     ]
 }
 
+/// The other cities of the demos: public places, made-up weather.
+fn demo_cities() -> (
+    Vec<crate::feeds::CityChoice>,
+    Vec<crate::feeds::openmeteo::CityWeather>,
+) {
+    use crate::feeds::openmeteo::{CityWeather, Day, Hour};
+    let at = DEMO_NOW as i64 - 600;
+    let midnight = DEMO_NOW as i64 - DEMO_NOW as i64 % 86400;
+    let city = |id: u64, name: &str, region: &str, country: &str, lat: f64, lon: f64| {
+        crate::feeds::CityChoice {
+            id,
+            name: name.into(),
+            region: region.into(),
+            country: country.into(),
+            lat,
+            lon,
+        }
+    };
+    let weather = |id: u64, temp: f32, cond: &str, offset: i32, conds: [&str; 5]| CityWeather {
+        id,
+        temp,
+        cond: cond.into(),
+        hours: (0..8)
+            .map(|h| Hour {
+                at: midnight + (14 + h) * 3600,
+                temp: temp + ((h as f32) * 0.7).sin() * 2.0 - h as f32 * 0.3,
+                cond: conds[h as usize % 5].into(),
+            })
+            .collect(),
+        days: (0..5)
+            .map(|d| Day {
+                at: midnight + d * 86400,
+                high: temp + 3.0 - d as f32,
+                low: temp - 5.0 + (d as f32 * 0.5),
+                cond: conds[d as usize].into(),
+            })
+            .collect(),
+        utc_offset: offset,
+        unit: "°C".into(),
+        at,
+    };
+    (
+        vec![
+            city(2950159, "Berlin", "Berlin", "DE", 52.52, 13.41),
+            city(1850147, "Tokyo", "Tokyo", "JP", 35.69, 139.69),
+            city(4250542, "Springfield", "Illinois", "US", 39.8, -89.64),
+        ],
+        vec![
+            weather(
+                2950159,
+                9.0,
+                "rainy",
+                3600,
+                ["rainy", "cloudy", "rainy", "partlycloudy", "cloudy"],
+            ),
+            weather(
+                1850147,
+                12.0,
+                "clear-night",
+                9 * 3600,
+                ["clear-night", "sunny", "sunny", "partlycloudy", "rainy"],
+            ),
+            weather(
+                4250542,
+                17.0,
+                "partlycloudy",
+                -6 * 3600,
+                ["partlycloudy", "sunny", "cloudy", "pouring", "sunny"],
+            ),
+        ],
+    )
+}
+
 /// The words of the widget's pages.
 fn widget_words(l: &Locale) -> widgets::Words<'_> {
     let ch = |k: &str, d: char| l.text(k).chars().next().unwrap_or(d);
@@ -1694,9 +1772,9 @@ impl<S: Screen> Ui<S> {
             (None, Some(s)) => s.widget_order(),
             _ => WidgetKind::ALL.to_vec(),
         };
-        let (widget_quotes, widget_currency) = match (&opts.demo, &settings) {
-            (None, Some(s)) => (s.quotes(), s.widget_currency()),
-            _ => (Vec::new(), "usd".to_string()),
+        let (widget_quotes, widget_currency, widget_cities) = match (&opts.demo, &settings) {
+            (None, Some(s)) => (s.quotes(), s.widget_currency(), s.cities()),
+            _ => (Vec::new(), "usd".to_string(), Vec::new()),
         };
         // The demos never ask the internet (no cache, nothing chosen).
         let feeds = crate::feeds::Feeds::new(if demo { None } else { opts.state_dir.clone() });
@@ -1788,6 +1866,8 @@ impl<S: Screen> Ui<S> {
             widget_data: RefCell::new(widgets::Data::default()),
             widget_quotes: RefCell::new(widget_quotes),
             widget_currency: RefCell::new(widget_currency),
+            widget_cities: RefCell::new(widget_cities),
+            city_weather: RefCell::new(Vec::new()),
             feeds: RefCell::new(feeds),
             feeds_rev: Cell::new(0),
             widget_every: Cell::new(
@@ -3059,6 +3139,11 @@ impl<S: Screen> Ui<S> {
         }]);
         if d.widget == Some(WidgetKind::Quotes) {
             self.widget_data.borrow_mut().quotes = demo_quotes();
+        }
+        if d.widget == Some(WidgetKind::Cities) {
+            let (choices, weather) = demo_cities();
+            *self.widget_cities.borrow_mut() = choices;
+            *self.city_weather.borrow_mut() = weather;
         }
         desk.timers.truncate(d.widget_cards.min(1));
         // The next alarm would be a card too: not in these.
@@ -5482,6 +5567,9 @@ impl<S: Screen> Ui<S> {
             .map(|w| super::weather::widget_columns(w, &l, &today, now, &|t| local_hm(t).0))
             .unwrap_or_default();
         let words = widget_words(&l);
+        if !self.city_weather.borrow().is_empty() {
+            self.widget_data.borrow_mut().cities = self.city_rows(now);
+        }
         let data = self.widget_data.borrow();
         let sources = widgets::Sources {
             next: &next,
@@ -5556,7 +5644,7 @@ impl<S: Screen> Ui<S> {
         let d = self.widget_data.borrow();
         match kind {
             WidgetKind::Quotes => self.widget_quotes.borrow().len(),
-            WidgetKind::Cities => d.cities.len(),
+            WidgetKind::Cities => self.widget_cities.borrow().len(),
             WidgetKind::Sensors => d.sensors.len(),
             _ => 0,
         }
@@ -5702,6 +5790,12 @@ impl<S: Screen> Ui<S> {
         let config = crate::feeds::FeedsConfig {
             quotes: self.widget_quotes.borrow().clone(),
             currency: self.widget_currency.borrow().clone(),
+            cities: self.widget_cities.borrow().clone(),
+            fahrenheit: self
+                .weather
+                .borrow()
+                .as_ref()
+                .is_some_and(|w| w.unit.contains('F')),
         };
         self.feeds.borrow_mut().configure(config);
     }
@@ -5710,15 +5804,24 @@ impl<S: Screen> Ui<S> {
     /// the screen on), and their new data into the widget (shown when its page comes back).
     fn tick_feeds(&self) {
         let (night, off) = (self.desk.borrow().night_now, super::backlight::screen_off());
-        let on = self.widget_on.borrow().contains(&WidgetKind::Quotes);
-        let rev = {
-            let mut f = self.feeds.borrow_mut();
-            f.set_active(crate::feeds::plan::active(
-                on,
+        let on = |k: WidgetKind| self.widget_on.borrow().contains(&k);
+        let active = crate::feeds::Active {
+            quotes: crate::feeds::plan::active(
+                on(WidgetKind::Quotes),
                 !self.widget_quotes.borrow().is_empty(),
                 night,
                 !off,
-            ));
+            ),
+            cities: crate::feeds::plan::active(
+                on(WidgetKind::Cities),
+                !self.widget_cities.borrow().is_empty(),
+                night,
+                !off,
+            ),
+        };
+        let rev = {
+            let mut f = self.feeds.borrow_mut();
+            f.set_active(active);
             f.rev()
         };
         if rev != self.feeds_rev.get() {
@@ -5759,7 +5862,36 @@ impl<S: Screen> Ui<S> {
             })
             .collect();
         self.widget_data.borrow_mut().quotes = quotes;
+        *self.city_weather.borrow_mut() = self
+            .widget_cities
+            .borrow()
+            .iter()
+            .filter_map(|c| snap.city(c.id).cloned())
+            .collect();
         self.refresh_widget();
+    }
+
+    /// The other cities as the widget's rows: the time there now, the name, the sky, the
+    /// temperature.
+    fn city_rows(&self, now: i64) -> Vec<widgets::CityRow> {
+        let choices = self.widget_cities.borrow();
+        self.city_weather
+            .borrow()
+            .iter()
+            .filter_map(|w| {
+                let c = choices.iter().find(|c| c.id == w.id)?;
+                let there = (now + w.utc_offset as i64).rem_euclid(86400);
+                Some(widgets::CityRow {
+                    name: c.name.clone(),
+                    time: format!("{:02}:{:02}", there / 3600, there % 3600 / 60),
+                    temp: format!("{}°", w.temp.round() as i64),
+                    cond: w.cond.clone(),
+                    at: w.at,
+                    fresh: 2 * crate::feeds::plan::OPENMETEO as i64,
+                    max_age: 24 * 3600,
+                })
+            })
+            .collect()
     }
 
     /// The widget's second: its turn, and at a new minute the page on screen with fresh data

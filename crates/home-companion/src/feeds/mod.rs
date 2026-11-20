@@ -13,6 +13,7 @@
 pub mod cache;
 pub mod coingecko;
 pub mod http;
+pub mod openmeteo;
 pub mod plan;
 pub mod yahoo;
 
@@ -167,9 +168,15 @@ pub struct Quote {
 pub struct Snapshot {
     #[serde(default)]
     pub quotes: Vec<Quote>,
+    #[serde(default)]
+    pub cities: Vec<openmeteo::CityWeather>,
 }
 
 impl Snapshot {
+    pub fn city(&self, id: u64) -> Option<&openmeteo::CityWeather> {
+        self.cities.iter().find(|c| c.id == id)
+    }
+
     pub fn quote(&self, key: &str) -> Option<&Quote> {
         self.quotes.iter().find(|q| q.key == key)
     }
@@ -188,11 +195,14 @@ pub struct FeedsConfig {
     pub quotes: Vec<QuoteChoice>,
     /// The coins' currency ("usd"; [`coingecko::CURRENCIES`]).
     pub currency: String,
+    pub cities: Vec<CityChoice>,
+    /// The cities' temperatures in °F (as the home's weather).
+    pub fahrenheit: bool,
 }
 
 impl FeedsConfig {
     pub fn is_empty(&self) -> bool {
-        self.quotes.is_empty()
+        self.quotes.is_empty() && self.cities.is_empty()
     }
 }
 
@@ -208,9 +218,16 @@ pub struct Hit {
 
 enum Cmd {
     Config(FeedsConfig),
-    /// Whether the markets' page may fetch now.
-    Active(bool),
+    /// Whether the markets' page and the cities' may fetch now.
+    Active(Active),
     Shutdown,
+}
+
+/// Which pages may fetch now.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Active {
+    pub quotes: bool,
+    pub cities: bool,
 }
 
 /// The feeds' thread seen from the screen.
@@ -220,7 +237,7 @@ pub struct Feeds {
     cache: Option<PathBuf>,
     /// What the thread was last told (it is told only changes).
     config: FeedsConfig,
-    active: bool,
+    active: Active,
     fetch: Option<Box<dyn Fetch>>,
     /// The longest spread of the requests when the feeds are needed again (20 s; 0 in tests).
     spread: f64,
@@ -248,7 +265,7 @@ impl Feeds {
             }),
             cache,
             config: FeedsConfig::default(),
-            active: false,
+            active: Active::default(),
             fetch: Some(fetch),
             spread: 20.0,
         }
@@ -308,8 +325,9 @@ impl Feeds {
         }
     }
 
-    /// Whether the markets may be fetched now (their page on, not the night, the screen on).
-    pub fn set_active(&mut self, on: bool) {
+    /// Whether the markets and the cities may be fetched now (their page on, not the night, the
+    /// screen on).
+    pub fn set_active(&mut self, on: Active) {
         if on == self.active {
             return;
         }
@@ -334,11 +352,13 @@ struct Worker {
     shared: Arc<Shared>,
     cache: Option<PathBuf>,
     config: FeedsConfig,
-    active: bool,
+    active: Active,
     /// One job per Yahoo symbol, by the choice's key.
     yahoo: HashMap<String, Job>,
     /// All the coins in one request.
     coins: Job,
+    /// All the cities in one request.
+    weather: Job,
     host: YahooHost,
     /// The last Yahoo request (requests are [`plan::YAHOO_GAP`] apart).
     last_yahoo: f64,
@@ -353,9 +373,10 @@ impl Worker {
             shared,
             cache,
             config: FeedsConfig::default(),
-            active: false,
+            active: Active::default(),
             yahoo: HashMap::new(),
             coins: Job::new(),
+            weather: Job::new(),
             host: YahooHost::default(),
             last_yahoo: f64::NEG_INFINITY,
             start: Instant::now(),
@@ -415,30 +436,33 @@ impl Worker {
             .filter(|q| !(new_currency && q.source == Source::Coingecko))
             .map(|q| q.key())
             .collect();
+        // Another city or another unit: the cities at once.
+        if c.cities != self.config.cities || c.fahrenheit != self.config.fahrenheit {
+            self.weather = Job::new();
+        }
+        let ids: Vec<u64> = c.cities.iter().map(|x| x.id).collect();
+        let unit = if c.fahrenheit { "°F" } else { "°C" };
         let changed = {
             let mut s = self
                 .shared
                 .snapshot
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let before = s.quotes.len();
+            let before = (s.quotes.len(), s.cities.len());
             s.quotes.retain(|q| all.contains(&q.key));
-            s.quotes.len() != before
+            s.cities.retain(|w| ids.contains(&w.id) && w.unit == unit);
+            (s.quotes.len(), s.cities.len()) != before
         };
         self.config = c;
         if changed {
             self.publish();
         }
-        if self.active {
-            self.wake(now);
-        }
+        self.wake(now);
     }
 
-    fn set_active(&mut self, on: bool, now: f64) {
+    fn set_active(&mut self, on: Active, now: f64) {
         self.active = on;
-        if on {
-            self.wake(now);
-        }
+        self.wake(now);
     }
 
     /// Back to work: what is overdue goes within 20 s, spread.
@@ -465,21 +489,27 @@ impl Worker {
 
     /// The next time something is due (None: nothing to do).
     fn next(&self, now: f64) -> Option<f64> {
-        if !self.active {
-            return None;
-        }
-        let coins = (!self.coin_ids().is_empty()).then_some(self.coins.due);
+        let q = self.active.quotes;
+        let coins = (q && !self.coin_ids().is_empty()).then_some(self.coins.due);
+        let weather =
+            (self.active.cities && !self.config.cities.is_empty()).then_some(self.weather.due);
         self.yahoo
             .values()
+            .filter(|_| q)
             .map(|j| j.due.max(self.last_yahoo + plan::YAHOO_GAP))
             .chain(coins)
+            .chain(weather)
             .fold(None, |a: Option<f64>, t| Some(a.map_or(t, |a| a.min(t))))
             .map(|t| t.max(now))
     }
 
     /// Does at most one request that is due. `unix` dates the data.
     fn step(&mut self, now: f64, unix: i64) -> bool {
-        if !self.active {
+        if self.active.cities && self.weather.is_due(now) && !self.config.cities.is_empty() {
+            self.fetch_weather(now, unix);
+            return true;
+        }
+        if !self.active.quotes {
             return false;
         }
         if self.coins.is_due(now) && !self.coin_ids().is_empty() {
@@ -585,6 +615,40 @@ impl Worker {
         }
     }
 
+    fn fetch_weather(&mut self, now: f64, unix: i64) {
+        let cities = self.config.cities.clone();
+        let url = openmeteo::forecast_url(&cities, self.config.fahrenheit);
+        let (result, retry) = match self.fetch.get(&url) {
+            Outcome::Ok(body) => (openmeteo::parse_forecast(&body, &cities, unix), None),
+            Outcome::Http(code, retry) => (Err(format!("HTTP {code}")), retry.map(|r| r as f64)),
+            Outcome::Timeout => (Err("timeout".into()), None),
+            Outcome::Failed(e) => (Err(e), None),
+        };
+        match result {
+            Ok(list) => {
+                self.weather.success(now, plan::OPENMETEO, plan::jitter());
+                let mut s = self
+                    .shared
+                    .snapshot
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                for w in list {
+                    match s.cities.iter_mut().find(|x| x.id == w.id) {
+                        Some(x) => *x = w,
+                        None => s.cities.push(w),
+                    }
+                }
+                drop(s);
+                self.publish();
+            }
+            Err(e) => {
+                self.weather
+                    .failure(now, plan::OPENMETEO, retry, plan::jitter());
+                log::info!(event = "feeds", source = "openmeteo", errors = self.weather.errors; "feeds: cities: {e}");
+            }
+        }
+    }
+
     /// New data: the revision grows and the cache is written.
     fn publish(&self) {
         self.shared.rev.fetch_add(1, Ordering::AcqRel);
@@ -650,6 +714,11 @@ pub(crate) mod tests {
         }
     }
 
+    const QUOTES: Active = Active {
+        quotes: true,
+        cities: false,
+    };
+
     fn worker(f: &FakeFetch) -> Worker {
         Worker::new(
             Box::new(f.clone()),
@@ -697,7 +766,7 @@ pub(crate) mod tests {
         // Not shown: nothing.
         assert!(!w.step(100.0, 1_795_198_800));
         assert!(w.next(100.0).is_none());
-        w.set_active(true, 100.0);
+        w.set_active(QUOTES, 100.0);
         // Overdue: within 20 s, never at once for all.
         let first = w.next(100.0).unwrap();
         assert!((100.0..=120.0).contains(&first), "{first}");
@@ -741,7 +810,7 @@ pub(crate) mod tests {
             },
             0.0,
         );
-        w.set_active(true, 0.0);
+        w.set_active(QUOTES, 0.0);
         assert!(w.step(30.0, 0));
         // Refused: Retry-After (120 s) is shorter than the interval: the interval.
         let due = w.yahoo["yahoo:AAPL"].due;
@@ -763,7 +832,7 @@ pub(crate) mod tests {
             },
             0.0,
         );
-        w.set_active(true, 0.0);
+        w.set_active(QUOTES, 0.0);
         assert!(w.step(30.0, 0));
         assert!(w.shared.snapshot.lock().unwrap().quotes.is_empty());
         assert_eq!(w.yahoo["yahoo:AAPL"].errors, 1);
@@ -785,9 +854,10 @@ pub(crate) mod tests {
         let mut c = FeedsConfig {
             quotes: vec![coin("bitcoin"), coin("ethereum"), yahoo("AAPL")],
             currency: "eur".into(),
+            ..Default::default()
         };
         w.configure(c.clone(), 0.0);
-        w.set_active(true, 0.0);
+        w.set_active(QUOTES, 0.0);
         assert!(w.step(25.0, 9));
         assert!(f.asked()[0].contains("vs_currency=eur&ids=bitcoin%2Cethereum&sparkline=true"));
         assert_eq!(w.shared.snapshot.lock().unwrap().quotes.len(), 2);
@@ -798,6 +868,51 @@ pub(crate) mod tests {
         w.configure(c, 30.0);
         assert!(w.shared.snapshot.lock().unwrap().quotes.is_empty());
         assert!(w.coins.due <= 50.0, "within the 20 s of a wake");
+    }
+
+    #[test]
+    fn the_cities_in_one_request_only_while_their_page_is_shown() {
+        let f = FakeFetch::default();
+        f.answer(
+            "v1/forecast",
+            Outcome::Ok(fixture("openmeteo-forecast-two.json")),
+        );
+        let mut w = worker(&f);
+        let city = |id: u64, lat: f64, lon: f64| CityChoice {
+            id,
+            name: "x".into(),
+            region: String::new(),
+            country: String::new(),
+            lat,
+            lon,
+        };
+        let c = FeedsConfig {
+            cities: vec![city(1, 52.52, 13.41), city(2, 39.8, -89.64)],
+            ..Default::default()
+        };
+        w.configure(c.clone(), 0.0);
+        w.set_active(QUOTES, 0.0);
+        assert!(!w.step(100.0, 0), "the markets' page is not the cities'");
+        w.set_active(
+            Active {
+                quotes: false,
+                cities: true,
+            },
+            100.0,
+        );
+        assert!(w.step(125.0, 0));
+        assert_eq!(w.shared.snapshot.lock().unwrap().cities.len(), 2);
+        assert!((125.0 + 1620.0..=125.0 + 1980.0).contains(&w.weather.due));
+        // In °F: the °C data goes, asked again.
+        w.configure(
+            FeedsConfig {
+                fahrenheit: true,
+                ..c
+            },
+            130.0,
+        );
+        assert!(w.shared.snapshot.lock().unwrap().cities.is_empty());
+        assert!(w.weather.due <= 150.0);
     }
 
     #[test]
@@ -835,7 +950,7 @@ pub(crate) mod tests {
         std::thread::sleep(Duration::from_millis(100));
         assert!(f.asked().is_empty());
         let rev = feeds.rev();
-        feeds.set_active(true);
+        feeds.set_active(QUOTES);
         let t0 = Instant::now();
         while feeds.rev() == rev && t0.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(Duration::from_millis(50));
