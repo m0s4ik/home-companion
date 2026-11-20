@@ -61,6 +61,12 @@ repo = "m0s4ik/home-companion"
 # Offer release candidates too (the switch on the Updates page wins over this)
 prerelease = false
 
+[panel]
+# The browser panel (Settings -> Access from the browser, off until switched on there): the port
+# systemd listens on (home-companion-panel.socket: change both) and the body's socket.
+port = 8125
+socket = "/run/home-companion/panel.sock"
+
 [paths]
 state_dir = "/var/lib/home-companion"
 locales_dir = "/opt/home-companion/locales"

@@ -10,6 +10,11 @@
 ip saddr $LAN_V4 tcp dport { 8124, 10700, 10701 } accept comment "home-companion: link, satellite, brain"
 ip6 saddr $LAN_V6 tcp dport { 8124, 10700, 10701 } accept comment "home-companion: link, satellite, brain (IPv6)"
 
+# The browser panel (home-companion-panel.socket, [panel] port): plain HTTP for the home network.
+# Off unless switched on on the screen; each device is allowed on the screen.
+ip saddr $LAN_V4 tcp dport 8125 accept comment "home-companion: browser panel"
+ip6 saddr $LAN_V6 tcp dport 8125 accept comment "home-companion: browser panel (IPv6)"
+
 # AirPlay ([airplay], only while it is on): UxPlay with `-p 6010` ([airplay] port). TCP 6010 is the
 # mirrored screen's video, TCP 6011 the RTSP/HTTP server the sender connects to; UDP 6010, 6011 and
 # 6012 are the timing, control and audio ports of a session (UxPlay asks for TCP 6012 too but never

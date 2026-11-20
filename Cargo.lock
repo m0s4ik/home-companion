@@ -3422,6 +3422,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "panel"
+version = "0.3.1"
+dependencies = [
+ "httpd",
+ "serde_json",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

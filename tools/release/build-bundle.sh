@@ -40,12 +40,13 @@ echo "== binaries ($TARGET)"
 [ -f crates/spike-native/third_party/vosk/aarch64/libvosk.so ] || crates/spike-native/tools/fetch-vosk.sh
 cargo build -q --release --target $TARGET -p home-companion --no-default-features --features fbdev,gpu
 cargo build -q --release --target $TARGET -p brain
+cargo build -q --release --target $TARGET -p panel
 cargo build -q --release --target $TARGET -p reflex --features vosk --bin home-companion-reflex
 git checkout -q Cargo.lock 2>/dev/null || true
 
 rm -rf "$STAGE" "$OUT/$NAME.tar.gz"
 mkdir -p "$STAGE/opt/lib" "$STAGE/opt/airplay" "$STAGE/packaging" "$STAGE/tools" "$STAGE/licenses" "$STAGE/source"
-for b in home-companion home-companion-brain home-companion-reflex; do
+for b in home-companion home-companion-brain home-companion-reflex home-companion-panel; do
     $STRIP -o "$STAGE/opt/$b" "$REL/$b"
 done
 install -m 0755 crates/spike-native/third_party/vosk/aarch64/libvosk.so "$STAGE/opt/lib/libvosk.so"
@@ -80,6 +81,7 @@ cp -R locales "$STAGE/opt/locales"
 cp packaging/home-companion.service packaging/home-companion-brain.service packaging/home-companion-web.service \
     packaging/home-companion.nft packaging/99-home-companion-backlight.rules \
     packaging/home-companion-update.sh packaging/home-companion-update.service packaging/home-companion-update.path \
+    packaging/home-companion-panel.socket packaging/home-companion-panel.service \
     packaging/home-companion.toml.in packaging/brain.toml.in "$STAGE/packaging/"
 install -m 0755 packaging/install.sh "$STAGE/install.sh"
 install -m 0755 tools/slim-vosk-model.py "$STAGE/tools/"
