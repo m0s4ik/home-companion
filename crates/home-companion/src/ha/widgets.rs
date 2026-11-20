@@ -156,7 +156,7 @@ pub struct Want {
     pub sensors: Vec<String>,
     /// The media player shown ("" none).
     pub player: String,
-    /// The people shown (empty: every `person.*`); None: who is home is off.
+    /// The people shown (none chosen: nobody); None: who is home is off.
     pub people: Option<Vec<String>>,
     /// What to check: openings, batteries (each may be off).
     pub openings: bool,
@@ -169,16 +169,8 @@ pub fn wanted(w: &Want, catalog: &[Entity]) -> Vec<String> {
     if !w.player.is_empty() {
         out.push(w.player.clone());
     }
-    match &w.people {
-        Some(p) if !p.is_empty() => out.extend(p.iter().take(MAX_PEOPLE).cloned()),
-        Some(_) => out.extend(
-            catalog
-                .iter()
-                .filter(|e| e.domain() == "person")
-                .take(MAX_PEOPLE)
-                .map(|e| e.id.clone()),
-        ),
-        None => {}
+    if let Some(p) = &w.people {
+        out.extend(p.iter().take(MAX_PEOPLE).cloned());
     }
     let check: Vec<String> = catalog
         .iter()
@@ -390,33 +382,23 @@ pub fn view(w: &Want, catalog: &[Entity], s: &States) -> WidgetsData {
         });
     let people = match &w.people {
         None => Vec::new(),
-        Some(chosen) => {
-            let ids: Vec<String> = if chosen.is_empty() {
-                catalog
-                    .iter()
-                    .filter(|e| e.domain() == "person")
-                    .map(|e| e.id.clone())
-                    .collect()
-            } else {
-                chosen.clone()
-            };
-            ids.iter()
-                .take(MAX_PEOPLE)
-                .filter_map(|id| {
-                    let st = s.by_id.get(id)?;
-                    let place = match st.state.as_str() {
-                        "home" => Place::Home,
-                        "not_home" => Place::Away,
-                        s if super::weather::is_unavailable(s) || s.is_empty() => return None,
-                        zone => Place::Zone(crate::feeds::clean_name(zone)),
-                    };
-                    Some(Person {
-                        name: name(id, st),
-                        place,
-                    })
+        Some(chosen) => chosen
+            .iter()
+            .take(MAX_PEOPLE)
+            .filter_map(|id| {
+                let st = s.by_id.get(id)?;
+                let place = match st.state.as_str() {
+                    "home" => Place::Home,
+                    "not_home" => Place::Away,
+                    s if super::weather::is_unavailable(s) || s.is_empty() => return None,
+                    zone => Place::Zone(crate::feeds::clean_name(zone)),
+                };
+                Some(Person {
+                    name: name(id, st),
+                    place,
                 })
-                .collect()
-        }
+            })
+            .collect(),
     };
     WidgetsData {
         sensors,
@@ -612,7 +594,7 @@ mod tests {
                 "input_number.target".into(),
             ],
             player: "media_player.speaker".into(),
-            people: Some(vec![]),
+            people: Some(vec!["person.ada".into(), "person.bob".into()]),
             openings: true,
             batteries: true,
         }

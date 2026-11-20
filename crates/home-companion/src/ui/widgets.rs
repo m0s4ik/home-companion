@@ -25,7 +25,7 @@ use super::lists::{self, ShopList};
 use super::next::NextItem;
 
 /// Pages in the turn at most.
-pub const MAX_PAGES: usize = 8;
+pub const MAX_PAGES: usize = 10;
 /// After a swipe or a tap the turn waits this long (who chose a page wants to read it).
 pub const HOLD: Duration = Duration::from_secs(60);
 /// The turn's default interval.

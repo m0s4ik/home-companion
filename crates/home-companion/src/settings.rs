@@ -277,7 +277,12 @@ impl Settings {
                     .collect(),
             )
         };
-        let seen = keys("seen").unwrap_or_else(|| Kind::FIRST.to_vec());
+        // Without `seen`: the first version's file. One with every page off stays so (the user
+        // turned the widget off: a new page must not turn it back on).
+        let seen = keys("seen").unwrap_or_else(|| match keys("on") {
+            Some(on) if on.is_empty() => Kind::ALL.to_vec(),
+            _ => Kind::FIRST.to_vec(),
+        });
         let on: Vec<Kind> = match keys("on") {
             Some(listed) => order
                 .iter()
@@ -808,6 +813,14 @@ mod tests {
                 Kind::Playing
             ]
         );
+        // A first version's file with every page off: all stay off.
+        std::fs::write(&s.path, "[widgets]\non = []\nevery = 30\n").unwrap();
+        assert_eq!(s.widgets(), (Vec::new(), 30));
+        std::fs::write(
+            &s.path,
+            "[widgets]\non = [\"shopping\", \"stocks\", \"next\"]\nevery = 7\n",
+        )
+        .unwrap();
         // Saved once: every page seen, turning one off sticks.
         s.save_widgets(&[Kind::Next], 20);
         assert_eq!(s.widgets().0, [Kind::Next]);
