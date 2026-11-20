@@ -45,6 +45,10 @@ pub struct Entities {
 pub enum HubCmd {
     /// Bought: the item of the list is completed in Home Assistant.
     Done { list: String, uid: String },
+    /// A new item (the browser panel): `todo.add_item`.
+    Add { list: String, text: String },
+    /// An item taken away (the browser panel): `todo.remove_item`.
+    Remove { list: String, uid: String },
     /// The user's choice of lists (empty = all of them).
     SetLists(Vec<String>),
     /// An event for Home Assistant's bus (`fire_event`, needs an admin user); `device` is added.
@@ -225,6 +229,18 @@ impl Subs {
 pub fn tick_message(id: u64, list: &str, uid: &str) -> Value {
     json!({"id": id, "type": "call_service", "domain": "todo", "service": "update_item",
            "service_data": {"item": uid, "status": "completed"}, "target": {"entity_id": list}})
+}
+
+/// `todo.add_item`: a new item on a list.
+pub fn add_message(id: u64, list: &str, text: &str) -> Value {
+    json!({"id": id, "type": "call_service", "domain": "todo", "service": "add_item",
+           "service_data": {"item": text}, "target": {"entity_id": list}})
+}
+
+/// `todo.remove_item`: an item gone from a list (by its uid).
+pub fn remove_message(id: u64, list: &str, uid: &str) -> Value {
+    json!({"id": id, "type": "call_service", "domain": "todo", "service": "remove_item",
+           "service_data": {"item": uid}, "target": {"entity_id": list}})
 }
 
 // ---- the thread ------------------------------------------------------------------------------
@@ -428,6 +444,16 @@ fn session(
                     ws.send_text(&tick_message(take_id(), &list, &uid).to_string())
                         .map_err(lost)?;
                     log::info!(event = "ha_shopping"; "item ticked on the screen");
+                }
+                Ok(HubCmd::Add { list, text }) => {
+                    ws.send_text(&add_message(take_id(), &list, &text).to_string())
+                        .map_err(lost)?;
+                    log::info!(event = "ha_shopping"; "item added from the browser panel");
+                }
+                Ok(HubCmd::Remove { list, uid }) => {
+                    ws.send_text(&remove_message(take_id(), &list, &uid).to_string())
+                        .map_err(lost)?;
+                    log::info!(event = "ha_shopping"; "item removed from the browser panel");
                 }
                 Ok(HubCmd::Fire { event_type, data }) => {
                     let id = take_id();
@@ -858,5 +884,18 @@ mod tests {
         assert_eq!(m["subscription"], sub_ids["todo.spesa"]);
         assert_eq!(next(&rx), HubMsg::Lists(named(&[("todo.casa", "Casa")])));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn add_and_remove_messages() {
+        assert_eq!(
+            add_message(4, "todo.shopping", "Eggs"),
+            json!({"id": 4, "type": "call_service", "domain": "todo", "service": "add_item",
+                   "service_data": {"item": "Eggs"}, "target": {"entity_id": "todo.shopping"}})
+        );
+        assert_eq!(
+            remove_message(5, "todo.shopping", "u1")["service_data"],
+            json!({"item": "u1"})
+        );
     }
 }

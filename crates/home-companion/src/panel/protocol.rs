@@ -1,0 +1,677 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+//! What the browser panel's process may ask the body, over `panel.sock`: one JSON object per
+//! line, one answer per line. A closed list: an `op` not here does not exist for the panel.
+//!
+//! Without a device let in (`token`) only these pass: `hello` (the character's name, whether the
+//! panel is on, whether `token` is good), `strings` (the panel's words), `pair.request`,
+//! `pair.status`, `pair.qr`. With one: `session.end`, `schema`, `state`, `set`,
+//! `shopping.list|add|done|remove`, `sessions.list|revoke`. With the panel switched off every
+//! op but `hello` and `strings` answers `off`.
+//!
+//! Every answer is built here from what the body chooses to say: settings through
+//! [`crate::settings_model`] (only the `panel` items), the shopping lists' items, the devices'
+//! names. Never the Home Assistant token or address, keys, photos, recordings, memories,
+//! conversations or logs (a test puts such things in the state and reads every answer).
+//!
+//! Requests carry `peer` (the browser's address) and `agent` (`{browser, os}`), as the panel's
+//! process saw them: shown on the screen, never trusted for anything else.
+
+use serde_json::{Value, json};
+
+use super::sessions::{Agent, Refusal, Rng, Sessions, Status};
+use crate::settings_model::{self as model, SetError};
+use crate::ui::lists::ShopList;
+
+/// The longest item a shopping list gets from the panel.
+pub const MAX_ITEM: usize = 200;
+
+/// What the protocol needs from the body (the screen's thread; a fake in the tests).
+pub trait PanelHost: model::Host {
+    /// Settings → Access from the browser is on.
+    fn panel_on(&self) -> bool;
+    /// The screen may show the access dialog now (not at night, with do not disturb, during a
+    /// conversation, a ring, another dialog…).
+    fn can_ask(&self) -> bool;
+    /// The character's name.
+    fn name(&self) -> String;
+    /// The words of `lang` (falling back to English key by key).
+    fn words(&self, lang: &str) -> Box<dyn Fn(&str) -> String + '_>;
+    /// The language codes there are words for.
+    fn languages(&self) -> Vec<String>;
+    /// Shows the dialog for a request just made.
+    fn ask(&self, request: &super::sessions::Request);
+    /// The shopping lists shown on the screen, with their open items.
+    fn shopping(&self) -> Vec<ShopList>;
+    /// Adds an item to a list (Home Assistant's `todo.add_item`).
+    fn shopping_add(&self, list: &str, text: &str);
+    /// Ticks an item off (`todo.update_item` completed: Home Assistant keeps it).
+    fn shopping_done(&self, list: &str, uid: &str);
+    /// Removes an item (`todo.remove_item`).
+    fn shopping_remove(&self, list: &str, uid: &str);
+    /// The device list changed (the screen's page redraws it).
+    fn sessions_changed(&self);
+}
+
+fn err(code: &str) -> Value {
+    json!({"ok": false, "error": code})
+}
+
+fn ok(mut v: Value) -> Value {
+    v["ok"] = json!(true);
+    v
+}
+
+fn str_of<'a>(req: &'a Value, k: &str) -> &'a str {
+    req.get(k).and_then(Value::as_str).unwrap_or("")
+}
+
+/// The first of `wanted` (the browser's languages, best first) there are words for; English
+/// otherwise.
+pub fn pick_language(wanted: &[String], have: &[String]) -> String {
+    wanted
+        .iter()
+        .map(|w| {
+            w.split(['-', '_'])
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase()
+        })
+        .find(|w| have.iter().any(|h| h == w))
+        .unwrap_or_else(|| locale::DEFAULT.to_string())
+}
+
+fn lang_of(host: &dyn PanelHost, req: &Value) -> String {
+    let wanted: Vec<String> = req
+        .get("lang")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .take(8)
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    pick_language(&wanted, &host.languages())
+}
+
+/// The panel's words in `lang`: every `panel_*` key of `[text]`, plus the few shared ones.
+fn strings(host: &dyn PanelHost, lang: &str, keys: &[&str]) -> Value {
+    let word = host.words(lang);
+    let mut out = serde_json::Map::new();
+    for k in keys {
+        out.insert(
+            (*k).to_string(),
+            json!(word(k).replace("{name}", &host.name())),
+        );
+    }
+    Value::Object(out)
+}
+
+/// The keys of the panel's words.
+pub const STRING_KEYS: &[&str] = &[
+    "panel_title",
+    "panel_ask",
+    "panel_ask_hint",
+    "panel_check_code",
+    "panel_waiting",
+    "panel_refused",
+    "panel_expired",
+    "panel_busy",
+    "panel_blocked",
+    "panel_wait",
+    "panel_cannot_ask",
+    "panel_full",
+    "panel_bad_ticket",
+    "panel_off",
+    "panel_try_again",
+    "panel_error",
+    "panel_saved",
+    "panel_section_settings",
+    "panel_section_shopping",
+    "panel_section_devices",
+    "panel_shopping_add",
+    "panel_shopping_placeholder",
+    "panel_shopping_empty",
+    "panel_shopping_none",
+    "panel_done",
+    "panel_remove",
+    "panel_devices_this",
+    "panel_devices_revoke",
+    "panel_logout",
+    "panel_device_line",
+    "panel_all",
+    "panel_lan_note",
+];
+
+fn shopping_json(lists: &[ShopList]) -> Value {
+    json!({"lists": lists.iter().map(|l| json!({
+        "entity": l.entity,
+        "name": l.name,
+        "items": l.items.iter().map(|(uid, text)| json!({"uid": uid, "text": text})).collect::<Vec<_>>(),
+    })).collect::<Vec<_>>()})
+}
+
+/// An item's text from the panel: one line, trimmed, at most [`MAX_ITEM`] characters, none of
+/// them control characters.
+pub fn clean_item(text: &str) -> Option<String> {
+    let t = text.trim();
+    if t.is_empty() || t.chars().count() > MAX_ITEM || t.chars().any(char::is_control) {
+        return None;
+    }
+    Some(t.to_string())
+}
+
+/// One request → its answer. `now`: seconds since the epoch.
+pub fn handle(
+    host: &dyn PanelHost,
+    sessions: &mut Sessions,
+    req: &Value,
+    now: u64,
+    rng: Rng,
+) -> Value {
+    let op = str_of(req, "op");
+    let token = str_of(req, "token");
+    let peer = str_of(req, "peer");
+    let agent = req
+        .get("agent")
+        .map(|a| Agent::clean(str_of(a, "browser"), str_of(a, "os")))
+        .unwrap_or_default();
+    match op {
+        "hello" => {
+            let session = host.panel_on() && sessions.check(token, now).is_some();
+            return ok(json!({"name": host.name(), "on": host.panel_on(), "session": session}));
+        }
+        "strings" => {
+            let lang = lang_of(host, req);
+            return ok(json!({"lang": lang, "strings": strings(host, &lang, STRING_KEYS)}));
+        }
+        _ => {}
+    }
+    if !host.panel_on() {
+        return err("off");
+    }
+    let refusal = |r: Refusal| err(r.key());
+    match op {
+        "pair.request" => {
+            return match sessions.request(peer, agent, host.can_ask(), now, rng) {
+                Ok(r) => {
+                    host.ask(&r);
+                    log::info!(event = "panel", peer = peer; "browser access asked from {peer}");
+                    ok(json!({"id": r.id, "code": r.code}))
+                }
+                Err(r) => refusal(r),
+            };
+        }
+        "pair.status" => {
+            return match sessions.status(str_of(req, "id"), now) {
+                Status::Waiting => ok(json!({"status": "waiting"})),
+                Status::Refused => ok(json!({"status": "refused"})),
+                Status::Expired => ok(json!({"status": "expired"})),
+                Status::Unknown => ok(json!({"status": "unknown"})),
+                Status::Allowed(t) => {
+                    host.sessions_changed();
+                    ok(json!({"status": "allowed", "token": t}))
+                }
+            };
+        }
+        "pair.qr" => {
+            return match sessions.redeem(str_of(req, "ticket"), peer, agent, now, rng) {
+                Ok(t) => {
+                    host.sessions_changed();
+                    ok(json!({"token": t}))
+                }
+                Err(r) => refusal(r),
+            };
+        }
+        _ => {}
+    }
+    let Some(me) = sessions.check(token, now).map(|s| s.hash.clone()) else {
+        return err("no_session");
+    };
+    match op {
+        "session.end" => {
+            sessions.end(token);
+            host.sessions_changed();
+            ok(json!({}))
+        }
+        "schema" => {
+            let lang = lang_of(host, req);
+            let word = host.words(&lang);
+            ok(model::panel_schema(host, &*word))
+        }
+        "state" => ok(json!({"values": model::panel_state(host)})),
+        "set" => match model::panel_set(
+            host,
+            str_of(req, "key"),
+            req.get("value").unwrap_or(&Value::Null),
+        ) {
+            Ok(()) => ok(json!({"values": model::panel_state(host)})),
+            Err(SetError::Unknown) => err("unknown_key"),
+            Err(SetError::Invalid) => err("invalid"),
+        },
+        "shopping.list" => ok(shopping_json(&host.shopping())),
+        "shopping.add" => {
+            let list = str_of(req, "list");
+            let Some(text) = clean_item(str_of(req, "text")) else {
+                return err("invalid");
+            };
+            if !host.shopping().iter().any(|l| l.entity == list) {
+                return err("invalid");
+            }
+            host.shopping_add(list, &text);
+            ok(json!({}))
+        }
+        "shopping.done" | "shopping.remove" => {
+            let (list, uid) = (str_of(req, "list"), str_of(req, "uid"));
+            let known = host
+                .shopping()
+                .iter()
+                .any(|l| l.entity == list && l.items.iter().any(|(u, _)| u == uid));
+            if !known {
+                return err("invalid");
+            }
+            if op == "shopping.done" {
+                host.shopping_done(list, uid);
+            } else {
+                host.shopping_remove(list, uid);
+            }
+            ok(shopping_json(&host.shopping()))
+        }
+        "sessions.list" => {
+            let list: Vec<Value> = sessions
+                .list(now)
+                .iter()
+                .map(|s| {
+                    json!({"id": s.id(), "browser": s.agent.browser, "os": s.agent.os,
+                           "peer": s.peer, "created": s.created, "last_used": s.last_used,
+                           "current": s.hash == me})
+                })
+                .collect();
+            ok(json!({"sessions": list}))
+        }
+        "sessions.revoke" => {
+            let gone = sessions.revoke(str_of(req, "id"));
+            host.sessions_changed();
+            if gone { ok(json!({})) } else { err("invalid") }
+        }
+        _ => err("unknown_op"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings_model::tests::FakeHost;
+    use std::cell::{Cell, RefCell};
+
+    struct Host {
+        model: FakeHost,
+        on: Cell<bool>,
+        can: Cell<bool>,
+        asked: RefCell<Vec<String>>,
+        lists: RefCell<Vec<ShopList>>,
+        calls: RefCell<Vec<String>>,
+    }
+
+    impl model::Host for Host {
+        fn settings(&self) -> Option<&crate::settings::Settings> {
+            self.model.settings()
+        }
+        fn live(&self, key: &str) -> Option<Value> {
+            self.model.live(key)
+        }
+        fn dynamic_options(&self, key: &str) -> Vec<(String, String)> {
+            self.model.dynamic_options(key)
+        }
+        fn apply(&self, change: model::Change) {
+            self.model.apply(change)
+        }
+    }
+
+    impl PanelHost for Host {
+        fn panel_on(&self) -> bool {
+            self.on.get()
+        }
+        fn can_ask(&self) -> bool {
+            self.can.get()
+        }
+        fn name(&self) -> String {
+            "Alfred".into()
+        }
+        fn words(&self, lang: &str) -> Box<dyn Fn(&str) -> String + '_> {
+            let l = locale::load_or_english(&locale::repo_locales(), lang).unwrap();
+            Box::new(move |k| l.text(k).to_string())
+        }
+        fn languages(&self) -> Vec<String> {
+            vec!["en".into(), "it".into()]
+        }
+        fn ask(&self, r: &crate::panel::sessions::Request) {
+            self.asked.borrow_mut().push(r.code.clone());
+        }
+        fn shopping(&self) -> Vec<ShopList> {
+            self.lists.borrow().clone()
+        }
+        fn shopping_add(&self, list: &str, text: &str) {
+            self.calls.borrow_mut().push(format!("add {list} {text}"));
+        }
+        fn shopping_done(&self, list: &str, uid: &str) {
+            self.calls.borrow_mut().push(format!("done {list} {uid}"));
+            crate::ui::lists::remove(&mut self.lists.borrow_mut(), list, uid);
+        }
+        fn shopping_remove(&self, list: &str, uid: &str) {
+            self.calls.borrow_mut().push(format!("remove {list} {uid}"));
+            crate::ui::lists::remove(&mut self.lists.borrow_mut(), list, uid);
+        }
+        fn sessions_changed(&self) {}
+    }
+
+    fn host(name: &str) -> Host {
+        Host {
+            model: FakeHost::new(name),
+            on: Cell::new(true),
+            can: Cell::new(true),
+            asked: RefCell::new(Vec::new()),
+            lists: RefCell::new(vec![ShopList {
+                entity: "todo.shopping".into(),
+                name: "Shopping".into(),
+                items: vec![("u1".into(), "Bread".into()), ("u2".into(), "Milk".into())],
+            }]),
+            calls: RefCell::new(Vec::new()),
+        }
+    }
+
+    const T0: u64 = 1_800_000_000;
+
+    /// Random bytes that never repeat over a test run (a fresh counter would hand two devices
+    /// the same token).
+    fn rng(out: &mut [u8]) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(1);
+        for chunk in out.chunks_mut(8) {
+            let n = N
+                .fetch_add(1, Ordering::Relaxed)
+                .wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            chunk.copy_from_slice(&n.to_le_bytes()[..chunk.len()]);
+        }
+    }
+
+    fn call(h: &Host, s: &mut Sessions, req: Value) -> Value {
+        handle(h, s, &req, T0, &mut rng)
+    }
+
+    /// A device let in through the screen's dialog: (token).
+    fn pair(h: &Host, s: &mut Sessions) -> String {
+        let r = call(
+            h,
+            s,
+            json!({"op": "pair.request", "peer": "192.0.2.24",
+            "agent": {"browser": "Chrome", "os": "macOS"}}),
+        );
+        let id = r["id"].as_str().unwrap().to_string();
+        assert_eq!(
+            h.asked.borrow().last().unwrap(),
+            r["code"].as_str().unwrap()
+        );
+        let waiting = s.waiting().unwrap().id.clone();
+        s.answer(&waiting, true, T0, &mut rng);
+        let st = call(h, s, json!({"op": "pair.status", "id": id}));
+        assert_eq!(st["status"], "allowed");
+        st["token"].as_str().unwrap().to_string()
+    }
+
+    /// Every op the panel knows.
+    const SESSION_OPS: &[&str] = &[
+        "schema",
+        "state",
+        "set",
+        "shopping.list",
+        "shopping.add",
+        "shopping.done",
+        "shopping.remove",
+        "sessions.list",
+        "sessions.revoke",
+        "session.end",
+    ];
+
+    #[test]
+    fn without_a_session_only_pairing_passes() {
+        let h = host("nosession");
+        let mut s = Sessions::default();
+        let hello = call(&h, &mut s, json!({"op": "hello"}));
+        assert_eq!(
+            hello,
+            json!({"ok": true, "name": "Alfred", "on": true, "session": false})
+        );
+        for op in SESSION_OPS {
+            for token in ["", "abc", &"f".repeat(64)] {
+                let r = call(
+                    &h,
+                    &mut s,
+                    json!({"op": op, "token": token, "key": "home_compact",
+                    "value": true, "list": "todo.shopping", "uid": "u1", "text": "x"}),
+                );
+                assert_eq!(r, json!({"ok": false, "error": "no_session"}), "{op}");
+            }
+        }
+        assert!(h.model.applied.borrow().is_empty());
+        assert!(h.calls.borrow().is_empty());
+        assert_eq!(
+            call(&h, &mut s, json!({"op": "shell", "token": ""}))["error"],
+            "no_session"
+        );
+        // Revoked: nothing either.
+        let t = pair(&h, &mut s);
+        assert_eq!(
+            call(&h, &mut s, json!({"op": "hello", "token": t}))["session"],
+            true
+        );
+        let id = s.list(T0)[0].id().to_string();
+        assert!(s.revoke(&id));
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "set", "token": t, "key": "home_compact", "value": true}),
+        );
+        assert_eq!(r["error"], "no_session");
+    }
+
+    #[test]
+    fn off_answers_off() {
+        let h = host("off");
+        let mut s = Sessions::default();
+        let t = pair(&h, &mut s);
+        h.on.set(false);
+        for op in ["pair.request", "pair.qr", "pair.status", "state", "set"] {
+            assert_eq!(
+                call(&h, &mut s, json!({"op": op, "token": t}))["error"],
+                "off"
+            );
+        }
+        assert_eq!(
+            call(&h, &mut s, json!({"op": "hello", "token": t}))["session"],
+            false
+        );
+        assert_eq!(call(&h, &mut s, json!({"op": "strings"}))["ok"], true);
+        // Switching off keeps the devices.
+        h.on.set(true);
+        assert_eq!(
+            call(&h, &mut s, json!({"op": "hello", "token": t}))["session"],
+            true
+        );
+    }
+
+    #[test]
+    fn settings_and_shopping_with_a_session() {
+        let h = host("ops");
+        let mut s = Sessions::default();
+        let t = pair(&h, &mut s);
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "set", "token": t, "key": "home_compact", "value": true}),
+        );
+        assert_eq!(r["values"]["home_compact"], true);
+        assert_eq!(
+            h.model.applied.borrow().last(),
+            Some(&model::Change::HomeCompact(true))
+        );
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "set", "token": t, "key": "update_prerelease", "value": true}),
+        );
+        assert_eq!(r["error"], "unknown_key");
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "set", "token": t, "key": "volume", "value": 7}),
+        );
+        assert_eq!(r["error"], "invalid");
+        let schema = call(
+            &h,
+            &mut s,
+            json!({"op": "schema", "token": t, "lang": ["it-IT", "en"]}),
+        );
+        assert_eq!(schema["groups"][1]["label"], "Schermo");
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "shopping.add", "token": t, "list": "todo.shopping",
+            "text": "  Eggs  "}),
+        );
+        assert_eq!(r["ok"], true);
+        for (list, text) in [
+            ("todo.other", "x"),
+            ("todo.shopping", ""),
+            ("todo.shopping", "a\nb"),
+        ] {
+            let r = call(
+                &h,
+                &mut s,
+                json!({"op": "shopping.add", "token": t, "list": list, "text": text}),
+            );
+            assert_eq!(r["error"], "invalid");
+        }
+        let long = "x".repeat(MAX_ITEM + 1);
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "shopping.add", "token": t, "list": "todo.shopping", "text": long}),
+        );
+        assert_eq!(r["error"], "invalid");
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "shopping.done", "token": t, "list": "todo.shopping", "uid": "u1"}),
+        );
+        assert_eq!(
+            r["lists"][0]["items"],
+            json!([{"uid": "u2", "text": "Milk"}])
+        );
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "shopping.remove", "token": t, "list": "todo.shopping", "uid": "u1"}),
+        );
+        assert_eq!(r["error"], "invalid");
+        call(
+            &h,
+            &mut s,
+            json!({"op": "shopping.remove", "token": t, "list": "todo.shopping", "uid": "u2"}),
+        );
+        assert_eq!(
+            *h.calls.borrow(),
+            [
+                "add todo.shopping Eggs",
+                "done todo.shopping u1",
+                "remove todo.shopping u2"
+            ]
+        );
+        // The devices: this one marked, revoked by id, then logged out.
+        let list = call(&h, &mut s, json!({"op": "sessions.list", "token": t}));
+        assert_eq!(list["sessions"][0]["current"], true);
+        assert_eq!(list["sessions"][0]["browser"], "Chrome");
+        let r = call(&h, &mut s, json!({"op": "session.end", "token": t}));
+        assert_eq!(r["ok"], true);
+        assert_eq!(
+            call(&h, &mut s, json!({"op": "state", "token": t}))["error"],
+            "no_session"
+        );
+    }
+
+    #[test]
+    fn languages() {
+        let have = vec!["de".to_string(), "en".into(), "it".into()];
+        assert_eq!(pick_language(&["it-IT".into(), "en".into()], &have), "it");
+        assert_eq!(pick_language(&["fr".into(), "de-CH".into()], &have), "de");
+        assert_eq!(pick_language(&["fr".into()], &have), "en");
+        let h = host("strings");
+        let mut s = Sessions::default();
+        let r = call(&h, &mut s, json!({"op": "strings", "lang": ["it"]}));
+        for k in STRING_KEYS {
+            let v = r["strings"][k].as_str().unwrap();
+            assert!(!v.is_empty() && v != *k, "{k} missing in it");
+        }
+    }
+
+    /// The canary: secrets of every kind put where the body keeps them; no answer to any op,
+    /// with or without a device let in, ever contains one.
+    #[test]
+    fn no_answer_ever_holds_a_secret() {
+        let h = host("canary");
+        let dir = h.model.dir.clone();
+        std::fs::write(
+            dir.join("ha-auth.json"),
+            r#"{"access_token":"CANARY-ACCESS","refresh_token":"CANARY-REFRESH","client_id":"http://CANARY-URL/"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("settings.toml"),
+            "ha_url = \"http://CANARY-HA.example:8123\"\n[assistant]\nai = \"CANARY-AI\"\ntts = \"CANARY-TTS\"\n",
+        )
+        .unwrap();
+        let mut s = Sessions::default();
+        let t = pair(&h, &mut s);
+        // Another device's token must not show to this one either.
+        let qr = s.ticket(T0, &mut rng).unwrap().to_string();
+        let other = call(
+            &h,
+            &mut s,
+            json!({"op": "pair.qr", "ticket": qr, "peer": "192.0.2.30"}),
+        )["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut secrets: Vec<String> = vec!["CANARY".into(), other.clone()];
+        secrets.extend(s.list(T0).iter().map(|x| x.hash.clone()));
+        let ops = ["hello", "strings", "pair.request", "pair.status", "pair.qr"]
+            .iter()
+            .chain(SESSION_OPS.iter())
+            .chain(["nonsense"].iter());
+        for op in ops {
+            for tok in ["", t.as_str()] {
+                for extra in [
+                    json!({}),
+                    json!({"key": "home_compact", "value": false}),
+                    json!({"key": "ha_url", "value": "x"}),
+                    json!({"list": "todo.shopping", "uid": "u1", "text": "Tea"}),
+                    json!({"id": "", "ticket": ""}),
+                ] {
+                    let mut req = extra.clone();
+                    req["op"] = json!(op);
+                    req["token"] = json!(tok);
+                    req["peer"] = json!("192.0.2.40");
+                    let a = call(&h, &mut s, req).to_string();
+                    for secret in &secrets {
+                        assert!(!a.contains(secret.as_str()), "{op}: {a}");
+                    }
+                }
+            }
+        }
+        // The other device is still in, and this one too (session.end was last, for "").
+        assert!(s.check(&other, T0).is_some());
+    }
+}
