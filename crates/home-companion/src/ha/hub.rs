@@ -53,6 +53,10 @@ pub enum HubCmd {
     SetLists(Vec<String>),
     /// An event for Home Assistant's bus (`fire_event`, needs an admin user); `device` is added.
     Fire { event_type: String, data: Value },
+    /// What the home's widget wants of Home Assistant (widgets.rs).
+    SetWidgets(super::widgets::Want),
+    /// The catalogue again (the browser panel opened its widget section): once a minute at most.
+    Catalog,
 }
 
 /// What the screen gets.
@@ -76,6 +80,10 @@ pub enum HubMsg {
         up: bool,
         last_seen: i64,
     },
+    /// The entities the widget may show (the browser panel searches them).
+    Catalog(Vec<super::widgets::Entity>),
+    /// The widget's data from Home Assistant, when it changed.
+    Widgets(super::widgets::WidgetsData),
 }
 
 /// What the hub knows of its link across connections: when the last message came (seconds since
@@ -266,6 +274,8 @@ fn run(cfg: HubConfig, tx: Sender<HubMsg>, cmds: Receiver<HubCmd>, stop: fn() ->
     };
     log::info!(event = "ha_hub"; "cards and lists from {}:{}", ep.host, ep.port);
     let mut chosen = cfg.lists.clone();
+    // What the widget wants, across connections.
+    let mut want = super::widgets::Want::default();
     // When the last message came, and whether the screen was told the link is up.
     let mut link = LinkState::default();
     // The screen was told the link is lost (or was never made): the retries then stay short, so
@@ -288,7 +298,17 @@ fn run(cfg: HubConfig, tx: Sender<HubMsg>, cmds: Receiver<HubCmd>, stop: fn() ->
             }
         };
         let started = Instant::now();
-        match session(&cfg, &ep, &token, &tx, &cmds, &mut chosen, &mut link, stop) {
+        match session(
+            &cfg,
+            &ep,
+            &token,
+            &tx,
+            &cmds,
+            &mut chosen,
+            &mut want,
+            &mut link,
+            stop,
+        ) {
             Ok(()) => return,
             Err(why) => {
                 if std::mem::take(&mut link.told_up) {
@@ -334,6 +354,7 @@ fn session(
     tx: &Sender<HubMsg>,
     cmds: &Receiver<HubCmd>,
     chosen: &mut Vec<String>,
+    want: &mut super::widgets::Want,
     link: &mut LinkState,
     stop: fn() -> bool,
 ) -> Result<(), String> {
@@ -430,6 +451,10 @@ fn session(
         .map_err(lost)?;
     let mut fire_ids: Vec<u64> = Vec::new();
     let mut fire_refused = false;
+    let mut wd = WidgetSide::default();
+    if wd.needs_catalog(want) {
+        wd.ask_catalog(&mut ws, &mut take_id).map_err(lost)?;
+    }
     let mut last_rx = Instant::now();
     let mut last_ping = Instant::now();
     loop {
@@ -464,6 +489,31 @@ fn session(
                     ws.send_text(&fire_message(id, &event_type, &cfg.device, &data).to_string())
                         .map_err(lost)?;
                 }
+                Ok(HubCmd::SetWidgets(w)) => {
+                    if *want != w {
+                        *want = w;
+                        if wd.catalog.is_none() && wd.needs_catalog(want) && wd.catalog_id.is_none()
+                        {
+                            wd.ask_catalog(&mut ws, &mut take_id).map_err(lost)?;
+                        }
+                        // With the catalogue on its way, the subscription waits for it.
+                        if wd.catalog_id.is_none()
+                            && !wd.refresh(&mut ws, want, tx, &mut take_id).map_err(lost)?
+                        {
+                            ws.close();
+                            return Ok(());
+                        }
+                    }
+                }
+                Ok(HubCmd::Catalog) => {
+                    if wd.catalog_id.is_none()
+                        && wd
+                            .catalog_at
+                            .is_none_or(|t| t.elapsed() >= Duration::from_secs(60))
+                    {
+                        wd.ask_catalog(&mut ws, &mut take_id).map_err(lost)?;
+                    }
+                }
                 Ok(HubCmd::SetLists(l)) => {
                     if *chosen != l {
                         *chosen = l;
@@ -481,9 +531,41 @@ fn session(
             Some(Message::Text(t)) => {
                 last_rx = Instant::now();
                 link.seen = unix_now();
+                // The catalogue's answer can be megabytes: read through its own struct, never
+                // as a JSON value.
+                if let Some(cid) = wd.catalog_id
+                    && message_id(&t) == Some(cid)
+                {
+                    wd.catalog_id = None;
+                    wd.catalog_at = Some(Instant::now());
+                    match super::widgets::parse_catalog(&t) {
+                        Ok(c) => {
+                            log::info!(event = "ha_widgets", entities = c.len(); "widget: {} entities it may show", c.len());
+                            wd.catalog = Some(c.clone());
+                            if tx.send(HubMsg::Catalog(c)).is_err()
+                                || !wd.refresh(&mut ws, want, tx, &mut take_id).map_err(lost)?
+                            {
+                                ws.close();
+                                return Ok(());
+                            }
+                        }
+                        Err(e) => log::info!(event = "ha_widgets"; "widget: {e}"),
+                    }
+                    continue;
+                }
                 let Ok(v) = serde_json::from_str::<Value>(&t) else {
                     continue;
                 };
+                if wd.sub_id.is_some() && v.get("id").and_then(Value::as_u64) == wd.sub_id {
+                    if let Some(ev) = v.get("event")
+                        && wd.states.apply(ev)
+                        && !wd.publish(want, tx)
+                    {
+                        ws.close();
+                        return Ok(());
+                    }
+                    continue;
+                }
                 let id = v.get("id").and_then(Value::as_u64);
                 let is_event = v.get("type").and_then(Value::as_str) == Some("event");
                 let failed = v.get("type").and_then(Value::as_str) == Some("result")
@@ -568,6 +650,88 @@ fn session(
             ws.send_text(&json!({"id": take_id(), "type": "ping"}).to_string())
                 .map_err(lost)?;
         }
+        // The catalogue again every six hours (entities come and go).
+        if wd.catalog_id.is_none()
+            && wd.needs_catalog(want)
+            && wd.catalog_at.is_some_and(|t| t.elapsed() >= CATALOG_EVERY)
+        {
+            wd.ask_catalog(&mut ws, &mut take_id).map_err(lost)?;
+        }
+    }
+}
+
+/// The catalogue is read again this often.
+const CATALOG_EVERY: Duration = Duration::from_secs(6 * 3600);
+
+/// A message's `id` without reading the rest of it as JSON values.
+fn message_id(text: &str) -> Option<u64> {
+    #[derive(serde::Deserialize)]
+    struct Head {
+        id: Option<u64>,
+    }
+    serde_json::from_str::<Head>(text).ok()?.id
+}
+
+/// The widget's side of the connection: the catalogue, the one subscription, the states.
+#[derive(Default)]
+struct WidgetSide {
+    catalog: Option<Vec<super::widgets::Entity>>,
+    catalog_id: Option<u64>,
+    catalog_at: Option<Instant>,
+    sub_id: Option<u64>,
+    sub_ids: Vec<String>,
+    states: super::widgets::States,
+    told: Option<super::widgets::WidgetsData>,
+}
+
+impl WidgetSide {
+    /// Something wants Home Assistant's data (and so the catalogue).
+    fn needs_catalog(&self, w: &super::widgets::Want) -> bool {
+        *w != super::widgets::Want::default()
+    }
+
+    fn ask_catalog(
+        &mut self,
+        ws: &mut WebSocket<TcpStream>,
+        take_id: &mut dyn FnMut() -> u64,
+    ) -> io::Result<()> {
+        let id = take_id();
+        self.catalog_id = Some(id);
+        ws.send_text(&super::widgets::catalog_request(id))
+    }
+
+    /// The subscription made what is wanted now; the data told. False: the screen is gone.
+    fn refresh(
+        &mut self,
+        ws: &mut WebSocket<TcpStream>,
+        want: &super::widgets::Want,
+        tx: &Sender<HubMsg>,
+        take_id: &mut dyn FnMut() -> u64,
+    ) -> io::Result<bool> {
+        let ids = super::widgets::wanted(want, self.catalog.as_deref().unwrap_or(&[]));
+        if ids != self.sub_ids {
+            if let Some(old) = self.sub_id.take() {
+                ws.send_text(&super::widgets::unsubscribe(take_id(), old))?;
+            }
+            self.states = Default::default();
+            if !ids.is_empty() {
+                let id = take_id();
+                self.sub_id = Some(id);
+                ws.send_text(&super::widgets::subscribe(id, &ids))?;
+                log::info!(event = "ha_widgets", entities = ids.len(); "widget: {} entities followed", ids.len());
+            }
+            self.sub_ids = ids;
+        }
+        Ok(self.publish(want, tx))
+    }
+
+    fn publish(&mut self, want: &super::widgets::Want, tx: &Sender<HubMsg>) -> bool {
+        let data = super::widgets::view(want, self.catalog.as_deref().unwrap_or(&[]), &self.states);
+        if self.told.as_ref() == Some(&data) {
+            return true;
+        }
+        self.told = Some(data.clone());
+        tx.send(HubMsg::Widgets(data)).is_ok()
     }
 }
 
@@ -883,6 +1047,61 @@ mod tests {
         assert_eq!(m["type"], "unsubscribe_events");
         assert_eq!(m["subscription"], sub_ids["todo.spesa"]);
         assert_eq!(next(&rx), HubMsg::Lists(named(&[("todo.casa", "Casa")])));
+        // The widget: the catalogue (read without a JSON value of the whole), one subscription
+        // for what is wanted, the data when it changes.
+        let fx = |n: &str| {
+            std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("fixtures/ha")
+                    .join(n),
+            )
+            .unwrap()
+        };
+        tx.send(HubCmd::SetWidgets(super::super::widgets::Want {
+            sensors: vec!["sensor.outdoor_temperature".into()],
+            player: String::new(),
+            people: None,
+            openings: true,
+            batteries: false,
+        }))
+        .unwrap();
+        let get = read_frame(&mut s, &mut buf);
+        assert_eq!(get["type"], "get_states");
+        let mut states: Value = serde_json::from_str(&fx("widgets-get-states.json")).unwrap();
+        states["id"] = get["id"].clone();
+        send(&mut s, &states);
+        let sub = read_frame(&mut s, &mut buf);
+        assert_eq!(sub["type"], "subscribe_entities");
+        assert_eq!(
+            sub["entity_ids"],
+            json!([
+                "binary_sensor.front_door",
+                "binary_sensor.kitchen_window",
+                "sensor.outdoor_temperature"
+            ])
+        );
+        assert!(
+            matches!(next(&rx), HubMsg::Catalog(c) if c.iter().all(|e| !e.id.starts_with("lock.")))
+        );
+        assert_eq!(next(&rx), HubMsg::Widgets(Default::default()));
+        let first: Value = serde_json::from_str(
+            fx("widgets-subscribe-entities.jsonl")
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        send(
+            &mut s,
+            &json!({"id": sub["id"], "type": "event", "event": first["event"]}),
+        );
+        match next(&rx) {
+            HubMsg::Widgets(d) => {
+                assert_eq!(d.sensors.len(), 1);
+                assert_eq!(d.check.len(), 1, "the kitchen window");
+            }
+            m => panic!("{m:?}"),
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 

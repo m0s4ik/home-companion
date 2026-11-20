@@ -73,6 +73,18 @@ impl WakeSensitivity {
     }
 }
 
+/// An entity id of one of `domains`: `domain.object_id`, lower case letters, digits, `_`.
+pub fn valid_entity(id: &str, domains: &[&str]) -> bool {
+    let Some((d, o)) = id.split_once('.') else {
+        return false;
+    };
+    domains.contains(&d)
+        && !o.is_empty()
+        && o.len() <= 128
+        && o.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub path: PathBuf,
@@ -350,6 +362,55 @@ impl Settings {
             .collect();
         self.save_widgets_keys(|t| {
             t.insert("cities".into(), list.into());
+        });
+    }
+
+    /// Home Assistant's entities for the widget (`[widgets] sensors`, `player`, `people`, the
+    /// checks): what the hub subscribes to (ha/widgets.rs). Ids are checked for their domain.
+    pub fn widget_ha(&self) -> crate::ha::widgets::Want {
+        use crate::ha::widgets::{MAX_PEOPLE, MAX_SENSORS};
+        let t = self.widgets_table();
+        let ids = |key: &str, domains: &[&str], max: usize| -> Vec<String> {
+            let mut out: Vec<String> = Vec::new();
+            for v in t.get(key).and_then(|v| v.as_array()).into_iter().flatten() {
+                if let Some(id) = v.as_str().filter(|id| valid_entity(id, domains))
+                    && !out.iter().any(|o| o == id)
+                {
+                    out.push(id.to_string());
+                }
+            }
+            out.truncate(max);
+            out
+        };
+        let flag = |k: &str| t.get(k).and_then(|v| v.as_bool()).unwrap_or(true);
+        crate::ha::widgets::Want {
+            sensors: ids("sensors", &["sensor", "input_number"], MAX_SENSORS),
+            player: t
+                .get("player")
+                .and_then(|v| v.as_str())
+                .filter(|id| valid_entity(id, &["media_player"]))
+                .unwrap_or("")
+                .to_string(),
+            people: Some(ids("people", &["person"], MAX_PEOPLE)),
+            openings: flag("check_openings"),
+            batteries: flag("check_batteries"),
+        }
+    }
+
+    pub fn save_widget_ha(&self, w: &crate::ha::widgets::Want) {
+        let w = w.clone();
+        self.save_widgets_keys(move |t| {
+            let list = |v: &[String]| -> toml::Value {
+                v.iter()
+                    .map(|s| toml::Value::from(s.as_str()))
+                    .collect::<Vec<_>>()
+                    .into()
+            };
+            t.insert("sensors".into(), list(&w.sensors));
+            t.insert("player".into(), w.player.as_str().into());
+            t.insert("people".into(), list(w.people.as_deref().unwrap_or(&[])));
+            t.insert("check_openings".into(), w.openings.into());
+            t.insert("check_batteries".into(), w.batteries.into());
         });
     }
 

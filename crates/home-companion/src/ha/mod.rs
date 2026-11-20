@@ -22,6 +22,7 @@ pub mod todo;
 pub mod tts;
 pub mod usage;
 pub mod weather;
+pub mod widgets;
 pub mod ws;
 
 use std::io;

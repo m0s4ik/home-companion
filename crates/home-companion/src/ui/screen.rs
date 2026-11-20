@@ -1256,6 +1256,11 @@ pub struct Ui<S: Screen> {
     widget_every: Cell<Option<Duration>>,
     /// The data of the pages chosen from the browser and of Home Assistant's (feeds/, ha/).
     widget_data: RefCell<widgets::Data>,
+    /// Home Assistant's side of the widget: what it is asked (settings), the entities it may
+    /// show (the catalogue, for the browser panel's searches), the data it sent.
+    widget_ha: RefCell<crate::ha::widgets::Want>,
+    ha_catalog: RefCell<Vec<crate::ha::widgets::Entity>>,
+    ha_widgets: RefCell<crate::ha::widgets::WidgetsData>,
     /// The board's notes (the brain's `notes` event), oldest first.
     board: RefCell<Vec<brain_link::Note>>,
     /// The markets chosen from the browser (settings.toml), in their order, and the coins'
@@ -1856,6 +1861,11 @@ impl<S: Screen> Ui<S> {
             (None, Some(s)) => s.widget_order(),
             _ => WidgetKind::ALL.to_vec(),
         };
+        let widget_ha = settings
+            .as_ref()
+            .filter(|_| !demo)
+            .map(Settings::widget_ha)
+            .unwrap_or_default();
         let (widget_quotes, widget_currency, widget_cities) = match (&opts.demo, &settings) {
             (None, Some(s)) => (s.quotes(), s.widget_currency(), s.cities()),
             _ => (Vec::new(), "usd".to_string(), Vec::new()),
@@ -1949,6 +1959,9 @@ impl<S: Screen> Ui<S> {
             widget_order: RefCell::new(widget_order),
             widget_data: RefCell::new(widgets::Data::default()),
             board: RefCell::new(Vec::new()),
+            widget_ha: RefCell::new(widget_ha),
+            ha_catalog: RefCell::new(Vec::new()),
+            ha_widgets: RefCell::new(Default::default()),
             widget_quotes: RefCell::new(widget_quotes),
             widget_currency: RefCell::new(widget_currency),
             widget_cities: RefCell::new(widget_cities),
@@ -5813,6 +5826,7 @@ impl<S: Screen> Ui<S> {
         match change {
             Change::Widgets(on, every) => {
                 *self.widget_on.borrow_mut() = on;
+                self.send_widget_want();
                 self.widget_every
                     .set((every > 0).then(|| Duration::from_secs(every as u64)));
                 self.refresh_widget_settings();
@@ -6562,6 +6576,7 @@ impl<S: Screen> Ui<S> {
     /// go, and the lists chosen at first (empty = all).
     pub fn set_hub(&self, tx: Sender<HubCmd>, lists: Vec<String>) {
         *self.hub_tx.borrow_mut() = Some(tx);
+        self.send_widget_want();
         self.choice.borrow_mut().lists = lists;
         self.choice.borrow_mut().calendars = self
             .settings
@@ -6570,9 +6585,81 @@ impl<S: Screen> Ui<S> {
             .unwrap_or_default();
     }
 
+    /// What the widget asks of Home Assistant now: only what the pages that are on show.
+    fn widget_want(&self) -> crate::ha::widgets::Want {
+        let on = self.widget_on.borrow();
+        let w = self.widget_ha.borrow();
+        let has = |k: WidgetKind| on.contains(&k);
+        crate::ha::widgets::Want {
+            sensors: if has(WidgetKind::Sensors) {
+                w.sensors.clone()
+            } else {
+                Vec::new()
+            },
+            player: if has(WidgetKind::Playing) {
+                w.player.clone()
+            } else {
+                String::new()
+            },
+            people: if has(WidgetKind::Home) {
+                w.people.clone()
+            } else {
+                None
+            },
+            openings: has(WidgetKind::Check) && w.openings,
+            batteries: has(WidgetKind::Check) && w.batteries,
+        }
+    }
+
+    fn send_widget_want(&self) {
+        if let Some(tx) = self.hub_tx.borrow().as_ref() {
+            let _ = tx.send(HubCmd::SetWidgets(self.widget_want()));
+        }
+    }
+
+    /// Home Assistant's data in the widget's terms (the sensors without their curve until the
+    /// statistics come).
+    fn apply_ha_widgets(&self) {
+        let d = self.ha_widgets.borrow().clone();
+        let now = now_unix() as i64;
+        let mut data = self.widget_data.borrow_mut();
+        data.sensors = d
+            .sensors
+            .iter()
+            .map(|s| widgets::Trend {
+                name: s.name.clone(),
+                value: s.value,
+                decimals: s.decimals,
+                unit: s.unit.clone(),
+                prev: None,
+                pct: false,
+                points: Vec::new(),
+                low: s.value,
+                high: s.value,
+                at: now,
+                fresh: i64::MAX / 4,
+                max_age: i64::MAX / 4,
+            })
+            .collect();
+        data.check = d.check.clone();
+        // Alfred's own AirPlay has its card already.
+        data.playing = d
+            .playing
+            .clone()
+            .filter(|_| self.desk.borrow().music.is_none());
+        data.people = d.people.clone();
+        drop(data);
+        self.refresh_widget();
+    }
+
     /// What Home Assistant's thread says.
     pub fn apply_hub(&self, m: HubMsg) {
         match m {
+            HubMsg::Catalog(c) => *self.ha_catalog.borrow_mut() = c,
+            HubMsg::Widgets(d) => {
+                *self.ha_widgets.borrow_mut() = d;
+                self.apply_ha_widgets();
+            }
             HubMsg::Card(ev) => {
                 let show = matches!(ev, crate::ha::events::CardEvent::Show(_));
                 let changed = self.desk.borrow_mut().ha_cards.apply(ev, Instant::now());
