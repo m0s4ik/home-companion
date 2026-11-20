@@ -194,19 +194,50 @@ impl Curl {
 }
 
 impl Fetch for Curl {
+    /// The answer is read through a cap ([`MAX_BODY`] and the status line): `--max-filesize`
+    /// counts the bytes on the wire, and with `--compressed` a small gzip can grow a
+    /// hundredfold; past the cap curl is killed and nothing is kept.
     fn get(&mut self, url: &Url) -> Outcome {
+        use std::io::Read;
         let path = std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into());
-        let out = Command::new(&self.program)
+        let child = Command::new(&self.program)
             .args(curl_args(&self.ua, url))
             .env_clear()
             .env("PATH", path)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output();
-        match out {
-            Ok(o) => outcome(o.status.code(), &o.stdout, &o.stderr),
-            Err(e) => Outcome::Failed(format!("curl: {e}")),
+            .spawn();
+        let mut child = match child {
+            Ok(c) => c,
+            Err(e) => return Outcome::Failed(format!("curl: {e}")),
+        };
+        // stderr: its first lines kept, the rest drained (curl never blocks on it).
+        let err_reader = child.stderr.take().map(|mut e| {
+            std::thread::spawn(move || {
+                let mut kept = Vec::new();
+                let _ = (&mut e).take(4096).read_to_end(&mut kept);
+                let _ = std::io::copy(&mut e, &mut std::io::sink());
+                kept
+            })
+        });
+        let cap = MAX_BODY + 64;
+        let mut out = Vec::new();
+        let read = child
+            .stdout
+            .take()
+            .map(|o| o.take(cap + 1).read_to_end(&mut out));
+        if out.len() as u64 > cap {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Outcome::Failed("answer too big".into());
+        }
+        let status = child.wait();
+        let err = err_reader.and_then(|h| h.join().ok()).unwrap_or_default();
+        match (read, status) {
+            (Some(Err(e)), _) => Outcome::Failed(format!("curl: {e}")),
+            (_, Ok(st)) => outcome(st.code(), &out, &err),
+            (_, Err(e)) => Outcome::Failed(format!("curl: {e}")),
         }
     }
 }
@@ -285,6 +316,29 @@ mod tests {
         let mut out = big.clone();
         out.extend_from_slice(b"\n200 ");
         assert!(matches!(outcome(Some(0), &out, b""), Outcome::Failed(_)));
+    }
+
+    /// A body that grows past the cap (a small gzip, decompressed): curl is stopped, nothing kept.
+    #[test]
+    fn a_body_past_the_cap_is_cut_and_curl_killed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("hc-fake-curl-big-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prog = dir.join("curl");
+        // Endless output: only the cap can stop it.
+        std::fs::write(
+            &prog,
+            "#!/bin/sh\nexec yes aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&prog, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut c = Curl::with_program(prog.to_str().unwrap());
+        let t0 = std::time::Instant::now();
+        let o = c.get(&Url::new(Host::CoinGecko, "x", &[]));
+        assert_eq!(o, Outcome::Failed("answer too big".into()));
+        assert!(t0.elapsed() < std::time::Duration::from_secs(5));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A fake curl in a directory of its own: it prints its arguments and the status line, so
