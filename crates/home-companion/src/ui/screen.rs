@@ -41,6 +41,7 @@ use crate::settings::{Settings, WakeSensitivity};
 use crate::settings_model::{self as model, Change};
 
 mod panel_ui;
+pub mod samples;
 use crate::timers::{TimerView, now_unix};
 use serde_json::json;
 
@@ -6304,24 +6305,11 @@ impl<S: Screen> Ui<S> {
     /// The other cities as the widget's rows: the time there now, the name, the sky, the
     /// temperature.
     fn city_rows(&self, now: i64) -> Vec<widgets::CityRow> {
-        let choices = self.widget_cities.borrow();
-        self.city_weather
-            .borrow()
-            .iter()
-            .filter_map(|w| {
-                let c = choices.iter().find(|c| c.id == w.id)?;
-                let there = (now + w.utc_offset as i64).rem_euclid(86400);
-                Some(widgets::CityRow {
-                    name: c.name.clone(),
-                    time: format!("{:02}:{:02}", there / 3600, there % 3600 / 60),
-                    temp: format!("{}°", w.temp.round() as i64),
-                    cond: w.cond.clone(),
-                    at: w.at,
-                    fresh: 2 * crate::feeds::plan::OPENMETEO as i64,
-                    max_age: 24 * 3600,
-                })
-            })
-            .collect()
+        samples::city_rows_of(
+            &self.widget_cities.borrow(),
+            &self.city_weather.borrow(),
+            now,
+        )
     }
 
     /// The widget's second: its turn, and at a new minute the page on screen with fresh data

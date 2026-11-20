@@ -136,6 +136,8 @@ pub struct WidgetRow {
     pub trend: i8,
     /// The last hours, normalised 0-1, at most [`CURVE_POINTS`] (empty: no curve).
     pub curve: Vec<f32>,
+    /// Chosen but its data not here yet (the browser panel draws "…"; never on the screen).
+    pub wait: bool,
 }
 
 /// A page of the widget.
@@ -304,22 +306,126 @@ pub fn pages(
             continue;
         }
         seen.push(kind);
-        let page = match kind {
-            Kind::Next => next_page(s.next, w, now, local),
-            Kind::Weather => weather_page(&s.weather, w),
-            Kind::Shopping => s.shopping.and_then(|l| shopping_page(l, w)),
-            Kind::Quotes => trend_page(Kind::Quotes, w.quotes, s.quotes, w, now, local),
-            Kind::Sensors => trend_page(Kind::Sensors, w.sensors, s.sensors, w, now, local),
-            Kind::Cities => cities_page(s.cities, w, now, local),
-            Kind::Notes => notes_page(s.notes, w),
-            Kind::Check => check_page(s.check, w),
-            Kind::Playing => s.playing.and_then(|p| playing_page(p, w)),
-            Kind::Home => home_page(s.people, w),
-        };
-        out.extend(page);
+        out.extend(page(s, kind, w, now, local));
     }
     out.truncate(MAX_PAGES);
     out
+}
+
+/// One page, if it has something to say.
+pub fn page(
+    s: &Sources,
+    kind: Kind,
+    w: &Words,
+    now: i64,
+    local: &dyn Fn(i64) -> (String, i64),
+) -> Option<WidgetView> {
+    match kind {
+        Kind::Next => next_page(s.next, w, now, local),
+        Kind::Weather => weather_page(&s.weather, w),
+        Kind::Shopping => s.shopping.and_then(|l| shopping_page(l, w)),
+        Kind::Quotes => trend_page(Kind::Quotes, w.quotes, s.quotes, w, now, local),
+        Kind::Sensors => trend_page(Kind::Sensors, w.sensors, s.sensors, w, now, local),
+        Kind::Cities => cities_page(s.cities, w, now, local),
+        Kind::Notes => notes_page(s.notes, w),
+        Kind::Check => check_page(s.check, w),
+        Kind::Playing => s.playing.and_then(|p| playing_page(p, w)),
+        Kind::Home => home_page(s.people, w),
+    }
+}
+
+/// What the browser panel shows of the widget's choices: which items are chosen (their names, in
+/// order), so a page shows a row for each even before its data comes.
+#[derive(Debug, Default)]
+pub struct Chosen<'a> {
+    pub quotes: &'a [String],
+    pub cities: &'a [String],
+    pub sensors: &'a [String],
+    /// What to check has at least one kind on.
+    pub check: bool,
+    /// The media player chosen ("" none).
+    pub player: &'a str,
+}
+
+/// Every page for the browser panel, in [`Kind::ALL`]'s order: the page as the screen would
+/// draw it now (`real`), with a "…" row for each chosen item whose data has not come yet; the
+/// pages that show only at times (what to check, now playing) and the weather fall back to an
+/// example (`sample`, drawn at `sample_now`) and say so. None: nothing to show.
+pub fn panel_pages(
+    real: &Sources,
+    sample: &Sources,
+    chosen: &Chosen,
+    w: &Words,
+    now: i64,
+    sample_now: i64,
+    local: &dyn Fn(i64) -> (String, i64),
+) -> Vec<(Kind, Option<WidgetView>, bool)> {
+    Kind::ALL
+        .into_iter()
+        .map(|kind| {
+            let real_page = page(real, kind, w, now, local);
+            let names: &[String] = match kind {
+                Kind::Quotes => chosen.quotes,
+                Kind::Cities => chosen.cities,
+                Kind::Sensors => chosen.sensors,
+                _ => &[],
+            };
+            if !names.is_empty() {
+                return (kind, Some(waiting(kind, real_page, names, w)), false);
+            }
+            let fallback = match kind {
+                Kind::Check => chosen.check,
+                Kind::Playing => !chosen.player.is_empty(),
+                Kind::Weather => true,
+                _ => false,
+            };
+            match real_page {
+                Some(p) => (kind, Some(p), false),
+                None if fallback => {
+                    let mut p = page(sample, kind, w, sample_now, local);
+                    if kind == Kind::Playing
+                        && let Some(p) = p.as_mut()
+                    {
+                        p.aside = chosen.player.to_string();
+                    }
+                    (kind, p.clone(), p.is_some())
+                }
+                None => (kind, None, false),
+            }
+        })
+        .collect()
+}
+
+/// The page with its rows in the order of `names`, a waiting row for each name without data.
+fn waiting(kind: Kind, page: Option<WidgetView>, names: &[String], w: &Words) -> WidgetView {
+    let mut v = page.unwrap_or_else(|| WidgetView {
+        kind,
+        title: match kind {
+            Kind::Quotes => w.quotes,
+            Kind::Cities => w.cities,
+            _ => w.sensors,
+        }
+        .to_string(),
+        aside: String::new(),
+        rows: Vec::new(),
+        columns: false,
+        line: None,
+        window: w.window.to_string(),
+    });
+    let mut have = std::mem::take(&mut v.rows);
+    for n in names {
+        match have.iter().position(|r| r.text == *n) {
+            Some(i) => v.rows.push(have.remove(i)),
+            None => v.rows.push(WidgetRow {
+                text: n.clone(),
+                right: "…".into(),
+                wait: true,
+                ..Default::default()
+            }),
+        }
+    }
+    v.rows.extend(have);
+    v
 }
 
 /// Today's and tomorrow's reminders and events: the time on the left (all-day: "today"),
@@ -921,7 +1027,7 @@ pub fn fit(view: &WidgetView, slots: usize, turn: u32) -> Option<WidgetView> {
 }
 
 /// The windows of rows a page has with `slots` free (1: it all fits).
-fn windows(view: &WidgetView, slots: usize) -> usize {
+pub fn windows(view: &WidgetView, slots: usize) -> usize {
     if view.columns || view.window.is_empty() || slots < 2 {
         return 1;
     }
