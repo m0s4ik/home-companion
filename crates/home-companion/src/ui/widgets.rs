@@ -544,20 +544,91 @@ pub fn downsample(points: &[f64], n: usize) -> Vec<f32> {
 /// A curve as SVG path commands in the screen's 160 x 32 box (2 px off the top and bottom for
 /// the stroke); "" without one.
 pub fn curve_path(points: &[f32]) -> String {
+    curve_path_in(points, 160.0, 32.0)
+}
+
+/// A curve in a `w` x `h` box, 2 px off its top and bottom.
+pub fn curve_path_in(points: &[f32], w: f32, h: f32) -> String {
     if points.len() < 2 {
         return String::new();
     }
     let last = (points.len() - 1) as f32;
     let mut out = String::new();
     for (i, p) in points.iter().enumerate() {
-        let x = i as f32 / last * 160.0;
-        let y = 2.0 + (1.0 - p.clamp(0.0, 1.0)) * 28.0;
+        let x = i as f32 / last * w;
+        let y = 2.0 + (1.0 - p.clamp(0.0, 1.0)) * (h - 4.0);
         out.push_str(&format!(
             "{}{x:.1} {y:.1}",
             if i == 0 { "M " } else { " L " }
         ));
     }
     out
+}
+
+/// A card of the markets' or the sensors' page.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TrendCard {
+    pub name: String,
+    /// "data from 14:02" when old, else `detail` as given (a symbol, a unit).
+    pub detail: String,
+    pub value: String,
+    pub change: String,
+    pub trend: i8,
+    pub curve: Vec<f32>,
+    /// "max 190.10", "min 186.20" ("" without a curve).
+    pub high: String,
+    pub low: String,
+}
+
+/// The cards of the markets' or the sensors' page: every item with a value not too old, in
+/// order. `details` gives each item's second line (its symbol); `high`/`low` are "max {v}" and
+/// "min {v}".
+pub fn trend_cards(
+    items: &[Trend],
+    details: &dyn Fn(&Trend) -> String,
+    w: &Words,
+    high: &str,
+    low: &str,
+    now: i64,
+    local: &dyn Fn(i64) -> (String, i64),
+) -> Vec<TrendCard> {
+    items
+        .iter()
+        .filter(|t| t.value.is_finite() && now - t.at <= t.max_age)
+        .map(|t| {
+            let row = trend_row(t, w);
+            let num = |v: f64| {
+                let v = format_number(v, t.decimals, w);
+                match unit_sign(&t.unit) {
+                    "" => v,
+                    u => format!("{v} {u}"),
+                }
+            };
+            let curve = !row.curve.is_empty();
+            TrendCard {
+                name: t.name.clone(),
+                detail: if now - t.at > t.fresh {
+                    w.data_from.replace("{t}", &local(t.at).0)
+                } else {
+                    details(t)
+                },
+                value: row.right,
+                change: row.change,
+                trend: row.trend,
+                curve: row.curve,
+                high: if curve {
+                    high.replace("{v}", &num(t.high))
+                } else {
+                    String::new()
+                },
+                low: if curve {
+                    low.replace("{v}", &num(t.low))
+                } else {
+                    String::new()
+                },
+            }
+        })
+        .collect()
 }
 
 /// A page in Settings → Screen → Widgets.
@@ -1650,5 +1721,32 @@ mod tests {
         assert!(pages(&s, &Kind::ALL, &words(), NOW, &local).is_empty());
         assert!(!Kind::Home.default_on() && Kind::Quotes.default_on());
         assert!(!Kind::Playing.tappable() && Kind::Notes.tappable());
+    }
+
+    #[test]
+    fn trend_cards_for_the_page() {
+        let q = vec![
+            trend("Apple", 189.2, 186.95, NOW - 60),
+            trend("Old", 10.0, 10.0, NOW - 7200),
+            trend("Gone", 1.0, 1.0, NOW - 3 * 86400),
+        ];
+        let cards = trend_cards(
+            &q,
+            &|t| format!("{} sym", t.name),
+            &words(),
+            "max {v}",
+            "min {v}",
+            NOW,
+            &local,
+        );
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].detail, "Apple sym");
+        assert_eq!(cards[0].value, "189.20 $");
+        assert_eq!(
+            (cards[0].high.as_str(), cards[0].low.as_str()),
+            ("max 3.00 $", "min 1.00 $")
+        );
+        assert_eq!(cards[1].detail, "data from 08:00");
+        assert!(curve_path_in(&cards[0].curve, 520.0, 96.0).starts_with("M 0.0 94.0 L"));
     }
 }

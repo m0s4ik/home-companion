@@ -301,6 +301,13 @@ widgets_hint_notes = "Written by voice or from the browser"
 widgets_hint_quotes = "{n} chosen"
 widgets_hint_cities = "{n} chosen"
 widgets_hint_sensors = "{n} chosen"
+# The markets' and the sensors' page (a tap on the widget).
+trends_high = "high {v}"
+trends_low = "low {v}"
+trends_credit_markets = "Quotes from Yahoo Finance (unofficial) and CoinGecko, delayed, for information only. Crypto data by CoinGecko."
+# Another city's page: its time now.
+city_local_time = "{t} local time"
+city_credit = "Weather data by Open-Meteo.com (CC BY 4.0)"
 
 # Settings → Home Assistant: the setup after the QR link, one row per check ({name} = the character's name)
 ha_title = "Home Assistant"

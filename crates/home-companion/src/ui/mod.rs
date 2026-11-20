@@ -240,6 +240,14 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn on_widget_tapped(&self, f: impl Fn() + 'static);
     /// +1 the next page, -1 the previous one.
     fn on_widget_swiped(&self, f: impl Fn(i32) + 'static);
+    /// The markets' or the sensors' page: its title, the cards, the sources' credit.
+    fn set_trends(&self, title: &str, cards: &[widgets::TrendCard], footer: &str);
+    fn get_trends_kind(&self) -> String;
+    /// Another city's page: the cities' names (chips), the one shown, its weather as the weather
+    /// page shows it, the source's credit.
+    fn set_city(&self, v: &weather::CityView);
+    fn get_city_index(&self) -> i32;
+    fn on_city_chosen(&self, f: impl Fn(i32) + 'static);
     /// The weather page: the condition's icon (MDI path data), today's high and low, the
     /// daily forecast.
     fn set_weather_page(&self, icon: &str, high: &str, low: &str, rows: &[weather::ForecastRow]);
@@ -801,6 +809,67 @@ macro_rules! impl_screen {
                     $m::CompanionWindow::set_weather_condition(self, condition.into());
                     $m::CompanionWindow::set_temperature(self, temperature.into());
                 }
+            }
+            fn set_trends(&self, title: &str, cards: &[widgets::TrendCard], footer: &str) {
+                let rows: Vec<$m::TrendRow> = cards
+                    .iter()
+                    .map(|c| $m::TrendRow {
+                        name: c.name.as_str().into(),
+                        detail: c.detail.as_str().into(),
+                        value: c.value.as_str().into(),
+                        change: c.change.as_str().into(),
+                        trend: c.trend as i32,
+                        curve: widgets::curve_path_in(&c.curve, 520.0, 96.0).into(),
+                        low: c.low.as_str().into(),
+                        high: c.high.as_str().into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_trends_title(self, title.into());
+                $m::CompanionWindow::set_trend_rows(self, model!(rows));
+                $m::CompanionWindow::set_trends_footer(self, footer.into());
+            }
+            fn get_trends_kind(&self) -> String {
+                $m::CompanionWindow::get_trends_kind(self).into()
+            }
+            fn set_city(&self, v: &weather::CityView) {
+                let (title, names, index, text, condition, rows, footer) = (
+                    v.title,
+                    v.names,
+                    v.index,
+                    v.text,
+                    v.condition,
+                    v.rows,
+                    v.footer,
+                );
+                let names: Vec<slint::SharedString> =
+                    names.iter().map(|n| n.as_str().into()).collect();
+                $m::CompanionWindow::set_city_title(self, title.into());
+                $m::CompanionWindow::set_city_names(self, model!(names));
+                $m::CompanionWindow::set_city_index(self, index as i32);
+                $m::CompanionWindow::set_city_icon(self, text.icon.into());
+                $m::CompanionWindow::set_city_temperature(self, text.temperature.as_str().into());
+                $m::CompanionWindow::set_city_condition(self, condition.into());
+                $m::CompanionWindow::set_city_high(self, text.high.as_str().into());
+                $m::CompanionWindow::set_city_low(self, text.low.as_str().into());
+                let v: Vec<$m::ForecastRow> = rows
+                    .iter()
+                    .map(|r| $m::ForecastRow {
+                        day: r.day.as_str().into(),
+                        kind: r.kind.as_str().into(),
+                        condition: r.condition.as_str().into(),
+                        high: r.high.as_str().into(),
+                        low: r.low.as_str().into(),
+                        rain: r.rain.as_str().into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_city_rows(self, model!(v));
+                $m::CompanionWindow::set_city_footer(self, footer.into());
+            }
+            fn get_city_index(&self) -> i32 {
+                $m::CompanionWindow::get_city_index(self)
+            }
+            fn on_city_chosen(&self, f: impl Fn(i32) + 'static) {
+                $m::CompanionWindow::on_city_chosen(self, f)
             }
             fn set_weather_page(
                 &self,

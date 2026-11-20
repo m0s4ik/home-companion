@@ -498,7 +498,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 87] = [
+pub const DEMO_STATES: [&str; 89] = [
     "home",
     "cards",
     "cards-setup",
@@ -582,6 +582,8 @@ pub const DEMO_STATES: [&str; 87] = [
     "widget-quotes",
     "widget-quotes-line",
     "widget-cities",
+    "trends",
+    "city",
     "settings-widgets",
     "settings-panel",
     "panel-ask",
@@ -842,6 +844,14 @@ impl Demo {
             }
             "update" => page("update"),
             "settings-widgets" => page("widgets"),
+            "trends" => Demo {
+                widget: Some(WidgetKind::Quotes),
+                ..page("trends")
+            },
+            "city" => Demo {
+                widget: Some(WidgetKind::Cities),
+                ..page("city")
+            },
             "settings-panel" => Demo {
                 panel: 1,
                 ..page("panel")
@@ -1532,6 +1542,67 @@ fn demo_quotes() -> Vec<widgets::Trend> {
         q("EUR/USD", "", 4, 1.0835, 1.0812, 4.0),
         q("Gold", "USD", 2, 2391.5, 2402.8, 6.0),
     ]
+}
+
+/// A city's weather as Home Assistant's (`ha::weather::Weather`), so the weather page's code
+/// draws it; and its date today there ("2026-11-03").
+fn city_as_weather(w: &crate::feeds::openmeteo::CityWeather, now: i64) -> (Weather, String) {
+    use crate::ha::weather::{ForecastDay, ForecastHour};
+    let date = |t: i64| {
+        let days = (t + w.utc_offset as i64).div_euclid(86400);
+        let (y, m, d) = civil_from_days(days);
+        format!("{y:04}-{m:02}-{d:02}")
+    };
+    let mut days = w.days.iter().map(|d| ForecastDay {
+        // Noon of that day, so a time zone's midnight never falls on the day before.
+        date: date(d.at + 12 * 3600 - w.utc_offset as i64),
+        condition: d.cond.clone(),
+        high: Some(d.high as f64),
+        low: Some(d.low as f64),
+        precipitation: None,
+        precipitation_probability: None,
+    });
+    let today = date(now);
+    let first = days.next();
+    let (today_fc, mut next): (Option<ForecastDay>, Vec<ForecastDay>) = match first {
+        Some(f) if f.date == today => (Some(f), Vec::new()),
+        Some(f) => (None, vec![f]),
+        None => (None, Vec::new()),
+    };
+    next.extend(days);
+    (
+        Weather {
+            condition: w.cond.clone(),
+            temperature: w.temp as f64,
+            unit: w.unit.clone(),
+            today: today_fc,
+            next_days: next,
+            hours: w
+                .hours
+                .iter()
+                .map(|h| ForecastHour {
+                    at: h.at,
+                    condition: h.cond.clone(),
+                    temperature: Some(h.temp as f64),
+                })
+                .collect(),
+        },
+        today,
+    )
+}
+
+/// The civil date of a day number since 1970-01-01.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    (y, m, d)
 }
 
 /// The other cities of the demos: public places, made-up weather.
@@ -2498,6 +2569,12 @@ impl<S: Screen> Ui<S> {
         self.screen.on_widget_every_stepped(move |d| {
             if let Some(ui) = ui.upgrade() {
                 ui.widget_every_stepped(d);
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_city_chosen(move |_| {
+            if let Some(ui) = ui.upgrade() {
+                ui.refresh_city();
             }
         });
         let ui = Rc::downgrade(self);
@@ -3638,6 +3715,11 @@ impl<S: Screen> Ui<S> {
             }
         }
         self.screen.set_page(d.page);
+        match d.page {
+            "trends" => self.refresh_trends(),
+            "city" => self.refresh_city(),
+            _ => {}
+        }
         if !d.dialog.is_empty() {
             self.screen.set_dialog(d.dialog);
         }
@@ -5330,6 +5412,8 @@ impl<S: Screen> Ui<S> {
                 self.tick_usage(true);
             }
             "usage" => self.tick_usage(true),
+            "trends" => self.refresh_trends(),
+            "city" => self.refresh_city(),
             _ => {}
         }
         // The mirroring card is there only while its page is not.
@@ -5869,6 +5953,95 @@ impl<S: Screen> Ui<S> {
             .filter_map(|c| snap.city(c.id).cloned())
             .collect();
         self.refresh_widget();
+    }
+
+    /// The markets' or the sensors' page, as the data is now.
+    fn refresh_trends(&self) {
+        let l = self.locale.borrow();
+        let w = widget_words(&l);
+        let kind = self.screen.get_trends_kind();
+        let data = self.widget_data.borrow();
+        let quotes = kind != "sensors";
+        let (items, title) = if quotes {
+            (&data.quotes, l.text("widget_quotes"))
+        } else {
+            (&data.sensors, l.text("widget_sensors"))
+        };
+        let symbols: Vec<(String, String)> = self
+            .widget_quotes
+            .borrow()
+            .iter()
+            .map(|c| (c.name.clone(), c.id.to_ascii_uppercase()))
+            .collect();
+        let details = |t: &widgets::Trend| -> String {
+            if quotes {
+                symbols
+                    .iter()
+                    .find(|(n, _)| *n == t.name)
+                    .map(|(_, id)| id.clone())
+                    .unwrap_or_default()
+            } else {
+                t.unit.clone()
+            }
+        };
+        let cards = widgets::trend_cards(
+            items,
+            &details,
+            &w,
+            l.text("trends_high"),
+            l.text("trends_low"),
+            self.now() as i64,
+            &local_hm,
+        );
+        let footer = if quotes {
+            l.text("trends_credit_markets")
+        } else {
+            ""
+        };
+        self.screen.set_trends(title, &cards, footer);
+    }
+
+    /// The other cities' page: the one chosen on its chips (the first at first), its weather as
+    /// the home's weather page shows it, in its own time.
+    fn refresh_city(&self) {
+        let l = self.locale.borrow();
+        let choices = self.widget_cities.borrow();
+        let weather = self.city_weather.borrow();
+        let shown: Vec<(
+            &crate::feeds::CityChoice,
+            &crate::feeds::openmeteo::CityWeather,
+        )> = choices
+            .iter()
+            .filter_map(|c| Some((c, weather.iter().find(|w| w.id == c.id)?)))
+            .collect();
+        let names: Vec<String> = shown.iter().map(|(c, _)| c.name.clone()).collect();
+        let index =
+            (self.screen.get_city_index().max(0) as usize).min(names.len().saturating_sub(1));
+        let Some((c, cw)) = shown.get(index) else {
+            return;
+        };
+        let now = self.now() as i64;
+        let (w, today) = city_as_weather(cw, now);
+        let text = super::weather::text(&w, &l);
+        let there = (now + cw.utc_offset as i64).rem_euclid(86400);
+        let condition = format!(
+            "{} · {}",
+            text.condition,
+            l.text("city_local_time").replace(
+                "{t}",
+                &format!("{:02}:{:02}", there / 3600, there % 3600 / 60)
+            )
+        );
+        let rows = super::weather::forecast_rows(&w, &l, &today, 5);
+        self.screen.set_city(&super::weather::CityView {
+            title: &c.name,
+            names: &names,
+            index,
+            text: &text,
+            condition: &condition,
+            rows: &rows,
+            footer: l.text("city_credit"),
+        });
     }
 
     /// The other cities as the widget's rows: the time there now, the name, the sky, the
@@ -7305,6 +7478,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_city_s_days_in_its_own_time() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(20395), (2025, 11, 3));
+        assert_eq!(civil_from_days(-1), (1969, 12, 31));
+        let (_, cities) = demo_cities();
+        // Tokyo, nine hours ahead: at 14:25 UTC it is already the next day there.
+        let (w, today) = city_as_weather(&cities[1], DEMO_NOW as i64);
+        assert_eq!(today, "2026-11-03");
+        assert_eq!(w.unit, "°C");
+        let late = DEMO_NOW as i64 + 10 * 3600;
+        assert_eq!(city_as_weather(&cities[1], late).1, "2026-11-04");
+        assert!(w.today.is_some() && w.next_days.len() == 4);
+    }
+
+    #[test]
     fn memories_tile_says_what_waits() {
         let l = locale::load(&locale::repo_locales(), "it").unwrap();
         assert_eq!(memories_tile(&l, "6 ricordi", 0), "6 ricordi");
@@ -7762,6 +7950,68 @@ mod tests {
         assert_eq!(st["status"], "refused");
         ui.panel_sessions.borrow_mut().skip_pause();
         assert_eq!(ask("192.0.2.1")["ok"], true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tap on the markets' widget opens their page with a card each; on the cities' widget,
+    /// the city page, whose chips change the city; on now playing, nothing.
+    #[test]
+    fn widget_taps_open_their_pages() {
+        use slint::LogicalPosition;
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let (ui, dir) = headless_ui("widget-taps");
+        let w = &ui.screen;
+        let tap = |x: f32, y: f32| {
+            let position = LogicalPosition::new(x, y);
+            let button = PointerEventButton::Left;
+            w.window()
+                .dispatch_event(WindowEvent::PointerPressed { position, button });
+            w.window()
+                .dispatch_event(WindowEvent::PointerReleased { position, button });
+            slint::platform::update_timers_and_animations();
+        };
+        let show = |kind: WidgetKind| {
+            *ui.widget_on.borrow_mut() = vec![kind];
+            ui.refresh_home();
+            assert_eq!(ui.widget.borrow().kind(), Some(kind));
+            w.set_page("home".into());
+        };
+        ui.widget_data.borrow_mut().quotes = demo_quotes()
+            .into_iter()
+            .map(|mut t| {
+                t.at = now_unix() as i64;
+                t
+            })
+            .collect();
+        show(WidgetKind::Quotes);
+        tap(800.0, 420.0);
+        assert_eq!(w.get_page(), "trends");
+        assert_eq!(w.get_trends_kind(), "quotes");
+        ui.on_page("trends");
+        assert_eq!(slint::Model::row_count(&w.get_trend_rows()), 5);
+        let (choices, mut weather) = demo_cities();
+        for c in &mut weather {
+            c.at = now_unix() as i64;
+        }
+        *ui.widget_cities.borrow_mut() = choices;
+        *ui.city_weather.borrow_mut() = weather;
+        show(WidgetKind::Cities);
+        tap(800.0, 420.0);
+        assert_eq!(w.get_page(), "city");
+        ui.on_page("city");
+        assert_eq!(w.get_city_title(), "Berlin");
+        // The second chip: Tokyo.
+        tap(796.0, 144.0);
+        assert_eq!(w.get_city_title(), "Tokyo");
+        ui.widget_data.borrow_mut().playing = Some(widgets::Playing {
+            title: "Song".into(),
+            artist: "Band".into(),
+            player: "Speaker".into(),
+        });
+        show(WidgetKind::Playing);
+        assert!(!w.get_widget_tappable());
+        tap(800.0, 420.0);
+        assert_eq!(w.get_page(), "home");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

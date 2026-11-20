@@ -40,6 +40,20 @@ export { Grid } from "design/tokens.slint";
 // One tile of the control center: `key` picks its icon ("wifi", "bluetooth", "airplay", "mic",
 // "night", "ha"); the words come from the body (crates/home-companion/src/ui/control.rs).
 // One step of an install (update.rs): "done", "now", "todo" or "failed".
+// The markets' or the sensors' page: one number with its day.
+export struct TrendRow {
+    name: string,
+    // The symbol, or "data from 14:02".
+    detail: string,
+    value: string,
+    change: string,
+    trend: int,
+    // SVG path commands in a 520 x 96 box ("" none).
+    curve: string,
+    low: string,
+    high: string,
+}
+
 // Settings → Screen → Widgets: one page of the widget, in the turn's order.
 export struct WidgetPage {
     key: string,
@@ -794,6 +808,24 @@ export component CompanionWindow inherits Window {
     in property <int> widget-seq: 0;
     in property <bool> widget-tappable: true;
     callback widget-tapped();
+    // The markets' and the sensors' page ("trends"): which, its title, its rows, the sources'
+    // credit under them.
+    in-out property <string> trends-kind: "quotes";
+    in property <string> trends-title: "";
+    in property <[TrendRow]> trend-rows: [];
+    in property <string> trends-footer: "";
+    // The other cities' page ("city"): the cities' names (chips), the one shown, its weather.
+    in property <[string]> city-names: [];
+    in-out property <int> city-index: 0;
+    in property <string> city-title: "";
+    in property <string> city-icon: "";
+    in property <string> city-temperature: "";
+    in property <string> city-condition: "";
+    in property <string> city-high: "";
+    in property <string> city-low: "";
+    in property <[ForecastRow]> city-rows: [];
+    in property <string> city-footer: "";
+    callback city-chosen(int);
     callback widget-swiped(int);
     // Settings → Screen → Widgets: every page in the turn's order with its switch, the interval
     // in seconds (0 = by hand), the Screen page's line.
@@ -1694,6 +1726,11 @@ export component CompanionWindow inherits Window {
                 } else if (root.widget-kind == "next") {
                     root.page-back = "home";
                     root.page = "reminders";
+                } else if (root.widget-kind == "quotes" || root.widget-kind == "sensors") {
+                    root.trends-kind = root.widget-kind;
+                    root.page = "trends";
+                } else if (root.widget-kind == "cities") {
+                    root.page = "city";
                 }
             }
             swiped(d) => {
@@ -2990,6 +3027,192 @@ export component CompanionWindow inherits Window {
             picked(id) => {
                 root.page = "ha";
                 root.ha-picked(id);
+            }
+        }
+    }
+
+    // ---- The markets or the sensors chosen from the browser, one card each: name, value, the
+    // change, the day's curve (520 x 96), its low and high; the sources' credit at the end.
+    // Read only: they are chosen from the browser.
+    if root.desk && root.desk-page == "trends": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.trends-title;
+            clock: root.clock;
+            back => {
+                root.page = "home";
+            }
+        }
+        trends-flick := Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: Grid.page-height;
+            content-height: max(self.height, trends-col.preferred-height + 24px);
+            trends-col := VerticalLayout {
+                alignment: start;
+                spacing: 16px;
+                for r in root.trend-rows: Rectangle {
+                    height: 208px;
+                    border-radius: Grid.card-radius;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.line;
+                    property <color> change-color: root.trends-kind != "quotes" || r.trend == 0 ? Theme.text-2
+                        : r.trend > 0 ? Theme.ok : Theme.danger;
+                    Text {
+                        x: 24px;
+                        y: 16px;
+                        width: parent.width - 48px - 280px;
+                        height: 48px;
+                        text: r.name;
+                        font-size: 28px;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Text {
+                        x: parent.width - 24px - self.width;
+                        y: 12px;
+                        width: 280px;
+                        height: 56px;
+                        text: r.value;
+                        font-family: "Inter Tnum";
+                        font-size: 40px;
+                        color: Theme.text;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        x: 24px;
+                        y: 64px;
+                        width: parent.width - 48px - 280px;
+                        height: 28px;
+                        text: r.detail;
+                        font-size: 20px;
+                        color: Theme.text-3;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Text {
+                        x: parent.width - 24px - self.width;
+                        y: 64px;
+                        width: 280px;
+                        height: 32px;
+                        text: r.change;
+                        font-family: "Inter Tnum";
+                        font-size: 26px;
+                        color: change-color;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+                    if r.curve != "": Path {
+                        x: 24px;
+                        y: 100px;
+                        width: 520px;
+                        height: 96px;
+                        viewbox-x: 0;
+                        viewbox-y: 0;
+                        viewbox-width: 520;
+                        viewbox-height: 96;
+                        commands: r.curve;
+                        stroke: Theme.text-2;
+                        stroke-width: 2px;
+                    }
+                    Text {
+                        x: parent.width - 24px - self.width;
+                        y: 120px;
+                        width: 200px;
+                        height: 28px;
+                        text: r.high;
+                        font-family: "Inter Tnum";
+                        font-size: 20px;
+                        color: Theme.text-3;
+                        horizontal-alignment: right;
+                    }
+                    Text {
+                        x: parent.width - 24px - self.width;
+                        y: 156px;
+                        width: 200px;
+                        height: 28px;
+                        text: r.low;
+                        font-family: "Inter Tnum";
+                        font-size: 20px;
+                        color: Theme.text-3;
+                        horizontal-alignment: right;
+                    }
+                }
+                if root.trends-footer != "": Text {
+                    text: root.trends-footer;
+                    font-size: 20px;
+                    color: Theme.text-3;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        ScrollFade {
+            x: trends-flick.x;
+            y: trends-flick.y + trends-flick.height - self.height;
+            width: trends-flick.width;
+            more: trends-flick.content-height > trends-flick.height + 1px
+                && trends-flick.content-y > trends-flick.height - trends-flick.content-height + 1px;
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.microphone-44;
+            label: root.t.talk;
+            clicked => {
+                root.talk-clicked();
+            }
+        }
+    }
+
+    // ---- Another city's weather: the cities as chips, the one chosen as the weather page (its
+    // time there in the condition's line), the source's credit under the forecast.
+    if root.desk && root.desk-page == "city": Rectangle {
+        WeatherPage {
+            title: root.city-title;
+            clock: root.clock;
+            icon: root.city-icon;
+            temperature: root.city-temperature;
+            condition: root.city-condition;
+            high: root.city-high;
+            low: root.city-low;
+            forecast-title: root.t.weather-forecast;
+            empty: root.t.weather-no-forecast;
+            rows: root.city-rows;
+            top: root.city-names.length > 1 ? 80px : 0px;
+            footer: root.city-footer;
+            back => {
+                root.page = "home";
+            }
+        }
+        if root.city-names.length > 1: HorizontalLayout {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: 64px;
+            spacing: 12px;
+            alignment: start;
+            for n[i] in root.city-names: Chip {
+                width: min(240px, (Grid.col-width - (root.city-names.length - 1) * 12px) / root.city-names.length);
+                label: n;
+                chosen: i == root.city-index;
+                clicked => {
+                    root.city-index = i;
+                    root.city-chosen(i);
+                }
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.microphone-44;
+            label: root.t.talk;
+            clicked => {
+                root.talk-clicked();
             }
         }
     }

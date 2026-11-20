@@ -68,6 +68,18 @@ pub fn text(w: &Weather, l: &Locale) -> WeatherText {
     }
 }
 
+/// Another city's page (feeds/): the cities' names (its chips), the one shown, its weather as
+/// the weather page shows it, the condition's line with the time there, the source's credit.
+pub struct CityView<'a> {
+    pub title: &'a str,
+    pub names: &'a [String],
+    pub index: usize,
+    pub text: &'a WeatherText,
+    pub condition: &'a str,
+    pub rows: &'a [ForecastRow],
+    pub footer: &'a str,
+}
+
 /// A line of the weather page's forecast.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForecastRow {
