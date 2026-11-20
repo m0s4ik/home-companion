@@ -101,8 +101,8 @@ fn serve(brain: &Brain, stream: TcpStream) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
     let mut w = stream.try_clone()?;
-    let mut r = stream;
-    let req = match httpd::read_request(&mut r, LIMITS) {
+    let r = stream;
+    let req = match httpd::read_request(&mut httpd::Timed::new(&r, httpd::REQUEST_WITHIN), LIMITS) {
         Ok(req) => req,
         Err(e) => {
             if let Some(status) = e.status() {

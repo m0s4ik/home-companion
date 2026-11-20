@@ -32,6 +32,8 @@ use httpd::{Limits, Request, Response};
 use serde_json::{Value, json};
 
 pub const LIMITS: Limits = Limits::new(16 << 10, 64 << 10);
+/// A whole request (head and body) within this.
+pub const REQUEST_WITHIN: Duration = Duration::from_secs(5);
 pub const MAX_CONNECTIONS: usize = 8;
 pub const PER_SECOND: u32 = 20;
 pub const COOKIE: &str = "hc_panel";
@@ -392,7 +394,7 @@ impl<B: Body> Panel<B> {
     pub fn serve(&self, mut s: TcpStream, peer: IpAddr) {
         let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
         let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
-        let r = match httpd::read_request(&mut s, LIMITS) {
+        let r = match httpd::read_request(&mut httpd::Timed::new(&s, REQUEST_WITHIN), LIMITS) {
             Ok(req) => {
                 let head = req.method == "HEAD";
                 (self.route(&req, peer, Instant::now()), head)

@@ -111,6 +111,39 @@ impl From<io::Error> for Error {
     }
 }
 
+/// A stream read under a deadline for the whole request: every read waits at most what is
+/// left, and none starts after it (a client sending a byte every few seconds does not keep a
+/// connection for ever). Use it for every request: `read_request(&mut Timed::new(&s, d), ..)`.
+pub struct Timed<'a> {
+    stream: &'a std::net::TcpStream,
+    deadline: std::time::Instant,
+}
+
+/// The whole request (head and body) within this, by default.
+pub const REQUEST_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+
+impl<'a> Timed<'a> {
+    pub fn new(stream: &'a std::net::TcpStream, within: std::time::Duration) -> Timed<'a> {
+        Timed {
+            stream,
+            deadline: std::time::Instant::now() + within,
+        }
+    }
+}
+
+impl Read for Timed<'_> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let left = self
+            .deadline
+            .saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "request too slow"));
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        (&mut &*self.stream).read(out)
+    }
+}
+
 /// Bytes read past what was asked for: the head's read may take some of the body.
 struct Buffered<'a, R: Read> {
     r: &'a mut R,
@@ -170,8 +203,8 @@ fn is_token(s: &str) -> bool {
 }
 
 /// Where the head ends in `buf` (the index after the blank line), if it does.
-fn head_end(buf: &[u8]) -> Option<usize> {
-    for i in 0..buf.len() {
+fn head_end(buf: &[u8], from: usize) -> Option<usize> {
+    for i in from..buf.len() {
         if buf[i] == b'\n' {
             if buf[i + 1..].starts_with(b"\r\n") {
                 return Some(i + 3);
@@ -189,10 +222,14 @@ fn head_end(buf: &[u8]) -> Option<usize> {
 pub fn read_request<R: Read>(r: &mut R, limits: Limits) -> Result<Request, Error> {
     let mut buf: Vec<u8> = Vec::with_capacity(1024);
     let mut chunk = [0u8; 1024];
+    // Where the blank line may start in what came last: the scan never goes over the head
+    // again (a request sent a byte at a time costs as much as one sent at once).
+    let mut scanned = 0;
     let end = loop {
-        if let Some(e) = head_end(&buf) {
+        if let Some(e) = head_end(&buf, scanned) {
             break e;
         }
+        scanned = buf.len().saturating_sub(2);
         if buf.len() > limits.head {
             return Err(Error::HeadTooLarge);
         }
@@ -244,6 +281,14 @@ pub fn read_request<R: Read>(r: &mut R, limits: Limits) -> Result<Request, Error
             return Err(Error::HeadTooLarge);
         }
     }
+    if headers
+        .iter()
+        .filter(|(n, _)| n.eq_ignore_ascii_case("host"))
+        .count()
+        > 1
+    {
+        return Err(Error::Bad("two hosts"));
+    }
     let mut length: Option<usize> = None;
     let mut chunked = false;
     for (n, v) in &headers {
@@ -277,7 +322,7 @@ pub fn read_request<R: Read>(r: &mut R, limits: Limits) -> Result<Request, Error
             let size = b.line(64)?;
             let size = std::str::from_utf8(&size).map_err(|_| Error::Bad("chunk size"))?;
             let size = size.split(';').next().unwrap_or("").trim();
-            if size.is_empty() || size.len() > 8 {
+            if size.is_empty() || size.len() > 8 || !size.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err(Error::Bad("chunk size"));
             }
             let n = usize::from_str_radix(size, 16).map_err(|_| Error::Bad("chunk size"))?;
@@ -296,7 +341,7 @@ pub fn read_request<R: Read>(r: &mut R, limits: Limits) -> Result<Request, Error
                 }
                 break;
             }
-            if body.len() + n > limits.body {
+            if body.len().checked_add(n).is_none_or(|t| t > limits.body) {
                 return Err(Error::BodyTooLarge);
             }
             let at = body.len();
@@ -406,7 +451,10 @@ impl Response {
 }
 
 /// An address of the local network or of the device itself: loopback, the private ranges
-/// (RFC 1918, fc00::/7), link-local, and IPv4 inside IPv6 the same way.
+/// (RFC 1918, IPv6 unique local fc00::/7), link-local (169.254/16, fe80::/10), and IPv4 inside
+/// IPv6 the same way. A global IPv6 address is never private here, even one of the home
+/// network's own prefix: a browser reaching the device that way is refused (use the IPv4
+/// address, a ULA or the device's name); the firewall's `$LAN_V6` decides what arrives at all.
 pub fn is_private(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(a) => a.is_private() || a.is_loopback() || a.is_link_local(),
@@ -518,6 +566,14 @@ mod tests {
             Some(400)
         );
         assert_eq!(status(b"GET / HTTP/1.1\r\nBad Name: b\r\n\r\n"), Some(400));
+        assert_eq!(
+            status(b"GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n"),
+            Some(400)
+        );
+        assert_eq!(
+            status(b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n+4\r\nabcd\r\n0\r\n\r\n"),
+            Some(400)
+        );
         // Not HTTP/1.x, odd methods and targets.
         assert_eq!(status(b"GET / HTTP/2.0\r\n\r\n"), Some(400));
         assert_eq!(status(b"GET http://x/ HTTP/1.1\r\n\r\n"), Some(400));
@@ -618,5 +674,45 @@ mod tests {
             }
             let _ = read_request(&mut Trickle(&v), L);
         }
+    }
+
+    /// A client that sends slowly is cut at the deadline, whatever it sends; a head sent a byte
+    /// at a time is read in linear time.
+    #[test]
+    fn slow_clients_are_cut() {
+        use std::net::{TcpListener, TcpStream};
+        use std::time::{Duration, Instant};
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let slow = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(addr).unwrap();
+            for _ in 0..40 {
+                if c.write_all(b"X").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        let (s, _) = l.accept().unwrap();
+        let t = Instant::now();
+        let r = read_request(&mut Timed::new(&s, Duration::from_millis(700)), L);
+        assert!(
+            matches!(r, Err(Error::Io(ref e)) if e.kind() == io::ErrorKind::TimedOut),
+            "{r:?}"
+        );
+        assert!(t.elapsed() < Duration::from_millis(1500));
+        drop(s);
+        slow.join().unwrap();
+        // 8 KiB of head a byte at a time.
+        let mut head = b"GET / HTTP/1.1\r\n".to_vec();
+        for _ in 0..800 {
+            head.extend_from_slice(b"X-Pad: 12\r\n");
+        }
+        head.truncate(8000);
+        head.extend_from_slice(b"\r\n\r\n");
+        let big = Limits::new(16 << 10, 64);
+        let t = Instant::now();
+        let _ = read_request(&mut Trickle(&head), big);
+        assert!(t.elapsed() < Duration::from_secs(1));
     }
 }

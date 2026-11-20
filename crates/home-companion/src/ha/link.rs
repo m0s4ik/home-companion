@@ -259,16 +259,18 @@ impl Server {
         let _ = s.set_nonblocking(false);
         let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
         let _ = s.set_write_timeout(Some(Duration::from_secs(3)));
-        let req = match httpd::read_request(&mut s, LIMITS) {
-            Ok(r) => r,
-            Err(e) => {
-                log::debug!("Home Assistant link: {peer}: {e}");
-                if let Some(status) = e.status() {
-                    let _ = httpd::Response::new(status).write_to(&mut s, false);
+        // One connection at a time: a slow client holds the page for 3 s at most.
+        let req =
+            match httpd::read_request(&mut httpd::Timed::new(&s, Duration::from_secs(3)), LIMITS) {
+                Ok(r) => r,
+                Err(e) => {
+                    log::debug!("Home Assistant link: {peer}: {e}");
+                    if let Some(status) = e.status() {
+                        let _ = httpd::Response::new(status).write_to(&mut s, false);
+                    }
+                    return false;
                 }
-                return false;
-            }
-        };
+            };
         let head_only = req.method == "HEAD";
         if req.method != "GET" && !head_only {
             let _ = httpd::Response::new(405).write_to(&mut s, false);
