@@ -35,6 +35,8 @@ pub struct Alive<'a> {
     pub status: Option<(String, String)>,
     /// (title, text) when the setup in Home Assistant needs the user.
     pub setup: Option<(String, String)>,
+    /// (title, text) while browser access requests are stopped (too many unanswered).
+    pub panel: Option<(String, String)>,
     /// Messages waiting for an OK: (title, text).
     pub messages: &'a [(String, String)],
     /// ("Duplicazione schermo", "iPhone · Tocca per tornare") while a phone mirrors its screen
@@ -92,6 +94,9 @@ pub fn pick_n(a: &Alive, w: &CardWords, max: usize) -> Vec<CardView> {
     }
     if let Some((t, x)) = &a.setup {
         out.push(card("setup", t, x));
+    }
+    if let Some((t, x)) = &a.panel {
+        out.push(card("panel", t, x));
     }
     if let Some((t, x)) = &a.ready {
         out.push(card("ready", t, x));
@@ -379,6 +384,7 @@ mod tests {
             done: None,
             status: Some(("Home Assistant non risponde".into(), "Riprovo".into())),
             setup: None,
+            panel: None,
             messages: &msgs,
             mirror: None,
             ready: None,
@@ -612,5 +618,23 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(kinds(&pick(&a, &w)), ["reminder", "hc-timer"]);
+    }
+
+    /// Browser access requests stopped: a card after the body's own status, before the rest.
+    #[test]
+    fn the_panel_card_comes_after_the_status() {
+        let w = CardWords {
+            of: &|i, n| format!("{i}/{n}"),
+            more_timers: &|n| format!("+{n}"),
+            paused: "Paused",
+        };
+        let a = Alive {
+            status: Some(("Offline".into(), "".into())),
+            panel: Some(("Requests stopped".into(), "Ten minutes".into())),
+            answer: Some(("Last answer".into(), "…".into())),
+            ..Default::default()
+        };
+        let kinds: Vec<&str> = pick(&a, &w).iter().map(|c| c.kind).collect();
+        assert_eq!(kinds, ["status", "panel", "answer"]);
     }
 }

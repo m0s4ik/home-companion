@@ -242,6 +242,19 @@ impl Settings {
         self.save_logged("update_prerelease", on.into());
     }
 
+    /// Settings → Access from the browser (the panel): `[panel] on`; off by default.
+    pub fn panel_on(&self) -> bool {
+        self.table()
+            .and_then(|t| t.get("panel")?.as_table()?.get("on")?.as_bool())
+            .unwrap_or(false)
+    }
+
+    pub fn save_panel_on(&self, on: bool) {
+        let mut t = toml::Table::new();
+        t.insert("on".into(), on.into());
+        self.save_logged("panel", t.into());
+    }
+
     /// The control center's microphone switch: muted, the wake word is not listened for.
     pub fn mic_muted(&self) -> bool {
         self.flag("mic_muted").unwrap_or(false)

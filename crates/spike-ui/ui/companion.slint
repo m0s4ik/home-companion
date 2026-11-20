@@ -151,6 +151,14 @@ export struct LanguageRow {
 }
 
 // The body's words in the user's language (locales/*.toml, `[text]`, same names).
+// Settings → Access from the browser: a device let in ("Chrome on macOS", "192.0.2.24 · 20 nov
+// 14:02").
+export struct PanelDevice {
+    id: string,
+    line: string,
+    detail: string,
+}
+
 export struct Words {
     ha_short: string,
     talk: string,
@@ -207,6 +215,22 @@ export struct Words {
     widgets_every: string,
     widgets_by_hand: string,
     widgets_hint: string,
+    panel_access: string,
+    panel_access_on: string,
+    panel_access_off: string,
+    panel_access_hint: string,
+    panel_address_hint: string,
+    panel_devices_title: string,
+    panel_no_devices: string,
+    panel_devices_revoke: string,
+    panel_revoke_sure: string,
+    panel_revoke_all: string,
+    panel_revoke_all_question: string,
+    panel_revoke_all_text: string,
+    panel_ask_title: string,
+    panel_ask_text: string,
+    panel_allow: string,
+    panel_refuse: string,
     widget_next: string,
     widget_weather: string,
     widget_shopping: string,
@@ -772,6 +796,22 @@ export component CompanionWindow inherits Window {
     callback widget-toggled(string, bool);
     // "Change every": -1 shorter, +1 longer (by hand is the longest).
     callback widget-every-stepped(int);
+    // Settings → Access from the browser (the panel, home-companion-panel): on, the address to
+    // type and its QR code (a one-time ticket: it lets in whoever scans it), the devices let in,
+    // the one whose Revoke was touched once (a second touch revokes it), the Settings row's value.
+    in property <bool> panel-on: false;
+    in property <string> panel-address: "";
+    in property <image> panel-qr;
+    in property <[PanelDevice]> panel-devices: [];
+    in property <string> panel-armed: "";
+    in property <string> panel-summary: "";
+    // The access dialog: who asks ("Chrome on macOS · 192.0.2.24") and the code their browser shows.
+    in property <string> panel-ask-line: "";
+    in property <string> panel-ask-code: "";
+    callback panel-toggled(bool);
+    callback panel-revoke(string);
+    callback panel-revoke-all();
+    callback panel-answered(bool);
     // Home Assistant is not connected (the HA action is dimmed; a status card says so).
     in property <bool> offline: false;
     // Start-up: the character's loading animation, its name, "Starting…"; no clock.
@@ -1552,6 +1592,7 @@ export component CompanionWindow inherits Window {
                         : c.kind == "alarm" ? Icons.alarm-32
                         : c.kind == "mirror" ? Icons.cast-connected-32
                         : c.kind == "ready" ? Icons.check-circle-32
+                        : c.kind == "panel" ? Icons.monitor-cellphone-32
                         : c.kind == "hc-alert" ? Icons.alert-circle-32
                         : c.kind == "hc-check" ? Icons.check-circle-32
                         : c.kind == "hc-cart" ? Icons.cart-32
@@ -1562,7 +1603,7 @@ export component CompanionWindow inherits Window {
                         : c.kind == "hc-rain" ? Icons.weather-rainy-32
                         : c.kind == "hc-sun" ? Icons.weather-sunny-32
                         : Icons.forum-32;
-                    icon-color: c.kind == "status" || c.kind == "hc-alert" ? Theme.danger
+                    icon-color: c.kind == "status" || c.kind == "hc-alert" || c.kind == "panel" ? Theme.danger
                         : c.kind == "more" || c.kind == "answer" ? Theme.text-2 : Theme.accent;
                     title: c.title;
                     text: c.text;
@@ -1601,6 +1642,8 @@ export component CompanionWindow inherits Window {
                         } else if (c.kind == "ready") {
                             root.ready-dismissed();
                             root.home-assistant-clicked();
+                        } else if (c.kind == "panel") {
+                            root.page = "panel";
                         } else if (c.kind == "upcoming" || c.kind == "reminder") {
                             root.page-back = "home";
                             root.page = "reminders";
@@ -2638,7 +2681,7 @@ export component CompanionWindow inherits Window {
                     text: root.t.section-device;
                 }
                 Group {
-                    height: 4 * 76px;
+                    height: 5 * 76px;
                     Row {
                         y: 0;
                         width: parent.width;
@@ -2661,6 +2704,16 @@ export component CompanionWindow inherits Window {
                     Row {
                         y: 152px;
                         width: parent.width;
+                        icon: Icons.qrcode-28;
+                        label: root.t.panel-access;
+                        value: root.panel-summary;
+                        clicked => {
+                            root.page = "panel";
+                        }
+                    }
+                    Row {
+                        y: 228px;
+                        width: parent.width;
                         icon: Icons.information-28;
                         label: root.t.info;
                         value: root.version;
@@ -2669,7 +2722,7 @@ export component CompanionWindow inherits Window {
                         }
                     }
                     Row {
-                        y: 228px;
+                        y: 304px;
                         width: parent.width;
                         icon: Icons.power-sleep-28;
                         label: root.t.suspend-row;
@@ -3627,6 +3680,159 @@ export component CompanionWindow inherits Window {
         }
     }
 
+    // ---- Settings → Access from the browser: the switch, the address and its QR code, the
+    // devices let in with Revoke (a second touch confirms), Revoke all.
+    if root.desk && root.desk-page == "panel": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.panel-access;
+            clock: root.clock;
+            back => {
+                root.page = "settings";
+            }
+        }
+        Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: root.height - Grid.page-y - 16px;
+            content-height: max(self.height, panel-col.preferred-height);
+            panel-col := VerticalLayout {
+                alignment: start;
+                spacing: 8px;
+                Group {
+                    height: 76px;
+                    Row {
+                        y: 0;
+                        width: parent.width;
+                        first: true;
+                        kind: "toggle";
+                        icon: Icons.qrcode-28;
+                        label: root.t.panel-access;
+                        on: root.panel-on;
+                        toggled(v) => {
+                            root.panel-toggled(v);
+                        }
+                    }
+                }
+                if !root.panel-on: Text {
+                    text: root.t.panel-access-hint;
+                    font-size: 24px;
+                    color: Theme.text-3;
+                    wrap: word-wrap;
+                }
+                // The address and its QR code: scanned, it lets the phone in at once.
+                if root.panel-on: Rectangle {
+                    height: 328px;
+                    Rectangle {
+                        x: 0;
+                        y: 16px;
+                        width: 296px;
+                        height: 296px;
+                        border-radius: 16px;
+                        background: Theme.text;
+                        Image {
+                            x: 16px;
+                            y: 16px;
+                            width: 264px;
+                            height: 264px;
+                            source: root.panel-qr;
+                            image-rendering: pixelated;
+                        }
+                    }
+                    Text {
+                        x: 328px;
+                        y: 32px;
+                        width: parent.width - 328px;
+                        text: root.panel-address;
+                        font-size: 32px;
+                        font-weight: 500;
+                        color: Theme.accent;
+                        wrap: char-wrap;
+                    }
+                    Text {
+                        x: 328px;
+                        y: 32px + 48px + 16px;
+                        width: parent.width - 328px;
+                        text: root.t.panel-address-hint;
+                        font-size: 24px;
+                        color: Theme.text-2;
+                        wrap: word-wrap;
+                    }
+                }
+                Rectangle {
+                    height: 8px;
+                }
+                SectionTitle {
+                    text: root.t.panel-devices-title;
+                }
+                if root.panel-devices.length == 0: Text {
+                    text: root.t.panel-no-devices;
+                    font-size: 24px;
+                    color: Theme.text-3;
+                    wrap: word-wrap;
+                }
+                if root.panel-devices.length > 0: Group {
+                    height: root.panel-devices.length * 88px;
+                    for d[i] in root.panel-devices: Rectangle {
+                        y: i * 88px;
+                        width: parent.width;
+                        height: 88px;
+                        if i > 0: Separator {
+                            y: 0;
+                            width: parent.width - 48px;
+                        }
+                        Text {
+                            x: 28px;
+                            y: 12px;
+                            width: parent.width - 28px - 220px;
+                            text: d.line;
+                            font-size: 28px;
+                            color: Theme.text;
+                            overflow: elide;
+                        }
+                        Text {
+                            x: 28px;
+                            y: 50px;
+                            width: parent.width - 28px - 220px;
+                            text: d.detail;
+                            font-size: 22px;
+                            color: Theme.text-3;
+                            overflow: elide;
+                        }
+                        PillButton {
+                            x: parent.width - 16px - self.width;
+                            y: 12px;
+                            width: 188px;
+                            label: root.panel-armed == d.id ? root.t.panel-revoke-sure : root.t.panel-devices-revoke;
+                            primary: root.panel-armed == d.id;
+                            clicked => {
+                                root.panel-revoke(d.id);
+                            }
+                        }
+                    }
+                }
+                if root.panel-devices.length > 1: Group {
+                    height: 76px;
+                    Row {
+                        y: 0;
+                        width: parent.width;
+                        first: true;
+                        kind: "";
+                        label: root.t.panel-revoke-all;
+                    }
+                    TouchArea {
+                        clicked => {
+                            Feedback.tap();
+                            root.dialog = "panel-revoke-all";
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ---- Music: what is playing, large; the transport in the action band. Only while something
     // plays (AirPlay is not there yet: the data is a placeholder).
     if root.desk && root.desk-page == "music": Rectangle {
@@ -4164,6 +4370,53 @@ export component CompanionWindow inherits Window {
     }
 
     // ---- Dialogs on the desk.
+    // A browser asks to be let in: who, and the code its page shows; Refuse · Allow.
+    if root.dialog == "panel-ask": Dialog {
+        icon: Icons.monitor-cellphone-48;
+        title: root.t.panel-ask-title;
+        text: root.t.panel-ask-text;
+        cancel: root.t.panel-refuse;
+        confirm: root.t.panel-allow;
+        content-height: 32px + 16px + 64px;
+        Text {
+            x: 48px;
+            y: 0;
+            width: 672px - 96px;
+            text: root.panel-ask-line;
+            font-size: 24px;
+            color: Theme.text-2;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+        Text {
+            x: 48px;
+            y: 32px + 16px;
+            width: 672px - 96px;
+            text: root.panel-ask-code;
+            font-size: 48px;
+            font-weight: 500;
+            letter-spacing: 12px;
+            color: Theme.accent;
+            horizontal-alignment: center;
+        }
+        answered(yes) => {
+            root.dialog = "";
+            root.panel-answered(yes);
+        }
+    }
+    if root.dialog == "panel-revoke-all": Dialog {
+        icon: Icons.close-48;
+        title: root.t.panel-revoke-all-question;
+        text: root.t.panel-revoke-all-text;
+        cancel: root.t.cancel;
+        confirm: root.t.panel-revoke-all;
+        answered(yes) => {
+            root.dialog = "";
+            if (yes) {
+                root.panel-revoke-all();
+            }
+        }
+    }
     if root.dialog == "suspend": Dialog {
         icon: Icons.power-sleep-48;
         title: root.t.suspend-question;

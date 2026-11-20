@@ -1,0 +1,484 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+//! The screen's side of the browser panel: the requests of `panel.sock` answered on this thread
+//! ([`crate::panel::protocol`]), the access dialog, Settings → Access from the browser (the
+//! switch, the address and its QR code with a one-time ticket, the devices with Revoke) and the
+//! home's card after too many unanswered requests.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
+
+use serde_json::Value;
+
+use super::{Screen, Ui, WakeSource, local_hm, qr_image, short_date, word};
+use crate::core::{Phase, UiEvent};
+use crate::ha::hub::HubCmd;
+use crate::panel::PanelCfg;
+use crate::panel::protocol::{self, PanelHost};
+use crate::panel::sessions::{self, Request, Sessions};
+use crate::panel::socket::{self, PanelSocket};
+use crate::settings_model::Change;
+use crate::timers::now_unix;
+use crate::ui::lists::{self, ShopList};
+
+/// A Revoke touched once waits this long for its second touch.
+const ARMED_FOR: Duration = Duration::from_secs(3);
+
+/// The address and the ticket of the demos (`--state settings-panel`).
+const DEMO_ADDRESS: &str = "192.0.2.5";
+const DEMO_TICKET: &str = "0123456789abcdef0123456789abcdef";
+
+/// What the screen keeps about the panel.
+#[derive(Default)]
+pub(super) struct PanelUi {
+    socket: Option<PanelSocket>,
+    pub(super) cfg: PanelCfg,
+    /// Settings → Access from the browser is on.
+    pub(super) on: bool,
+    /// The request the dialog shows.
+    asking: Option<String>,
+    /// The ticket the QR code on screen holds.
+    pub(super) ticket_shown: Option<String>,
+    /// The device whose Revoke was touched once, and when.
+    armed: Option<(String, Instant)>,
+    /// The home's card is up (requests stopped for a while).
+    pub(super) blocked: bool,
+    /// The devices changed while the sessions were busy: draw the page again.
+    changed: bool,
+    /// The device's address on the home network, while the page shows it.
+    address: Option<String>,
+    /// Sample devices for the demos.
+    demo: Vec<(String, String, String)>,
+}
+
+impl PanelUi {
+    /// The panel's state at start: on as the settings say, its socket listening (`cfg` None:
+    /// no socket, as in the tests and the demos).
+    pub(super) fn new(cfg: Option<PanelCfg>, on: bool) -> PanelUi {
+        let socket = cfg.as_ref().and_then(|c| {
+            socket::start(std::path::Path::new(&c.socket))
+                .map_err(|e| log::warn!(event = "panel"; "browser panel socket {}: {e}", c.socket))
+                .ok()
+        });
+        PanelUi {
+            socket,
+            cfg: cfg.unwrap_or_default(),
+            on,
+            ..Default::default()
+        }
+    }
+}
+
+pub(super) fn load_sessions(dir: Option<&std::path::Path>) -> RefCell<Sessions> {
+    RefCell::new(dir.map(Sessions::load).unwrap_or_default())
+}
+
+fn now() -> u64 {
+    now_unix() as u64
+}
+
+impl<S: Screen> Ui<S> {
+    pub(super) fn wire_panel(self: &Rc<Self>) {
+        let ui = Rc::downgrade(self);
+        self.screen.on_panel_toggled(move |on| {
+            if let Some(ui) = ui.upgrade() {
+                crate::settings_model::commit(&*ui, Change::Panel(on));
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_panel_answered(move |yes| {
+            if let Some(ui) = ui.upgrade() {
+                ui.panel_answered(yes);
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_panel_revoke(move |id| {
+            if let Some(ui) = ui.upgrade() {
+                ui.panel_revoke(&id);
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_panel_revoke_all(move || {
+            if let Some(ui) = ui.upgrade() {
+                if let Ok(mut s) = ui.panel_sessions.try_borrow_mut() {
+                    s.revoke_all();
+                }
+                ui.refresh_panel();
+            }
+        });
+    }
+
+    /// Switched on or off on the screen (settings_model::Change::Panel).
+    pub(super) fn panel_switched(&self, on: bool) {
+        self.panel.borrow_mut().on = on;
+        log::info!(event = "panel", on = on; "access from the browser {}", if on { "on" } else { "off" });
+        if !on {
+            self.close_panel_ask();
+            if let Ok(mut s) = self.panel_sessions.try_borrow_mut() {
+                s.drop_ticket();
+            }
+        }
+        self.refresh_panel();
+    }
+
+    /// The requests the panel's process made since the last poll, answered.
+    pub(super) fn poll_panel(&self) {
+        let calls: Vec<socket::Call> = match &self.panel.borrow().socket {
+            Some(s) => s.calls.try_iter().collect(),
+            None => Vec::new(),
+        };
+        for c in calls {
+            let answer = self.panel_call(&c.request);
+            let _ = c.reply.send(answer);
+        }
+        if std::mem::take(&mut self.panel.borrow_mut().changed) {
+            self.refresh_panel();
+        }
+    }
+
+    /// One request of the panel → its answer (the tests call this directly).
+    pub(super) fn panel_call(&self, request: &Value) -> Value {
+        let answer = match self.panel_sessions.try_borrow_mut() {
+            Ok(mut s) => {
+                protocol::handle(self, &mut s, request, now(), &mut sessions::system_random)
+            }
+            Err(_) => serde_json::json!({"ok": false, "error": "busy"}),
+        };
+        self.panel.borrow_mut().changed = true;
+        answer
+    }
+
+    /// Every second: requests that waited too long, the home's card, the QR code's ticket, a
+    /// Revoke that was not confirmed.
+    pub(super) fn tick_panel(&self) {
+        let t = now();
+        let (waiting, blocked, ticket) = {
+            let Ok(mut s) = self.panel_sessions.try_borrow_mut() else {
+                return;
+            };
+            s.expire(t);
+            let shown = self.panel.borrow().on && self.screen.get_page() == "panel";
+            if !shown {
+                s.drop_ticket();
+            }
+            (
+                s.waiting().map(|r| r.id.clone()),
+                s.blocked(t),
+                shown.then(|| s.ticket(t, &mut sessions::system_random).map(String::from)),
+            )
+        };
+        let asking = self.panel.borrow().asking.clone();
+        if asking.is_some() && asking != waiting {
+            log::info!(event = "panel"; "browser access: the request was not answered in time");
+            self.close_panel_ask();
+        }
+        if blocked != self.panel.borrow().blocked {
+            self.panel.borrow_mut().blocked = blocked;
+            self.refresh_home();
+        }
+        let disarm = self
+            .panel
+            .borrow()
+            .armed
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= ARMED_FOR);
+        let new_ticket = ticket.is_some_and(|t| t != self.panel.borrow().ticket_shown);
+        if disarm {
+            self.panel.borrow_mut().armed = None;
+        }
+        if disarm || new_ticket {
+            self.refresh_panel();
+        }
+    }
+
+    fn close_panel_ask(&self) {
+        self.panel.borrow_mut().asking = None;
+        if self.screen.get_dialog() == "panel-ask" {
+            self.screen.set_dialog("");
+        }
+    }
+
+    /// Refuse or Allow in the dialog.
+    fn panel_answered(&self, yes: bool) {
+        let Some(id) = self.panel.borrow_mut().asking.take() else {
+            return;
+        };
+        if let Ok(mut s) = self.panel_sessions.try_borrow_mut() {
+            s.answer(&id, yes, now(), &mut sessions::system_random);
+        }
+        log::info!(event = "panel", allowed = yes; "browser access {}", if yes { "allowed" } else { "refused" });
+        self.refresh_panel();
+    }
+
+    /// A touch on a device's Revoke: the first arms it, the second (within 3 s) revokes it.
+    fn panel_revoke(&self, id: &str) {
+        let armed = self
+            .panel
+            .borrow()
+            .armed
+            .as_ref()
+            .is_some_and(|(a, at)| a == id && at.elapsed() < ARMED_FOR);
+        if armed {
+            self.panel.borrow_mut().armed = None;
+            if let Ok(mut s) = self.panel_sessions.try_borrow_mut() {
+                s.revoke(id);
+            }
+        } else {
+            self.panel.borrow_mut().armed = Some((id.to_string(), Instant::now()));
+        }
+        self.refresh_panel();
+    }
+
+    /// The device's address on the home network: the interface toward Home Assistant (or the
+    /// default route).
+    fn panel_address(&self) -> String {
+        if self.opts.demo.is_some() {
+            return DEMO_ADDRESS.into();
+        }
+        if let Some(a) = self.panel.borrow().address.clone() {
+            return a;
+        }
+        let host = self
+            .opts
+            .ha_host
+            .clone()
+            .unwrap_or_else(|| "192.0.2.1".into());
+        let a = match crate::ha::link::local_address(&host, 80) {
+            Ok(std::net::IpAddr::V6(v6)) => format!("[{v6}]"),
+            Ok(ip) => ip.to_string(),
+            Err(_) => String::new(),
+        };
+        self.panel.borrow_mut().address = Some(a.clone());
+        a
+    }
+
+    /// Settings → Access from the browser and the Settings row, as they are.
+    pub(super) fn refresh_panel(&self) {
+        let l = self.locale.borrow();
+        let on = self.panel.borrow().on;
+        let summary = l.text(if on {
+            "panel_access_on"
+        } else {
+            "panel_access_off"
+        });
+        let port = self.panel.borrow().cfg.port;
+        let host = if on {
+            self.panel_address()
+        } else {
+            String::new()
+        };
+        let address = if host.is_empty() {
+            String::new()
+        } else {
+            format!("http://{host}:{port}/")
+        };
+        let (devices, ticket) = if self.opts.demo.is_some() {
+            (
+                self.panel.borrow().demo.clone(),
+                on.then(|| DEMO_TICKET.to_string()),
+            )
+        } else {
+            let Ok(mut s) = self.panel_sessions.try_borrow_mut() else {
+                self.panel.borrow_mut().changed = true;
+                return;
+            };
+            let t = now();
+            let ticket = (on && self.screen.get_page() == "panel")
+                .then(|| s.ticket(t, &mut sessions::system_random).map(String::from))
+                .flatten();
+            let devices = s
+                .list(t)
+                .iter()
+                .map(|d| {
+                    let line = l
+                        .text("panel_device_line")
+                        .replace("{browser}", &d.agent.browser)
+                        .replace("{os}", &d.agent.os);
+                    let when = format!(
+                        "{} {}",
+                        short_date(&l, d.last_used as i64),
+                        local_hm(d.last_used as i64).0
+                    );
+                    let detail = l
+                        .text("panel_device_detail")
+                        .replace("{peer}", &d.peer)
+                        .replace("{when}", &when);
+                    (d.id().to_string(), line, detail)
+                })
+                .collect();
+            (devices, ticket)
+        };
+        let qr = match &ticket {
+            Some(t) if self.panel.borrow().ticket_shown.as_ref() != Some(t) && !host.is_empty() => {
+                qr_image(&format!("http://{host}:{port}/q/{t}"))
+            }
+            _ => None,
+        };
+        self.panel.borrow_mut().ticket_shown = ticket;
+        let armed = self
+            .panel
+            .borrow()
+            .armed
+            .as_ref()
+            .map(|(a, _)| a.clone())
+            .unwrap_or_default();
+        self.screen
+            .set_panel(on, &address, qr, &devices, &armed, summary);
+    }
+
+    /// The demos' devices and dialog (`--state settings-panel`, `panel-ask`).
+    pub(super) fn demo_panel(&self, ask: bool) {
+        let l = self.locale.borrow();
+        let line = |b: &str, o: &str| {
+            l.text("panel_device_line")
+                .replace("{browser}", b)
+                .replace("{os}", o)
+        };
+        let detail = |peer: &str, when: &str| {
+            l.text("panel_device_detail")
+                .replace("{peer}", peer)
+                .replace("{when}", when)
+        };
+        {
+            let mut p = self.panel.borrow_mut();
+            p.on = true;
+            p.demo = vec![
+                (
+                    "0123456789abcdef".into(),
+                    line("Safari", "iPhone"),
+                    detail("192.0.2.31", "14:02"),
+                ),
+                (
+                    "fedcba9876543210".into(),
+                    line("Firefox", "Linux"),
+                    detail("192.0.2.24", "13:40"),
+                ),
+            ];
+        }
+        if ask {
+            let who = format!("{} · 192.0.2.24", line("Chrome", "macOS"));
+            self.screen.set_panel_ask(&who, "4827");
+            self.screen.set_dialog("panel-ask");
+        }
+        drop(l);
+        self.refresh_panel();
+    }
+
+    /// The home's card while requests are stopped.
+    pub(super) fn panel_card(&self) -> Option<(String, String)> {
+        let l = self.locale.borrow();
+        let name = &self.character.name;
+        self.panel.borrow().blocked.then(|| {
+            (
+                word(&l, "panel_blocked_title", name),
+                word(&l, "panel_blocked_text", name),
+            )
+        })
+    }
+}
+
+impl<S: Screen> PanelHost for Ui<S> {
+    fn panel_on(&self) -> bool {
+        self.panel.borrow().on
+    }
+
+    fn can_ask(&self) -> bool {
+        let d = self.desk.borrow();
+        let busy = !matches!(self.view.get(), Phase::Home | Phase::Offline);
+        !d.night_now
+            && !self.dnd_on()
+            && !busy
+            && d.ringing.is_empty()
+            && self.screen.get_dialog().is_empty()
+            && self.asking.get().is_none()
+            && !super::super::webview::visible()
+            && !self.mirror_shown()
+    }
+
+    fn name(&self) -> String {
+        self.character.name.clone()
+    }
+
+    fn words(&self, lang: &str) -> Box<dyn Fn(&str) -> String + '_> {
+        let name = self.character.name.clone();
+        match locale::load_or_english(&self.opts.locales, lang) {
+            Ok(l) => Box::new(move |k| word(&l, k, &name)),
+            Err(_) => Box::new(|k| k.to_string()),
+        }
+    }
+
+    fn languages(&self) -> Vec<String> {
+        locale::available(&self.opts.locales)
+    }
+
+    fn ask(&self, r: &Request) {
+        let line = {
+            let l = self.locale.borrow();
+            let agent = l
+                .text("panel_device_line")
+                .replace("{browser}", &r.agent.browser)
+                .replace("{os}", &r.agent.os);
+            if r.agent.browser.is_empty() {
+                r.peer.clone()
+            } else {
+                format!("{agent} · {}", r.peer)
+            }
+        };
+        self.panel.borrow_mut().asking = Some(r.id.clone());
+        self.screen.set_panel_ask(&line, &r.code);
+        self.screen.set_dialog("panel-ask");
+        self.wake(WakeSource::Setup);
+        self.send(UiEvent::Tap);
+    }
+
+    fn shopping(&self) -> Vec<ShopList> {
+        self.desk.borrow().shopping.clone().unwrap_or_default()
+    }
+
+    fn shopping_add(&self, list: &str, text: &str) {
+        if let Some(tx) = self.hub_tx.borrow().as_ref() {
+            let _ = tx.send(HubCmd::Add {
+                list: list.into(),
+                text: text.into(),
+            });
+        }
+    }
+
+    fn shopping_done(&self, list: &str, uid: &str) {
+        if let Some(tx) = self.hub_tx.borrow().as_ref() {
+            let _ = tx.send(HubCmd::Done {
+                list: list.into(),
+                uid: uid.into(),
+            });
+        }
+        self.panel_item_gone(list, uid);
+    }
+
+    fn shopping_remove(&self, list: &str, uid: &str) {
+        if let Some(tx) = self.hub_tx.borrow().as_ref() {
+            let _ = tx.send(HubCmd::Remove {
+                list: list.into(),
+                uid: uid.into(),
+            });
+        }
+        self.panel_item_gone(list, uid);
+    }
+
+    fn sessions_changed(&self) {
+        self.panel.borrow_mut().changed = true;
+    }
+}
+
+impl<S: Screen> Ui<S> {
+    /// An item ticked or removed from the panel: gone from the screen at once (Home Assistant's
+    /// own update follows).
+    fn panel_item_gone(&self, list: &str, uid: &str) {
+        if let Some(l) = self.desk.borrow_mut().shopping.as_mut() {
+            lists::remove(l, list, uid);
+        }
+        self.refresh_home();
+        self.render_shopping();
+    }
+}

@@ -130,6 +130,8 @@ pub const ITEMS: &[Item] = &[
         "updates",
         Kind::Bool,
     ),
+    // The panel itself is switched on and off on the screen only.
+    item("panel", "panel_access", "access", Kind::Bool),
 ];
 
 /// The keys the browser panel may read and set: the list the security review looked at. A test
@@ -162,6 +164,7 @@ pub enum Change {
     Lists(Vec<String>),
     Calendars(Vec<String>),
     UpdatePrerelease(bool),
+    Panel(bool),
 }
 
 /// Why a value was not set.
@@ -249,6 +252,7 @@ pub fn get(host: &dyn Host, key: &str) -> Option<Value> {
         "lists" => json!(s.lists()),
         "calendars" => json!(s.calendars()),
         "update_prerelease" => json!(s.update_prerelease().unwrap_or(false)),
+        "panel" => json!(s.panel_on()),
         _ => return None,
     })
 }
@@ -366,6 +370,7 @@ pub fn change_for(host: &dyn Host, key: &str, value: &Value) -> Result<Change, S
             }
         }
         "update_prerelease" => Change::UpdatePrerelease(v.as_bool().unwrap_or(false)),
+        "panel" => Change::Panel(v.as_bool().unwrap_or(false)),
         _ => return Err(SetError::Unknown),
     })
 }
@@ -383,6 +388,7 @@ pub fn save(s: &Settings, change: &Change) {
         Change::Lists(l) => s.save_lists(l),
         Change::Calendars(c) => s.save_calendars(c),
         Change::UpdatePrerelease(on) => s.save_update_prerelease(*on),
+        Change::Panel(on) => s.save_panel_on(*on),
     }
 }
 
@@ -580,6 +586,7 @@ pub(crate) mod tests {
                 json!(true),
                 Change::UpdatePrerelease(true),
             ),
+            ("panel", json!(true), Change::Panel(true)),
         ];
         assert_eq!(cases.len(), ITEMS.len(), "a case for every item");
         for (key, value, change) in cases {
@@ -608,6 +615,7 @@ pub(crate) mod tests {
         assert_eq!(s.lists(), ["todo.hardware"]);
         assert!(s.calendars().is_empty());
         assert_eq!(s.update_prerelease(), Some(true));
+        assert!(s.panel_on());
     }
 
     #[test]
@@ -656,10 +664,9 @@ pub(crate) mod tests {
         }
         // Not on the panel: refused there, even though it exists.
         let h = FakeHost::new("panel");
-        assert_eq!(
-            panel_set(&h, "update_prerelease", &json!(true)),
-            Err(SetError::Unknown)
-        );
+        for k in ["update_prerelease", "panel"] {
+            assert_eq!(panel_set(&h, k, &json!(true)), Err(SetError::Unknown));
+        }
         assert!(panel_set(&h, "home_compact", &json!(true)).is_ok());
         let state = panel_state(&h);
         assert!(state.get("update_prerelease").is_none());

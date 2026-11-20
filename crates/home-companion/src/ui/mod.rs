@@ -247,6 +247,24 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// calendars.
     fn set_choices(&self, todo: &[(String, String, bool)], calendars: &[(String, String, bool)]);
     fn on_choice_toggled(&self, f: impl Fn(String) + 'static);
+    /// Settings → Access from the browser: on, the address, its QR code (None: kept), the
+    /// devices (id, "Chrome on macOS", "192.0.2.24 · 20 nov 14:02"), the one armed for revoking,
+    /// the Settings row's value.
+    fn set_panel(
+        &self,
+        on: bool,
+        address: &str,
+        qr: Option<Image>,
+        devices: &[(String, String, String)],
+        armed: &str,
+        summary: &str,
+    );
+    /// The access dialog's lines: who asks, the code.
+    fn set_panel_ask(&self, line: &str, code: &str);
+    fn on_panel_toggled(&self, f: impl Fn(bool) + 'static);
+    fn on_panel_revoke(&self, f: impl Fn(String) + 'static);
+    fn on_panel_revoke_all(&self, f: impl Fn() + 'static);
+    fn on_panel_answered(&self, f: impl Fn(bool) + 'static);
     fn set_offline(&self, offline: bool);
     fn set_starting(&self, starting: bool);
     /// Nothing moves by itself (demo screenshots): the start-up line, the ringing ring.
@@ -646,6 +664,22 @@ macro_rules! impl_screen {
                     widgets_every,
                     widgets_by_hand,
                     widgets_hint,
+                    panel_access,
+                    panel_access_on,
+                    panel_access_off,
+                    panel_access_hint,
+                    panel_address_hint,
+                    panel_devices_title,
+                    panel_no_devices,
+                    panel_devices_revoke,
+                    panel_revoke_sure,
+                    panel_revoke_all,
+                    panel_revoke_all_question,
+                    panel_revoke_all_text,
+                    panel_ask_title,
+                    panel_ask_text,
+                    panel_allow,
+                    panel_refuse,
                     widget_next,
                     widget_weather,
                     widget_shopping,
@@ -808,6 +842,48 @@ macro_rules! impl_screen {
             }
             fn on_choice_toggled(&self, f: impl Fn(String) + 'static) {
                 $m::CompanionWindow::on_choice_toggled(self, move |id| f(id.into()))
+            }
+            fn set_panel(
+                &self,
+                on: bool,
+                address: &str,
+                qr: Option<Image>,
+                devices: &[(String, String, String)],
+                armed: &str,
+                summary: &str,
+            ) {
+                $m::CompanionWindow::set_panel_on(self, on);
+                $m::CompanionWindow::set_panel_address(self, address.into());
+                if let Some(q) = qr {
+                    $m::CompanionWindow::set_panel_qr(self, q);
+                }
+                let rows: Vec<$m::PanelDevice> = devices
+                    .iter()
+                    .map(|(id, line, detail)| $m::PanelDevice {
+                        id: id.as_str().into(),
+                        line: line.as_str().into(),
+                        detail: detail.as_str().into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_panel_devices(self, model!(rows));
+                $m::CompanionWindow::set_panel_armed(self, armed.into());
+                $m::CompanionWindow::set_panel_summary(self, summary.into());
+            }
+            fn set_panel_ask(&self, line: &str, code: &str) {
+                $m::CompanionWindow::set_panel_ask_line(self, line.into());
+                $m::CompanionWindow::set_panel_ask_code(self, code.into());
+            }
+            fn on_panel_toggled(&self, f: impl Fn(bool) + 'static) {
+                $m::CompanionWindow::on_panel_toggled(self, f)
+            }
+            fn on_panel_revoke(&self, f: impl Fn(String) + 'static) {
+                $m::CompanionWindow::on_panel_revoke(self, move |id| f(id.into()))
+            }
+            fn on_panel_revoke_all(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_panel_revoke_all(self, f)
+            }
+            fn on_panel_answered(&self, f: impl Fn(bool) + 'static) {
+                $m::CompanionWindow::on_panel_answered(self, f)
             }
             fn set_cards(&self, cards: &[CardView]) {
                 let v: Vec<$m::CardRow> = cards

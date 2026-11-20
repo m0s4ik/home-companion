@@ -39,6 +39,8 @@ use crate::ha::weather::Weather;
 use crate::history::History;
 use crate::settings::{Settings, WakeSensitivity};
 use crate::settings_model::{self as model, Change};
+
+mod panel_ui;
 use crate::timers::{TimerView, now_unix};
 use serde_json::json;
 
@@ -490,10 +492,13 @@ pub struct Demo {
     pub widget: Option<WidgetKind>,
     /// `--state widget-medium` / `widget-line`: one card (a timer) or two over it.
     pub widget_cards: usize,
+    /// `--state settings-panel` (1), `panel-ask` (2), `panel-blocked` (3): the browser panel's
+    /// page, its access dialog, the home's card after too many requests.
+    pub panel: u8,
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 81] = [
+pub const DEMO_STATES: [&str; 84] = [
     "home",
     "cards",
     "cards-setup",
@@ -575,6 +580,9 @@ pub const DEMO_STATES: [&str; 81] = [
     "widget-line",
     "widget-compact",
     "settings-widgets",
+    "settings-panel",
+    "panel-ask",
+    "panel-blocked",
 ];
 
 impl Demo {
@@ -829,6 +837,18 @@ impl Demo {
             }
             "update" => page("update"),
             "settings-widgets" => page("widgets"),
+            "settings-panel" => Demo {
+                panel: 1,
+                ..page("panel")
+            },
+            "panel-ask" => Demo {
+                panel: 2,
+                ..page("settings")
+            },
+            "panel-blocked" => Demo {
+                panel: 3,
+                ..home.clone()
+            },
             "update-confirm" => Demo {
                 dialog: "update",
                 ..page("update")
@@ -981,6 +1001,8 @@ pub struct UiOptions {
     pub link: Option<crate::ha::link::LinkSetup>,
     /// Updates (Settings → Info): where from; None: no checking (`--state`, the simulator, tests).
     pub update: Option<crate::update::UpdateCfg>,
+    /// The browser panel's socket and port (None: no socket: `--state`, tests).
+    pub panel: Option<crate::panel::PanelCfg>,
 }
 
 /// The animation side of the UI.
@@ -1220,6 +1242,10 @@ pub struct Ui<S: Screen> {
     ask_left: Cell<f32>,
     /// Do not disturb (UiCommand::DoNotDisturb).
     dnd: Cell<Dnd>,
+    /// The browser panel (panel_ui.rs): who is let in, and what the screen shows of it. Apart:
+    /// the sessions are borrowed while a request is answered, the rest is drawn meanwhile.
+    panel_sessions: RefCell<crate::panel::sessions::Sessions>,
+    panel: RefCell<panel_ui::PanelUi>,
     this: RefCell<Weak<Self>>,
 }
 
@@ -1499,6 +1525,9 @@ impl<S: Screen> Ui<S> {
         };
         let opts_auto = opts.screen.auto.filter(|_| !demo).map(Auto::new);
         let opts_linked = opts.ha_linked;
+        let opts_state_dir = opts.state_dir.clone();
+        let opts_panel = opts.panel.clone();
+        let panel_on = settings.as_ref().is_some_and(Settings::panel_on);
         let opts_first = opts.first_start;
         let has_camera = !demo && super::camera::present();
         // The switch on the Updates page wins over the configuration's `prerelease`.
@@ -1588,6 +1617,8 @@ impl<S: Screen> Ui<S> {
             asking: Cell::new(None),
             ask_left: Cell::new(0.0),
             dnd: Cell::new(Dnd::default()),
+            panel_sessions: panel_ui::load_sessions(opts_state_dir.as_deref()),
+            panel: RefCell::new(panel_ui::PanelUi::new(opts_panel, panel_on)),
             this: RefCell::new(Weak::new()),
         });
         *ui.this.borrow_mut() = Rc::downgrade(&ui);
@@ -1624,6 +1655,7 @@ impl<S: Screen> Ui<S> {
         }
         ui.set_welcome();
         ui.wire();
+        ui.wire_panel();
         ui.start_wifi();
         ui.screen.set_error_pose(ui.pose(State::Error));
         ui.screen.set_dnd_prop(load_prop(
@@ -2444,6 +2476,7 @@ impl<S: Screen> Ui<S> {
 
     /// New animations, the start-up timeout; then [`Ui::step`]. Called every 20 ms.
     pub fn poll(&self) {
+        self.poll_panel();
         self.poll_link();
         self.poll_find();
         self.poll_brain();
@@ -2982,6 +3015,13 @@ impl<S: Screen> Ui<S> {
         self.screen.set_music(self.desk.borrow().music.as_ref());
         self.show_demo_v02(&d, &l);
         self.show_demo_widget(&d, &l);
+        if d.panel > 0 {
+            self.demo_panel(d.panel == 2);
+            if d.panel == 3 {
+                self.panel.borrow_mut().blocked = true;
+                self.refresh_home();
+            }
+        }
         if let Some((w, h)) = d.mirror {
             let info = MirrorInfo {
                 source: l.sample("mirror_source").to_string(),
@@ -3823,6 +3863,7 @@ impl<S: Screen> Ui<S> {
         if self.opts.demo.is_some() {
             return;
         }
+        self.tick_panel();
         self.feed_light();
         let now = Instant::now();
         if self.desk.borrow_mut().ha_cards.expire(now) {
@@ -5002,7 +5043,7 @@ impl<S: Screen> Ui<S> {
         match page {
             "chat" => self.refresh_chat(),
             "timers" => self.refresh_timers(),
-            "settings" | "screen" | "widgets" | "language" => self.refresh_settings(),
+            "settings" | "screen" | "widgets" | "panel" | "language" => self.refresh_settings(),
             "altro" => self.refresh_tiles(),
             "memories" => self.refresh_memories(),
             "what" => self.refresh_what(),
@@ -5186,6 +5227,7 @@ impl<S: Screen> Ui<S> {
             done,
             status: offline.then(|| (w("offline_title"), w("offline_text"))),
             setup,
+            panel: self.panel_card(),
             ready,
             mirror,
             alarm,
@@ -5361,6 +5403,7 @@ impl<S: Screen> Ui<S> {
                 self.choice.borrow_mut().calendars = calendars;
                 self.render_choices();
             }
+            Change::Panel(on) => self.panel_switched(on),
             Change::UpdatePrerelease(on) => {
                 if let Some(u) = &self.updater {
                     log::info!(event = "update", prerelease = on; "update: release candidates {}", if on { "offered" } else { "not offered" });
@@ -5554,6 +5597,7 @@ impl<S: Screen> Ui<S> {
 
     fn refresh_settings(&self) {
         self.refresh_widget_settings();
+        self.refresh_panel();
         let l = self.locale.borrow();
         let (on, start, end) = self.desk.borrow().night;
         let ha = if !self.ha_linked.get() {
@@ -6909,6 +6953,7 @@ mod tests {
             },
             link: None,
             update: None,
+            panel: None,
         };
         let ui = Ui::new(prepared.screen, character, opts, tx).unwrap();
         let w = &ui.screen;
@@ -7008,6 +7053,7 @@ mod tests {
             },
             link: None,
             update: None,
+            panel: None,
         };
         (Ui::new(prepared.screen, character, opts, tx).unwrap(), dir)
     }
@@ -7120,6 +7166,137 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The browser panel on a real (headless) screen, touched where a finger would: the switch,
+    /// a request with its dialog (Allow, Refuse), the QR code's ticket, Revoke (twice), and the
+    /// cases where nothing may be asked.
+    #[test]
+    fn panel_access_from_the_screen() {
+        use slint::LogicalPosition;
+        use slint::Model;
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let (ui, dir) = headless_ui("panel");
+        let w = &ui.screen;
+        let tap = |x: f32, y: f32| {
+            let position = LogicalPosition::new(x, y);
+            let button = PointerEventButton::Left;
+            w.window()
+                .dispatch_event(WindowEvent::PointerPressed { position, button });
+            w.window()
+                .dispatch_event(WindowEvent::PointerReleased { position, button });
+        };
+        let ask = |peer: &str| {
+            ui.panel_call(&json!({"op": "pair.request", "peer": peer,
+                "agent": {"browser": "Chrome", "os": "macOS"}}))
+        };
+        // Off by default: nothing is asked.
+        assert_eq!(ask("192.0.2.24")["error"], "off");
+        assert_eq!(w.get_dialog(), "");
+        // Settings → Access from the browser → the switch.
+        w.set_page("panel".into());
+        ui.refresh_settings();
+        assert!(!w.get_panel_on());
+        tap(1172.0, 150.0);
+        assert!(w.get_panel_on());
+        assert!(Settings::in_dir(&dir).panel_on());
+        assert!(w.get_panel_address().starts_with("http://"));
+        // A request: the dialog with the code; Allow lets the browser in.
+        let r = ask("192.0.2.24");
+        assert_eq!(w.get_dialog(), "panel-ask");
+        assert_eq!(w.get_panel_ask_code(), r["code"].as_str().unwrap());
+        assert_eq!(w.get_panel_ask_line(), "Chrome on macOS · 192.0.2.24");
+        // A second one while it waits: busy, the dialog stays the first's.
+        assert_eq!(ask("192.0.2.25")["error"], "busy");
+        tap(975.0, 572.0);
+        assert_eq!(w.get_dialog(), "");
+        let st = ui.panel_call(&json!({"op": "pair.status", "id": r["id"]}));
+        assert_eq!(st["status"], "allowed");
+        let token = st["token"].as_str().unwrap().to_string();
+        let hello = ui.panel_call(&json!({"op": "hello", "token": token}));
+        assert_eq!(hello["session"], true);
+        ui.poll_panel();
+        assert_eq!(w.get_panel_devices().row_count(), 1);
+        // Refuse.
+        let r = ask("192.0.2.26");
+        tap(680.0, 572.0);
+        assert_eq!(w.get_dialog(), "");
+        let st = ui.panel_call(&json!({"op": "pair.status", "id": r["id"]}));
+        assert_eq!(st["status"], "refused");
+        // Unanswered: the dialog goes when the minute is over.
+        let r = ask("192.0.2.27");
+        assert_eq!(w.get_dialog(), "panel-ask");
+        ui.panel_sessions
+            .borrow_mut()
+            .expire(now_unix() as u64 + 61);
+        ui.tick_panel();
+        assert_eq!(w.get_dialog(), "");
+        let st = ui.panel_call(&json!({"op": "pair.status", "id": r["id"]}));
+        assert_eq!(st["status"], "expired");
+        // Two failures, then a third: requests stop and the home has a card.
+        ui.panel.borrow_mut().blocked = false;
+        let r = ask("192.0.2.28");
+        assert!(r["ok"].as_bool().unwrap());
+        tap(680.0, 572.0);
+        ui.tick_panel();
+        assert!(ui.panel.borrow().blocked);
+        assert!(ui.card_kinds.borrow().contains(&"panel"));
+        assert_eq!(ask("192.0.2.29")["error"], "blocked");
+        // The QR code's ticket lets in once.
+        w.set_page("panel".into());
+        ui.refresh_panel();
+        let ticket = ui.panel.borrow().ticket_shown.clone().unwrap();
+        let q = ui.panel_call(&json!({"op": "pair.qr", "ticket": ticket, "peer": "192.0.2.40"}));
+        assert_eq!(q["ok"], true);
+        let again =
+            ui.panel_call(&json!({"op": "pair.qr", "ticket": ticket, "peer": "192.0.2.41"}));
+        assert_eq!(again["error"], "bad_ticket");
+        ui.poll_panel();
+        assert_eq!(w.get_panel_devices().row_count(), 2);
+        // A new ticket on the next tick.
+        ui.tick_panel();
+        assert_ne!(
+            ui.panel.borrow().ticket_shown.as_deref(),
+            Some(ticket.as_str())
+        );
+        // Revoke: the first touch arms it, the second revokes.
+        let first = w.get_panel_devices().row_data(0).unwrap().id.to_string();
+        w.invoke_panel_revoke(first.clone().into());
+        assert_eq!(w.get_panel_armed(), first.as_str());
+        assert_eq!(w.get_panel_devices().row_count(), 2);
+        w.invoke_panel_revoke(first.into());
+        assert_eq!(w.get_panel_devices().row_count(), 1);
+        // Switched off: everything answers off, the devices stay.
+        tap(1172.0, 150.0);
+        assert!(!w.get_panel_on());
+        assert_eq!(
+            ui.panel_call(&json!({"op": "state", "token": token}))["error"],
+            "off"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Nothing is asked at night, with do not disturb, during a conversation or over a dialog.
+    #[test]
+    fn panel_asks_only_when_it_may() {
+        let (ui, dir) = headless_ui("panel-quiet");
+        crate::settings_model::commit(&*ui, Change::Panel(true));
+        let ask = |peer: &str| ui.panel_call(&json!({"op": "pair.request", "peer": peer}));
+        ui.desk.borrow_mut().night_now = true;
+        assert_eq!(ask("192.0.2.1")["error"], "cannot_ask");
+        ui.desk.borrow_mut().night_now = false;
+        ui.view.set(Phase::Speaking);
+        assert_eq!(ask("192.0.2.1")["error"], "cannot_ask");
+        ui.view.set(Phase::Home);
+        ui.screen.set_dialog("suspend".into());
+        assert_eq!(ask("192.0.2.1")["error"], "cannot_ask");
+        ui.screen.set_dialog("".into());
+        ui.set_dnd(Some(now_unix() as u64 + 600));
+        assert_eq!(ask("192.0.2.1")["error"], "cannot_ask");
+        ui.set_dnd(None);
+        assert_eq!(ask("192.0.2.1")["ok"], true);
+        assert_eq!(ui.screen.get_dialog(), "panel-ask");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Settings → Screen → Widgets, touched where a finger would: each switch takes its page
     /// out of the turn (and Next and Shopping back to cards), the stepper changes the interval,
     /// both saved.
@@ -7218,6 +7395,7 @@ mod tests {
             },
             link: None,
             update: None,
+            panel: None,
         };
         let ui = Ui::new(prepared.screen, character, opts, tx).unwrap();
         let (hub, fired) = std::sync::mpsc::channel();

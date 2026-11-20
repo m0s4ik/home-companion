@@ -42,6 +42,8 @@ pub struct Config {
     /// Updates from the releases of a GitHub repository (update.rs); the root update service
     /// reads `repo` from this file too.
     pub update: crate::update::UpdateCfg,
+    /// The browser panel (home-companion-panel): its port and the body's socket.
+    pub panel: crate::panel::PanelCfg,
     pub paths: Paths,
     pub log: LogCfg,
 }
@@ -300,6 +302,7 @@ impl Default for Config {
             airplay: Default::default(),
             usage: Default::default(),
             update: Default::default(),
+            panel: Default::default(),
             paths: Paths::default(),
             log: LogCfg::default(),
         }

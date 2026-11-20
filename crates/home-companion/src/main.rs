@@ -227,6 +227,7 @@ fn run(a: &args::Args, cfg: Config, first: home_companion::settings::FirstStart)
         update: (a.state.is_none() && matches!(kind, Kind::Gpu | Kind::Software))
             .then(|| cfg.update.clone()),
         first_start: first,
+        panel: a.state.is_none().then(|| cfg.panel.clone()),
         link: (a.state.is_none() && !cfg.home_assistant.url.is_empty()).then(|| {
             home_companion::ha::link::LinkSetup {
                 hass_url: cfg.home_assistant.url.clone(),
