@@ -375,6 +375,22 @@ fn over_sockets_and_idle() {
         (64 << 10) + 1
     );
     assert!(raw(big).starts_with("HTTP/1.1 413"));
+    // Three slow connections from one address: a fourth is closed at once.
+    let slow: Vec<TcpStream> = (0..PER_ADDRESS)
+        .map(|_| {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.write_all(b"GET / HT").unwrap();
+            s
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(300));
+    let mut fourth = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let _ = fourth.write_all(b"GET /api/hello HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+    let mut out = String::new();
+    let _ = fourth.read_to_string(&mut out);
+    assert!(out.is_empty(), "{out}");
+    drop(slow);
+    std::thread::sleep(Duration::from_millis(300));
     let long = format!("GET /{} HTTP/1.1\r\n\r\n", "a".repeat(17 << 10));
     assert!(raw(long).starts_with("HTTP/1.1 431"));
     // Idle: it ends by itself.

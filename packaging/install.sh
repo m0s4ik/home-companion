@@ -531,6 +531,8 @@ run systemctl enable --now home-companion-update.path
 # the browser panel: systemd listens, the panel starts at the first connection (off on the screen
 # until the user switches it on)
 run systemctl enable --now home-companion-panel.socket
+# a panel already running (an upgrade) takes the new binary and unit at its next start
+run systemctl try-restart home-companion-panel.service
 if [ -n "$DRY" ] || systemctl -q is-active home-companion.service; then
     say "restarting the services"
     # home-companion-web is PartOf home-companion: it restarts with it

@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Andrea Mattera
 # The browser panel's pages (crates/panel), started by home-companion-panel.socket. It keeps no
-# state and holds no secret: every request goes to the body over /run/home-companion/panel.sock
-# (0660, group home-companion-panel). Its own user, no other group, no state directory, no access
-# to /var/lib/home-companion* or /etc/home-companion.
+# state and holds no secret: every request goes to the body over
+# /run/home-companion/panel/panel.sock (directory 0750 and socket 0660, group home-companion-panel).
+# Its own user, no other group, no state directory; it sees nothing of /run/home-companion but that
+# directory, and nothing of /var/lib/home-companion* or /etc/home-companion. It talks only with the
+# home network (IPAddressAllow).
 [Unit]
 Description=Home Companion browser panel
 Requires=home-companion-panel.socket
@@ -13,7 +15,7 @@ After=home-companion-panel.socket
 Type=simple
 User=home-companion-panel
 Group=home-companion-panel
-ExecStart=/opt/home-companion/home-companion-panel --socket /run/home-companion/panel.sock
+ExecStart=/opt/home-companion/home-companion-panel --socket /run/home-companion/panel/panel.sock
 MemoryMax=32M
 TasksMax=16
 Nice=5
@@ -25,7 +27,13 @@ ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
-InaccessiblePaths=-/var/lib/home-companion -/var/lib/home-companion-brain -/var/lib/home-companion-web -/etc/home-companion
+InaccessiblePaths=-/var/lib/home-companion -/var/lib/home-companion-brain -/var/lib/home-companion-web -/var/lib/home-companion-update -/etc/home-companion
+# Of the body's runtime directory only the panel's socket (the body makes the directory at start)
+TemporaryFileSystem=/run/home-companion:ro
+BindPaths=-/run/home-companion/panel
+# Only the device itself and the home network: loopback, link-local, the private ranges
+IPAddressDeny=any
+IPAddressAllow=localhost link-local 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 fc00::/7
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

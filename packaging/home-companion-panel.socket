@@ -14,6 +14,9 @@ ListenStream=8125
 # One process serves every connection (it threads them itself)
 Accept=no
 NoDelay=yes
+# Only the device itself and the home network (the firewall says so too)
+IPAddressDeny=any
+IPAddressAllow=localhost link-local 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 fc00::/7
 
 [Install]
 WantedBy=sockets.target

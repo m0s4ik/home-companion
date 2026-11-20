@@ -129,6 +129,17 @@ done
 restore() {
     rm -rf "$OPT.new"
     cp -a "$KEEP/opt" "$OPT.new" && rm -rf "$OPT" && mv "$OPT.new" "$OPT"
+    # units the new version added and the old one does not know: stopped and gone (a socket
+    # unit would otherwise keep listening for a program that is no longer there)
+    for f in "$UNITS"/home-companion*; do
+        [ -e "$f" ] || continue
+        n=${f##*/}
+        if [ ! -e "$KEEP/units/$n" ]; then
+            case "$n" in
+                *.service | *.socket | *.path | *.timer) systemctl disable --now "$n" 2>/dev/null || true ;;
+            esac
+        fi
+    done
     rm -rf "$UNITS"/home-companion*
     cp -a "$KEEP/units/." "$UNITS/"
     [ -f "$KEEP/home-companion.nft" ] && cp -a "$KEEP/home-companion.nft" /etc/nftables.d/

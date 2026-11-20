@@ -4,7 +4,7 @@
 //! `home-companion-panel [--socket PATH] [--listen ADDR] [--idle SECONDS]`: the browser panel.
 //! Under systemd it takes the listening socket of `home-companion-panel.socket` (`LISTEN_FDS`)
 //! and leaves after ten minutes without requests; `--listen 127.0.0.1:8125` is for trying it
-//! by hand. `--socket` is the body's (default /run/home-companion/panel.sock).
+//! by hand. `--socket` is the body's (default /run/home-companion/panel/panel.sock).
 
 use std::process::ExitCode;
 use std::sync::Arc;

@@ -65,7 +65,7 @@ prerelease = false
 # The browser panel (Settings -> Access from the browser, off until switched on there): the port
 # systemd listens on (home-companion-panel.socket: change both) and the body's socket.
 port = 8125
-socket = "/run/home-companion/panel.sock"
+socket = "/run/home-companion/panel/panel.sock"
 
 [paths]
 state_dir = "/var/lib/home-companion"

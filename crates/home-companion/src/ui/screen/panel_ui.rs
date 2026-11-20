@@ -159,13 +159,12 @@ impl<S: Screen> Ui<S> {
 
     /// One request of the panel → its answer (the tests call this directly).
     pub(super) fn panel_call(&self, request: &Value) -> Value {
-        let answer = match self.panel_sessions.try_borrow_mut() {
+        match self.panel_sessions.try_borrow_mut() {
             Ok(mut s) => {
                 protocol::handle(self, &mut s, request, now(), &mut sessions::system_random)
             }
             Err(_) => serde_json::json!({"ok": false, "error": "busy"}),
-        };
-        answer
+        }
     }
 
     /// Every second: requests that waited too long, the home's card, the QR code's ticket, a

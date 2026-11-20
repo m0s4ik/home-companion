@@ -21,7 +21,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 /// The socket's default place.
-pub const DEFAULT_PATH: &str = "/run/home-companion/panel.sock";
+/// In a directory of its own: the panel's unit sees only that one of `/run/home-companion`.
+pub const DEFAULT_PATH: &str = "/run/home-companion/panel/panel.sock";
 /// The group that may connect (packaging/install.sh makes it).
 pub const GROUP: &str = "home-companion-panel";
 /// A request line is at most this long (the panel's own body limit is 64 KiB).
@@ -83,20 +84,27 @@ fn peer_uid(s: &UnixStream) -> Option<libc::uid_t> {
 /// Listens on `path` (an old socket file there is replaced).
 pub fn start(path: &Path) -> std::io::Result<PanelSocket> {
     use std::os::unix::fs::PermissionsExt;
+    let gid = lookup_gid(GROUP);
+    let chgrp = |p: &Path| {
+        let Some(gid) = gid else { return };
+        let Ok(c) = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()) else {
+            return;
+        };
+        // SAFETY: a valid path; uid -1 keeps the owner.
+        if unsafe { libc::chown(c.as_ptr(), u32::MAX, gid) } != 0 {
+            log::warn!(event = "panel"; "{}: chgrp {GROUP}: {}", p.display(), std::io::Error::last_os_error());
+        }
+    };
+    // The directory: 0750, group home-companion-panel (the panel's unit binds only it).
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
+        std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o750))?;
+        chgrp(d);
     }
     let _ = std::fs::remove_file(path);
     let listener = UnixListener::bind(path)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))?;
-    if let Some(gid) = lookup_gid(GROUP) {
-        let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
-            .map_err(std::io::Error::other)?;
-        // SAFETY: a valid path; uid -1 keeps the owner.
-        if unsafe { libc::chown(c.as_ptr(), u32::MAX, gid) } != 0 {
-            log::warn!(event = "panel"; "{}: chgrp {GROUP}: {}", path.display(), std::io::Error::last_os_error());
-        }
-    }
+    chgrp(path);
     // SAFETY: getuid never fails.
     let me = unsafe { libc::getuid() };
     let allowed: Vec<libc::uid_t> = std::iter::once(me).chain(lookup_uid(GROUP)).collect();
@@ -172,6 +180,10 @@ mod tests {
             std::env::temp_dir().join(format!("home-companion-panel-sock-{}", std::process::id()));
         let path = dir.join("panel.sock");
         let sock = start(&path).unwrap();
+        let dmode = std::os::unix::fs::PermissionsExt::mode(
+            &std::fs::metadata(&dir).unwrap().permissions(),
+        );
+        assert_eq!(dmode & 0o777, 0o750);
         let mode = std::os::unix::fs::PermissionsExt::mode(
             &std::fs::metadata(&path).unwrap().permissions(),
         );

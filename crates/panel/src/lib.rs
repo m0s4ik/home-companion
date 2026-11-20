@@ -35,6 +35,8 @@ pub const LIMITS: Limits = Limits::new(16 << 10, 64 << 10);
 /// A whole request (head and body) within this.
 pub const REQUEST_WITHIN: Duration = Duration::from_secs(5);
 pub const MAX_CONNECTIONS: usize = 8;
+/// From one address at once: one browser cannot take all of them.
+pub const PER_ADDRESS: usize = 3;
 pub const PER_SECOND: u32 = 20;
 pub const COOKIE: &str = "hc_panel";
 /// The cookie lasts as long as a session can (the body ends it sooner when unused).
@@ -421,6 +423,7 @@ pub fn run<B: Body + Send + Sync + 'static>(
 ) -> std::io::Result<()> {
     listener.set_nonblocking(true)?;
     let open = std::sync::Arc::new(AtomicUsize::new(0));
+    let per: std::sync::Arc<Mutex<HashMap<IpAddr, usize>>> = Default::default();
     let mut last = Instant::now();
     loop {
         match listener.accept() {
@@ -433,18 +436,40 @@ pub fn run<B: Body + Send + Sync + 'static>(
                 if !httpd::is_private(peer) || open.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
                     continue;
                 }
+                {
+                    let mut m = per.lock().unwrap_or_else(|e| e.into_inner());
+                    let n = m.entry(peer).or_insert(0);
+                    if *n >= PER_ADDRESS {
+                        continue;
+                    }
+                    *n += 1;
+                }
+                let release = {
+                    let per = per.clone();
+                    move || {
+                        let mut m = per.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(n) = m.get_mut(&peer) {
+                            *n -= 1;
+                            if *n == 0 {
+                                m.remove(&peer);
+                            }
+                        }
+                    }
+                };
                 let _ = s.set_nonblocking(false);
                 open.fetch_add(1, Ordering::Relaxed);
-                let (p, o) = (panel.clone(), open.clone());
+                let (p, o, done) = (panel.clone(), open.clone(), release.clone());
                 let spawned =
                     std::thread::Builder::new()
                         .name("panel-http".into())
                         .spawn(move || {
                             p.serve(s, peer);
                             o.fetch_sub(1, Ordering::Relaxed);
+                            done();
                         });
                 if spawned.is_err() {
                     open.fetch_sub(1, Ordering::Relaxed);
+                    release();
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -478,7 +503,7 @@ pub fn systemd_listener() -> Option<TcpListener> {
 }
 
 pub fn default_socket() -> &'static Path {
-    Path::new("/run/home-companion/panel.sock")
+    Path::new("/run/home-companion/panel/panel.sock")
 }
 
 #[cfg(test)]

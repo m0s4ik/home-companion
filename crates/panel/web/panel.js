@@ -224,6 +224,8 @@ function shoppingSection(data) {
       for (const [op, word] of [['done', 'panel_done'], ['remove', 'panel_remove']]) {
         const b = el('button', op === 'done' ? 'small' : 'small ghost', t(word));
         b.addEventListener('click', async () => {
+          // Remove asks twice, as Revoke does: a second click within 3 s.
+          if (op === 'remove' && !arm(b, t(word))) return;
           b.disabled = true;
           const r = await api('/api/shopping/' + op, { list: l.entity, uid: it.uid });
           if (r.ok) s.replaceWith(shoppingSection(r));
@@ -265,6 +267,15 @@ function shoppingSection(data) {
   return s;
 }
 
+// The first click arms a button ("Remove?") for 3 s; true on the second.
+function arm(b, label) {
+  if (b.classList.contains('armed')) return true;
+  b.classList.add('armed');
+  b.textContent = label + '?';
+  setTimeout(() => { b.classList.remove('armed'); b.textContent = label; }, 3000);
+  return false;
+}
+
 function when(sec) {
   try {
     return new Date(sec * 1000).toLocaleString(lang, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
@@ -289,12 +300,7 @@ function devicesSection(data) {
     } else {
       const b = el('button', 'small ghost', t('panel_devices_revoke'));
       b.addEventListener('click', async () => {
-        if (!b.classList.contains('armed')) {
-          b.classList.add('armed');
-          b.textContent = t('panel_devices_revoke') + '?';
-          setTimeout(() => { b.classList.remove('armed'); b.textContent = t('panel_devices_revoke'); }, 3000);
-          return;
-        }
+        if (!arm(b, t('panel_devices_revoke'))) return;
         const r = await api('/api/sessions/revoke', { id: d.id });
         if (!r.ok) toast(errorText(r.error), true);
         const fresh = await api('/api/sessions');

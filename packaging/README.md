@@ -194,8 +194,9 @@ the phone that scans it. At most five devices, each for 30 days from its last us
   home-companion.toml (the address the screen shows): change both.
 - The process (`crates/panel`, `/opt/home-companion/home-companion-panel`) runs as its own user `home-companion-panel`
   (no home, no state, `MemoryMax=32M`, no access to `/var/lib/home-companion*` or `/etc/home-companion`). It holds
-  nothing: every request goes to the body over `/run/home-companion/panel.sock` (`[panel] socket`), 0660, group
-  `home-companion-panel`, which the body's user is in to hand the socket to it; the body answers a closed list of
+  nothing: every request goes to the body over `/run/home-companion/panel/panel.sock` (`[panel] socket`; directory 0750 and socket 0660, group
+  `home-companion-panel`, which the body's user is in to hand them to it; the unit shows the panel nothing else of
+  `/run/home-companion`, and only loopback, link-local and private addresses by `IPAddressAllow`); the body answers a closed list of
   requests and decides who is let in (`<state_dir>/panel-sessions.json`, 0600, only SHA-256 digests of the cookies).
 - The firewall opens TCP 8125 to `$LAN_V4`/`$LAN_V6` ([home-companion.nft](home-companion.nft)); the process refuses
   other addresses itself, and any `Host` that is not a private address or the device's own name.
