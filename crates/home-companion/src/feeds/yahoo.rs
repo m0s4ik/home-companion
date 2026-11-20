@@ -158,6 +158,67 @@ pub fn parse_chart(body: &[u8], key: &str, now: i64) -> Result<Quote, String> {
     })
 }
 
+/// Several symbols' day in one request (a search's hits, so each shows the row it will become).
+pub fn spark_url(host: Host, symbols: &[&str]) -> Url {
+    Url::new(
+        host,
+        "v8/finance/spark",
+        &[
+            ("symbols", &symbols.join(",")),
+            ("range", "1d"),
+            ("interval", "15m"),
+        ],
+    )
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Spark {
+    #[serde(default)]
+    close: Vec<Option<f64>>,
+    #[serde(default)]
+    previous_close: Option<f64>,
+    #[serde(default)]
+    chart_previous_close: Option<f64>,
+}
+
+/// A spark answer → a quote per symbol asked that has a price (`yahoo:<symbol>`, the last close).
+/// Spark says no currency: the quotes have none (the row it becomes shows the number alone).
+pub fn parse_spark(body: &[u8], symbols: &[&str], now: i64) -> Result<Vec<Quote>, String> {
+    let map: std::collections::HashMap<String, Spark> =
+        serde_json::from_slice(body).map_err(|e| format!("spark: {e}"))?;
+    Ok(symbols
+        .iter()
+        .filter_map(|sym| {
+            let s = map.get(*sym)?;
+            let closes: Vec<f64> = s
+                .close
+                .iter()
+                .map(|c| c.filter(|c| super::sane(*c)).unwrap_or(f64::NAN))
+                .collect();
+            let price = closes.iter().rev().copied().find(|c| c.is_finite())?;
+            let good = closes.iter().copied().filter(|c| c.is_finite());
+            let (low, high) = good.fold((price, price), |(l, h), p| (l.min(p), h.max(p)));
+            let decimals = if price < 10.0 { 4 } else { 2 };
+            Some(Quote {
+                key: format!("yahoo:{sym}"),
+                price,
+                prev: s
+                    .previous_close
+                    .or(s.chart_previous_close)
+                    .filter(|p| super::sane(*p)),
+                unit: String::new(),
+                decimals,
+                points: downsample(&closes, CURVE_POINTS),
+                low,
+                high,
+                market_open: false,
+                at: now,
+            })
+        })
+        .collect())
+}
+
 #[derive(Deserialize)]
 struct Search {
     #[serde(default)]
@@ -218,6 +279,27 @@ pub fn parse_search(body: &[u8]) -> Result<Vec<Hit>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spark_of_three_symbols() {
+        let body = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("fixtures/feeds/yahoo-spark-three.json"),
+        )
+        .unwrap();
+        let q = parse_spark(&body, &["AAPL", "^GSPC", "EURUSD=X", "NOPE.XX"], 7).unwrap();
+        let keys: Vec<&str> = q.iter().map(|q| q.key.as_str()).collect();
+        assert_eq!(keys, ["yahoo:AAPL", "yahoo:^GSPC", "yahoo:EURUSD=X"]);
+        assert_eq!(q[0].price, 342.56);
+        assert_eq!(q[0].prev, Some(349.21));
+        assert!(q[0].points.len() > 10 && q[0].unit.is_empty() && q[0].at == 7);
+        assert_eq!(q[2].decimals, 4);
+        assert!(parse_spark(b"[]", &["AAPL"], 0).is_err());
+        let u = spark_url(Host::Yahoo, &["AAPL", "^GSPC"])
+            .as_str()
+            .to_string();
+        assert!(u.contains("v8/finance/spark?symbols=AAPL%2C%5EGSPC"), "{u}");
+    }
 
     fn fixture(name: &str) -> Vec<u8> {
         std::fs::read(

@@ -279,6 +279,16 @@ pub const SEARCH_KEPT: Duration = Duration::from_secs(600);
 /// Hits per search at most.
 pub const MAX_HITS: usize = 6;
 
+/// The second half of a search: the prices and the weather of its hits, so each shows the row
+/// it will become (one request per source).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SearchRows {
+    /// By [`Quote::key`] (a hit's key).
+    pub quotes: Vec<Quote>,
+    /// By the hit's key ("city:<id>").
+    pub cities: Vec<(String, openmeteo::CityWeather)>,
+}
+
 /// Which pages may fetch now.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Active {
@@ -303,6 +313,7 @@ struct Shared {
     snapshot: Mutex<Snapshot>,
     rev: AtomicU64,
     searches: Mutex<HashMap<String, (Instant, SearchState)>>,
+    rows: Mutex<HashMap<String, (Instant, SearchRows)>>,
 }
 
 impl Feeds {
@@ -320,6 +331,7 @@ impl Feeds {
                 snapshot: Mutex::new(snapshot),
                 rev: AtomicU64::new(1),
                 searches: Mutex::new(HashMap::new()),
+                rows: Mutex::new(HashMap::new()),
             }),
             cache,
             config: FeedsConfig::default(),
@@ -440,6 +452,17 @@ impl Feeds {
             .map_or(SearchState::Unknown, |(_, st)| st.clone())
     }
 
+    /// The rows of search `id`'s hits, once they came (None: not yet, or no such search).
+    pub fn search_rows(&self, id: &str) -> Option<SearchRows> {
+        self.shared
+            .rows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .filter(|(at, _)| at.elapsed() < SEARCH_KEPT)
+            .map(|(_, r)| r.clone())
+    }
+
     /// The choice a hit of search `id` becomes (None: not one of its hits).
     pub fn search_choice(&self, id: &str, key: &str) -> Option<Choice> {
         match self.search_state(id) {
@@ -525,6 +548,10 @@ impl Worker {
                 Ok(Cmd::Active(on)) => self.set_active(on, self.clock()),
                 Ok(Cmd::Search(id, what, q, lang)) => {
                     let st = self.search(what, &q, &lang, self.clock());
+                    let found = match &st {
+                        SearchState::Done(f) if !f.is_empty() => Some(f.clone()),
+                        _ => None,
+                    };
                     if let Some(e) = self
                         .shared
                         .searches
@@ -533,6 +560,13 @@ impl Worker {
                         .get_mut(&id)
                     {
                         e.1 = st;
+                    }
+                    // The names are out; then the prices or the weather of the hits.
+                    if let Some(found) = found {
+                        let rows = self.search_rows(&found);
+                        let mut r = self.shared.rows.lock().unwrap_or_else(|e| e.into_inner());
+                        r.retain(|_, (at, _)| at.elapsed() < SEARCH_KEPT);
+                        r.insert(id, (Instant::now(), rows));
                     }
                 }
                 Ok(Cmd::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
@@ -868,6 +902,81 @@ impl Worker {
         }
     }
 
+    /// The prices of a search's markets (Yahoo's spark, CoinGecko's markets) or the weather of
+    /// its cities (one forecast for all): one request per source, after the names.
+    fn search_rows(&mut self, found: &[Found]) -> SearchRows {
+        let unix = now_unix();
+        let mut rows = SearchRows::default();
+        let symbols: Vec<&str> = found
+            .iter()
+            .filter_map(|f| match &f.choice {
+                Choice::Quote(q) if q.source == Source::Yahoo && q.valid() => Some(q.id.as_str()),
+                _ => None,
+            })
+            .collect();
+        if !symbols.is_empty() {
+            let now = self.clock();
+            let wait = self.last_yahoo + plan::YAHOO_GAP - now;
+            if wait > 0.0 && wait.is_finite() {
+                std::thread::sleep(Duration::from_secs_f64(wait.min(plan::YAHOO_GAP)));
+            }
+            let now = self.clock();
+            self.last_yahoo = now;
+            let host = if self.host.second(now) {
+                Host::Yahoo2
+            } else {
+                Host::Yahoo
+            };
+            if let Outcome::Ok(b) = self.fetch.get(&yahoo::spark_url(host, &symbols))
+                && let Ok(q) = yahoo::parse_spark(&b, &symbols, unix)
+            {
+                rows.quotes.extend(q);
+            }
+        }
+        let coins: Vec<&str> = found
+            .iter()
+            .filter_map(|f| match &f.choice {
+                Choice::Quote(q) if q.source == Source::Coingecko && q.valid() => {
+                    Some(q.id.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        if !coins.is_empty() {
+            let currency = if coingecko::valid_currency(&self.config.currency) {
+                self.config.currency.clone()
+            } else {
+                "usd".to_string()
+            };
+            if let Outcome::Ok(b) = self.fetch.get(&coingecko::markets_url(&coins, &currency))
+                && let Ok(q) = coingecko::parse_markets(&b, &coins, &currency, unix)
+            {
+                rows.quotes.extend(q);
+            }
+        }
+        let cities: Vec<(String, CityChoice)> = found
+            .iter()
+            .filter_map(|f| match &f.choice {
+                Choice::City(c) if c.valid() => Some((f.hit.key.clone(), c.clone())),
+                _ => None,
+            })
+            .collect();
+        if !cities.is_empty() {
+            let list: Vec<CityChoice> = cities.iter().map(|(_, c)| c.clone()).collect();
+            let url = openmeteo::forecast_url(&list, self.config.fahrenheit);
+            if let Outcome::Ok(b) = self.fetch.get(&url)
+                && let Ok(w) = openmeteo::parse_forecast(&b, &list, unix)
+            {
+                for w in w {
+                    if let Some((k, _)) = cities.iter().find(|(_, c)| c.id == w.id) {
+                        rows.cities.push((k.clone(), w));
+                    }
+                }
+            }
+        }
+        rows
+    }
+
     /// New data: the revision grows and the cache is written.
     fn publish(&self) {
         self.shared.rev.fetch_add(1, Ordering::AcqRel);
@@ -945,6 +1054,7 @@ pub(crate) mod tests {
                 snapshot: Mutex::new(Snapshot::default()),
                 rev: AtomicU64::new(1),
                 searches: Mutex::new(HashMap::new()),
+                rows: Mutex::new(HashMap::new()),
             }),
             None,
         )
