@@ -226,27 +226,30 @@ fn attr(a: &Value, k: &str) -> Option<String> {
 }
 
 impl States {
-    /// An event of the subscription; true when something changed.
+    /// An event of the subscription; true when something changed (only the entities named are
+    /// touched; nothing is copied).
     pub fn apply(&mut self, ev: &Value) -> bool {
-        let before = self.by_id.clone();
+        let mut changed = false;
         if let Some(all) = ev.get("a").and_then(Value::as_object) {
             for (id, e) in all {
                 let a = e.get("a").cloned().unwrap_or(Value::Null);
-                self.by_id.insert(
-                    id.clone(),
-                    State {
-                        state: e.get("s").and_then(Value::as_str).unwrap_or("").into(),
-                        name: attr(&a, "friendly_name").unwrap_or_default(),
-                        unit: attr(&a, "unit_of_measurement").unwrap_or_default(),
-                        title: attr(&a, "media_title").unwrap_or_default(),
-                        artist: attr(&a, "media_artist").unwrap_or_default(),
-                    },
-                );
+                let new = State {
+                    state: e.get("s").and_then(Value::as_str).unwrap_or("").into(),
+                    name: attr(&a, "friendly_name").unwrap_or_default(),
+                    unit: attr(&a, "unit_of_measurement").unwrap_or_default(),
+                    title: attr(&a, "media_title").unwrap_or_default(),
+                    artist: attr(&a, "media_artist").unwrap_or_default(),
+                };
+                if self.by_id.get(id) != Some(&new) {
+                    self.by_id.insert(id.clone(), new);
+                    changed = true;
+                }
             }
         }
         if let Some(changes) = ev.get("c").and_then(Value::as_object) {
             for (id, c) in changes {
                 let st = self.by_id.entry(id.clone()).or_default();
+                let before = st.clone();
                 if let Some(plus) = c.get("+") {
                     if let Some(s) = plus.get("s").and_then(Value::as_str) {
                         st.state = s.into();
@@ -275,14 +278,15 @@ impl States {
                         }
                     }
                 }
+                changed |= *st != before;
             }
         }
         if let Some(r) = ev.get("r").and_then(Value::as_array) {
             for id in r.iter().filter_map(Value::as_str) {
-                self.by_id.remove(id);
+                changed |= self.by_id.remove(id).is_some();
             }
         }
-        self.by_id != before
+        changed
     }
 }
 

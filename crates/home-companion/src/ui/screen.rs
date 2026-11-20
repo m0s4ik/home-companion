@@ -1275,6 +1275,10 @@ pub struct Ui<S: Screen> {
     widget_ha: RefCell<crate::ha::widgets::Want>,
     ha_catalog: RefCell<Vec<crate::ha::widgets::Entity>>,
     ha_widgets: RefCell<crate::ha::widgets::WidgetsData>,
+    /// What the hub was last told of the night and the screen (its curves wait), and when the
+    /// browser panel last had the catalogue asked again.
+    ha_quiet: Cell<Option<bool>>,
+    pub(super) catalog_asked: Cell<Option<Instant>>,
     /// The sensors' last 24 hours, by entity.
     ha_curves: RefCell<HashMap<String, crate::ha::widgets::Curve>>,
     /// The board's notes (the brain's `notes` event), oldest first.
@@ -2064,6 +2068,8 @@ impl<S: Screen> Ui<S> {
             ha_catalog: RefCell::new(Vec::new()),
             ha_widgets: RefCell::new(Default::default()),
             ha_curves: RefCell::new(HashMap::new()),
+            ha_quiet: Cell::new(None),
+            catalog_asked: Cell::new(None),
             widget_quotes: RefCell::new(widget_quotes),
             widget_currency: RefCell::new(widget_currency),
             widget_cities: RefCell::new(widget_cities),
@@ -6100,6 +6106,13 @@ impl<S: Screen> Ui<S> {
     /// the screen on), and their new data into the widget (shown when its page comes back).
     fn tick_feeds(&self) {
         let (night, off) = (self.desk.borrow().night_now, super::backlight::screen_off());
+        // Home Assistant's curves wait too.
+        if self.ha_quiet.get() != Some(night || off)
+            && let Some(tx) = self.hub_tx.borrow().as_ref()
+        {
+            self.ha_quiet.set(Some(night || off));
+            let _ = tx.send(HubCmd::Quiet(night || off));
+        }
         let on = |k: WidgetKind| self.widget_on.borrow().contains(&k);
         let active = crate::feeds::Active {
             quotes: crate::feeds::plan::active(

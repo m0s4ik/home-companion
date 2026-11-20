@@ -555,7 +555,16 @@ impl<S: Screen> PanelHost for Ui<S> {
     fn ha_catalog(&self) -> Vec<crate::ha::widgets::Entity> {
         self.ha_catalog.borrow().clone()
     }
+    /// At most every five minutes, however often the panel reads its state.
     fn ha_catalog_refresh(&self) {
+        if self
+            .catalog_asked
+            .get()
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(300))
+        {
+            return;
+        }
+        self.catalog_asked.set(Some(Instant::now()));
         if let Some(tx) = self.hub_tx.borrow().as_ref() {
             let _ = tx.send(crate::ha::hub::HubCmd::Catalog);
         }

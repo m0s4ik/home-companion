@@ -55,8 +55,11 @@ pub enum HubCmd {
     Fire { event_type: String, data: Value },
     /// What the home's widget wants of Home Assistant (widgets.rs).
     SetWidgets(super::widgets::Want),
-    /// The catalogue again (the browser panel opened its widget section): once a minute at most.
+    /// The catalogue again (the browser panel opened its widget section): every five minutes
+    /// at most.
     Catalog,
+    /// The screen is off or it is night: no sensor's curve is fetched meanwhile.
+    Quiet(bool),
 }
 
 /// What the screen gets.
@@ -276,8 +279,9 @@ fn run(cfg: HubConfig, tx: Sender<HubMsg>, cmds: Receiver<HubCmd>, stop: fn() ->
     };
     log::info!(event = "ha_hub"; "cards and lists from {}:{}", ep.host, ep.port);
     let mut chosen = cfg.lists.clone();
-    // What the widget wants, across connections.
+    // What the widget wants, and what it learnt, across connections.
     let mut want = super::widgets::Want::default();
+    let mut wd = WidgetSide::default();
     // When the last message came, and whether the screen was told the link is up.
     let mut link = LinkState::default();
     // The screen was told the link is lost (or was never made): the retries then stay short, so
@@ -308,6 +312,7 @@ fn run(cfg: HubConfig, tx: Sender<HubMsg>, cmds: Receiver<HubCmd>, stop: fn() ->
             &cmds,
             &mut chosen,
             &mut want,
+            &mut wd,
             &mut link,
             stop,
         ) {
@@ -357,6 +362,7 @@ fn session(
     cmds: &Receiver<HubCmd>,
     chosen: &mut Vec<String>,
     want: &mut super::widgets::Want,
+    wd: &mut WidgetSide,
     link: &mut LinkState,
     stop: fn() -> bool,
 ) -> Result<(), String> {
@@ -453,9 +459,12 @@ fn session(
         .map_err(lost)?;
     let mut fire_ids: Vec<u64> = Vec::new();
     let mut fire_refused = false;
-    let mut wd = WidgetSide::default();
-    if wd.needs_catalog(want) {
+    wd.connected();
+    if wd.catalog_due(want) {
         wd.ask_catalog(&mut ws, &mut take_id).map_err(lost)?;
+    } else if wd.catalog.is_some() && !wd.refresh(&mut ws, want, &mut take_id).map_err(lost)? {
+        ws.close();
+        return Ok(());
     }
     let mut last_rx = Instant::now();
     let mut last_ping = Instant::now();
@@ -494,13 +503,12 @@ fn session(
                 Ok(HubCmd::SetWidgets(w)) => {
                     if *want != w {
                         *want = w;
-                        if wd.catalog.is_none() && wd.needs_catalog(want) && wd.catalog_id.is_none()
-                        {
+                        if wd.catalog.is_none() && wd.catalog_due(want) {
                             wd.ask_catalog(&mut ws, &mut take_id).map_err(lost)?;
                         }
                         // With the catalogue on its way, the subscription waits for it.
                         if wd.catalog_id.is_none()
-                            && !wd.refresh(&mut ws, want, tx, &mut take_id).map_err(lost)?
+                            && !wd.refresh(&mut ws, want, &mut take_id).map_err(lost)?
                         {
                             ws.close();
                             return Ok(());
@@ -509,13 +517,13 @@ fn session(
                 }
                 Ok(HubCmd::Catalog) => {
                     if wd.catalog_id.is_none()
-                        && wd
-                            .catalog_at
-                            .is_none_or(|t| t.elapsed() >= Duration::from_secs(60))
+                        && !wd.blocked()
+                        && wd.catalog_at.is_none_or(|t| t.elapsed() >= CATALOG_ASKED)
                     {
                         wd.ask_catalog(&mut ws, &mut take_id).map_err(lost)?;
                     }
                 }
+                Ok(HubCmd::Quiet(q)) => wd.quiet = q,
                 Ok(HubCmd::SetLists(l)) => {
                     if *chosen != l {
                         *chosen = l;
@@ -529,18 +537,46 @@ fn session(
                 }
             }
         }
-        match ws.read().map_err(lost)? {
+        let read = ws.read().map_err(lost)?;
+        // A message too big was skipped: the catalogue or a sensor's history (the only big
+        // answers asked); not asked again for a while.
+        if ws.take_dropped() > 0 {
+            for entity in wd.dropped() {
+                if tx.send(HubMsg::Curve(entity, None)).is_err() {
+                    ws.close();
+                    return Ok(());
+                }
+            }
+        }
+        if std::mem::take(&mut wd.resubscribe)
+            && !wd.refresh(&mut ws, want, &mut take_id).map_err(lost)?
+        {
+            ws.close();
+            return Ok(());
+        }
+        if !wd.flush(tx) {
+            ws.close();
+            return Ok(());
+        }
+        match read {
             Some(Message::Text(t)) => {
                 last_rx = Instant::now();
                 link.seen = unix_now();
                 // The catalogue's answer can be megabytes: read through its own struct, never
-                // as a JSON value.
-                let mid = message_id(&t);
-                if let Some(entity) = mid.and_then(|m| wd.curve_pending.remove(&m)) {
-                    let c = super::widgets::parse_curve(&t, &entity);
-                    if c.is_none() {
-                        log::debug!(event = "ha_widgets"; "widget: no curve for {entity}");
-                    }
+                // as a JSON value (and only looked at while one is awaited).
+                let mid = if wd.catalog_id.is_some() || !wd.curve_pending.is_empty() {
+                    message_id(&t)
+                } else {
+                    None
+                };
+                if let Some((entity, _)) = mid.and_then(|m| wd.curve_pending.remove(&m)) {
+                    let c = if t.len() > super::widgets::MAX_HISTORY {
+                        wd.no_curve.insert(entity.clone(), Instant::now());
+                        log::info!(event = "ha_widgets"; "widget: {entity}'s day is too big to draw: no curve for a day");
+                        None
+                    } else {
+                        super::widgets::parse_curve(&t, &entity)
+                    };
                     if tx.send(HubMsg::Curve(entity, c)).is_err() {
                         ws.close();
                         return Ok(());
@@ -557,13 +593,16 @@ fn session(
                             log::info!(event = "ha_widgets", entities = c.len(); "widget: {} entities it may show", c.len());
                             wd.catalog = Some(c.clone());
                             if tx.send(HubMsg::Catalog(c)).is_err()
-                                || !wd.refresh(&mut ws, want, tx, &mut take_id).map_err(lost)?
+                                || !wd.refresh(&mut ws, want, &mut take_id).map_err(lost)?
                             {
                                 ws.close();
                                 return Ok(());
                             }
                         }
-                        Err(e) => log::info!(event = "ha_widgets"; "widget: {e}"),
+                        Err(e) => {
+                            log::info!(event = "ha_widgets"; "widget: {e}");
+                            wd.resubscribe = true;
+                        }
                     }
                     continue;
                 }
@@ -573,10 +612,8 @@ fn session(
                 if wd.sub_id.is_some() && v.get("id").and_then(Value::as_u64) == wd.sub_id {
                     if let Some(ev) = v.get("event")
                         && wd.states.apply(ev)
-                        && !wd.publish(want, tx)
                     {
-                        ws.close();
-                        return Ok(());
+                        wd.publish(want);
                     }
                     continue;
                 }
@@ -669,17 +706,19 @@ fn session(
             ws.send_text(&m).map_err(lost)?;
         }
         // The catalogue again every six hours (entities come and go).
-        if wd.catalog_id.is_none()
-            && wd.needs_catalog(want)
-            && wd.catalog_at.is_some_and(|t| t.elapsed() >= CATALOG_EVERY)
-        {
+        if wd.catalog.is_some() && wd.catalog_due(want) {
             wd.ask_catalog(&mut ws, &mut take_id).map_err(lost)?;
         }
     }
 }
 
-/// The catalogue is read again this often.
+/// The catalogue is read again this often; asked by the browser panel, at most this often;
+/// after an answer too big, not before this.
 const CATALOG_EVERY: Duration = Duration::from_secs(6 * 3600);
+const CATALOG_ASKED: Duration = Duration::from_secs(5 * 60);
+const CATALOG_BLOCKED: Duration = Duration::from_secs(6 * 3600);
+/// The widget's data goes to the screen at most this often.
+const WIDGETS_EVERY: Duration = Duration::from_millis(1500);
 
 /// A message's `id` without reading the rest of it as JSON values.
 fn message_id(text: &str) -> Option<u64> {
@@ -690,43 +729,106 @@ fn message_id(text: &str) -> Option<u64> {
     serde_json::from_str::<Head>(text).ok()?.id
 }
 
-/// The widget's side of the connection: the catalogue, the one subscription, the states.
+/// The widget's side of the connection: the catalogue, the one subscription, the states, the
+/// curves. Kept across connections: the catalogue, what was too big, when each curve was asked.
 #[derive(Default)]
 struct WidgetSide {
     catalog: Option<Vec<super::widgets::Entity>>,
     catalog_id: Option<u64>,
     catalog_at: Option<Instant>,
+    /// The catalogue's answer was too big: not asked again before then.
+    catalog_blocked: Option<Instant>,
     sub_id: Option<u64>,
     sub_ids: Vec<String>,
     states: super::widgets::States,
     told: Option<super::widgets::WidgetsData>,
-    /// Curves asked (message id → entity) and when each sensor's was asked last.
-    curve_pending: std::collections::HashMap<u64, String>,
+    /// Data waiting for [`WIDGETS_EVERY`], and when the last went.
+    pending: Option<super::widgets::WidgetsData>,
+    last_sent: Option<Instant>,
+    /// Curves asked (message id → entity, when) and when each sensor's was asked last.
+    curve_pending: std::collections::HashMap<u64, (String, Instant)>,
     curve_asked: std::collections::HashMap<String, Instant>,
     last_curve: Option<Instant>,
+    /// Sensors whose day was too big to read, and since when.
+    no_curve: std::collections::HashMap<String, Instant>,
+    /// The screen is off or it is night.
+    quiet: bool,
+    /// The catalogue will not come (too big, refused): subscribe to what is known anyway.
+    resubscribe: bool,
 }
 
-/// A sensor's day is read again this often; two requests at least this far apart.
+/// A sensor's day is read again this often; two requests at least this far apart; one not
+/// answered in this long is given up; one too big is not asked for a day.
 const CURVE_EVERY: Duration = Duration::from_secs(30 * 60);
 const CURVE_GAP: Duration = Duration::from_secs(5);
+const CURVE_WAIT: Duration = Duration::from_secs(60);
+const NO_CURVE_FOR: Duration = Duration::from_secs(24 * 3600);
 
 impl WidgetSide {
-    /// The next curve request due (`id` its message id), if any.
+    /// A new connection: what belonged to the old one goes.
+    fn connected(&mut self) {
+        self.catalog_id = None;
+        self.sub_id = None;
+        self.sub_ids.clear();
+        self.states = Default::default();
+        self.told = None;
+        self.pending = None;
+        self.curve_pending.clear();
+    }
+
+    fn blocked(&self) -> bool {
+        self.catalog_blocked
+            .is_some_and(|t| t.elapsed() < CATALOG_BLOCKED)
+    }
+
+    /// The catalogue should be asked now: something wants it, none is on its way, it is
+    /// missing or six hours old, and its last answer was not too big lately.
+    fn catalog_due(&self, w: &super::widgets::Want) -> bool {
+        *w != super::widgets::Want::default()
+            && self.catalog_id.is_none()
+            && !self.blocked()
+            && self.catalog_at.is_none_or(|t| t.elapsed() >= CATALOG_EVERY)
+    }
+
+    /// A message too big was skipped: what was awaited is given up (the entities whose curve
+    /// it was, to be told).
+    fn dropped(&mut self) -> Vec<String> {
+        if self.catalog_id.take().is_some() {
+            self.resubscribe = true;
+            self.catalog_blocked = Some(Instant::now());
+            self.catalog_at = Some(Instant::now());
+            log::warn!(event = "ha_widgets"; "widget: Home Assistant's list of entities is too big to read: tried again in six hours");
+        }
+        let gone: Vec<String> = self.curve_pending.drain().map(|(_, (e, _))| e).collect();
+        for e in &gone {
+            self.no_curve.insert(e.clone(), Instant::now());
+        }
+        gone
+    }
+
+    /// The next curve request due, if any: not while quiet, one at a time (one unanswered for a
+    /// minute is given up), each sensor every half hour, none for a sensor too big.
     fn next_curve(
         &mut self,
         want: &super::widgets::Want,
         take_id: &mut dyn FnMut() -> u64,
     ) -> Option<String> {
-        let catalog = self.catalog.as_ref()?;
-        if !self.curve_pending.is_empty()
+        self.curve_pending
+            .retain(|_, (_, at)| at.elapsed() < CURVE_WAIT);
+        self.no_curve.retain(|_, at| at.elapsed() < NO_CURVE_FOR);
+        if self.quiet
+            || !self.curve_pending.is_empty()
             || self.last_curve.is_some_and(|t| t.elapsed() < CURVE_GAP)
         {
             return None;
         }
+        let catalog = self.catalog.as_ref()?;
         let entity = want.sensors.iter().find(|s| {
-            self.curve_asked
-                .get(*s)
-                .is_none_or(|t| t.elapsed() >= CURVE_EVERY)
+            !self.no_curve.contains_key(*s)
+                && self
+                    .curve_asked
+                    .get(*s)
+                    .is_none_or(|t| t.elapsed() >= CURVE_EVERY)
         })?;
         let stats = catalog
             .iter()
@@ -734,15 +836,11 @@ impl WidgetSide {
             .is_some_and(|e| e.statistics);
         let id = take_id();
         self.curve_asked.insert(entity.clone(), Instant::now());
-        self.curve_pending.insert(id, entity.clone());
+        self.curve_pending
+            .insert(id, (entity.clone(), Instant::now()));
         self.last_curve = Some(Instant::now());
         let start = super::widgets::rfc3339(unix_now() - 24 * 3600);
         Some(super::widgets::curve_request(id, entity, stats, &start))
-    }
-
-    /// Something wants Home Assistant's data (and so the catalogue).
-    fn needs_catalog(&self, w: &super::widgets::Want) -> bool {
-        *w != super::widgets::Want::default()
     }
 
     fn ask_catalog(
@@ -752,15 +850,15 @@ impl WidgetSide {
     ) -> io::Result<()> {
         let id = take_id();
         self.catalog_id = Some(id);
+        self.catalog_at = Some(Instant::now());
         ws.send_text(&super::widgets::catalog_request(id))
     }
 
-    /// The subscription made what is wanted now; the data told. False: the screen is gone.
+    /// The subscription made what is wanted now; the data computed (sent by [`Self::flush`]).
     fn refresh(
         &mut self,
         ws: &mut WebSocket<TcpStream>,
         want: &super::widgets::Want,
-        tx: &Sender<HubMsg>,
         take_id: &mut dyn FnMut() -> u64,
     ) -> io::Result<bool> {
         let ids = super::widgets::wanted(want, self.catalog.as_deref().unwrap_or(&[]));
@@ -777,15 +875,28 @@ impl WidgetSide {
             }
             self.sub_ids = ids;
         }
-        Ok(self.publish(want, tx))
+        self.publish(want);
+        Ok(true)
     }
 
-    fn publish(&mut self, want: &super::widgets::Want, tx: &Sender<HubMsg>) -> bool {
+    /// The data as it is now, to be sent when it changed.
+    fn publish(&mut self, want: &super::widgets::Want) {
         let data = super::widgets::view(want, self.catalog.as_deref().unwrap_or(&[]), &self.states);
-        if self.told.as_ref() == Some(&data) {
+        if self.told.as_ref() != Some(&data) {
+            self.pending = Some(data);
+        } else {
+            self.pending = None;
+        }
+    }
+
+    /// Sends what waits, at most every [`WIDGETS_EVERY`]. False: the screen is gone.
+    fn flush(&mut self, tx: &Sender<HubMsg>) -> bool {
+        if self.pending.is_none() || self.last_sent.is_some_and(|t| t.elapsed() < WIDGETS_EVERY) {
             return true;
         }
+        let data = self.pending.take().unwrap_or_default();
         self.told = Some(data.clone());
+        self.last_sent = Some(Instant::now());
         tx.send(HubMsg::Widgets(data)).is_ok()
     }
 }
@@ -811,6 +922,79 @@ mod tests {
         v.iter()
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect()
+    }
+
+    /// The widget's side: too big is remembered, a curve unanswered is given up after a
+    /// minute, none while quiet, the data at most every 1.5 s.
+    #[test]
+    fn the_widget_side_remembers_and_waits() {
+        let want = super::super::widgets::Want {
+            sensors: vec!["sensor.a".into(), "sensor.b".into()],
+            ..Default::default()
+        };
+        let mut wd = WidgetSide {
+            catalog: Some(vec![]),
+            ..Default::default()
+        };
+        let mut n = 0u64;
+        let mut take = || {
+            n += 1;
+            n
+        };
+        assert!(wd.catalog_due(&want));
+        wd.catalog_id = Some(99);
+        let first = wd.next_curve(&want, &mut take).unwrap();
+        assert!(first.contains("sensor.a"));
+        assert!(wd.next_curve(&want, &mut take).is_none(), "one at a time");
+        // A message too big: the catalogue and the curve given up, remembered.
+        assert_eq!(wd.dropped(), ["sensor.a"]);
+        assert!(wd.blocked() && !wd.catalog_due(&want));
+        assert!(wd.no_curve.contains_key("sensor.a"));
+        wd.connected();
+        assert!(
+            !wd.catalog_due(&want),
+            "a new connection does not ask again"
+        );
+        // An unanswered curve is given up after a minute.
+        wd.last_curve = None;
+        let id = take();
+        wd.curve_pending.insert(
+            id,
+            ("sensor.b".into(), Instant::now() - Duration::from_secs(61)),
+        );
+        wd.curve_asked.insert(
+            "sensor.b".into(),
+            Instant::now() - Duration::from_secs(3600),
+        );
+        assert!(
+            wd.next_curve(&want, &mut take)
+                .unwrap()
+                .contains("sensor.b")
+        );
+        // Quiet: nothing.
+        wd.curve_pending.clear();
+        wd.curve_asked.clear();
+        wd.last_curve = None;
+        wd.quiet = true;
+        assert!(wd.next_curve(&want, &mut take).is_none());
+        // The data: the first at once, the next after 1.5 s.
+        let (tx, rx) = channel();
+        wd.pending = Some(Default::default());
+        assert!(wd.flush(&tx));
+        assert!(rx.try_recv().is_ok());
+        wd.pending = Some(super::super::widgets::WidgetsData {
+            check: vec![],
+            people: vec![crate::ui::widgets::Person {
+                name: "x".into(),
+                place: crate::ui::widgets::Place::Home,
+            }],
+            ..Default::default()
+        });
+        assert!(wd.flush(&tx));
+        assert!(rx.try_recv().is_err());
+        wd.last_sent = Some(Instant::now() - WIDGETS_EVERY);
+        assert!(wd.flush(&tx));
+        assert!(rx.try_recv().is_ok());
     }
 
     #[test]
