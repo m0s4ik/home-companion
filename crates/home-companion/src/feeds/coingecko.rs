@@ -61,21 +61,32 @@ fn decimals(price: f64) -> u8 {
     }
 }
 
-/// A markets answer → a quote per coin with a price (`coingecko:<id>`), in `currency`.
-pub fn parse_markets(body: &[u8], currency: &str, now: i64) -> Result<Vec<Quote>, String> {
+/// A markets answer → a quote per coin asked (`ids`) with a price (`coingecko:<id>`), in
+/// `currency`.
+pub fn parse_markets(
+    body: &[u8],
+    ids: &[&str],
+    currency: &str,
+    now: i64,
+) -> Result<Vec<Quote>, String> {
     let list: Vec<Market> = serde_json::from_slice(body).map_err(|e| format!("markets: {e}"))?;
     Ok(list
         .into_iter()
-        .filter(|m| valid_coin(&m.id))
+        .filter(|m| valid_coin(&m.id) && ids.contains(&m.id.as_str()))
         .filter_map(|m| {
-            let price = m.current_price.filter(|p| p.is_finite() && *p > 0.0)?;
+            let price = m.current_price.filter(|p| super::sane(*p))?;
             let prev = m
                 .price_change_24h
                 .map(|d| price - d)
-                .filter(|p| p.is_finite() && *p > 0.0);
+                .filter(|p| super::sane(*p));
             let hours: Vec<f64> = m
                 .sparkline_in_7d
-                .map(|s| s.price.into_iter().map(|p| p.unwrap_or(f64::NAN)).collect())
+                .map(|s| {
+                    s.price
+                        .into_iter()
+                        .map(|p| p.filter(|p| super::sane(*p)).unwrap_or(f64::NAN))
+                        .collect()
+                })
                 .unwrap_or_default();
             // The hourly points of the last day (and the price now, its end).
             let mut day: Vec<f64> = hours[hours.len().saturating_sub(24)..].to_vec();
@@ -153,7 +164,22 @@ mod tests {
 
     #[test]
     fn markets_with_the_days_curve() {
-        let q = parse_markets(&fixture("coingecko-markets-eur.json"), "eur", 7).unwrap();
+        // Only what was asked.
+        let one = parse_markets(
+            &fixture("coingecko-markets-eur.json"),
+            &["ethereum"],
+            "eur",
+            7,
+        )
+        .unwrap();
+        assert_eq!(one.len(), 1);
+        let q = parse_markets(
+            &fixture("coingecko-markets-eur.json"),
+            &["bitcoin", "ethereum"],
+            "eur",
+            7,
+        )
+        .unwrap();
         assert_eq!(q.len(), 2);
         assert_eq!(q[0].key, "coingecko:bitcoin");
         assert_eq!(q[0].price, 53704.0);
@@ -169,7 +195,7 @@ mod tests {
     fn broken_markets() {
         for bad in [&b""[..], b"{}", b"<html>", b"[{\"id\":\"x\"", b"null"] {
             assert!(
-                parse_markets(bad, "usd", 0).is_err(),
+                parse_markets(bad, &["a"], "usd", 0).is_err(),
                 "{}",
                 String::from_utf8_lossy(bad)
             );
@@ -177,7 +203,9 @@ mod tests {
         let q = parse_markets(
             br#"[{"id":"a","current_price":0},{"id":"Bad Id","current_price":1},
                 {"id":"b","current_price":0.004,"sparkline_in_7d":{"price":[null,0.003]}},
-                {"id":"c","current_price":null}]"#,
+                {"id":"c","current_price":null},{"id":"d","current_price":1e300},
+                {"id":"e","current_price":5}]"#,
+            &["a", "Bad Id", "b", "c", "d"],
             "usd",
             0,
         )

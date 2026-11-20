@@ -305,7 +305,7 @@ function chosenList(kind, items, onChange) {
   return ul;
 }
 
-// A search box: the body searches, the page asks how it went every half second (12 s at most);
+// A search box: the body searches, the page asks how it went every half second (30 s at most: a search may wait for Yahoo's pause and two sources' 10 s each);
 // each hit is a button that adds it.
 function searchBox(what, kind, onChange) {
   const box = el('div');
@@ -329,7 +329,7 @@ function searchBox(what, kind, onChange) {
     const r = await api('/api/search', { what, q });
     if (!r.ok) { b.disabled = false; out.replaceChildren(el('li', 'hint', errorText(r.error))); return; }
     let s = { status: 'waiting' };
-    for (let n = 0; n < 24 && s.ok !== false && s.status === 'waiting'; n++) {
+    for (let n = 0; n < 60 && s.ok !== false && s.status === 'waiting'; n++) {
       await new Promise(res => setTimeout(res, 500));
       s = await api('/api/search/' + encodeURIComponent(r.id));
     }

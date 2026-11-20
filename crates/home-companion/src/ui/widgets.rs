@@ -435,7 +435,11 @@ fn data_from(
 
 /// A number in the screen's words: `decimals` digits, the thousands grouped.
 pub fn format_number(v: f64, decimals: u8, w: &Words) -> String {
-    let s = format!("{:.*}", decimals as usize, v.abs());
+    // Never a string of a hundred digits: past a trillion (or not a number) a dash.
+    if !v.is_finite() || v.abs() >= 1e15 {
+        return "—".into();
+    }
+    let s = format!("{:.*}", decimals.min(6) as usize, v.abs());
     let (int, frac) = s.split_once('.').unwrap_or((&s, ""));
     let mut grouped = String::new();
     for (i, c) in int.chars().enumerate() {
@@ -1470,6 +1474,9 @@ mod tests {
         assert_eq!(format_number(-0.004, 2, &w), "0.00");
         assert_eq!(format_number(-12.5, 1, &w), "−12.5");
         assert_eq!(format_number(1234567.0, 0, &w), "1,234,567");
+        assert_eq!(format_number(1e300, 2, &w), "—");
+        assert_eq!(format_number(f64::NAN, 2, &w), "—");
+        assert_eq!(format_number(1.5, 255, &w), "1.500000");
         let it = Words {
             decimal: ',',
             group: '.',

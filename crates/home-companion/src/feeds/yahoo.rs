@@ -28,9 +28,9 @@ pub fn chart_url(host: Host, symbol: &str) -> Url {
     )
 }
 
-pub fn search_url(q: &str) -> Url {
+pub fn search_url(host: Host, q: &str) -> Url {
     Url::new(
-        Host::Yahoo,
+        host,
         "v1/finance/search",
         &[("q", q), ("quotesCount", "6"), ("newsCount", "0")],
     )
@@ -106,19 +106,24 @@ pub fn parse_chart(body: &[u8], key: &str, now: i64) -> Result<Quote, String> {
     let m = r.meta;
     let price = m
         .regular_market_price
-        .filter(|p| p.is_finite() && *p > 0.0)
+        .filter(|p| super::sane(*p))
         .ok_or("chart: no price")?;
     let prev = m
         .previous_close
         .or(m.chart_previous_close)
-        .filter(|p| p.is_finite() && *p > 0.0);
+        .filter(|p| super::sane(*p));
     let closes: Vec<f64> = r
         .indicators
         .map(|i| {
             i.quote
                 .into_iter()
                 .next()
-                .map(|s| s.close.into_iter().map(|c| c.unwrap_or(f64::NAN)).collect())
+                .map(|s| {
+                    s.close
+                        .into_iter()
+                        .map(|c| c.filter(|c| super::sane(*c)).unwrap_or(f64::NAN))
+                        .collect()
+                })
                 .unwrap_or_default()
         })
         .unwrap_or_default();

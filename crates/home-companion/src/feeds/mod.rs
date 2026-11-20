@@ -36,6 +36,16 @@ pub const MAX_CITIES: usize = 4;
 /// A name from a source, as the screen and the panel show it: at most this many characters.
 pub const MAX_NAME: usize = 40;
 
+/// A price a source may really give: a finite number above zero and under a trillion.
+pub fn sane(v: f64) -> bool {
+    v.is_finite() && v > 0.0 && v < 1e12
+}
+
+/// A temperature a forecast may really give (°C or °F).
+pub fn sane_temp(v: f64) -> bool {
+    v.is_finite() && (-100.0..=160.0).contains(&v)
+}
+
 /// A name from a source or Home Assistant, made safe to show: no control characters, spaces
 /// squeezed, at most [`MAX_NAME`] characters.
 pub fn clean_name(s: &str) -> String {
@@ -716,7 +726,7 @@ impl Worker {
         let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
         let currency = self.config.currency.clone();
         let (result, retry) = match self.fetch.get(&coingecko::markets_url(&ids, &currency)) {
-            Outcome::Ok(body) => (coingecko::parse_markets(&body, &currency, unix), None),
+            Outcome::Ok(body) => (coingecko::parse_markets(&body, &ids, &currency, unix), None),
             Outcome::Http(code, retry) => (Err(format!("HTTP {code}")), retry.map(|r| r as f64)),
             Outcome::Timeout => (Err("timeout".into()), None),
             Outcome::Failed(e) => (Err(e), None),
@@ -783,9 +793,21 @@ impl Worker {
         let mut answered = false;
         match what {
             What::Quote => {
-                if now >= self.last_yahoo + plan::YAHOO_GAP || self.last_yahoo.is_infinite() {
+                // Three seconds after the last Yahoo request (waited here: a search is rare),
+                // on the host in use.
+                let wait = self.last_yahoo + plan::YAHOO_GAP - now;
+                if wait > 0.0 && wait.is_finite() {
+                    std::thread::sleep(Duration::from_secs_f64(wait.min(plan::YAHOO_GAP)));
+                }
+                {
+                    let now = self.clock();
                     self.last_yahoo = now;
-                    if let Outcome::Ok(b) = self.fetch.get(&yahoo::search_url(q))
+                    let host = if self.host.second(now) {
+                        Host::Yahoo2
+                    } else {
+                        Host::Yahoo
+                    };
+                    if let Outcome::Ok(b) = self.fetch.get(&yahoo::search_url(host, q))
                         && let Ok(hits) = yahoo::parse_search(&b)
                     {
                         answered = true;

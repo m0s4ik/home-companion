@@ -195,7 +195,7 @@ pub fn parse_forecast(
         .zip(cities)
         .filter_map(|(f, c)| {
             let cur = f.current?;
-            let temp = cur.temperature_2m.filter(|t| t.is_finite())? as f32;
+            let temp = cur.temperature_2m.filter(|t| super::sane_temp(*t))? as f32;
             let day = cur.is_day.unwrap_or(1) != 0;
             let hours = f
                 .hourly
@@ -205,7 +205,7 @@ pub fn parse_forecast(
                             let t = (*h.temperature_2m.get(i)?)?;
                             let code = (*h.weather_code.get(i)?)?;
                             let day = h.is_day.get(i).copied().flatten().unwrap_or(1) != 0;
-                            t.is_finite().then(|| Hour {
+                            super::sane_temp(t).then(|| Hour {
                                 at: h.time[i],
                                 temp: t as f32,
                                 cond: condition(code, day).into(),
@@ -223,7 +223,7 @@ pub fn parse_forecast(
                             let hi = (*d.temperature_2m_max.get(i)?)?;
                             let lo = (*d.temperature_2m_min.get(i)?)?;
                             let code = (*d.weather_code.get(i)?)?;
-                            (hi.is_finite() && lo.is_finite()).then(|| Day {
+                            (super::sane_temp(hi) && super::sane_temp(lo)).then(|| Day {
                                 at: d.time[i],
                                 high: hi as f32,
                                 low: lo as f32,
@@ -382,6 +382,9 @@ mod tests {
         for bad in [&b""[..], b"<html>", b"[{\"current\":", b"42"] {
             assert!(parse_forecast(bad, &cities[..1], 0).is_err());
         }
+        // An absurd temperature is none.
+        let w = parse_forecast(br#"{"current":{"temperature_2m":1e40}}"#, &cities[..1], 0).unwrap();
+        assert!(w.is_empty());
         // No temperature now: that city is left out.
         let w = parse_forecast(br#"{"current":{"temperature_2m":null}}"#, &cities[..1], 0).unwrap();
         assert!(w.is_empty());

@@ -20,9 +20,23 @@ pub fn read(path: &Path) -> Snapshot {
     serde_json::from_slice(&text).unwrap_or_default()
 }
 
-/// Writes the cache if it differs from what is on disk.
+/// Writes the cache if it differs from what is on disk. A value that is not a number would be
+/// written as null and spoil the whole file: such a quote or city is left out.
 pub fn write(path: &Path, s: &Snapshot) {
-    let Ok(text) = serde_json::to_vec(s) else {
+    let mut s = s.clone();
+    s.quotes.retain(|q| {
+        [q.price, q.low, q.high].iter().all(|v| v.is_finite())
+            && q.prev.is_none_or(f64::is_finite)
+            && q.points.iter().all(|p| p.is_finite())
+    });
+    s.cities.retain(|c| {
+        c.temp.is_finite()
+            && c.hours.iter().all(|h| h.temp.is_finite())
+            && c.days
+                .iter()
+                .all(|d| d.high.is_finite() && d.low.is_finite())
+    });
+    let Ok(text) = serde_json::to_vec(&s) else {
         return;
     };
     if std::fs::read(path).is_ok_and(|old| old == text) {
