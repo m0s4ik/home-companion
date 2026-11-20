@@ -525,6 +525,29 @@ impl<S: Screen> PanelHost for Ui<S> {
     fn sessions_changed(&self) {
         self.panel.borrow_mut().changed = true;
     }
+    fn widget_pages(&self) -> Vec<(crate::ui::widgets::Kind, bool)> {
+        let on = self.widget_on.borrow();
+        self.widget_order
+            .borrow()
+            .iter()
+            .map(|k| (*k, on.contains(k)))
+            .collect()
+    }
+    fn widget_quotes(&self) -> Vec<crate::feeds::QuoteChoice> {
+        self.widget_quotes.borrow().clone()
+    }
+    fn widget_cities(&self) -> Vec<crate::feeds::CityChoice> {
+        self.widget_cities.borrow().clone()
+    }
+    fn search_start(&self, id: &str, what: crate::feeds::What, q: &str, lang: &str) -> bool {
+        self.feeds.borrow_mut().search(id, what, q, lang).is_some()
+    }
+    fn search_state(&self, id: &str) -> crate::feeds::SearchState {
+        self.feeds.borrow().search_state(id)
+    }
+    fn search_choice(&self, id: &str, key: &str) -> Option<crate::feeds::Choice> {
+        self.feeds.borrow().search_choice(id, key)
+    }
 }
 
 impl<S: Screen> Ui<S> {

@@ -10,6 +10,7 @@ pub mod protocol;
 pub mod sessions;
 pub mod sha256;
 pub mod socket;
+pub mod widget_ops;
 
 use serde::{Deserialize, Serialize};
 

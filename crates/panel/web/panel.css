@@ -46,12 +46,12 @@ input[role=switch]::after {
 }
 input[role=switch]:checked { background: var(--accent); border-color: var(--accent); }
 input[role=switch]:checked::after { transform: translateX(22px); background: var(--text); }
-select, input[type=text] {
+select, input[type=text], input[type=search] {
   font: inherit; color: var(--text); background: var(--surface-2); border: 1px solid var(--line);
   border-radius: 12px; padding: 8px 12px; min-height: 42px;
 }
 select { max-width: 60%; }
-input[type=text] { flex: 1; min-width: 0; }
+input[type=text], input[type=search] { flex: 1; min-width: 0; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button {
   font: inherit; font-weight: 500; color: var(--text); background: transparent; cursor: pointer;
@@ -80,3 +80,7 @@ button:disabled { opacity: .5; }
 }
 #toast.show { transform: translate(-50%, 0); opacity: 1; }
 #toast.bad { border-color: var(--danger); }
+.hits li { border-top: 0; padding: 4px 0; }
+button.hit { width: 100%; text-align: left; border-radius: 12px; overflow-wrap: anywhere; }
+.pages li { padding: 6px 0; }
+.hint.small { font-size: 13px; }

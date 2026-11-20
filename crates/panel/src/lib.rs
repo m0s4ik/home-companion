@@ -355,6 +355,14 @@ impl<B: Body> Panel<B> {
             (false, "/api/state") => relay(ask("state", json!({}))),
             (false, "/api/shopping") => relay(ask("shopping.list", json!({}))),
             (false, "/api/sessions") => relay(ask("sessions.list", json!({}))),
+            (false, "/api/widgets") => relay(ask("widgets.get", json!({}))),
+            (false, p) if p.starts_with("/api/search/") => {
+                let id = &p["/api/search/".len()..];
+                if !is_hex(id, 32) {
+                    return error(400, "bad_request");
+                }
+                relay(ask("search.status", json!({"id": id})))
+            }
             (false, p) if p.starts_with("/api/pair/") => {
                 let id = &p["/api/pair/".len()..];
                 if !is_hex(id, 32) {
@@ -388,6 +396,24 @@ impl<B: Body> Panel<B> {
                 "shopping.remove",
                 json!({"list": field("list"), "uid": field("uid")}),
             )),
+            (true, "/api/widgets/order") => {
+                relay(ask("widgets.order", json!({"order": field("order")})))
+            }
+            (true, "/api/search") => relay(ask(
+                "search.start",
+                json!({"what": field("what"), "q": field("q")}),
+            )),
+            (true, p) if p.starts_with("/api/quotes/") || p.starts_with("/api/cities/") => {
+                let (list, action) = p["/api/".len()..].split_once('/').unwrap_or(("", ""));
+                let op = match action {
+                    "add" | "remove" | "move" => format!("{list}.{action}"),
+                    _ => return error(404, "not_found"),
+                };
+                relay(ask(
+                    &op,
+                    json!({"search": field("search"), "ref": field("ref"), "to": field("to")}),
+                ))
+            }
             (true, "/api/sessions/revoke") => {
                 relay(ask("sessions.revoke", json!({"id": field("id")})))
             }

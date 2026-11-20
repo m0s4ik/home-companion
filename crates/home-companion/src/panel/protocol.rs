@@ -7,7 +7,8 @@
 //! Without a device let in (`token`) only these pass: `hello` (the character's name, whether the
 //! panel is on, whether `token` is good), `strings` (the panel's words), `pair.request`,
 //! `pair.status`, `pair.qr`. With one: `session.end`, `schema`, `state`, `set`,
-//! `shopping.list|add|done|remove`, `sessions.list|revoke`. With the panel switched off every
+//! `shopping.list|add|done|remove`, `sessions.list|revoke`, and the widget's (widget_ops.rs:
+//! `widgets.get|order`, `search.start|status`, `quotes|cities.add|remove|move`). With the panel switched off every
 //! op but `hello` and `strings` answers `off`.
 //!
 //! Every answer is built here from what the body chooses to say: settings through
@@ -52,6 +53,16 @@ pub trait PanelHost: model::Host {
     fn shopping_remove(&self, list: &str, uid: &str);
     /// The device list changed (the screen's page redraws it).
     fn sessions_changed(&self);
+    /// The widget's pages in the turn's order, each on or off.
+    fn widget_pages(&self) -> Vec<(crate::ui::widgets::Kind, bool)>;
+    /// The markets and the other cities chosen.
+    fn widget_quotes(&self) -> Vec<crate::feeds::QuoteChoice>;
+    fn widget_cities(&self) -> Vec<crate::feeds::CityChoice>;
+    /// Starts a search on the feeds' thread (false: another one is still going).
+    fn search_start(&self, id: &str, what: crate::feeds::What, q: &str, lang: &str) -> bool;
+    fn search_state(&self, id: &str) -> crate::feeds::SearchState;
+    /// What hit `key` of search `id` becomes (None: not one of its hits).
+    fn search_choice(&self, id: &str, key: &str) -> Option<crate::feeds::Choice>;
 }
 
 fn err(code: &str) -> Value {
@@ -144,6 +155,27 @@ pub const STRING_KEYS: &[&str] = &[
     "panel_device_line",
     "panel_all",
     "panel_lan_note",
+    "panel_widgets_pages",
+    "panel_up",
+    "panel_down",
+    "panel_markets",
+    "panel_cities",
+    "panel_search",
+    "panel_search_quote",
+    "panel_search_city",
+    "panel_searching",
+    "panel_search_none",
+    "panel_search_failed",
+    "panel_search_busy",
+    "panel_search_wait",
+    "panel_add",
+    "panel_quotes_empty",
+    "panel_cities_empty",
+    "panel_list_full",
+    "panel_exists",
+    "panel_invalid",
+    "panel_feeds_privacy",
+    "panel_feeds_credit",
 ];
 
 fn shopping_json(lists: &[ShopList]) -> Value {
@@ -240,6 +272,15 @@ pub fn handle(
     let Some(me) = sessions.check(token, now).map(|s| s.hash.clone()) else {
         return err("no_session");
     };
+    if super::widget_ops::OPS.contains(&op) {
+        let lang = lang_of(host, req);
+        let who = super::widget_ops::Caller {
+            me: &me,
+            lang: &lang,
+            now,
+        };
+        return super::widget_ops::handle(host, &mut sessions.searches, &who, op, req, rng);
+    }
     match op {
         "session.end" => {
             sessions.end(token);
@@ -323,6 +364,7 @@ mod tests {
         asked: RefCell<Vec<String>>,
         lists: RefCell<Vec<ShopList>>,
         calls: RefCell<Vec<String>>,
+        searches: RefCell<std::collections::HashMap<String, crate::feeds::SearchState>>,
     }
 
     impl model::Host for Host {
@@ -375,6 +417,73 @@ mod tests {
             crate::ui::lists::remove(&mut self.lists.borrow_mut(), list, uid);
         }
         fn sessions_changed(&self) {}
+        fn widget_pages(&self) -> Vec<(crate::ui::widgets::Kind, bool)> {
+            let order = model::widget_order(self);
+            let on = self.model.settings.widgets().0;
+            order.iter().map(|k| (*k, on.contains(k))).collect()
+        }
+        fn widget_quotes(&self) -> Vec<crate::feeds::QuoteChoice> {
+            self.model.settings.quotes()
+        }
+        fn widget_cities(&self) -> Vec<crate::feeds::CityChoice> {
+            self.model.settings.cities()
+        }
+        fn search_start(&self, id: &str, what: crate::feeds::What, q: &str, _lang: &str) -> bool {
+            use crate::feeds::*;
+            let mut s = self.searches.borrow_mut();
+            if s.values().any(|x| *x == SearchState::Waiting) {
+                return false;
+            }
+            // A canned answer: the words searched become a hit's name (they are a source's
+            // text now).
+            let found = match what {
+                What::Quote => vec![Found {
+                    hit: Hit {
+                        key: "yahoo:AAPL".into(),
+                        name: q.into(),
+                        detail: "AAPL · NASDAQ".into(),
+                    },
+                    choice: Choice::Quote(QuoteChoice {
+                        source: Source::Yahoo,
+                        id: "AAPL".into(),
+                        name: clean_name(q),
+                    }),
+                }],
+                What::City => vec![Found {
+                    hit: Hit {
+                        key: "city:7".into(),
+                        name: q.into(),
+                        detail: "Region, XX".into(),
+                    },
+                    choice: Choice::City(CityChoice {
+                        id: 7,
+                        name: clean_name(q),
+                        region: "Region".into(),
+                        country: "XX".into(),
+                        lat: 1.5,
+                        lon: 2.5,
+                    }),
+                }],
+            };
+            s.insert(id.into(), SearchState::Done(found));
+            true
+        }
+        fn search_state(&self, id: &str) -> crate::feeds::SearchState {
+            self.searches
+                .borrow()
+                .get(id)
+                .cloned()
+                .unwrap_or(crate::feeds::SearchState::Unknown)
+        }
+        fn search_choice(&self, id: &str, key: &str) -> Option<crate::feeds::Choice> {
+            match self.searches.borrow().get(id) {
+                Some(crate::feeds::SearchState::Done(f)) => f
+                    .iter()
+                    .find(|x| x.hit.key == key)
+                    .map(|x| x.choice.clone()),
+                _ => None,
+            }
+        }
     }
 
     fn host(name: &str) -> Host {
@@ -389,6 +498,7 @@ mod tests {
                 items: vec![("u1".into(), "Bread".into()), ("u2".into(), "Milk".into())],
             }]),
             calls: RefCell::new(Vec::new()),
+            searches: RefCell::new(Default::default()),
         }
     }
 
@@ -443,6 +553,16 @@ mod tests {
         "shopping.remove",
         "sessions.list",
         "sessions.revoke",
+        "widgets.get",
+        "widgets.order",
+        "search.start",
+        "search.status",
+        "quotes.add",
+        "quotes.remove",
+        "quotes.move",
+        "cities.add",
+        "cities.remove",
+        "cities.move",
         "session.end",
     ];
 
@@ -612,6 +732,165 @@ mod tests {
         );
     }
 
+    /// The widget's ops: the order, a search, adding only one of its own hits, the limits.
+    #[test]
+    fn widgets_from_the_browser() {
+        let h = host("widgets");
+        let mut s = Sessions::default();
+        let t = pair(&h, &mut s);
+        let w = call(
+            &h,
+            &mut s,
+            json!({"op": "widgets.get", "token": t, "lang": ["it"]}),
+        );
+        assert_eq!(
+            w["order"][0],
+            json!({"kind": "next", "on": true, "label": "Prossimi"})
+        );
+        assert_eq!(w["order"][9]["on"], false);
+        assert_eq!(w["quotes"], json!([]));
+        assert_eq!(w["limits"]["quotes"], 8);
+        // The order: a permutation of every page, nothing else.
+        let mut order: Vec<&str> = crate::ui::widgets::Kind::ALL
+            .iter()
+            .map(|k| k.key())
+            .collect();
+        order.reverse();
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "widgets.order", "token": t, "order": order}),
+        );
+        assert_eq!(r["order"][0]["kind"], "home");
+        for bad in [
+            json!(["next"]),
+            json!(["next", "next"]),
+            json!("next"),
+            json!([
+                "next", "quotes", "weather", "cities", "shopping", "notes", "sensors", "check",
+                "playing", "stocks"
+            ]),
+        ] {
+            let r = call(
+                &h,
+                &mut s,
+                json!({"op": "widgets.order", "token": t, "order": bad}),
+            );
+            assert_eq!(r["error"], "invalid", "{bad}");
+        }
+        // A search, then its hit added: the name is the body's (cleaned), not the browser's.
+        for bad in ["", "a\nb", "<b>", &"x".repeat(41)] {
+            let r = call(
+                &h,
+                &mut s,
+                json!({"op": "search.start", "token": t, "what": "quote", "q": bad}),
+            );
+            assert_eq!(r["error"], "invalid", "{bad}");
+        }
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "search.start", "token": t, "what": "stock", "q": "x"}),
+        );
+        assert_eq!(r["error"], "invalid");
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "search.start", "token": t, "what": "quote", "q": "Apple"}),
+        );
+        let id = r["id"].as_str().unwrap().to_string();
+        assert_eq!(id.len(), 32);
+        let st = call(
+            &h,
+            &mut s,
+            json!({"op": "search.status", "token": t, "id": id}),
+        );
+        assert_eq!(st["status"], "done");
+        assert_eq!(st["hits"][0]["ref"], "yahoo:AAPL");
+        // Not one of its hits, or another search: invalid.
+        for (search, r#ref) in [(id.as_str(), "yahoo:MSFT"), ("feed", "yahoo:AAPL")] {
+            let r = call(
+                &h,
+                &mut s,
+                json!({"op": "quotes.add", "token": t, "search": search, "ref": r#ref}),
+            );
+            assert_eq!(r["error"], "invalid");
+        }
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "cities.add", "token": t, "search": id, "ref": "yahoo:AAPL"}),
+        );
+        assert_eq!(r["error"], "invalid", "a markets' search adds no city");
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "quotes.add", "token": t, "search": id, "ref": "yahoo:AAPL",
+                                        "name": "<img src=x onerror=alert(1)>"}),
+        );
+        assert_eq!(
+            r["quotes"],
+            json!([{"ref": "yahoo:AAPL", "name": "Apple", "detail": "AAPL"}])
+        );
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "quotes.add", "token": t, "search": id, "ref": "yahoo:AAPL"}),
+        );
+        assert_eq!(r["error"], "exists");
+        assert!(
+            matches!(h.model.applied.borrow().last(), Some(model::Change::Quotes(q)) if q.len() == 1)
+        );
+        // Too soon after the last one; another device's search is not this one's.
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "search.start", "token": t, "what": "city", "q": "Berlin"}),
+        );
+        assert_eq!(r["error"], "search_wait");
+        let qr = s.ticket(at(0), &mut rng).unwrap().to_string();
+        let other = call(
+            &h,
+            &mut s,
+            json!({"op": "pair.qr", "ticket": qr, "peer": "192.0.2.31"}),
+        )["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let st = call(
+            &h,
+            &mut s,
+            json!({"op": "search.status", "token": other, "id": id}),
+        );
+        assert_eq!(st["error"], "invalid");
+        // Moved and removed by ref.
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "quotes.move", "token": t, "ref": "yahoo:AAPL", "to": 3}),
+        );
+        assert_eq!(r["error"], "invalid");
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "quotes.remove", "token": t, "ref": "yahoo:AAPL"}),
+        );
+        assert_eq!(r["quotes"], json!([]));
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "quotes.remove", "token": t, "ref": "yahoo:AAPL"}),
+        );
+        assert_eq!(r["error"], "invalid");
+        // The coins' currency is a setting of the panel.
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "set", "token": t, "key": "widgets_currency", "value": "chf"}),
+        );
+        assert_eq!(r["values"]["widgets_currency"], "chf");
+    }
+
     #[test]
     fn languages() {
         let have = vec!["de".to_string(), "en".into(), "it".into()];
@@ -669,6 +948,8 @@ mod tests {
                     json!({"key": "ha_url", "value": "x"}),
                     json!({"list": "todo.shopping", "uid": "u1", "text": "Tea"}),
                     json!({"id": "", "ticket": ""}),
+                    json!({"what": "quote", "q": "Apple", "order": ["next"], "ref": "yahoo:AAPL",
+                           "search": "", "to": 0}),
                 ] {
                     let mut req = extra.clone();
                     req["op"] = json!(op);

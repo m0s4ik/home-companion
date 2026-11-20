@@ -71,6 +71,12 @@ pub const ITEMS: &[Item] = &[
         "widgets",
         Kind::Choice,
     )),
+    on_panel(item(
+        "widgets_currency",
+        "widgets_currency",
+        "widgets",
+        Kind::Choice,
+    )),
     on_panel(item("night_on", "night_mode", "screen", Kind::Bool)),
     on_panel(item(
         "night_start",
@@ -139,6 +145,7 @@ pub const ITEMS: &[Item] = &[
 pub const PANEL_KEYS: &[&str] = &[
     "widgets",
     "widgets_every",
+    "widgets_currency",
     "night_on",
     "night_start",
     "night_end",
@@ -155,6 +162,13 @@ pub const PANEL_KEYS: &[&str] = &[
 #[derive(Debug, Clone, PartialEq)]
 pub enum Change {
     Widgets(Vec<WidgetKind>, u32),
+    /// Every page of the widget in the turn's order (the browser panel's arrows).
+    WidgetOrder(Vec<WidgetKind>),
+    /// The coins' currency.
+    WidgetCurrency(String),
+    /// The markets and the other cities chosen from the browser panel.
+    Quotes(Vec<crate::feeds::QuoteChoice>),
+    Cities(Vec<crate::feeds::CityChoice>),
     Night(bool, u32, u32),
     HomeCompact(bool),
     Language(String),
@@ -224,6 +238,10 @@ pub fn options(
                 (e.to_string(), label)
             })
             .collect(),
+        "widgets_currency" => crate::feeds::coingecko::CURRENCIES
+            .iter()
+            .map(|c| (c.to_string(), c.to_ascii_uppercase()))
+            .collect(),
         "wake_sensitivity" => [
             WakeSensitivity::Less,
             WakeSensitivity::Normal,
@@ -271,6 +289,7 @@ pub fn get(host: &dyn Host, key: &str) -> Option<Value> {
     Some(match key {
         "widgets" => json!(s.widgets().0.iter().map(|k| k.key()).collect::<Vec<_>>()),
         "widgets_every" => json!(s.widgets().1.to_string()),
+        "widgets_currency" => json!(s.widget_currency()),
         "night_on" => json!(s.night().0),
         "night_start" => int(s.night().1 as i64),
         "night_end" => int(s.night().2 as i64),
@@ -387,6 +406,7 @@ pub fn change_for(host: &dyn Host, key: &str, value: &Value) -> Result<Change, S
                 .ok_or(SetError::Invalid)?;
             Change::Widgets(widgets().0, every)
         }
+        "widgets_currency" => Change::WidgetCurrency(v.as_str().unwrap_or("usd").to_string()),
         "night_on" | "night_start" | "night_end" => {
             let (mut on, mut start, mut end) = night();
             match key {
@@ -427,6 +447,10 @@ pub fn change_for(host: &dyn Host, key: &str, value: &Value) -> Result<Change, S
 pub fn save(s: &Settings, change: &Change) {
     match change {
         Change::Widgets(on, every) => s.save_widgets(on, *every),
+        Change::WidgetOrder(order) => s.save_widget_order(order),
+        Change::WidgetCurrency(c) => s.save_widget_currency(c),
+        Change::Quotes(q) => s.save_quotes(q),
+        Change::Cities(c) => s.save_cities(c),
         Change::Night(on, start, end) => s.save_night(*on, *start, *end),
         Change::HomeCompact(on) => s.save_home_compact(*on),
         Change::Language(code) => s.save_language(code),
@@ -600,6 +624,11 @@ pub(crate) mod tests {
                 json!("60"),
                 Change::Widgets(vec![WidgetKind::Next, WidgetKind::Shopping], 60),
             ),
+            (
+                "widgets_currency",
+                json!("eur"),
+                Change::WidgetCurrency("eur".into()),
+            ),
             ("night_on", json!(false), Change::Night(false, 23, 7)),
             ("night_start", json!(22), Change::Night(false, 22, 7)),
             ("night_end", json!(6), Change::Night(false, 22, 6)),
@@ -653,6 +682,7 @@ pub(crate) mod tests {
             (vec![WidgetKind::Next, WidgetKind::Shopping], 60)
         );
         assert_eq!(s.night(), (false, 22, 6));
+        assert_eq!(s.widget_currency(), "eur");
         assert!(s.home_compact());
         assert_eq!(s.language().as_deref(), Some("it"));
         assert_eq!(s.volume(), Some(35));
@@ -680,6 +710,8 @@ pub(crate) mod tests {
             ("widgets", json!(["stocks"])),
             ("widgets_every", json!(20)),
             ("widgets_every", json!("45")),
+            ("widgets_currency", json!("btc")),
+            ("widgets_currency", json!("EUR")),
             ("lists", json!(["todo.unknown"])),
             ("lists", json!("todo.shopping")),
         ] {

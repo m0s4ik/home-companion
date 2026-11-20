@@ -15,6 +15,9 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use home_companion::feeds::{
+    Choice, CityChoice, Found, Hit, QuoteChoice, SearchState, Source, What,
+};
 use home_companion::panel::protocol::{self, PanelHost};
 use home_companion::panel::sessions::{self, Request, Sessions};
 use home_companion::settings::Settings;
@@ -25,6 +28,7 @@ use serde_json::{Value, json};
 const ALLOW_AFTER: Duration = Duration::from_secs(4);
 
 struct Demo {
+    searches: RefCell<std::collections::HashMap<String, SearchState>>,
     settings: Settings,
     lists: RefCell<Vec<ShopList>>,
     asked: RefCell<Option<(String, Instant)>>,
@@ -112,6 +116,108 @@ impl PanelHost for Demo {
         lists::remove(&mut self.lists.borrow_mut(), list, uid);
     }
     fn sessions_changed(&self) {}
+    fn widget_pages(&self) -> Vec<(home_companion::ui::widgets::Kind, bool)> {
+        let on = self.settings.widgets().0;
+        self.settings
+            .widget_order()
+            .into_iter()
+            .map(|k| (k, on.contains(&k)))
+            .collect()
+    }
+    fn widget_quotes(&self) -> Vec<QuoteChoice> {
+        self.settings.quotes()
+    }
+    fn widget_cities(&self) -> Vec<CityChoice> {
+        self.settings.cities()
+    }
+    /// Canned hits (the real body asks Yahoo, CoinGecko, Open-Meteo); one name is markup, to
+    /// show it stays text.
+    fn search_start(&self, id: &str, what: What, _q: &str, _lang: &str) -> bool {
+        let quote = |key: &str, src, id: &str, name: &str, detail: &str| Found {
+            hit: Hit {
+                key: key.into(),
+                name: name.into(),
+                detail: detail.into(),
+            },
+            choice: Choice::Quote(QuoteChoice {
+                source: src,
+                id: id.into(),
+                name: name.into(),
+            }),
+        };
+        let city = |cid: u64, name: &str, region: &str, country: &str, lat, lon| Found {
+            hit: Hit {
+                key: format!("city:{cid}"),
+                name: name.into(),
+                detail: format!("{region}, {country}"),
+            },
+            choice: Choice::City(CityChoice {
+                id: cid,
+                name: name.into(),
+                region: region.into(),
+                country: country.into(),
+                lat,
+                lon,
+            }),
+        };
+        let found = match what {
+            What::Quote => vec![
+                quote(
+                    "yahoo:AAPL",
+                    Source::Yahoo,
+                    "AAPL",
+                    "Apple Inc.",
+                    "AAPL · NASDAQ · Equity",
+                ),
+                quote(
+                    "yahoo:APLE",
+                    Source::Yahoo,
+                    "APLE",
+                    "Apple Hospitality REIT, Inc.",
+                    "APLE · NYSE · Equity",
+                ),
+                quote(
+                    "yahoo:EVIL",
+                    Source::Yahoo,
+                    "EVIL",
+                    "<img src=x onerror=alert(1)>",
+                    "EVIL · Test",
+                ),
+                quote(
+                    "coingecko:bitcoin",
+                    Source::Coingecko,
+                    "bitcoin",
+                    "Bitcoin",
+                    "BTC · Crypto",
+                ),
+            ],
+            What::City => vec![
+                city(4409896, "Springfield", "Missouri", "US", 37.22, -93.3),
+                city(4250542, "Springfield", "Illinois", "US", 39.8, -89.64),
+                city(4951788, "Springfield", "Massachusetts", "US", 42.1, -72.59),
+            ],
+        };
+        self.searches
+            .borrow_mut()
+            .insert(id.into(), SearchState::Done(found));
+        true
+    }
+    fn search_state(&self, id: &str) -> SearchState {
+        self.searches
+            .borrow()
+            .get(id)
+            .cloned()
+            .unwrap_or(SearchState::Unknown)
+    }
+    fn search_choice(&self, id: &str, key: &str) -> Option<Choice> {
+        match self.searches.borrow().get(id) {
+            Some(SearchState::Done(f)) => f
+                .iter()
+                .find(|x| x.hit.key == key)
+                .map(|x| x.choice.clone()),
+            _ => None,
+        }
+    }
 }
 
 fn main() {
@@ -124,6 +230,7 @@ fn main() {
     std::fs::create_dir_all(&dir).expect("dir");
     let item = |u: &str, t: &str| (u.to_string(), t.to_string());
     let demo = Demo {
+        searches: RefCell::new(Default::default()),
         settings: Settings::in_dir(&dir),
         lists: RefCell::new(vec![
             ShopList {

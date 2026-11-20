@@ -405,7 +405,7 @@ fn over_sockets_and_idle() {
 #[test]
 fn pages_are_light() {
     let total = INDEX.len() + CSS.len() + JS.len();
-    assert!(total < 30 * 1024, "{total} bytes");
+    assert!(total < 45 * 1024, "{total} bytes");
     assert!(
         !JS.contains("innerHTML")
             && !JS.contains("outerHTML")
@@ -413,4 +413,74 @@ fn pages_are_light() {
     );
     assert!(!JS.contains("eval(") && !JS.contains("document.write"));
     assert!(!INDEX.contains("<script>") && !INDEX.contains("style="));
+}
+
+#[test]
+fn the_widgets_routes() {
+    let p = panel();
+    let last = |p: &Panel<Fake>| p.body.asked.lock().unwrap().last().cloned().unwrap();
+    // Reads: the widgets, a search by its id (32 hex), nothing else in the path.
+    assert_eq!(
+        status(
+            &p,
+            &req(
+                "GET",
+                "/api/widgets",
+                &[("Cookie", &format!("hc_panel={GOOD}"))],
+                ""
+            )
+        ),
+        200
+    );
+    assert_eq!(last(&p)["op"], "widgets.get");
+    let get = |path: &str| req("GET", path, &[("Cookie", &format!("hc_panel={GOOD}"))], "");
+    assert_eq!(status(&p, &get(&format!("/api/search/{ID}"))), 200);
+    assert_eq!(last(&p)["op"], "search.status");
+    assert_eq!(last(&p)["id"], ID);
+    for bad in [
+        "/api/search/x",
+        "/api/search/../etc",
+        &format!("/api/search/{ID}0"),
+    ] {
+        assert_eq!(status(&p, &get(bad)), 400, "{bad}");
+    }
+    // Writes: only their fields reach the body.
+    let r = post(
+        "/api/search",
+        r#"{"what":"quote","q":"Apple","op":"set","name":"x"}"#,
+        &[],
+    );
+    assert_eq!(status(&p, &r), 200);
+    let a = last(&p);
+    assert_eq!(
+        (a["op"].as_str(), a["what"].as_str(), a["q"].as_str()),
+        (Some("search.start"), Some("quote"), Some("Apple"))
+    );
+    assert!(a.get("name").is_none());
+    for (path, op) in [
+        ("/api/quotes/add", "quotes.add"),
+        ("/api/quotes/remove", "quotes.remove"),
+        ("/api/quotes/move", "quotes.move"),
+        ("/api/cities/add", "cities.add"),
+        ("/api/cities/remove", "cities.remove"),
+        ("/api/cities/move", "cities.move"),
+        ("/api/widgets/order", "widgets.order"),
+    ] {
+        let r = post(
+            path,
+            r#"{"search":"s","ref":"yahoo:AAPL","to":1,"order":["next"],"lat":1}"#,
+            &[],
+        );
+        assert_eq!(status(&p, &r), 200, "{path}");
+        let a = last(&p);
+        assert_eq!(a["op"], op);
+        assert!(a.get("lat").is_none());
+    }
+    assert_eq!(status(&p, &post("/api/quotes/delete", "{}", &[])), 404);
+    assert_eq!(status(&p, &post("/api/notes/add", "{}", &[])), 404);
+    // Without the same origin: refused before the body hears of it.
+    let n = p.body.asked.lock().unwrap().len();
+    let r = post("/api/quotes/add", "{}", &[("Sec-Fetch-Site", "cross-site")]);
+    assert_eq!(status(&p, &r), 403);
+    assert_eq!(p.body.asked.lock().unwrap().len(), n);
 }

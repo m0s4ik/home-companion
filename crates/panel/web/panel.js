@@ -276,6 +276,149 @@ function arm(b, label) {
   return false;
 }
 
+// ---- The home's widget: its pages in their order, the markets, the other cities.
+
+// A list of chosen items: name and detail, arrows to move, a remove that asks twice.
+function chosenList(kind, items, onChange) {
+  const ul = el('ul', 'items');
+  if (items.length === 0) ul.append(el('li', 'hint', t('panel_' + kind + '_empty')));
+  items.forEach((it, i) => {
+    const li = el('li');
+    const who = el('div', 'grow');
+    who.append(el('div', null, it.name), el('div', 'hint', it.detail));
+    li.append(who);
+    for (const [label, to, sign] of [['panel_up', i - 1, '▲'], ['panel_down', i + 1, '▼']]) {
+      const b = el('button', 'small ghost', sign);
+      b.setAttribute('aria-label', t(label));
+      b.disabled = to < 0 || to >= items.length;
+      b.addEventListener('click', async () => onChange(await api('/api/' + kind + '/move', { ref: it.ref, to })));
+      li.append(b);
+    }
+    const x = el('button', 'small ghost', t('panel_remove'));
+    x.addEventListener('click', async () => {
+      if (!arm(x, t('panel_remove'))) return;
+      onChange(await api('/api/' + kind + '/remove', { ref: it.ref }));
+    });
+    li.append(x);
+    ul.append(li);
+  });
+  return ul;
+}
+
+// A search box: the body searches, the page asks how it went every half second (12 s at most);
+// each hit is a button that adds it.
+function searchBox(what, kind, onChange) {
+  const box = el('div');
+  const f = el('form', 'add');
+  const i = el('input');
+  i.type = 'search';
+  i.maxLength = 40;
+  i.required = true;
+  i.placeholder = t('panel_search_' + what);
+  i.setAttribute('aria-label', t('panel_search_' + what));
+  const b = el('button', 'primary', t('panel_search'));
+  f.append(i, b);
+  const out = el('ul', 'items hits');
+  out.setAttribute('aria-live', 'polite');
+  f.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const q = i.value.trim();
+    if (!q) return;
+    b.disabled = true;
+    out.replaceChildren(el('li', 'hint', t('panel_searching')));
+    const r = await api('/api/search', { what, q });
+    if (!r.ok) { b.disabled = false; out.replaceChildren(el('li', 'hint', errorText(r.error))); return; }
+    let s = { status: 'waiting' };
+    for (let n = 0; n < 24 && s.ok !== false && s.status === 'waiting'; n++) {
+      await new Promise(res => setTimeout(res, 500));
+      s = await api('/api/search/' + encodeURIComponent(r.id));
+    }
+    b.disabled = false;
+    if (s.status !== 'done') { out.replaceChildren(el('li', 'hint', t('panel_search_failed'))); return; }
+    out.replaceChildren();
+    if (s.hits.length === 0) out.append(el('li', 'hint', t('panel_search_none')));
+    for (const h of s.hits) {
+      const li = el('li');
+      const add = el('button', 'hit');
+      add.append(el('span', null, h.name), el('span', 'hint', ' · ' + h.detail));
+      add.addEventListener('click', async () => {
+        add.disabled = true;
+        const a = await api('/api/' + kind + '/add', { search: r.id, ref: h.ref });
+        if (a.ok) { i.value = ''; out.replaceChildren(); toast(t('panel_saved')); }
+        else { add.disabled = false; toast(errorText(a.error), true); }
+        onChange(a);
+      });
+      li.append(add);
+      out.append(li);
+    }
+  });
+  box.append(f, out);
+  return box;
+}
+
+// The widget's card: every page in the turn's order with its switch and its arrows, then the
+// group's other settings (the interval).
+function widgetsSection(w, g, values) {
+  const s = el('section', 'card');
+  s.id = 'widgets';
+  s.append(el('h2', null, g.label), el('p', 'hint', t('panel_widgets_pages')));
+  const ul = el('ul', 'items pages');
+  const redraw = r => { if (r && r.ok) { Object.assign(w, r); s.replaceWith(widgetsSection(w, g, values)); } else if (r) toast(errorText(r.error), true); };
+  w.order.forEach((p, i) => {
+    const li = el('li');
+    const c = el('input');
+    c.type = 'checkbox';
+    c.setAttribute('role', 'switch');
+    c.id = 'page-' + p.kind;
+    c.checked = p.on;
+    c.addEventListener('change', async () => {
+      p.on = c.checked;
+      const on = w.order.filter(x => x.on).map(x => x.kind);
+      const r = await api('/api/set', { key: 'widgets', value: on });
+      if (r.ok) toast(t('panel_saved')); else { toast(errorText(r.error), true); c.checked = !c.checked; p.on = c.checked; }
+    });
+    const l = el('label', 'grow', p.label);
+    l.htmlFor = c.id;
+    li.append(c, l);
+    for (const [label, to, sign] of [['panel_up', i - 1, '▲'], ['panel_down', i + 1, '▼']]) {
+      const b = el('button', 'small ghost', sign);
+      b.setAttribute('aria-label', t(label));
+      b.disabled = to < 0 || to >= w.order.length;
+      b.addEventListener('click', async () => {
+        const order = w.order.map(x => x.kind);
+        order.splice(to, 0, order.splice(i, 1)[0]);
+        redraw(await api('/api/widgets/order', { order }));
+      });
+      li.append(b);
+    }
+    ul.append(li);
+  });
+  s.append(ul);
+  const rest = settingsGroup({ label: '', items: g.items.filter(x => x.key === 'widgets_every') }, values);
+  s.append(...rest.childNodes);
+  return s;
+}
+
+// The markets (and the coins' currency) or the other cities, with the sentences about what
+// leaves the house.
+function feedSection(kind, w, g, values) {
+  const s = el('section', 'card');
+  s.id = kind;
+  s.append(el('h2', null, t(kind === 'quotes' ? 'panel_markets' : 'panel_cities')));
+  const redraw = r => { if (r && r.ok) { Object.assign(w, r); s.replaceWith(feedSection(kind, w, g, values)); } else if (r) toast(errorText(r.error), true); };
+  s.append(chosenList(kind, w[kind] || [], redraw));
+  const full = (w[kind] || []).length >= w.limits[kind];
+  if (full) s.append(el('p', 'hint', t('panel_list_full')));
+  else s.append(searchBox(kind === 'quotes' ? 'quote' : 'city', kind, redraw));
+  if (kind === 'quotes') {
+    const cur = settingsGroup({ label: '', items: g.items.filter(x => x.key === 'widgets_currency') }, values);
+    s.append(...cur.childNodes);
+  }
+  // Once, under the second of the two cards.
+  if (kind === 'cities') s.append(el('p', 'hint', t('panel_feeds_privacy')), el('p', 'hint small', t('panel_feeds_credit')));
+  return s;
+}
+
 function when(sec) {
   try {
     return new Date(sec * 1000).toLocaleString(lang, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
@@ -319,6 +462,7 @@ async function main() {
   const schema = await api('/api/schema');
   const state = await api('/api/state');
   const shopping = await api('/api/shopping');
+  const widgets = await api('/api/widgets');
   const devices = await api('/api/sessions');
   if (!schema.ok || !state.ok) return;
   if (location.search) history.replaceState(null, '', '/');
@@ -327,8 +471,13 @@ async function main() {
   const left = el('div', 'col');
   const right = el('div', 'col');
   const groups = schema.groups || [];
-  const widgets = groups.filter(g => g.key === 'widgets');
-  for (const g of widgets) left.append(settingsGroup(g, values));
+  const wg = groups.find(g => g.key === 'widgets');
+  if (wg && widgets.ok) {
+    left.append(widgetsSection(widgets, wg, values), feedSection('quotes', widgets, wg, values),
+      feedSection('cities', widgets, wg, values));
+  } else if (wg) {
+    left.append(settingsGroup(wg, values));
+  }
   left.append(shoppingSection(shopping));
   const settings = el('div');
   settings.append(el('h2', 'section', t('panel_section_settings')));

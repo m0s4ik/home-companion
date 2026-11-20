@@ -270,6 +270,8 @@ pub struct Sessions {
     pub changed: bool,
     /// `last_used` moved by more than [`TOUCH_EVERY`] since the file was written.
     dirty: bool,
+    /// The widget's searches: who made which, how often (widget_ops.rs).
+    pub searches: super::widget_ops::SearchBook,
 }
 
 impl Sessions {

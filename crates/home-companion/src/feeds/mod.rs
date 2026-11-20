@@ -220,8 +220,47 @@ enum Cmd {
     Config(FeedsConfig),
     /// Whether the markets' page and the cities' may fetch now.
     Active(Active),
+    /// A search from the browser panel: its id, what, the words (already checked), the language.
+    Search(String, What, String, String),
     Shutdown,
 }
+
+/// What a search looks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum What {
+    /// Stocks, indices, currencies (Yahoo) and coins (CoinGecko).
+    Quote,
+    City,
+}
+
+/// What a search's hit becomes when it is added.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Choice {
+    Quote(QuoteChoice),
+    City(CityChoice),
+}
+
+/// A search's hit with its choice.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Found {
+    pub hit: Hit,
+    pub choice: Choice,
+}
+
+/// Where a search is.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SearchState {
+    Waiting,
+    Done(Vec<Found>),
+    Failed,
+    /// No such search (never asked, or older than [`SEARCH_KEPT`]).
+    Unknown,
+}
+
+/// A search's results are kept this long (the panel adds one of them meanwhile).
+pub const SEARCH_KEPT: Duration = Duration::from_secs(600);
+/// Hits per search at most.
+pub const MAX_HITS: usize = 6;
 
 /// Which pages may fetch now.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -246,6 +285,7 @@ pub struct Feeds {
 struct Shared {
     snapshot: Mutex<Snapshot>,
     rev: AtomicU64,
+    searches: Mutex<HashMap<String, (Instant, SearchState)>>,
 }
 
 impl Feeds {
@@ -262,6 +302,7 @@ impl Feeds {
             shared: Arc::new(Shared {
                 snapshot: Mutex::new(snapshot),
                 rev: AtomicU64::new(1),
+                searches: Mutex::new(HashMap::new()),
             }),
             cache,
             config: FeedsConfig::default(),
@@ -322,6 +363,63 @@ impl Feeds {
         }
         if let Some(tx) = self.sender() {
             let _ = tx.send(Cmd::Config(config));
+        }
+    }
+
+    /// Starts a search (the thread starts if needed). None: another one is still going.
+    pub fn search(&mut self, id: &str, what: What, q: &str, lang: &str) -> Option<()> {
+        {
+            let mut s = self
+                .shared
+                .searches
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            s.retain(|_, (at, _)| at.elapsed() < SEARCH_KEPT);
+            if s.values().any(|(_, st)| *st == SearchState::Waiting) {
+                return None;
+            }
+            s.insert(id.to_string(), (Instant::now(), SearchState::Waiting));
+        }
+        let sent = self.sender().map(|tx| {
+            tx.send(Cmd::Search(id.into(), what, q.into(), lang.into()))
+                .is_ok()
+        });
+        if sent != Some(true) {
+            self.set_search(id, SearchState::Failed);
+        }
+        Some(())
+    }
+
+    fn set_search(&self, id: &str, st: SearchState) {
+        if let Some(e) = self
+            .shared
+            .searches
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(id)
+        {
+            e.1 = st;
+        }
+    }
+
+    pub fn search_state(&self, id: &str) -> SearchState {
+        self.shared
+            .searches
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .filter(|(at, _)| at.elapsed() < SEARCH_KEPT)
+            .map_or(SearchState::Unknown, |(_, st)| st.clone())
+    }
+
+    /// The choice a hit of search `id` becomes (None: not one of its hits).
+    pub fn search_choice(&self, id: &str, key: &str) -> Option<Choice> {
+        match self.search_state(id) {
+            SearchState::Done(found) => found
+                .into_iter()
+                .find(|f| f.hit.key == key)
+                .map(|f| f.choice),
+            _ => None,
         }
     }
 
@@ -397,6 +495,18 @@ impl Worker {
             match rx.recv_timeout(Duration::from_secs_f64(wait)) {
                 Ok(Cmd::Config(c)) => self.configure(c, self.clock()),
                 Ok(Cmd::Active(on)) => self.set_active(on, self.clock()),
+                Ok(Cmd::Search(id, what, q, lang)) => {
+                    let st = self.search(what, &q, &lang, self.clock());
+                    if let Some(e) = self
+                        .shared
+                        .searches
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get_mut(&id)
+                    {
+                        e.1 = st;
+                    }
+                }
                 Ok(Cmd::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
                 Err(RecvTimeoutError::Timeout) => {}
             }
@@ -649,6 +759,74 @@ impl Worker {
         }
     }
 
+    /// A search, done now: the markets (Yahoo, then the biggest coins) or the cities.
+    fn search(&mut self, what: What, q: &str, lang: &str, now: f64) -> SearchState {
+        let mut found: Vec<Found> = Vec::new();
+        let mut answered = false;
+        match what {
+            What::Quote => {
+                if now >= self.last_yahoo + plan::YAHOO_GAP || self.last_yahoo.is_infinite() {
+                    self.last_yahoo = now;
+                    if let Outcome::Ok(b) = self.fetch.get(&yahoo::search_url(q))
+                        && let Ok(hits) = yahoo::parse_search(&b)
+                    {
+                        answered = true;
+                        found.extend(hits.into_iter().take(4).filter_map(|hit| {
+                            let id = hit.key.strip_prefix("yahoo:")?.to_string();
+                            Some(Found {
+                                choice: Choice::Quote(QuoteChoice {
+                                    source: Source::Yahoo,
+                                    id,
+                                    name: hit.name.clone(),
+                                }),
+                                hit,
+                            })
+                        }));
+                    }
+                }
+                if let Outcome::Ok(b) = self.fetch.get(&coingecko::search_url(q))
+                    && let Ok(hits) = coingecko::parse_search(&b, "Crypto")
+                {
+                    answered = true;
+                    found.extend(hits.into_iter().filter_map(|hit| {
+                        let id = hit.key.strip_prefix("coingecko:")?.to_string();
+                        Some(Found {
+                            choice: Choice::Quote(QuoteChoice {
+                                source: Source::Coingecko,
+                                id,
+                                name: hit.name.clone(),
+                            }),
+                            hit,
+                        })
+                    }));
+                }
+            }
+            What::City => {
+                let lang = if lang.len() == 2 && lang.bytes().all(|b| b.is_ascii_lowercase()) {
+                    lang
+                } else {
+                    "en"
+                };
+                if let Outcome::Ok(b) = self.fetch.get(&openmeteo::search_url(q, lang))
+                    && let Ok(hits) = openmeteo::parse_search(&b)
+                {
+                    answered = true;
+                    found.extend(hits.into_iter().map(|(hit, c)| Found {
+                        hit,
+                        choice: Choice::City(c),
+                    }));
+                }
+            }
+        }
+        found.truncate(MAX_HITS);
+        log::info!(event = "feeds", search = if what == What::City { "city" } else { "quote" }, hits = found.len(); "feeds: a search from the browser, {} hits", found.len());
+        if answered {
+            SearchState::Done(found)
+        } else {
+            SearchState::Failed
+        }
+    }
+
     /// New data: the revision grows and the cache is written.
     fn publish(&self) {
         self.shared.rev.fetch_add(1, Ordering::AcqRel);
@@ -725,6 +903,7 @@ pub(crate) mod tests {
             Arc::new(Shared {
                 snapshot: Mutex::new(Snapshot::default()),
                 rev: AtomicU64::new(1),
+                searches: Mutex::new(HashMap::new()),
             }),
             None,
         )
@@ -913,6 +1092,75 @@ pub(crate) mod tests {
         );
         assert!(w.shared.snapshot.lock().unwrap().cities.is_empty());
         assert!(w.weather.due <= 150.0);
+    }
+
+    #[test]
+    fn searches_answer_later_and_only_their_own_hits_are_choices() {
+        let f = FakeFetch::default();
+        f.answer(
+            "v1/finance/search",
+            Outcome::Ok(fixture("yahoo-search-apple.json")),
+        );
+        f.answer(
+            "api/v3/search",
+            Outcome::Ok(fixture("coingecko-search-bitcoin.json")),
+        );
+        f.answer(
+            "geocoding-api",
+            Outcome::Ok(fixture("openmeteo-geocoding-springfield.json")),
+        );
+        let mut feeds = Feeds::with_fetch(None, Box::new(f.clone()));
+        assert_eq!(feeds.search_state("nope"), SearchState::Unknown);
+        feeds.search("s1", What::Quote, "apple", "en").unwrap();
+        let t0 = Instant::now();
+        while feeds.search_state("s1") == SearchState::Waiting
+            && t0.elapsed() < Duration::from_secs(5)
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let SearchState::Done(found) = feeds.search_state("s1") else {
+            panic!("no answer");
+        };
+        assert!(found.len() <= MAX_HITS);
+        assert_eq!(found[0].hit.key, "yahoo:AAPL");
+        assert!(found.iter().any(|x| x.hit.key == "coingecko:bitcoin"));
+        assert_eq!(
+            feeds.search_choice("s1", "yahoo:AAPL"),
+            Some(Choice::Quote(QuoteChoice {
+                source: Source::Yahoo,
+                id: "AAPL".into(),
+                name: "Apple Inc.".into()
+            }))
+        );
+        assert!(feeds.search_choice("s1", "yahoo:MSFT").is_none());
+        assert!(feeds.search_choice("s2", "yahoo:AAPL").is_none());
+        feeds.search("s2", What::City, "Springfield", "it").unwrap();
+        let t0 = Instant::now();
+        while feeds.search_state("s2") == SearchState::Waiting
+            && t0.elapsed() < Duration::from_secs(5)
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(matches!(
+            feeds.search_choice("s2", "city:4250542"),
+            Some(Choice::City(_))
+        ));
+        assert!(
+            f.asked()
+                .iter()
+                .any(|u| u.contains("name=Springfield&count=6&language=it"))
+        );
+        // Nothing answered: failed.
+        let g = FakeFetch::default();
+        let mut feeds = Feeds::with_fetch(None, Box::new(g));
+        feeds.search("s3", What::City, "x", "en").unwrap();
+        let t0 = Instant::now();
+        while feeds.search_state("s3") == SearchState::Waiting
+            && t0.elapsed() < Duration::from_secs(5)
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(feeds.search_state("s3"), SearchState::Failed);
     }
 
     #[test]

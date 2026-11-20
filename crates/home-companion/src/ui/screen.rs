@@ -1331,6 +1331,7 @@ impl<S: Screen> model::Host for Ui<S> {
                     .collect::<Vec<_>>()
             ),
             "widgets_every" => json!(self.widget_every_secs().to_string()),
+            "widgets_currency" => json!(self.widget_currency.borrow().clone()),
             "widget_order" => json!(
                 self.widget_order
                     .borrow()
@@ -5778,6 +5779,36 @@ impl<S: Screen> Ui<S> {
                     .set((every > 0).then(|| Duration::from_secs(every as u64)));
                 self.refresh_widget_settings();
                 self.refresh_home();
+            }
+            Change::WidgetOrder(order) => {
+                // The pages on follow the new order.
+                let on: Vec<WidgetKind> = {
+                    let now = self.widget_on.borrow();
+                    order.iter().copied().filter(|k| now.contains(k)).collect()
+                };
+                *self.widget_order.borrow_mut() = order;
+                *self.widget_on.borrow_mut() = on;
+                log::info!(event = "widget_settings"; "widget: the pages' order changed");
+                self.refresh_widget_settings();
+                self.refresh_home();
+            }
+            Change::WidgetCurrency(c) => {
+                *self.widget_currency.borrow_mut() = c;
+                self.configure_feeds();
+            }
+            Change::Quotes(q) => {
+                log::info!(event = "widget_settings", quotes = q.len(); "widget: {} markets chosen", q.len());
+                *self.widget_quotes.borrow_mut() = q;
+                self.configure_feeds();
+                self.apply_feeds();
+                self.refresh_widget_settings();
+            }
+            Change::Cities(c) => {
+                log::info!(event = "widget_settings", cities = c.len(); "widget: {} cities chosen", c.len());
+                *self.widget_cities.borrow_mut() = c;
+                self.configure_feeds();
+                self.apply_feeds();
+                self.refresh_widget_settings();
             }
             Change::Night(on, start, end) => {
                 self.desk.borrow_mut().night = (on, start, end);
