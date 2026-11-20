@@ -1285,6 +1285,8 @@ pub struct Ui<S: Screen> {
     widget_currency: RefCell<String>,
     /// The other cities chosen from the browser, and their weather as last fetched.
     widget_cities: RefCell<Vec<crate::feeds::CityChoice>>,
+    /// The home's weather is in °F (its last known unit): the other cities follow.
+    fahrenheit: Cell<bool>,
     city_weather: RefCell<Vec<crate::feeds::openmeteo::CityWeather>>,
     /// The feeds' thread (feeds/) and the revision of its data last shown.
     feeds: RefCell<crate::feeds::Feeds>,
@@ -2065,6 +2067,7 @@ impl<S: Screen> Ui<S> {
             widget_quotes: RefCell::new(widget_quotes),
             widget_currency: RefCell::new(widget_currency),
             widget_cities: RefCell::new(widget_cities),
+            fahrenheit: Cell::new(false),
             city_weather: RefCell::new(Vec::new()),
             feeds: RefCell::new(feeds),
             feeds_rev: Cell::new(0),
@@ -4361,6 +4364,14 @@ impl<S: Screen> Ui<S> {
         if self.opts.demo.is_some() {
             return;
         }
+        // The other cities in the home's unit: the last one known (a weather gone for a while
+        // does not turn them back to °C).
+        if let Some(f) = w.as_ref().map(|w| w.unit.contains('F'))
+            && f != self.fahrenheit.get()
+        {
+            self.fahrenheit.set(f);
+            self.configure_feeds();
+        }
         *self.weather.borrow_mut() = w;
         self.render_weather();
         // The widget's weather page: new hours show when the page comes back.
@@ -6080,11 +6091,7 @@ impl<S: Screen> Ui<S> {
             quotes: self.widget_quotes.borrow().clone(),
             currency: self.widget_currency.borrow().clone(),
             cities: self.widget_cities.borrow().clone(),
-            fahrenheit: self
-                .weather
-                .borrow()
-                .as_ref()
-                .is_some_and(|w| w.unit.contains('F')),
+            fahrenheit: self.fahrenheit.get(),
         };
         self.feeds.borrow_mut().configure(config);
     }
@@ -8374,6 +8381,20 @@ mod tests {
         assert!(!w.get_widget_tappable());
         tap(800.0, 420.0);
         assert_eq!(w.get_page(), "home");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other cities follow the home's unit when Home Assistant's weather tells it.
+    #[test]
+    fn cities_follow_the_home_s_unit() {
+        let (ui, dir) = headless_ui("cities-unit");
+        assert!(!ui.fahrenheit.get());
+        let mut w = Weather::sample();
+        w.unit = "°F".into();
+        ui.set_weather(Some(w));
+        assert!(ui.fahrenheit.get());
+        ui.set_weather(None);
+        assert!(ui.fahrenheit.get(), "a weather gone keeps the unit");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
