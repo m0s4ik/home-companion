@@ -1198,9 +1198,10 @@ pub struct Ui<S: Screen> {
     /// Settings → Screen → "Home compatta" (the clock higher, four cards).
     home_compact: Cell<bool>,
     /// The home's widget (widgets.rs): its turn, the pages that are on (none: no widget, the
-    /// home as before).
+    /// home as before), the interval of the turn (None: by hand only).
     widget: RefCell<Band>,
     widget_on: RefCell<Vec<WidgetKind>>,
+    widget_every: Cell<Option<Duration>>,
     /// The first start's welcome page is still to be answered.
     language_pending: Cell<bool>,
     /// The first start's search for Home Assistant on the network, while it runs.
@@ -1534,6 +1535,7 @@ impl<S: Screen> Ui<S> {
             home_compact: Cell::new(compact),
             widget: RefCell::new(Band::new(Instant::now())),
             widget_on: RefCell::new(widget_on),
+            widget_every: Cell::new(Some(widgets::DEFAULT_EVERY)),
             language_pending: Cell::new(opts_first.language),
             find: RefCell::new(None),
             restart_timer: Timer::default(),
@@ -3813,7 +3815,8 @@ impl<S: Screen> Ui<S> {
         }
         let (wday, day, month, hour, minute) = local_now();
         let clock = format!("{hour:02}:{minute:02}");
-        if self.screen.get_clock() != clock {
+        let new_minute = self.screen.get_clock() != clock;
+        if new_minute {
             // Once a minute: the reminders still to come (set by voice through Home Assistant,
             // the brain does not tell), for the home's "next reminder" card.
             if let Some(b) = &self.brain {
@@ -3846,6 +3849,7 @@ impl<S: Screen> Ui<S> {
         {
             self.screen.set_page("home");
         }
+        self.tick_widget(now, new_minute);
         if self.view.get() == Phase::Ringing {
             self.refresh_ringing();
         }
@@ -5192,12 +5196,25 @@ impl<S: Screen> Ui<S> {
         let picked = cards::pick_n(&alive, &cw, self.max_cards());
         *self.card_kinds.borrow_mut() = picked.iter().map(|c| c.kind).collect();
         self.screen.set_cards(&picked);
-        // The widget in the slots the cards leave free.
+        drop(d);
+        drop(l);
+        self.refresh_widget();
+    }
+
+    /// The widget's pages from the data as it is now, offered to the turn with the slots the
+    /// cards leave free (the page on screen keeps its data until it comes back: widgets::Band).
+    fn refresh_widget(&self) {
+        let on = self.widget_on.borrow().clone();
         let slots = if on.is_empty() {
             0
         } else {
-            self.max_cards().saturating_sub(picked.len())
+            self.max_cards()
+                .saturating_sub(self.card_kinds.borrow().len())
         };
+        let l = self.locale.borrow();
+        let d = self.desk.borrow();
+        let now = self.now() as i64;
+        let next = next::merge(&d.upcoming, &d.events, now);
         let today = if self.opts.demo.is_some() {
             DEMO_DATE.to_string()
         } else {
@@ -5223,7 +5240,42 @@ impl<S: Screen> Ui<S> {
             shopping: d.shopping.as_deref(),
         };
         let pages = widgets::pages(&sources, &on, &words, now, &local_hm);
+        drop(d);
+        drop(l);
         let shown = self.widget.borrow_mut().offer(pages, slots, Instant::now());
+        if let Some(s) = shown {
+            self.screen.set_widget(&s);
+        }
+    }
+
+    /// The home is not on screen, or not to be looked at: the widget's turn stands still.
+    fn widget_paused(&self) -> bool {
+        let d = self.desk.borrow();
+        self.screen.get_page() != "home"
+            || super::webview::visible()
+            || d.mirror.is_some() && self.screen.get_page() == super::mirror::PAGE
+            || !matches!(self.view.get(), Phase::Home | Phase::Offline)
+            || d.night_shown
+            || d.notice.is_some()
+            || super::backlight::screen_off()
+            || self.screen.get_control_open()
+            || !self.screen.get_dialog().is_empty()
+    }
+
+    /// The widget's second: its turn, and at a new minute the page on screen with fresh data
+    /// (what is over leaves Next).
+    fn tick_widget(&self, now: Instant, minute: bool) {
+        if self.widget_on.borrow().is_empty() {
+            return;
+        }
+        if minute {
+            self.refresh_widget();
+        }
+        let paused = self.widget_paused();
+        let shown = self
+            .widget
+            .borrow_mut()
+            .tick(now, paused, self.widget_every.get(), minute);
         if let Some(s) = shown {
             self.screen.set_widget(&s);
         }
@@ -6776,6 +6828,111 @@ mod tests {
             ]
         );
         drop(ui);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A headless Ui on its own state directory, Home Assistant not linked, no first start.
+    fn headless_ui(name: &str) -> (Rc<Ui<super::super::sw::CompanionWindow>>, PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("home-companion-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let prepared = super::super::renderer::prepare_fb(
+            super::super::renderer::Kind::Headless,
+            Path::new(""),
+            0,
+        )
+        .unwrap();
+        let character =
+            Rc::new(character::load(&character::repo_characters().join("alfred")).unwrap());
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let opts = UiOptions {
+            locales: locale::repo_locales(),
+            language: "en".into(),
+            sample_weather: false,
+            demo: None,
+            screen: ScreenOptions {
+                animations: false,
+                ..Default::default()
+            },
+            state_dir: Some(dir.clone()),
+            ha_linked: false,
+            ha_host: None,
+            setup_at_start: false,
+            first_start: crate::settings::FirstStart {
+                language: false,
+                home_assistant: false,
+            },
+            link: None,
+            update: None,
+        };
+        (Ui::new(prepared.screen, character, opts, tx).unwrap(), dir)
+    }
+
+    /// The widget on a real (headless) screen: it turns every 20 s on the home and only there,
+    /// writes nothing between two turns, and with no page on the home is as before.
+    #[test]
+    fn widget_turns_on_the_home_only() {
+        let (ui, dir) = headless_ui("widget");
+        let w = &ui.screen;
+        let now = now_unix() as i64;
+        {
+            let mut d = ui.desk.borrow_mut();
+            d.upcoming = vec![(now + 3600, "Dentist".into())];
+            d.shopping = Some(vec![ShopList {
+                entity: "todo.shopping".into(),
+                name: "Shopping".into(),
+                items: vec![("1".into(), "Bread".into()), ("2".into(), "Milk".into())],
+            }]);
+        }
+        // No page on: cards as before, no widget.
+        ui.refresh_home();
+        assert!(!w.get_widget_shown());
+        // (Home Assistant is not linked: its status card is first.)
+        assert_eq!(*ui.card_kinds.borrow(), ["status", "upcoming", "shopping"]);
+        // All pages on: those two cards become the widget's pages, in the two slots left.
+        *ui.widget_on.borrow_mut() = WidgetKind::ALL.to_vec();
+        ui.refresh_home();
+        assert_eq!(*ui.card_kinds.borrow(), ["status"]);
+        assert!(w.get_widget_shown());
+        assert_eq!(w.get_widget_kind(), "next");
+        assert_eq!((w.get_widget_slots(), w.get_widget_count()), (2, 2));
+        let seq = w.get_widget_seq();
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        for s in 1..20 {
+            ui.tick_widget(at(s), false);
+            assert_eq!(
+                (w.get_widget_kind().as_str(), w.get_widget_seq()),
+                ("next", seq)
+            );
+        }
+        ui.tick_widget(at(20), false);
+        assert_eq!(w.get_widget_kind(), "shopping");
+        assert_eq!(w.get_widget_seq(), seq + 1);
+        // Another page: the turn stands still.
+        w.set_page("altro".into());
+        for s in 21..120 {
+            ui.tick_widget(at(s), s % 60 == 0);
+        }
+        assert_eq!(w.get_widget_kind(), "shopping");
+        // Back home: a whole interval, then the next page.
+        w.set_page("home".into());
+        ui.tick_widget(at(120), false);
+        ui.tick_widget(at(139), false);
+        assert_eq!(w.get_widget_kind(), "shopping");
+        ui.tick_widget(at(140), false);
+        assert_eq!(w.get_widget_kind(), "next");
+        // A timer card: one slot left.
+        ui.desk.borrow_mut().timers = vec![TimerView {
+            id: "a".into(),
+            name: "Eggs".into(),
+            left: "07:42".into(),
+            fraction: 0.5,
+            paused: false,
+            due_unix: 0.0,
+        }];
+        ui.refresh_home();
+        assert_eq!(w.get_widget_slots(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
