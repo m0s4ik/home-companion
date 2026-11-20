@@ -192,6 +192,46 @@ impl Settings {
         self.save_logged("home_compact", on.into());
     }
 
+    /// Settings → Screen → Widgets: the pages of the home's widget that are on (in the turn's
+    /// order) and its interval in seconds (0 = by hand only). `[widgets] on = ["next", ...]`,
+    /// `every = 20`; without the section every page is on, every 20 s. Unknown keys are left
+    /// out, an interval that is not one of the choices is the default.
+    pub fn widgets(&self) -> (Vec<crate::ui::widgets::Kind>, u32) {
+        use crate::ui::widgets::{DEFAULT_EVERY, EVERY_CHOICES, Kind};
+        let default_every = DEFAULT_EVERY.as_secs() as u32;
+        let Some(t) = self
+            .table()
+            .and_then(|t| t.get("widgets")?.as_table().cloned())
+        else {
+            return (Kind::ALL.to_vec(), default_every);
+        };
+        let on: Vec<Kind> = match t.get("on").and_then(|v| v.as_array()) {
+            Some(list) => {
+                let keys: Vec<&str> = list.iter().filter_map(|v| v.as_str()).collect();
+                Kind::ALL
+                    .into_iter()
+                    .filter(|k| keys.contains(&k.key()))
+                    .collect()
+            }
+            None => Kind::ALL.to_vec(),
+        };
+        let every = t
+            .get("every")
+            .and_then(|v| v.as_integer())
+            .and_then(|e| u32::try_from(e).ok())
+            .filter(|e| EVERY_CHOICES.contains(e))
+            .unwrap_or(default_every);
+        (on, every)
+    }
+
+    pub fn save_widgets(&self, on: &[crate::ui::widgets::Kind], every: u32) {
+        let mut t = toml::Table::new();
+        let keys: Vec<toml::Value> = on.iter().map(|k| k.key().into()).collect();
+        t.insert("on".into(), keys.into());
+        t.insert("every".into(), (every as i64).into());
+        self.save_logged("widgets", t.into());
+    }
+
     /// Updates (Settings → Info): offer the release candidates too; None = as the configuration
     /// says (`[update] prerelease`).
     pub fn update_prerelease(&self) -> Option<bool> {
@@ -429,6 +469,31 @@ mod tests {
         assert_eq!(WakeSensitivity::from_step(-5), Less);
         assert_eq!(WakeSensitivity::from_step(7), More);
         assert_eq!(WakeSensitivity::from_key("loud"), None);
+    }
+
+    #[test]
+    fn widgets_default_on_and_read_back() {
+        use crate::ui::widgets::Kind;
+        let dir =
+            std::env::temp_dir().join(format!("home-companion-widgets-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = Settings::in_dir(&dir);
+        assert_eq!(s.widgets(), (Kind::ALL.to_vec(), 20));
+        s.save_widgets(&[Kind::Shopping, Kind::Next], 0);
+        // The turn's order whatever the order saved; 0 = by hand.
+        assert_eq!(s.widgets(), (vec![Kind::Next, Kind::Shopping], 0));
+        s.save_widgets(&[], 60);
+        assert_eq!(s.widgets(), (Vec::new(), 60));
+        // Other keys are kept.
+        s.save_home_compact(true);
+        assert_eq!(s.widgets(), (Vec::new(), 60));
+        std::fs::write(
+            &s.path,
+            "[widgets]\non = [\"weather\", \"stocks\"]\nevery = 7\n",
+        )
+        .unwrap();
+        assert_eq!(s.widgets(), (vec![Kind::Weather], 20));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

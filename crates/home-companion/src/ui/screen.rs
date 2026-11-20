@@ -492,7 +492,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 80] = [
+pub const DEMO_STATES: [&str; 81] = [
     "home",
     "cards",
     "cards-setup",
@@ -573,6 +573,7 @@ pub const DEMO_STATES: [&str; 80] = [
     "widget-medium",
     "widget-line",
     "widget-compact",
+    "settings-widgets",
 ];
 
 impl Demo {
@@ -826,6 +827,7 @@ impl Demo {
                 page(DEMO_STATES.into_iter().find(|x| *x == s)?)
             }
             "update" => page("update"),
+            "settings-widgets" => page("widgets"),
             "update-confirm" => Demo {
                 dialog: "update",
                 ..page("update")
@@ -1449,10 +1451,13 @@ impl<S: Screen> Ui<S> {
             Some(d) => d.compact,
             None => settings.as_ref().is_some_and(Settings::home_compact),
         };
-        // The widget's pages: in the demos the widget ones' (all of them), else none yet.
-        let widget_on = match &opts.demo {
-            Some(d) if d.widget.is_some() => WidgetKind::ALL.to_vec(),
-            _ => Vec::new(),
+        // The widget's pages and interval (Settings → Screen → Widgets); the demos: all, 20 s.
+        let (widget_on, widget_every) = match (&opts.demo, &settings) {
+            (None, Some(s)) => s.widgets(),
+            _ => (
+                WidgetKind::ALL.to_vec(),
+                widgets::DEFAULT_EVERY.as_secs() as u32,
+            ),
         };
         let opts_auto = opts.screen.auto.filter(|_| !demo).map(Auto::new);
         let opts_linked = opts.ha_linked;
@@ -1535,7 +1540,9 @@ impl<S: Screen> Ui<S> {
             home_compact: Cell::new(compact),
             widget: RefCell::new(Band::new(Instant::now())),
             widget_on: RefCell::new(widget_on),
-            widget_every: Cell::new(Some(widgets::DEFAULT_EVERY)),
+            widget_every: Cell::new(
+                (widget_every > 0).then(|| Duration::from_secs(widget_every as u64)),
+            ),
             language_pending: Cell::new(opts_first.language),
             find: RefCell::new(None),
             restart_timer: Timer::default(),
@@ -2173,6 +2180,18 @@ impl<S: Screen> Ui<S> {
                 && let Some(kind) = ui.widget.borrow_mut().tap(Instant::now())
             {
                 log::info!(event = "widget", page = kind.key(), why = "tap"; "widget: {} opened", kind.key());
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_widget_toggled(move |key, on| {
+            if let Some(ui) = ui.upgrade() {
+                ui.widget_toggled(&key, on);
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_widget_every_stepped(move |d| {
+            if let Some(ui) = ui.upgrade() {
+                ui.widget_every_stepped(d);
             }
         });
         let ui = Rc::downgrade(self);
@@ -4982,7 +5001,7 @@ impl<S: Screen> Ui<S> {
         match page {
             "chat" => self.refresh_chat(),
             "timers" => self.refresh_timers(),
-            "settings" | "screen" | "language" => self.refresh_settings(),
+            "settings" | "screen" | "widgets" | "language" => self.refresh_settings(),
             "altro" => self.refresh_tiles(),
             "memories" => self.refresh_memories(),
             "what" => self.refresh_what(),
@@ -5248,6 +5267,62 @@ impl<S: Screen> Ui<S> {
         }
     }
 
+    /// Settings → Screen → Widgets as they are.
+    fn refresh_widget_settings(&self) {
+        let l = self.locale.borrow();
+        let on = self.widget_on.borrow();
+        let summary = if on.is_empty() {
+            l.text("widgets_off").to_string()
+        } else {
+            l.text("widgets_on").replace("{n}", &on.len().to_string())
+        };
+        let every = self.widget_every.get().map_or(0, |d| d.as_secs() as u32);
+        self.screen.set_widget_settings(&on, every, &summary);
+    }
+
+    /// A switch of Settings → Screen → Widgets: the page joins or leaves the turn (and Next and
+    /// Shopping go back to being cards when theirs is off); saved.
+    fn widget_toggled(&self, key: &str, on: bool) {
+        let Some(kind) = WidgetKind::from_key(key) else {
+            return;
+        };
+        {
+            let mut list = self.widget_on.borrow_mut();
+            let mut keep: Vec<WidgetKind> = list.iter().copied().filter(|k| *k != kind).collect();
+            if on {
+                keep.push(kind);
+            }
+            *list = WidgetKind::ALL
+                .into_iter()
+                .filter(|k| keep.contains(k))
+                .collect();
+        }
+        self.save_widget_settings();
+        log::info!(event = "widget_settings", page = key, on = on; "widget: {key} {}", if on { "on" } else { "off" });
+        self.refresh_widget_settings();
+        self.refresh_home();
+    }
+
+    /// "Change every": one step along 20 s, 30 s, 1 min, by hand.
+    fn widget_every_stepped(&self, d: i32) {
+        let now = self.widget_every.get().map_or(0, |e| e.as_secs() as u32);
+        let choices = widgets::EVERY_CHOICES;
+        let i = choices.iter().position(|c| *c == now).unwrap_or(0) as i32;
+        let next = choices[(i + d.signum()).clamp(0, choices.len() as i32 - 1) as usize];
+        self.widget_every
+            .set((next > 0).then(|| Duration::from_secs(next as u64)));
+        self.save_widget_settings();
+        log::info!(event = "widget_settings", every = next; "widget: every {next} s (0 = by hand)");
+        self.refresh_widget_settings();
+    }
+
+    fn save_widget_settings(&self) {
+        if let Some(s) = &self.settings {
+            let every = self.widget_every.get().map_or(0, |d| d.as_secs() as u32);
+            s.save_widgets(&self.widget_on.borrow(), every);
+        }
+    }
+
     /// The home is not on screen, or not to be looked at: the widget's turn stands still.
     fn widget_paused(&self) -> bool {
         let d = self.desk.borrow();
@@ -5402,6 +5477,7 @@ impl<S: Screen> Ui<S> {
     }
 
     fn refresh_settings(&self) {
+        self.refresh_widget_settings();
         let l = self.locale.borrow();
         let (on, start, end) = self.desk.borrow().night;
         let ha = if !self.ha_linked.get() {
@@ -6885,6 +6961,7 @@ mod tests {
             }]);
         }
         // No page on: cards as before, no widget.
+        ui.widget_on.borrow_mut().clear();
         ui.refresh_home();
         assert!(!w.get_widget_shown());
         // (Home Assistant is not linked: its status card is first.)
@@ -6933,6 +7010,67 @@ mod tests {
         }];
         ui.refresh_home();
         assert_eq!(w.get_widget_slots(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Settings → Screen → Widgets, touched where a finger would: each switch takes its page
+    /// out of the turn (and Next and Shopping back to cards), the stepper changes the interval,
+    /// both saved.
+    #[test]
+    fn widget_settings_switches_do_something() {
+        use slint::LogicalPosition;
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let (ui, dir) = headless_ui("widget-settings");
+        let w = &ui.screen;
+        let tap = |x: f32, y: f32| {
+            let position = LogicalPosition::new(x, y);
+            let button = PointerEventButton::Left;
+            w.window()
+                .dispatch_event(WindowEvent::PointerPressed { position, button });
+            w.window()
+                .dispatch_event(WindowEvent::PointerReleased { position, button });
+        };
+        ui.desk.borrow_mut().shopping = Some(vec![ShopList {
+            entity: "todo.shopping".into(),
+            name: "Shopping".into(),
+            items: vec![("1".into(), "Bread".into())],
+        }]);
+        ui.refresh_home();
+        assert!(!ui.card_kinds.borrow().contains(&"shopping"));
+        w.set_page("widgets".into());
+        ui.refresh_settings();
+        assert!(w.get_widget_shopping_on());
+        assert_eq!(w.get_widget_summary(), "3 on");
+        // The third switch: Shopping off, a card again.
+        tap(1172.0, 318.0);
+        assert!(!w.get_widget_shopping_on());
+        assert_eq!(
+            *ui.widget_on.borrow(),
+            [WidgetKind::Next, WidgetKind::Weather]
+        );
+        assert!(ui.card_kinds.borrow().contains(&"shopping"));
+        assert_eq!(w.get_widget_summary(), "2 on");
+        // The first and the second.
+        tap(1172.0, 166.0);
+        tap(1172.0, 242.0);
+        assert!(ui.widget_on.borrow().is_empty());
+        assert_eq!(w.get_widget_summary(), "Off");
+        tap(1172.0, 242.0);
+        assert_eq!(*ui.widget_on.borrow(), [WidgetKind::Weather]);
+        // "Change every": + to 30 s, 1 min, by hand (and no further), − back.
+        assert_eq!(w.get_widget_every(), 20);
+        tap(1184.0, 410.0);
+        assert_eq!(w.get_widget_every(), 30);
+        tap(1184.0, 410.0);
+        tap(1184.0, 410.0);
+        tap(1184.0, 410.0);
+        assert_eq!(w.get_widget_every(), 0);
+        assert_eq!(ui.widget_every.get(), None);
+        tap(960.0, 410.0);
+        assert_eq!(w.get_widget_every(), 60);
+        // Saved.
+        let saved = Settings::in_dir(&dir).widgets();
+        assert_eq!(saved, (vec![WidgetKind::Weather], 60));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

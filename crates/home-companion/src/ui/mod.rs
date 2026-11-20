@@ -232,6 +232,11 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_cards(&self, cards: &[CardView]);
     /// The home's widget (widgets.rs): the page cut to its slots, or none.
     fn set_widget(&self, w: &widgets::Shown);
+    /// Settings → Screen → Widgets: the pages on, the interval in seconds (0 = by hand), and the
+    /// Screen page's line ("3 on", "Off").
+    fn set_widget_settings(&self, on: &[widgets::Kind], every: u32, summary: &str);
+    fn on_widget_toggled(&self, f: impl Fn(String, bool) + 'static);
+    fn on_widget_every_stepped(&self, f: impl Fn(i32) + 'static);
     fn on_widget_tapped(&self, f: impl Fn() + 'static);
     /// +1 the next page, -1 the previous one.
     fn on_widget_swiped(&self, f: impl Fn(i32) + 'static);
@@ -637,6 +642,13 @@ macro_rules! impl_screen {
                     false_wake,
                     home_compact_off,
                     home_compact_on,
+                    widgets,
+                    widgets_every,
+                    widgets_by_hand,
+                    widgets_hint,
+                    widget_next,
+                    widget_weather,
+                    widget_shopping,
                     wake_sensitivity,
                     wake_less,
                     wake_normal,
@@ -836,6 +848,20 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_widget_count(self, w.count as i32);
                 $m::CompanionWindow::set_widget_seq(self, w.seq as i32);
                 $m::CompanionWindow::set_widget_shown(self, true);
+            }
+            fn set_widget_settings(&self, on: &[widgets::Kind], every: u32, summary: &str) {
+                use widgets::Kind;
+                $m::CompanionWindow::set_widget_next_on(self, on.contains(&Kind::Next));
+                $m::CompanionWindow::set_widget_weather_on(self, on.contains(&Kind::Weather));
+                $m::CompanionWindow::set_widget_shopping_on(self, on.contains(&Kind::Shopping));
+                $m::CompanionWindow::set_widget_every(self, every as i32);
+                $m::CompanionWindow::set_widget_summary(self, summary.into());
+            }
+            fn on_widget_toggled(&self, f: impl Fn(String, bool) + 'static) {
+                $m::CompanionWindow::on_widget_toggled(self, move |k, on| f(k.into(), on))
+            }
+            fn on_widget_every_stepped(&self, f: impl Fn(i32) + 'static) {
+                $m::CompanionWindow::on_widget_every_stepped(self, f)
             }
             fn on_widget_tapped(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_widget_tapped(self, f)

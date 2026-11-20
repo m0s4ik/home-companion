@@ -203,6 +203,13 @@ export struct Words {
     false_wake: string,
     home_compact_off: string,
     home_compact_on: string,
+    widgets: string,
+    widgets_every: string,
+    widgets_by_hand: string,
+    widgets_hint: string,
+    widget_next: string,
+    widget_weather: string,
+    widget_shopping: string,
     wake_sensitivity: string,
     wake_less: string,
     wake_normal: string,
@@ -754,6 +761,17 @@ export component CompanionWindow inherits Window {
     in property <int> widget-seq: 0;
     callback widget-tapped();
     callback widget-swiped(int);
+    // Settings → Screen → Widgets: the pages on, the interval in seconds (0 = by hand), the
+    // Screen page's line.
+    in property <bool> widget-next-on: true;
+    in property <bool> widget-weather-on: true;
+    in property <bool> widget-shopping-on: true;
+    in property <int> widget-every: 20;
+    in property <string> widget-summary: "";
+    // A page switched: ("next" | "weather" | "shopping", on).
+    callback widget-toggled(string, bool);
+    // "Change every": -1 shorter, +1 longer (by hand is the longest).
+    callback widget-every-stepped(int);
     // Home Assistant is not connected (the HA action is dimmed; a status card says so).
     in property <bool> offline: false;
     // Start-up: the character's loading animation, its name, "Starting…"; no clock.
@@ -3496,6 +3514,111 @@ export component CompanionWindow inherits Window {
                     root.home-compact-changed(v);
                 }
             }
+        }
+        // The home's widget: its own page.
+        Group {
+            x: Grid.col-x;
+            y: night-hint.y + night-hint.preferred-height + 24px + 76px + 12px;
+            width: Grid.col-width;
+            height: 76px;
+            Row {
+                y: 0;
+                width: parent.width;
+                first: true;
+                kind: "page";
+                icon: Icons.calendar-clock-28;
+                label: root.t.widgets;
+                value: root.widget-summary;
+                clicked => {
+                    root.page = "widgets";
+                }
+            }
+        }
+    }
+
+    // ---- Settings → Screen → Widgets: a switch per page of the home's widget, its interval.
+    if root.desk && root.desk-page == "widgets": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.widgets;
+            clock: root.clock;
+            back => {
+                root.page = "screen";
+            }
+        }
+        Group {
+            x: Grid.col-x;
+            y: Grid.page-y + 16px;
+            width: Grid.col-width;
+            height: 3 * 76px;
+            Row {
+                y: 0;
+                width: parent.width;
+                first: true;
+                kind: "toggle";
+                icon: Icons.calendar-clock-28;
+                label: root.t.widget-next;
+                on: root.widget-next-on;
+                toggled(v) => {
+                    root.widget-toggled("next", v);
+                }
+            }
+            Row {
+                y: 76px;
+                width: parent.width;
+                kind: "toggle";
+                icon: Icons.weather-partly-cloudy-28;
+                label: root.t.widget-weather;
+                on: root.widget-weather-on;
+                toggled(v) => {
+                    root.widget-toggled("weather", v);
+                }
+            }
+            Row {
+                y: 152px;
+                width: parent.width;
+                kind: "toggle";
+                icon: Icons.cart-28;
+                label: root.t.widget-shopping;
+                on: root.widget-shopping-on;
+                toggled(v) => {
+                    root.widget-toggled("shopping", v);
+                }
+            }
+        }
+        Group {
+            x: Grid.col-x;
+            y: Grid.page-y + 16px + 3 * 76px + 16px;
+            width: Grid.col-width;
+            height: 76px;
+            Row {
+                y: 0;
+                width: parent.width;
+                first: true;
+                kind: "";
+                label: root.t.widgets-every;
+            }
+            Stepper {
+                x: parent.width - 16px - self.width;
+                y: 6px;
+                value-width: 160px;
+                font-size: 34px;
+                value: root.widget-every == 0 ? root.t.widgets-by-hand
+                    : root.widget-every < 60 ? root.widget-every + " s" : root.widget-every / 60 + " min";
+                step(d) => {
+                    root.widget-every-stepped(d);
+                }
+            }
+        }
+        Text {
+            x: Grid.col-x + 8px;
+            y: Grid.page-y + 16px + 4 * 76px + 16px + 16px;
+            width: Grid.col-width - 16px;
+            text: root.t.widgets-hint;
+            font-size: 24px;
+            color: Theme.text-3;
+            wrap: word-wrap;
         }
     }
 

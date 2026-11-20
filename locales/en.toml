@@ -109,6 +109,13 @@ home_compact = "Compact home"
 false_wake = "False alarm"
 home_compact_off = "3 cards"
 home_compact_on = "4 cards"
+# Settings → Screen → Widgets (the home's widget).
+widgets = "Widgets"
+widgets_every = "Change every"
+widgets_by_hand = "By hand"
+widgets_hint = "Under the cards, one panel at a time that turns by itself: what comes next, the weather, the shopping. Swipe it to turn it, tap it to open it."
+widgets_off = "Off"
+widgets_on = "{n} on"
 # Settings: how readily the character answers to his wake word (a step around the model's cutoff).
 wake_sensitivity = "Answers to his name"
 wake_less = "Less often"
