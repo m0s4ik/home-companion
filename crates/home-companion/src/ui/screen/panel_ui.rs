@@ -429,23 +429,7 @@ impl<S: Screen> PanelHost for Ui<S> {
 
     fn words(&self, lang: &str) -> Box<dyn Fn(&str) -> String + '_> {
         let name = self.character.name.clone();
-        // `lang` is one of `languages()` (protocol::pick_language): a handful at most.
-        let cached = self.panel.borrow().words.get(lang).cloned();
-        let l = match cached {
-            Some(l) => Some(l),
-            None => match locale::load_or_english(&self.opts.locales, lang) {
-                Ok(l) => {
-                    let l = Rc::new(l);
-                    self.panel
-                        .borrow_mut()
-                        .words
-                        .insert(lang.to_string(), l.clone());
-                    Some(l)
-                }
-                Err(_) => None,
-            },
-        };
-        match l {
+        match self.panel_locale(lang) {
             Some(l) => Box::new(move |k| word(&l, k, &name)),
             None => Box::new(|k| k.to_string()),
         }
@@ -597,9 +581,137 @@ impl<S: Screen> PanelHost for Ui<S> {
         log::info!(event = "notes", id = id; "note {id} removed from the browser");
         self.brain_do(crate::brain_link::note_delete(id));
     }
+    fn widget_views(
+        &self,
+        lang: &str,
+    ) -> Vec<(
+        crate::ui::widgets::Kind,
+        Option<crate::ui::widgets::WidgetView>,
+        bool,
+    )> {
+        use crate::ui::widgets;
+        let Some(l) = self.panel_locale(lang) else {
+            return Vec::new();
+        };
+        let w = super::widget_words(&l);
+        let now = self.now() as i64;
+        let today = if self.opts.demo.is_some() {
+            super::DEMO_DATE.to_string()
+        } else {
+            crate::ha::local_date()
+        };
+        let columns = self
+            .weather
+            .borrow()
+            .as_ref()
+            .map(|wt| crate::ui::weather::widget_columns(wt, &l, &today, now, &|t| local_hm(t).0))
+            .unwrap_or_default();
+        let cities = self.city_rows(now);
+        let d = self.desk.borrow();
+        let next = crate::ui::next::merge(&d.upcoming, &d.events, now);
+        let data = self.widget_data.borrow();
+        let real = widgets::Sources {
+            next: &next,
+            weather: columns,
+            shopping: d.shopping.as_deref(),
+            quotes: &data.quotes,
+            cities: if cities.is_empty() {
+                &data.cities
+            } else {
+                &cities
+            },
+            notes: &data.notes,
+            sensors: &data.sensors,
+            check: &data.check,
+            playing: data.playing.as_ref(),
+            people: &data.people,
+        };
+        let samples = super::samples::samples(&l);
+        let quotes: Vec<String> = self
+            .widget_quotes
+            .borrow()
+            .iter()
+            .map(|q| q.name.clone())
+            .collect();
+        let city_names: Vec<String> = self
+            .widget_cities
+            .borrow()
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        let ha = self.widget_ha.borrow().clone();
+        let catalog = self.ha_catalog.borrow();
+        let name_of = |id: &str| {
+            catalog
+                .iter()
+                .find(|e| e.id == id)
+                .map_or_else(|| id.to_string(), |e| e.name.clone())
+        };
+        let sensors: Vec<String> = ha.sensors.iter().map(|id| name_of(id)).collect();
+        let player = if ha.player.is_empty() {
+            String::new()
+        } else {
+            name_of(&ha.player)
+        };
+        let check = ["check_openings", "check_batteries"]
+            .iter()
+            .any(|k| crate::settings_model::get(self, k) == Some(serde_json::json!(true)));
+        let chosen = widgets::Chosen {
+            quotes: &quotes,
+            cities: &city_names,
+            sensors: &sensors,
+            check,
+            player: &player,
+        };
+        widgets::panel_pages(
+            &real,
+            &samples.sources(),
+            &chosen,
+            &w,
+            now,
+            super::samples::NOW,
+            &local_hm,
+        )
+    }
+    fn widget_samples(&self, lang: &str) -> Vec<crate::ui::widgets::WidgetView> {
+        let Some(l) = self.panel_locale(lang) else {
+            return Vec::new();
+        };
+        let w = super::widget_words(&l);
+        let s = super::samples::samples(&l);
+        let src = s.sources();
+        crate::ui::widgets::Kind::ALL
+            .into_iter()
+            .filter_map(|k| crate::ui::widgets::page(&src, k, &w, super::samples::NOW, &local_hm))
+            .collect()
+    }
+    fn search_rows(
+        &self,
+        id: &str,
+        lang: &str,
+    ) -> Option<Vec<(String, crate::ui::widgets::WidgetRow)>> {
+        let l = self.panel_locale(lang)?;
+        let w = super::widget_words(&l);
+        let rows = self.feeds.borrow().search_rows(id)?;
+        Some(super::samples::hit_rows(&rows, &w, self.now() as i64))
+    }
 }
 
 impl<S: Screen> Ui<S> {
+    /// The words of `lang` for the panel, loaded once (`lang` is one of `languages()`,
+    /// protocol::pick_language: a handful at most).
+    fn panel_locale(&self, lang: &str) -> Option<Rc<locale::Locale>> {
+        if let Some(l) = self.panel.borrow().words.get(lang).cloned() {
+            return Some(l);
+        }
+        let l = Rc::new(locale::load_or_english(&self.opts.locales, lang).ok()?);
+        self.panel
+            .borrow_mut()
+            .words
+            .insert(lang.to_string(), l.clone());
+        Some(l)
+    }
+
     /// An item ticked or removed from the panel: gone from the screen at once (Home Assistant's
     /// own update follows).
     fn panel_item_gone(&self, list: &str, uid: &str) {

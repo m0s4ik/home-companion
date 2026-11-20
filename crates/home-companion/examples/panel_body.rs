@@ -21,14 +21,22 @@ use home_companion::feeds::{
 use home_companion::panel::protocol::{self, PanelHost};
 use home_companion::panel::sessions::{self, Request, Sessions};
 use home_companion::settings::Settings;
-use home_companion::settings_model::{Change, Host};
+use home_companion::settings_model::{self as model, Change, Host};
 use home_companion::ui::lists::{self, ShopList};
+use home_companion::ui::screen::samples;
+use home_companion::ui::widgets::{
+    self, Chosen, CityRow, Kind, Person, Place, Sources, Trend, WidgetRow,
+};
 use serde_json::{Value, json};
 
 const ALLOW_AFTER: Duration = Duration::from_secs(4);
 
 struct Demo {
     notes: RefCell<Vec<(i64, String)>>,
+    /// When a chosen item was first seen without data: its numbers "come" 3 s later.
+    seen: RefCell<std::collections::HashMap<String, Instant>>,
+    /// When each search started: its rows "come" a second after the names.
+    started: RefCell<std::collections::HashMap<String, Instant>>,
     searches: RefCell<std::collections::HashMap<String, SearchState>>,
     settings: Settings,
     lists: RefCell<Vec<ShopList>>,
@@ -134,6 +142,9 @@ impl PanelHost for Demo {
     /// Canned hits (the real body asks Yahoo, CoinGecko, Open-Meteo); one name is markup, to
     /// show it stays text.
     fn search_start(&self, id: &str, what: What, q: &str, _lang: &str) -> bool {
+        self.started
+            .borrow_mut()
+            .insert(id.to_string(), Instant::now());
         if matches!(what, What::Sensor | What::Player | What::Person) {
             let f = home_companion::ha::widgets::search(&self.ha_catalog(), what, q);
             self.searches
@@ -262,6 +273,164 @@ impl PanelHost for Demo {
     fn note_remove(&self, id: i64) {
         self.notes.borrow_mut().retain(|x| x.0 != id);
     }
+    /// The sample pages (the screen's demos), with the choices of this panel: a chosen item that
+    /// is not in the samples gets made-up numbers a few seconds after it was added.
+    fn widget_views(
+        &self,
+        lang: &str,
+    ) -> Vec<(Kind, Option<home_companion::ui::widgets::WidgetView>, bool)> {
+        let l = locale::load_or_english(&locale::repo_locales(), lang).expect("locales");
+        let s = samples::samples(&l);
+        let w = samples::words(&l);
+        let quotes = self.settings.quotes();
+        let cities = self.settings.cities();
+        let ha = self.widget_ha();
+        let catalog = self.ha_catalog();
+        let name_of = |id: &str| {
+            catalog
+                .iter()
+                .find(|e| e.id == id)
+                .map_or_else(|| id.to_string(), |e| e.name.clone())
+        };
+        let ready = |key: &str| {
+            let mut seen = self.seen.borrow_mut();
+            let at = *seen.entry(key.to_string()).or_insert_with(Instant::now);
+            at.elapsed() >= Duration::from_secs(3)
+        };
+        let q_trends: Vec<Trend> = quotes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, q)| {
+                let t = s.quotes.iter().find(|t| t.name == q.name).cloned();
+                match t {
+                    Some(t) => Some(t),
+                    None if ready(&q.key()) => {
+                        let mut t = s.quotes[i % s.quotes.len()].clone();
+                        t.name = q.name.clone();
+                        Some(t)
+                    }
+                    None => None,
+                }
+            })
+            .collect();
+        let sensor_names: Vec<String> = ha.sensors.iter().map(|id| name_of(id)).collect();
+        let s_trends: Vec<Trend> = sensor_names
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| ready(&format!("sensor:{n}")))
+            .map(|(i, n)| {
+                let mut t = s.sensors[i % s.sensors.len()].clone();
+                t.name = n.clone();
+                t
+            })
+            .collect();
+        let c_rows: Vec<CityRow> = cities
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| ready(&c.key()))
+            .map(|(i, c)| {
+                let mut r = s.cities[i % s.cities.len()].clone();
+                r.name = c.name.clone();
+                r
+            })
+            .collect();
+        let notes: Vec<String> = self.notes.borrow().iter().map(|n| n.1.clone()).collect();
+        let lists = self.lists.borrow().clone();
+        let people: Vec<Person> = ha
+            .people
+            .clone()
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+            .map(|(i, id)| Person {
+                name: name_of(id),
+                place: if i == 0 { Place::Home } else { Place::Away },
+            })
+            .collect();
+        let real = Sources {
+            next: &s.next,
+            weather: s.weather.clone(),
+            shopping: Some(&lists),
+            quotes: &q_trends,
+            cities: &c_rows,
+            notes: &notes,
+            sensors: &s_trends,
+            check: &[],
+            playing: None,
+            people: &people,
+        };
+        let qn: Vec<String> = quotes.iter().map(|q| q.name.clone()).collect();
+        let cn: Vec<String> = cities.iter().map(|c| c.name.clone()).collect();
+        let player = if ha.player.is_empty() {
+            String::new()
+        } else {
+            name_of(&ha.player)
+        };
+        let chosen = Chosen {
+            quotes: &qn,
+            cities: &cn,
+            sensors: &sensor_names,
+            check: ha.openings || ha.batteries,
+            player: &player,
+        };
+        widgets::panel_pages(
+            &real,
+            &s.sources(),
+            &chosen,
+            &w,
+            samples::NOW,
+            samples::NOW,
+            &samples::local,
+        )
+    }
+    fn widget_samples(&self, lang: &str) -> Vec<home_companion::ui::widgets::WidgetView> {
+        let l = locale::load_or_english(&locale::repo_locales(), lang).expect("locales");
+        let s = samples::samples(&l);
+        let w = samples::words(&l);
+        Kind::ALL
+            .into_iter()
+            .filter_map(|k| widgets::page(&s.sources(), k, &w, samples::NOW, &samples::local))
+            .collect()
+    }
+    /// Made-up prices and weather for the canned hits, a second after the names.
+    fn search_rows(&self, id: &str, lang: &str) -> Option<Vec<(String, WidgetRow)>> {
+        let started = *self.started.borrow().get(id)?;
+        if started.elapsed() < Duration::from_secs(1) {
+            return None;
+        }
+        let l = locale::load_or_english(&locale::repo_locales(), lang).expect("locales");
+        let s = samples::samples(&l);
+        let w = samples::words(&l);
+        let SearchState::Done(found) = self.search_state(id) else {
+            return None;
+        };
+        Some(
+            found
+                .iter()
+                .enumerate()
+                .filter_map(|(i, f)| {
+                    let row = match &f.choice {
+                        Choice::Quote(_) => {
+                            let mut r = widgets::trend_row(&s.quotes[i % s.quotes.len()], &w);
+                            r.text.clear();
+                            r
+                        }
+                        Choice::City(_) => {
+                            let c = &s.cities[i % s.cities.len()];
+                            WidgetRow {
+                                left: c.time.clone(),
+                                right: c.temp.clone(),
+                                note: c.cond.clone(),
+                                ..Default::default()
+                            }
+                        }
+                        Choice::Entity(_) => return None,
+                    };
+                    Some((f.hit.key.clone(), row))
+                })
+                .collect(),
+        )
+    }
     fn search_choice(&self, id: &str, key: &str) -> Option<Choice> {
         match self.searches.borrow().get(id) {
             Some(SearchState::Done(f)) => f
@@ -283,6 +452,8 @@ fn main() {
     std::fs::create_dir_all(&dir).expect("dir");
     let item = |u: &str, t: &str| (u.to_string(), t.to_string());
     let demo = Demo {
+        seen: RefCell::new(Default::default()),
+        started: RefCell::new(Default::default()),
         notes: RefCell::new(vec![
             (1, "The plumber comes on Tuesday morning".into()),
             (2, "Water the basil".into()),
@@ -308,6 +479,67 @@ fn main() {
         asked: RefCell::new(None),
         volume: RefCell::new(40),
     };
+    // A first start: some markets, cities and sensors chosen (public names), as after a
+    // few minutes with the panel.
+    if demo.settings.quotes().is_empty() {
+        let q = |source, id: &str, name: &str| QuoteChoice {
+            source,
+            id: id.into(),
+            name: name.into(),
+        };
+        model::commit(
+            &demo,
+            Change::Quotes(vec![
+                q(Source::Yahoo, "AAPL", "Apple Inc."),
+                q(Source::Yahoo, "^GSPC", "S&P 500"),
+                q(Source::Coingecko, "bitcoin", "Bitcoin"),
+                q(Source::Yahoo, "EURUSD=X", "EUR/USD"),
+                q(Source::Yahoo, "GC=F", "Gold"),
+            ]),
+        );
+        let c = |id, name: &str, region: &str, country: &str, lat, lon| CityChoice {
+            id,
+            name: name.into(),
+            region: region.into(),
+            country: country.into(),
+            lat,
+            lon,
+        };
+        model::commit(
+            &demo,
+            Change::Cities(vec![
+                c(2950159, "Berlin", "Berlin", "DE", 52.52, 13.41),
+                c(1850147, "Tokyo", "Tokyo", "JP", 35.69, 139.69),
+                c(4250542, "Springfield", "Illinois", "US", 39.8, -89.64),
+            ]),
+        );
+        let mut ha = demo.widget_ha();
+        ha.sensors = vec![
+            "sensor.outdoor_temperature".into(),
+            "sensor.living_room".into(),
+            "sensor.humidity".into(),
+            "sensor.power".into(),
+        ];
+        ha.player = "media_player.speaker".into();
+        ha.people = Some(vec!["person.ada".into(), "person.bob".into()]);
+        model::commit(&demo, Change::WidgetHa(ha));
+    }
+    // Everything there at once (the delays are for what is added later).
+    let long_ago = Instant::now() - Duration::from_secs(10);
+    for k in demo
+        .settings
+        .quotes()
+        .iter()
+        .map(|q| q.key())
+        .chain(demo.settings.cities().iter().map(|c| c.key()))
+    {
+        demo.seen.borrow_mut().insert(k, long_ago);
+    }
+    for n in ["Outdoor temperature", "Living room", "Humidity", "Power"] {
+        demo.seen
+            .borrow_mut()
+            .insert(format!("sensor:{n}"), long_ago);
+    }
     let mut sessions = Sessions::load(&dir);
     let sock = home_companion::panel::socket::start(&dir.join("panel.sock")).expect("socket");
     eprintln!("panel_body: {}", dir.join("panel.sock").display());

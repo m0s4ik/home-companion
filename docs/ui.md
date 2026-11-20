@@ -147,6 +147,13 @@ its ring and the gold fill) and No stays a target that wins.
   order, the markets, the cities, Home Assistant's entities are chosen only from the browser panel (no keyboard
   here); saved as `[widgets]` in settings.toml (`order`, `on`, `seen`, `quotes`, `cities`, `currency`, `sensors`,
   `player`, `people`, `check_openings`, `check_batteries`).
+- **The browser panel** (`crates/panel/web/`, not this screen, same tokens): four sections (Widgets, Shopping,
+  Settings, Access; a bar at the bottom on a phone, a column on the left from 900 px). The widget's pages are drawn
+  by the panel from the body's own page model (`widgets::panel_pages` → `panel/widget_ops.rs` `model`: the same
+  words, numbers and cuts as here, with three free slots), in the screen's Inter subsets and with `WidgetPanel`'s
+  sizes in `em` of 16 px at 808 px (`.wc` in panel.css): what changes there shows in its preview at once. A chosen
+  item without data yet shows "…"; what to check and now playing show an example ("(example)"). Removing is a bin
+  and an Undo for 7 s (the body keeps the last removal of each device for 15 s); only Revoke asks twice.
 - **The widget's pages** (opened by a tap): **trends** (the markets or the sensors: a card each, read only: name,
   symbol or "data from…", value 40 Tnum, change, the day's curve 520 x 96, high and low; the sources' credit under
   them), **city** (the weather page with another city's data in its own time zone: "local time 15:02" in the

@@ -8,7 +8,9 @@
 //! panel is on, whether `token` is good), `strings` (the panel's words), `pair.request`,
 //! `pair.status`, `pair.qr`. With one: `session.end`, `schema`, `state`, `set`,
 //! `shopping.list|add|done|remove`, `sessions.list|revoke`, and the widget's (widget_ops.rs:
-//! `widgets.get|order`, `search.start|status`, `quotes|cities.add|remove|move`). With the panel switched off every
+//! `widgets.get|order|samples`, `search.start|status`, `quotes|cities|sensors.add|remove|move`,
+//! `player.set`, `people.set`, `notes.list|add|edit|remove`, `undo`; their answers carry the pages'
+//! previews as the screen draws them, `pages`). With the panel switched off every
 //! op but `hello` and `strings` answers `off`.
 //!
 //! Every answer is built here from what the body chooses to say: settings through
@@ -74,6 +76,29 @@ pub trait PanelHost: model::Host {
     fn note_add(&self, text: &str);
     fn note_edit(&self, id: i64, text: &str);
     fn note_remove(&self, id: i64);
+    /// Every page of the widget as the screen would draw it now, in `lang`'s words, in
+    /// [`crate::ui::widgets::Kind::ALL`]'s order (`widgets::panel_pages`): the page (None: nothing to
+    /// show) and whether it is an example.
+    fn widget_views(
+        &self,
+        lang: &str,
+    ) -> Vec<(
+        crate::ui::widgets::Kind,
+        Option<crate::ui::widgets::WidgetView>,
+        bool,
+    )>;
+    /// An example page of every kind for the gallery, in `lang`'s words.
+    fn widget_samples(&self, lang: &str) -> Vec<crate::ui::widgets::WidgetView>;
+    /// The rows a search's hits will become (hit key → row) once the second half of the search
+    /// came back (None: not yet, or never: the hits show without it).
+    fn search_rows(
+        &self,
+        id: &str,
+        lang: &str,
+    ) -> Option<Vec<(String, crate::ui::widgets::WidgetRow)>> {
+        let _ = (id, lang);
+        None
+    }
 }
 
 fn err(code: &str) -> Value {
@@ -205,6 +230,109 @@ pub const STRING_KEYS: &[&str] = &[
     "panel_check",
     "panel_ha_privacy",
     "panel_no_ha",
+    "panel_tabs",
+    "panel_tab_widgets",
+    "panel_tab_shopping",
+    "panel_tab_settings",
+    "panel_tab_access",
+    "panel_now_on_home",
+    "panel_turn_line",
+    "panel_turn_prev",
+    "panel_turn_next",
+    "panel_turn_pause",
+    "panel_turn_none",
+    "panel_turn_every",
+    "panel_turn_skip",
+    "panel_your_widgets",
+    "panel_drag_hint",
+    "panel_add_widget",
+    "panel_off_widgets",
+    "panel_off_hint",
+    "panel_edit_widget",
+    "panel_show_on_home",
+    "panel_widget_on",
+    "panel_widget_off",
+    "panel_move",
+    "panel_moved",
+    "panel_order_saved",
+    "panel_empty_next",
+    "panel_empty_quotes",
+    "panel_empty_weather",
+    "panel_empty_cities",
+    "panel_empty_shopping",
+    "panel_empty_notes",
+    "panel_empty_sensors",
+    "panel_empty_check",
+    "panel_empty_playing",
+    "panel_empty_home",
+    "panel_close",
+    "panel_preview",
+    "panel_preview_sample",
+    "panel_rows_prev",
+    "panel_rows_next",
+    "panel_shown_quotes",
+    "panel_shown_cities",
+    "panel_shown_sensors",
+    "panel_count",
+    "panel_four_rows",
+    "panel_already",
+    "panel_choose",
+    "panel_added",
+    "panel_removed",
+    "panel_undo",
+    "panel_remove_x",
+    "panel_check_what",
+    "panel_sample_note",
+    "panel_which_player",
+    "panel_player_chosen",
+    "panel_player_none_long",
+    "panel_playing_note",
+    "panel_who",
+    "panel_who_hint",
+    "panel_calendars_hint",
+    "panel_next_note",
+    "panel_open_shopping",
+    "panel_weather_note",
+    "panel_gallery_intro",
+    "panel_on_home_badge",
+    "panel_added_end",
+    "panel_soon",
+    "panel_what_next",
+    "panel_src_next",
+    "panel_what_quotes",
+    "panel_src_quotes",
+    "panel_what_weather",
+    "panel_src_weather",
+    "panel_what_cities",
+    "panel_src_cities",
+    "panel_what_shopping",
+    "panel_src_shopping",
+    "panel_what_notes",
+    "panel_src_notes",
+    "panel_what_sensors",
+    "panel_src_sensors",
+    "panel_what_check",
+    "panel_src_check",
+    "panel_what_playing",
+    "panel_src_playing",
+    "panel_what_home",
+    "panel_src_home",
+    "panel_name_trmnl",
+    "panel_what_trmnl",
+    "panel_src_trmnl",
+    "panel_name_energy",
+    "panel_what_energy",
+    "panel_src_energy",
+    "panel_to_buy",
+    "panel_bought",
+    "panel_bought_label",
+    "panel_add_to",
+    "panel_shopping_hint",
+    "panel_revoke_x",
+    "panel_revoke_sure_x",
+    "panel_access_new_hint",
+    "panel_last_used",
+    "panel_search_rows_wait",
 ];
 
 fn shopping_json(lists: &[ShopList]) -> Value {
@@ -329,7 +457,18 @@ pub fn handle(
             str_of(req, "key"),
             req.get("value").unwrap_or(&Value::Null),
         ) {
-            Ok(()) => ok(json!({"values": model::panel_state(host)})),
+            Ok(()) => {
+                let key = str_of(req, "key");
+                let mut a = json!({"values": model::panel_state(host)});
+                // What the previews show changed with it: the pages come along.
+                if key.starts_with("widgets")
+                    || key.starts_with("check_")
+                    || matches!(key, "lists" | "calendars")
+                {
+                    a["pages"] = super::widget_ops::pages(host, &lang_of(host, req));
+                }
+                ok(a)
+            }
             Err(SetError::Unknown) => err("unknown_key"),
             Err(SetError::Invalid) => err("invalid"),
         },
@@ -539,6 +678,78 @@ mod tests {
         fn note_remove(&self, id: i64) {
             self.calls.borrow_mut().push(format!("note remove {id}"));
         }
+        /// The samples for the pages that wait or show at times; the notes are the host's own.
+        fn widget_views(
+            &self,
+            lang: &str,
+        ) -> Vec<(
+            crate::ui::widgets::Kind,
+            Option<crate::ui::widgets::WidgetView>,
+            bool,
+        )> {
+            use crate::ui::screen::samples;
+            let l = locale::load_or_english(&locale::repo_locales(), lang).unwrap();
+            let w = samples::words(&l);
+            let s = samples::samples(&l);
+            let notes: Vec<String> = self
+                .notes
+                .borrow()
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|n| n.1)
+                .collect();
+            let real = crate::ui::widgets::Sources {
+                notes: &notes,
+                ..Default::default()
+            };
+            let quotes: Vec<String> = self.widget_quotes().into_iter().map(|q| q.name).collect();
+            let chosen = crate::ui::widgets::Chosen {
+                quotes: &quotes,
+                check: true,
+                ..Default::default()
+            };
+            crate::ui::widgets::panel_pages(
+                &real,
+                &s.sources(),
+                &chosen,
+                &w,
+                samples::NOW,
+                samples::NOW,
+                &samples::local,
+            )
+        }
+        fn widget_samples(&self, lang: &str) -> Vec<crate::ui::widgets::WidgetView> {
+            use crate::ui::screen::samples;
+            let l = locale::load_or_english(&locale::repo_locales(), lang).unwrap();
+            let s = samples::samples(&l);
+            crate::ui::widgets::Kind::ALL
+                .into_iter()
+                .filter_map(|k| {
+                    crate::ui::widgets::page(
+                        &s.sources(),
+                        k,
+                        &samples::words(&l),
+                        samples::NOW,
+                        &samples::local,
+                    )
+                })
+                .collect()
+        }
+        fn search_rows(
+            &self,
+            _id: &str,
+            _lang: &str,
+        ) -> Option<Vec<(String, crate::ui::widgets::WidgetRow)>> {
+            Some(vec![(
+                "yahoo:AAPL".into(),
+                crate::ui::widgets::WidgetRow {
+                    right: "189.20 $".into(),
+                    curve: vec![0.0, 1.0],
+                    ..Default::default()
+                },
+            )])
+        }
         fn search_choice(&self, id: &str, key: &str) -> Option<crate::feeds::Choice> {
             match self.searches.borrow().get(id) {
                 Some(crate::feeds::SearchState::Done(f)) => f
@@ -637,6 +848,8 @@ mod tests {
         "notes.add",
         "notes.edit",
         "notes.remove",
+        "widgets.samples",
+        "undo",
         "session.end",
     ];
 
@@ -806,6 +1019,136 @@ mod tests {
         );
     }
 
+    /// The pages as the screen draws them, in every answer that changes them; the rows a search
+    /// will become; a removal put back once, by the device that made it, within 15 s.
+    #[test]
+    fn previews_rows_and_undo() {
+        let h = host("previews");
+        let mut s = Sessions::default();
+        let t = pair(&h, &mut s);
+        let w = call(
+            &h,
+            &mut s,
+            json!({"op": "widgets.get", "token": t, "lang": ["it"]}),
+        );
+        let pages = w["pages"].as_array().unwrap();
+        assert_eq!(pages.len(), crate::ui::widgets::Kind::ALL.len());
+        let page = |w: &Value, k: &str| -> Value {
+            w["pages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["kind"] == k)
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(page(&w, "next")["label"], "Prossimi");
+        // The host's own note, as the screen writes it.
+        let notes = page(&w, "notes");
+        assert_eq!(
+            notes["model"]["windows"][0]["rows"][0]["text"],
+            "Water the plants"
+        );
+        assert_eq!(notes["model"]["sample"], false);
+        // Nothing chosen: no page; what to check shows an example.
+        assert_eq!(page(&w, "quotes")["model"], Value::Null);
+        assert_eq!(page(&w, "check")["model"]["sample"], true);
+        assert_eq!(page(&w, "weather")["model"]["layout"], "hours");
+        // A quote added: its row waits for the data.
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "search.start", "token": t, "what": "quote", "q": "Apple"}),
+        );
+        let id = r["id"].as_str().unwrap().to_string();
+        let st = call(
+            &h,
+            &mut s,
+            json!({"op": "search.status", "token": t, "id": id}),
+        );
+        assert_eq!(st["rows"], true);
+        assert_eq!(
+            st["hits"][0]["row"],
+            json!({"right": "189.20 $", "curve": [0.0, 1.0]})
+        );
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "quotes.add", "token": t, "search": id, "ref": "yahoo:AAPL"}),
+        );
+        let q = page(&r, "quotes");
+        assert_eq!(
+            q["model"]["windows"][0]["rows"][0],
+            json!({"text": "Apple", "right": "…", "wait": true})
+        );
+        assert_eq!(q["status"], "1 chosen · Yahoo Finance, CoinGecko");
+        // Removed, then put back where it was; only once.
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "quotes.remove", "token": t, "ref": "yahoo:AAPL"}),
+        );
+        assert_eq!(
+            (r["undo"].clone(), r["quotes"].clone()),
+            (json!(true), json!([]))
+        );
+        let r = call(&h, &mut s, json!({"op": "undo", "token": t}));
+        assert_eq!(r["quotes"][0]["ref"], "yahoo:AAPL");
+        assert_eq!(
+            call(&h, &mut s, json!({"op": "undo", "token": t}))["error"],
+            "invalid"
+        );
+        // Another device cannot put back what this one removed; nor after 15 s.
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "quotes.remove", "token": t, "ref": "yahoo:AAPL"}),
+        );
+        assert_eq!(r["undo"], true);
+        let qr = s.ticket(at(0), &mut rng).unwrap().to_string();
+        let other = call(
+            &h,
+            &mut s,
+            json!({"op": "pair.qr", "ticket": qr, "peer": "192.0.2.30"}),
+        )["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            call(&h, &mut s, json!({"op": "undo", "token": other}))["error"],
+            "invalid"
+        );
+        let late = handle(
+            &h,
+            &mut s,
+            &json!({"op": "undo", "token": t}),
+            at(16),
+            &mut rng,
+        );
+        assert_eq!(late["error"], "invalid");
+        assert_eq!(late.get("quotes"), None);
+        // The gallery: an example of every kind.
+        let g = call(
+            &h,
+            &mut s,
+            json!({"op": "widgets.samples", "token": t, "lang": ["en"]}),
+        );
+        let kinds: Vec<&str> = g["samples"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds.len(), crate::ui::widgets::Kind::ALL.len());
+        assert!(
+            g["samples"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|x| x["model"]["sample"] == true)
+        );
+    }
+
     /// The widget's ops: the order, a search, adding only one of its own hits, the limits.
     #[test]
     fn widgets_from_the_browser() {
@@ -821,6 +1164,7 @@ mod tests {
             w["order"][0],
             json!({"kind": "next", "on": true, "label": "Prossimi"})
         );
+        assert_eq!(w["pages"][0]["kind"], "next");
         assert_eq!(w["order"][9]["on"], false);
         assert_eq!(w["quotes"], json!([]));
         assert_eq!(w["limits"]["quotes"], 8);

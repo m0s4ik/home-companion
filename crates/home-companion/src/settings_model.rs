@@ -539,6 +539,12 @@ pub fn panel_schema(host: &dyn Host, word: &dyn Fn(&str) -> String) -> Value {
     let mut groups: Vec<Value> = Vec::new();
     for i in ITEMS.iter().filter(|i| i.panel) {
         let mut v = json!({"key": i.key, "label": word(i.label)});
+        // The line that explains it, where the words have one (`<label>_help`).
+        let help_key = format!("{}_help", i.label);
+        let help = word(&help_key);
+        if !help.is_empty() && help != help_key {
+            v["help"] = json!(help);
+        }
         match i.kind {
             Kind::Bool => v["kind"] = json!("bool"),
             Kind::Int { min, max, step } => {
