@@ -302,6 +302,8 @@ pub fn handle(
         return err("no_session");
     };
     if super::widget_ops::OPS.contains(&op) {
+        let alive: Vec<String> = sessions.list(now).iter().map(|s| s.hash.clone()).collect();
+        sessions.searches.keep_only(&alive);
         let lang = lang_of(host, req);
         let who = super::widget_ops::Caller {
             me: &me,
@@ -626,6 +628,11 @@ mod tests {
         "cities.add",
         "cities.remove",
         "cities.move",
+        "sensors.add",
+        "sensors.remove",
+        "sensors.move",
+        "player.set",
+        "people.set",
         "notes.list",
         "notes.add",
         "notes.edit",

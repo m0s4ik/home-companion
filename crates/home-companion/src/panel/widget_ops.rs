@@ -123,6 +123,13 @@ pub struct SearchBook {
 }
 
 impl SearchBook {
+    /// Only the devices still let in keep their searches and counts (one revoked or expired is
+    /// forgotten, and its searches can no longer be added from).
+    pub fn keep_only(&mut self, alive: &[String]) {
+        self.times.retain(|k, _| alive.contains(k));
+        self.owners.retain(|_, (m, _, _)| alive.contains(m));
+    }
+
     fn allow(&mut self, me: &str, now: Instant) -> Result<(), &'static str> {
         let t = self.times.entry(me.to_string()).or_default();
         t.retain(|x| now.duration_since(*x) < Duration::from_secs(3600));
@@ -548,6 +555,13 @@ mod tests {
         assert_eq!(b.allow("a", t + SEARCH_EVERY), Err("search_wait"));
         assert!(b.allow("a", t0 + Duration::from_secs(3601)).is_ok());
         b.own("s", "a", What::City, t0);
+        b.own("t", "c", What::City, t0);
+        b.keep_only(&["a".to_string()]);
+        assert!(
+            !b.owned("t", "c", None, t0),
+            "a device revoked: its searches go"
+        );
+        assert!(!b.times.contains_key("b"));
         assert!(b.owned("s", "a", Some(What::City), t0));
         assert!(!b.owned("s", "b", None, t0));
         assert!(!b.owned("s", "a", Some(What::Quote), t0));

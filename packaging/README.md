@@ -216,6 +216,12 @@ market or a city is chosen, nothing at night or with the screen off; errors back
 `Retry-After` is honoured. The last data is in `<state_dir>/feeds.json` (0600, written only when it changed). The
 firewall ([home-companion.nft](home-companion.nft)) filters incoming traffic only: no rule is needed.
 
+Going back to 0.3.0 or 0.3.1 (the update's rollback, or by hand): those versions do not know the new keys of
+`[widgets]` in settings.toml, and the first time they save the widget's settings (a switch in Settings → Screen →
+Widgets) they write the section again without them: the markets, the other cities, the coins' currency, the order
+of the pages and Home Assistant's sensors, player and people are lost and must be chosen again after updating.
+`feeds.json` and the brain's notes stay.
+
 ## The brain (`home-companion-brain`, optional)
 
 Tools for Home Assistant's own AI: the conversation agent is an agent
