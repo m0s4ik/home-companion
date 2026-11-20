@@ -64,6 +64,8 @@ pub enum BrainMsg {
     TakePhoto,
     /// The calendar events for the "next" card, soonest first (`upcoming`).
     Upcoming(Vec<Upcoming>),
+    /// The board's notes, all of them, oldest first (`notes`).
+    Notes(Vec<Note>),
     /// The subscription is up (true) or lost (false).
     Present(bool),
 }
@@ -97,6 +99,14 @@ pub struct Upcoming {
     pub all_day: bool,
     pub title: String,
     pub calendar: String,
+}
+
+/// A note of the board (BrainMsg::Notes).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Note {
+    pub id: i64,
+    pub text: String,
+    pub created: i64,
 }
 
 /// Where an answer to the brain's question comes from (`confirm.answer`'s `via`).
@@ -145,6 +155,20 @@ pub fn turn_end(id: u64, said: &str) -> Value {
 /// The screen's "Undo" on the house command `id`.
 pub fn undo(id: i64) -> Value {
     json!({"cmd": "control.undo", "id": id})
+}
+
+/// The board: write a note, change one, remove one (the answers carry the whole list, and a
+/// `notes` event follows).
+pub fn note_add(text: &str) -> Value {
+    json!({"cmd": "notes.add", "text": text})
+}
+
+pub fn note_edit(id: i64, text: &str) -> Value {
+    json!({"cmd": "notes.edit", "id": id, "text": text})
+}
+
+pub fn note_delete(id: i64) -> Value {
+    json!({"cmd": "notes.delete", "id": id})
 }
 
 /// One event line of the subscription (crates/brain/src/events.rs is the other side; both
@@ -230,6 +254,20 @@ pub fn parse_event(v: Value) -> Option<BrainMsg> {
                         calendar: str_of(i, "calendar").unwrap_or_default(),
                     })
                 })
+                .collect(),
+        ),
+        "notes" => BrainMsg::Notes(
+            v.get("items")?
+                .as_array()?
+                .iter()
+                .filter_map(|i| {
+                    Some(Note {
+                        id: int_of(i, "id")?,
+                        text: str_of(i, "text")?,
+                        created: int_of(i, "created").unwrap_or(0),
+                    })
+                })
+                .take(20)
                 .collect(),
         ),
         _ => return None,
@@ -642,6 +680,18 @@ mod tests {
                 BrainMsg::Dnd(Some(Some(60))),
                 BrainMsg::Dnd(Some(None)),
                 BrainMsg::Dnd(None),
+                BrainMsg::Notes(vec![
+                    Note {
+                        id: 1,
+                        text: "The plumber comes on Tuesday".into(),
+                        created: 1_794_150_000,
+                    },
+                    Note {
+                        id: 2,
+                        text: "Water the plants".into(),
+                        created: 1_794_153_600,
+                    },
+                ]),
             ]
         );
         assert_eq!(
@@ -665,7 +715,11 @@ mod tests {
         assert_eq!(turn_end(7, "Done."), req[5]);
         assert_eq!(confirm_answer(42, false, Via::Stop), req[6]);
         assert_eq!(confirm_answer(42, true, Via::VoiceReflex), req[7]);
-        assert_eq!(req.len(), 8);
+        assert_eq!(json!({"cmd": "notes.list"}), req[8]);
+        assert_eq!(note_add("The plumber comes on Tuesday"), req[9]);
+        assert_eq!(note_edit(1, "The plumber comes on Wednesday"), req[10]);
+        assert_eq!(note_delete(1), req[11]);
+        assert_eq!(req.len(), 12);
     }
 
     /// Requests reach the brain in the order they were made, even when it answers slowly.

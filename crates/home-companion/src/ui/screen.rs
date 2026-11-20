@@ -1246,6 +1246,8 @@ pub struct Ui<S: Screen> {
     widget_every: Cell<Option<Duration>>,
     /// The data of the pages chosen from the browser and of Home Assistant's (feeds/, ha/).
     widget_data: RefCell<widgets::Data>,
+    /// The board's notes (the brain's `notes` event), oldest first.
+    board: RefCell<Vec<brain_link::Note>>,
     /// The markets chosen from the browser (settings.toml), in their order, and the coins'
     /// currency.
     widget_quotes: RefCell<Vec<crate::feeds::QuoteChoice>>,
@@ -1936,6 +1938,7 @@ impl<S: Screen> Ui<S> {
             widget_on: RefCell::new(widget_on),
             widget_order: RefCell::new(widget_order),
             widget_data: RefCell::new(widgets::Data::default()),
+            board: RefCell::new(Vec::new()),
             widget_quotes: RefCell::new(widget_quotes),
             widget_currency: RefCell::new(widget_currency),
             widget_cities: RefCell::new(widget_cities),
@@ -6956,6 +6959,12 @@ impl<S: Screen> Ui<S> {
                 }
                 BrainMsg::ShowView(v) => house_cards.push(HouseEvent::View(v)),
                 BrainMsg::TakePhoto => house_cards.push(HouseEvent::Photo),
+                BrainMsg::Notes(notes) => {
+                    self.widget_data.borrow_mut().notes =
+                        notes.iter().map(|n| n.text.clone()).collect();
+                    *self.board.borrow_mut() = notes;
+                    changed = true;
+                }
                 BrainMsg::Upcoming(items) => {
                     d.memories.events = event_rows(&items, &l, now_unix() as i64);
                     d.events = items;

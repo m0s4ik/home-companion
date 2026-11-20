@@ -62,7 +62,12 @@ pub fn answer(brain: &Brain, msg: &Value) -> Option<Value> {
                         "inputSchema": t.parameters});
                     if matches!(
                         t.name,
-                        "home_entities" | "recall" | "list_read" | "list_jobs" | "read_briefing"
+                        "home_entities"
+                            | "recall"
+                            | "list_read"
+                            | "list_jobs"
+                            | "read_briefing"
+                            | "note_list"
                     ) {
                         v["annotations"] = json!({"readOnlyHint": true});
                     }

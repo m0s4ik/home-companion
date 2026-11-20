@@ -129,6 +129,9 @@ const ACTION_TOOLS: &[&str] = &[
     "take_photo",
     "announce",
     "read_briefing",
+    "note_add",
+    "note_list",
+    "note_remove",
 ];
 
 /// Words that carry no meaning for comparing facts (with `memory::STOP`).

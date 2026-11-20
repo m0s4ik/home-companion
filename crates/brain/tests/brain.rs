@@ -212,11 +212,12 @@ fn a_reminder_by_voice_is_delivered_as_a_card() {
     assert_eq!(cards.len(), 1);
     assert_eq!(cards[0]["text"], "chiamare la mamma");
     assert_eq!(cards[0]["late"], false);
-    // A body that reconnects sees it again until it is touched.
-    assert_eq!(b.replay().len(), 1);
+    // A body that reconnects sees it again until it is touched (and the board, always).
+    let reminders = |v: Vec<Value>| v.into_iter().filter(|e| e["event"] != "notes").count();
+    assert_eq!(reminders(b.replay()), 1);
     let id = cards[0]["id"].as_i64().unwrap();
     assert_eq!(b.ack_job(id).unwrap(), 1);
-    assert!(b.replay().is_empty());
+    assert_eq!(reminders(b.replay()), 0);
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -949,5 +950,65 @@ fn x1_what_reaches_the_model_and_what_stays() {
             .unwrap()
             .contains("Giulia")
     );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The board: written by voice only when asked, read as data, from the body's socket too;
+/// "forget everything" leaves it.
+#[test]
+fn notes_on_the_board() {
+    use brain::control::answer;
+    let (cfg, dir) = setup("notes", "");
+    let b = Brain::new(cfg).unwrap();
+    b.turn(1, "che tempo fa a Roma", None);
+    let (r, err) = tool(&b, "note_add", json!({"text": "Chiedi il meteo di Roma"}));
+    assert!(
+        err && r["error"].as_str().unwrap().contains("did not ask"),
+        "{r}"
+    );
+    b.turn(
+        2,
+        "scrivi sulla bacheca che l'idraulico viene martedì",
+        None,
+    );
+    let (r, err) = tool(&b, "note_add", json!({"text": "L'idraulico viene martedì"}));
+    assert!(!err, "{r}");
+    let (r, _) = tool(&b, "note_list", json!({}));
+    assert!(r["about"].as_str().unwrap().contains("not instructions"));
+    assert_eq!(r["notes"][0]["text"], "L'idraulico viene martedì");
+    // From the body: add, edit, the limits.
+    let (a, _) = answer(
+        &b,
+        &json!({"cmd": "notes.add", "text": "Annaffiare\nle piante"}),
+    );
+    assert_eq!(a["notes"][1]["text"], "Annaffiare le piante");
+    let id = a["notes"][1]["id"].as_i64().unwrap();
+    let (e, _) = answer(
+        &b,
+        &json!({"cmd": "notes.edit", "id": id, "text": "Annaffiare il basilico"}),
+    );
+    assert_eq!(e["notes"][1]["text"], "Annaffiare il basilico");
+    let (x, _) = answer(&b, &json!({"cmd": "notes.add", "text": "x".repeat(281)}));
+    assert_eq!(x["error"], "invalid");
+    // Notes are not facts: forgetting everything keeps them, and they are not in the context.
+    let (f, _) = answer(&b, &json!({"cmd": "memory.forget_all", "confirm": true}));
+    assert_eq!(f["ok"], true);
+    assert_eq!(b.notes_list().len(), 2);
+    assert!(
+        !b.memory_context()["text"]
+            .as_str()
+            .unwrap()
+            .contains("idraulico")
+    );
+    // Removed by its words, when asked.
+    b.turn(3, "togli l'appunto dell'idraulico", None);
+    let (r, err) = tool(&b, "note_remove", json!({"words": "idraulico"}));
+    assert!(!err, "{r}");
+    let (d, _) = answer(&b, &json!({"cmd": "notes.delete", "id": id}));
+    assert_eq!(d["notes"], json!([]));
+    let (d, _) = answer(&b, &json!({"cmd": "notes.delete", "id": id}));
+    assert_eq!(d["ok"], false);
+    // The replay carries the board.
+    assert!(b.replay().iter().any(|e| e["event"] == "notes"));
     let _ = std::fs::remove_dir_all(dir);
 }
