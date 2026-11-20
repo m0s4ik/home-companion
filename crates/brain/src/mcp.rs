@@ -12,7 +12,6 @@
 //! only after a 404/405 before the session starts. No authentication: only Home Assistant's
 //! address may connect (`allow`).
 
-use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::Duration;
@@ -86,96 +85,45 @@ pub fn answer(brain: &Brain, msg: &Value) -> Option<Value> {
     })
 }
 
-struct Request {
-    method: String,
-    body: Vec<u8>,
-}
+/// Home Assistant's tool calls are small; a request head stays well under this.
+const LIMITS: httpd::Limits = httpd::Limits::new(16 << 10, MAX_BODY);
 
-fn read_request(r: &mut BufReader<TcpStream>) -> std::io::Result<Option<Request>> {
-    let mut line = String::new();
-    if r.read_line(&mut line)? == 0 {
-        return Ok(None);
-    }
-    let method = line.split_whitespace().next().unwrap_or("").to_string();
-    let mut len = 0usize;
-    let mut chunked = false;
-    loop {
-        line.clear();
-        if r.read_line(&mut line)? == 0 {
-            return Ok(None);
-        }
-        let l = line.trim_end();
-        if l.is_empty() {
-            break;
-        }
-        if let Some((k, v)) = l.split_once(':') {
-            match k.trim().to_ascii_lowercase().as_str() {
-                "content-length" => len = v.trim().parse().unwrap_or(0),
-                "transfer-encoding" => chunked = v.to_ascii_lowercase().contains("chunked"),
-                _ => {}
-            }
-        }
-    }
-    let mut body = Vec::new();
-    if chunked {
-        loop {
-            line.clear();
-            r.read_line(&mut line)?;
-            let n = usize::from_str_radix(line.trim().split(';').next().unwrap_or("0"), 16)
-                .unwrap_or(0);
-            if n == 0 || body.len() + n > MAX_BODY {
-                line.clear();
-                let _ = r.read_line(&mut line);
-                break;
-            }
-            let mut chunk = vec![0; n];
-            r.read_exact(&mut chunk)?;
-            body.extend_from_slice(&chunk);
-            line.clear();
-            r.read_line(&mut line)?;
-        }
-    } else if len > 0 {
-        if len > MAX_BODY {
-            return Err(std::io::Error::other("body too large"));
-        }
-        body.resize(len, 0);
-        r.read_exact(&mut body)?;
-    }
-    Ok(Some(Request { method, body }))
-}
-
-fn respond(w: &mut TcpStream, status: &str, body: &str) -> std::io::Result<()> {
-    let ctype = if body.is_empty() {
-        ""
+fn respond(w: &mut TcpStream, status: u16, body: &str) -> std::io::Result<()> {
+    let r = if body.is_empty() {
+        httpd::Response::new(status)
     } else {
-        "Content-Type: application/json\r\n"
+        httpd::Response::new(status).body("application/json", body)
     };
-    write!(
-        w,
-        "HTTP/1.1 {status}\r\n{ctype}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    )?;
-    w.flush()
+    r.write_to(w, false)
 }
 
 fn serve(brain: &Brain, stream: TcpStream) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
     let mut w = stream.try_clone()?;
-    let mut r = BufReader::new(stream);
-    let Some(req) = read_request(&mut r)? else {
-        return Ok(());
+    let mut r = stream;
+    let req = match httpd::read_request(&mut r, LIMITS) {
+        Ok(req) => req,
+        Err(e) => {
+            if let Some(status) = e.status() {
+                respond(&mut w, status, "")?;
+            }
+            return match e {
+                httpd::Error::Io(e) => Err(e),
+                _ => Ok(()),
+            };
+        }
     };
     if req.method != "POST" {
         // No server-to-client stream: the client goes on with POSTs only.
-        return respond(&mut w, "405 Method Not Allowed", "");
+        return respond(&mut w, 405, "");
     }
     let msg: Value = match serde_json::from_slice(&req.body) {
         Ok(v) => v,
         Err(_) => {
             let e = json!({"jsonrpc": "2.0", "id": null,
                 "error": {"code": -32700, "message": "parse error"}});
-            return respond(&mut w, "400 Bad Request", &e.to_string());
+            return respond(&mut w, 400, &e.to_string());
         }
     };
     let out = match &msg {
@@ -186,8 +134,8 @@ fn serve(brain: &Brain, stream: TcpStream) -> std::io::Result<()> {
         m => answer(brain, m),
     };
     match out {
-        Some(v) => respond(&mut w, "200 OK", &v.to_string()),
-        None => respond(&mut w, "202 Accepted", ""),
+        Some(v) => respond(&mut w, 200, &v.to_string()),
+        None => respond(&mut w, 202, ""),
     }
 }
 
@@ -310,5 +258,58 @@ mod tests {
         .unwrap();
         assert_eq!(r["error"]["code"], -32601);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Over HTTP as Home Assistant's client talks: a POST (plain or chunked) gets its JSON
+    /// answer, a notification 202, a GET 405, broken JSON 400, a body over the limit 413.
+    #[test]
+    fn over_http() {
+        use std::io::{Read, Write};
+        let dir = std::env::temp_dir().join(format!(
+            "home-companion-brain-mcp-http-{}",
+            std::process::id()
+        ));
+        let mut cfg = crate::config::Config::default();
+        cfg.memory.dir = dir.display().to_string();
+        let brain = Arc::new(Brain::new(cfg).unwrap());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || run(brain, listener, Vec::new()));
+        let ask = |raw: Vec<u8>| {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.write_all(&raw).unwrap();
+            let mut out = String::new();
+            let _ = s.read_to_string(&mut out);
+            out
+        };
+        let post = |body: &str| {
+            format!(
+                "POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .into_bytes()
+        };
+        let ping = r#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#;
+        let a = ask(post(ping));
+        assert!(a.starts_with("HTTP/1.1 200 OK\r\n"), "{a}");
+        assert!(
+            a.ends_with(r#"{"id":7,"jsonrpc":"2.0","result":{}}"#),
+            "{a}"
+        );
+        let chunked = format!(
+            "POST /mcp HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{ping}\r\n0\r\n\r\n",
+            ping.len()
+        );
+        assert!(ask(chunked.into_bytes()).starts_with("HTTP/1.1 200"));
+        let note = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+        assert!(ask(post(note)).starts_with("HTTP/1.1 202"));
+        assert!(ask(b"GET /mcp HTTP/1.1\r\n\r\n".to_vec()).starts_with("HTTP/1.1 405"));
+        assert!(ask(post("{nope")).starts_with("HTTP/1.1 400"));
+        let big = format!(
+            "POST /mcp HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            MAX_BODY + 1
+        );
+        assert!(ask(big.into_bytes()).starts_with("HTTP/1.1 413"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

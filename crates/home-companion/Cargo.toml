@@ -54,6 +54,8 @@ serde_json = "1"
 toml = "1"
 # The QR code of Settings → Home Assistant (the link, src/ha/link.rs): one file, no dependencies.
 qrcodegen = "1.8"
+# The HTTP server pieces shared with the brain and the browser panel (std only).
+httpd = { path = "../httpd" }
 
 # As spike-ui: fontconfig is opened with dlopen, not linked (the device has none; our fonts are
 # embedded).

@@ -25,3 +25,5 @@ libc = "0.2"
 # The yes/no words of the reflex grammar (pure Rust: libc, serde, serde_json, toml, which the
 # brain has already; libvosk only behind the reflex crate's own `vosk` feature).
 reflex = { path = "../reflex" }
+# The HTTP server pieces shared with the body (std only).
+httpd = { path = "../httpd" }

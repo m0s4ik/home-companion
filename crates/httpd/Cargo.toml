@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+[package]
+name = "httpd"
+description = "The smallest HTTP/1.1 server pieces home-companion needs: a request read with limits, an answer written (std only)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]

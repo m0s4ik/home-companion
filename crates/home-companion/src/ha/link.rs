@@ -23,7 +23,7 @@
 //! on the port otherwise (the firewall must allow it from the LAN: packaging/README.md). One
 //! connection at a time, a 3 s read timeout and an 8 KiB request cap.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -34,7 +34,8 @@ use std::time::Duration;
 
 use super::auth::{self, TokenError};
 
-const MAX_REQUEST: usize = 8 << 10;
+/// The head of a request (8 KiB); a GET has no body.
+const LIMITS: httpd::Limits = httpd::Limits::new(8 << 10, 0);
 
 /// What a link needs.
 #[derive(Debug, Clone)]
@@ -210,7 +211,7 @@ struct Server {
 
 /// One HTTP answer.
 struct Page {
-    status: &'static str,
+    status: u16,
     body: String,
 }
 
@@ -258,18 +259,26 @@ impl Server {
         let _ = s.set_nonblocking(false);
         let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
         let _ = s.set_write_timeout(Some(Duration::from_secs(3)));
-        let target = match read_target(&mut s) {
-            Ok(t) => t,
+        let req = match httpd::read_request(&mut s, LIMITS) {
+            Ok(r) => r,
             Err(e) => {
                 log::debug!("Home Assistant link: {peer}: {e}");
+                if let Some(status) = e.status() {
+                    let _ = httpd::Response::new(status).write_to(&mut s, false);
+                }
                 return false;
             }
         };
-        let (path, query) = target.split_once('?').unwrap_or((&target, ""));
+        let head_only = req.method == "HEAD";
+        if req.method != "GET" && !head_only {
+            let _ = httpd::Response::new(405).write_to(&mut s, false);
+            return false;
+        }
+        let (path, query) = (req.path(), req.query());
         let mut linked = false;
         let page = match path {
             "/" => Page {
-                status: "200 OK",
+                status: 200,
                 body: html(
                     &self.setup.name,
                     &self.setup.name,
@@ -300,7 +309,7 @@ impl Server {
                         forget_state();
                         let _ = self.tx.send(LinkEvent::Linked);
                         Page {
-                            status: "200 OK",
+                            status: 200,
                             body: html(&self.setup.name, &self.setup.done_text, ""),
                         }
                     }
@@ -317,26 +326,22 @@ impl Server {
                             ),
                         }
                         Page {
-                            status: "400 Bad Request",
+                            status: 400,
                             body: html(&self.setup.name, &self.setup.failed_text, ""),
                         }
                     }
                 }
             }
             _ => Page {
-                status: "404 Not Found",
+                status: 404,
                 body: html("404", "404", ""),
             },
         };
-        let _ = write!(
-            s,
-            "HTTP/1.1 {}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\n\
-             Cache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n{}",
-            page.status,
-            page.body.len(),
-            page.body
-        );
-        let _ = s.flush();
+        let _ = httpd::Response::new(page.status)
+            .body("text/html; charset=utf-8", page.body)
+            .header("Cache-Control", "no-store")
+            .header("Referrer-Policy", "no-referrer")
+            .write_to(&mut s, head_only);
         linked
     }
 
@@ -357,33 +362,6 @@ impl Server {
     }
 }
 
-/// The request target of a GET ("/auth_callback?code=.."), after reading the whole head.
-fn read_target(s: &mut TcpStream) -> io::Result<String> {
-    let mut buf = Vec::with_capacity(1024);
-    let mut chunk = [0u8; 1024];
-    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
-        let n = s.read(&mut chunk)?;
-        if n == 0 {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "closed"));
-        }
-        buf.extend_from_slice(&chunk[..n]);
-        if buf.len() > MAX_REQUEST {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "request too large",
-            ));
-        }
-    }
-    let line = buf.split(|&b| b == b'\r').next().unwrap_or_default();
-    let line = std::str::from_utf8(line)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "not UTF-8"))?;
-    let mut parts = line.split(' ');
-    match (parts.next(), parts.next()) {
-        (Some("GET" | "HEAD"), Some(t)) if t.starts_with('/') => Ok(t.to_string()),
-        _ => Err(io::Error::new(io::ErrorKind::InvalidData, "not a GET")),
-    }
-}
-
 /// The QR code of `text` as rows of dark (true) and light modules, with the 4-module quiet zone.
 pub fn qr_modules(text: &str) -> Option<(usize, Vec<bool>)> {
     let qr = qrcodegen::QrCode::encode_text(text, qrcodegen::QrCodeEcc::Low).ok()?;
@@ -401,6 +379,7 @@ pub fn qr_modules(text: &str) -> Option<(usize, Vec<bool>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn urls() {
@@ -509,5 +488,40 @@ mod tests {
         });
         assert!(closed);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// What the shared HTTP reader refuses is refused here too, and the page stays.
+    #[test]
+    fn odd_requests() {
+        let d =
+            std::env::temp_dir().join(format!("home-companion-link-odd-{}", std::process::id()));
+        let ha = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let _link = Link::start(LinkSetup {
+            hass_url: format!("http://127.0.0.1:{}", ha.local_addr().unwrap().port()),
+            port,
+            state_dir: d,
+            name: "Alfred".into(),
+            done_text: "ok".into(),
+            failed_text: "no".into(),
+        })
+        .unwrap();
+        let raw = |r: &str| {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.write_all(r.as_bytes()).unwrap();
+            let mut out = String::new();
+            let _ = s.read_to_string(&mut out);
+            out
+        };
+        assert!(raw("POST / HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 405"));
+        assert!(raw("GET / HTTP/9\r\n\r\n").starts_with("HTTP/1.1 400"));
+        let long = format!("GET /{} HTTP/1.1\r\n\r\n", "a".repeat(9000));
+        assert!(raw(&long).starts_with("HTTP/1.1 431"));
+        let head = raw("HEAD / HTTP/1.1\r\n\r\n");
+        assert!(head.starts_with("HTTP/1.1 200") && head.ends_with("\r\n\r\n"));
+        assert!(get(port, "/").starts_with("HTTP/1.1 200"));
     }
 }
