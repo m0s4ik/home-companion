@@ -39,6 +39,41 @@ retries by itself; timers and alarms go on working.
 <img src="docs/images/offline.png" width="400" alt="Home Assistant is not answering: Alfred on a deckchair under a beach umbrella, the card says he retries by himself and that timers and alarms work"> <!-- state: offline -->
 </p>
 
+### 🧩 The widget: markets, other cities, notes, Home Assistant's numbers
+
+Under the cards, one panel turns through what is around the house, in the order you choose: what comes next, the
+weather, the shopping, and what you pick from a phone or a computer (Settings → Access from the browser): stocks,
+indices, currencies and coins with the day's curve, the weather of other cities in their own time, a board of notes
+("write on the board that…"), Home Assistant's sensors with their last 24 hours, the doors and windows left open and
+the batteries running low, what a media player plays, who is home. A tap opens the page behind it.
+
+<p align="center">
+<img src="docs/images/widget-quotes.png" width="400" alt="The home with the Markets widget: four rows with a name, a small curve of the day, the price and the change in green or red"> <!-- state: widget-quotes -->
+<img src="docs/images/trends.png" width="400" alt="The Markets page: a card per quote with its price, change, the day's curve and its high and low"> <!-- state: trends -->
+</p>
+<p align="center">
+<img src="docs/images/widget-cities.png" width="400" alt="The Other cities widget: the time in Berlin, Tokyo and Springfield, the sky and the temperature"> <!-- state: widget-cities -->
+<img src="docs/images/city.png" width="400" alt="A city's page: chips with the cities, the weather now with the local time, the next days"> <!-- state: city -->
+</p>
+<p align="center">
+<img src="docs/images/widget-sensors.png" width="400" alt="The Sensors widget: outdoor temperature, living room, humidity and power, each with its curve of the last 24 hours"> <!-- state: widget-sensors -->
+<img src="docs/images/widget-notes.png" width="400" alt="The Notes widget: three short notes for whoever is home"> <!-- state: widget-notes -->
+</p>
+
+Where the data comes from, and what leaves your home network:
+
+- **Markets**: [Yahoo Finance](https://finance.yahoo.com) (an **unofficial API**, it may change or stop working;
+  quotes are delayed, for information only) and [CoinGecko](https://www.coingecko.com) ("Crypto data by
+  CoinGecko"). **Other cities**: [Open-Meteo](https://open-meteo.com) ("Weather data by Open-Meteo.com", CC BY 4.0;
+  its free API is for non-commercial use). No keys. The device asks these services directly, with `curl`, only for
+  what you chose and only while that page is on, by day, with the screen on (a market every 15 minutes while it is
+  open, the coins every 10, the cities every 30): they see the symbols and cities and your home's internet address.
+  Nothing is asked until you add something. The last data is kept in `feeds.json` next to the settings.
+- **Notes** live in `home-companion-brain` (not in the memory, never in the assistant's instructions).
+- **Home Assistant's pages** use the token of the QR link and nothing else: one `get_states` for the list of
+  sensors, players and people, one subscription for the chosen ones, the sensors' statistics for the curves.
+  Anyone who looks at the screen sees them: "At home" is off until you turn it on.
+
 ### 🗣️ Talk to it
 
 Say **"Okay Alfred"**, or tap Talk: the wake word is heard on the device, and no audio leaves it before that. Your

@@ -109,26 +109,51 @@ its ring and the gold fill) and No stays a target that wins.
   reminder, (6) the shopping list, (7) what plays, (8) the last long answer for a few minutes (opens Conversations).
   A tap on a card opens what it belongs to.
 - **Widget** (`crates/home-companion/src/ui/widgets.rs`, `WidgetPanel`): one panel under the cards that turns
-  through what is around the house: **Coming up** (reminders and calendar events of today and tomorrow: the time in
-  gold on the left, "tomorrow" with the time on the right), **Weather** (five columns, the next hours: hour, sky,
-  temperature; without an hourly forecast the next four days with their high) and **Shopping** ("4 to buy" in the
-  header, one item a row). It takes **the slots the cards leave free**, one rule for every case: 3 free (4 on the
-  compact home) = a header (icon 28, the name in 20 Medium `text-3`, at the right a count or the time of old data)
-  and 4 rows of 52 px (6), 2 = a header and 2 rows, 1 = one row as tall as a card without header, 0 = no widget.
-  It is never taller than what it shows: a page with fewer rows (or the weather's columns) ends under its
-  content and the band below stays empty, as under the cards.
-  Rows that do not fit are cut, never shrunk; text never under 20 px, rows in 28. **Cards and widget**: with its
-  page on, the next reminder and the shopping list are pages of the widget, not cards; everything that asks for
-  attention or a gesture stays a card and wins its slot. A page with nothing to say is not in the turn (no "No
-  events today"); one page: no dots, no turn. The invitation shows only with neither a card nor a widget.
+  through what is around the house, up to eight pages in the user's order: **Coming up** (reminders and calendar
+  events of today and tomorrow: the time in gold on the left, "tomorrow" with the time on the right), **Markets**
+  (stocks, indices, currencies, coins chosen from the browser: name, the day's curve, value, change), **Weather**
+  (five columns, the next hours: hour, sky, temperature; without an hourly forecast the next four days with their
+  high), **Other cities** (the time there in gold, the name, the sky, the temperature), **Shopping** ("4 to buy" in
+  the header, one item a row), **Notes** (the board, a note a row), **Sensors** (Home Assistant's numbers chosen from
+  the browser: name, the last 24 hours' curve, value, change against 24 hours ago), **To check** (doors and windows
+  open, then batteries under 20 % from the emptiest; only when there is something), **Now playing** (a chosen media
+  player, only while it plays; never Alfred's own AirPlay, which has its card) and **At home** (who is home, away or
+  in a zone; off by default: anyone in the room reads it). It takes **the slots the cards leave free**, one rule for
+  every case: 3 free (4 on the compact home) = a header (icon 28, the name in 20 Medium `text-3`, at the right a
+  count, the rows shown or the time of old data) and 4 rows of 52 px (6), 2 = a header and 2 rows, 1 = one row as
+  tall as a card without header (a page's own summary: the first quote without its curve, "1 open · 2 batteries",
+  the first note and "+2"), 0 = no widget. It is never taller than what it shows. Rows that do not fit are cut, never
+  shrunk; text never under 20 px, rows in 28. **More rows than fit** (Markets, Sensors, Notes, To check, Cities, At
+  home): the page shows a window that moves on each time the page comes back ("5-8 of 8" in the header), or every
+  interval when it is the only page. **A row with a number**: the curve (a `Path` whose commands Rust computes, 160 x
+  32, stroke 2 px `text-2`, no fill), the value in a right-aligned column of 176 px (so the curves stand in a
+  column), the change ("▲ 1.2%", "▼ 0.5"). **Colour only on the markets** (`ok` up, `danger` down): for a
+  temperature or a power, up is neither good nor bad. **Old data** says when it is from ("data from 14:02") after
+  two intervals and leaves the page after a day (the markets: two). **Cards and widget**: with its page on, the
+  next reminder and the shopping list are pages of the widget, not cards; everything that asks for attention or a
+  gesture stays a card and wins its slot. A page with nothing to say is not in the turn (no "No events today"); one
+  page: no dots, no turn. The invitation shows only with neither a card nor a widget.
   **The turn**: every 20 s (Settings → Screen → Widgets: 20 s, 30 s, 1 min or by hand), driven by the body's
   one-second tick, never by an animation of the screen; it stands still while the home is not what is on screen
   (another page, Home Assistant's view, a mirrored screen, a conversation, a ring, a reminder full screen, the
   night, the screen off, the control centre, a dialog) and the page stays a whole interval when the home is back.
-  The page on screen is a photograph: new data shows when it comes back, or at the minute. A swipe across turns it,
-  a tap opens its own page (Reminders, Weather, Shopping); after either the turn waits a minute. Dots of 6 px, 16
-  apart, in the band's last 16 px (the current one `accent`, the others `line`). Not at night. Settings → Screen →
-  Widgets: a switch per page (all on by default) and the interval; saved as `[widgets]` in settings.toml.
+  The page on screen is a photograph: new data shows when it comes back, or at the minute (no thread ever writes a
+  property: the feeds and Home Assistant's data wait in the screen until then). A swipe across turns it, a tap opens
+  its own page (Reminders, Weather, Shopping, the trends, the city, Notes); To check, Now playing and At home
+  have none (the widget's window already goes through every row) and do not even press. After either the turn waits a minute. Dots of 6 px, 16 apart, in the band's last 16
+  px (the current one `accent`, the others `line`). Not at night.
+  Settings → Screen → Widgets: the interval, then a switch per page in the turn's order (scrolls), with a line in
+  `text-3` under the pages whose content is chosen from the browser ("3 chosen · Chosen from the browser"). The
+  order, the markets, the cities, Home Assistant's entities are chosen only from the browser panel (no keyboard
+  here); saved as `[widgets]` in settings.toml (`order`, `on`, `seen`, `quotes`, `cities`, `currency`, `sensors`,
+  `player`, `people`, `check_openings`, `check_batteries`).
+- **The widget's pages** (opened by a tap): **trends** (the markets or the sensors: a card each, read only: name,
+  symbol or "data from…", value 40 Tnum, change, the day's curve 520 x 96, high and low; the sources' credit under
+  them), **city** (the weather page with another city's data in its own time zone: "local time 15:02" in the
+  condition's line; the cities as chips above; "Weather data by Open-Meteo.com (CC BY 4.0)" under the forecast),
+  **Notes** (a row per note with its date, ✕ asks "Delete?" and Undo stays 5 s; "To write one: by voice or from the
+  browser"; the chips "Reminders · Notes" join it to the Reminders page, which has the same chips: More has no room
+  for a ninth tile).
 - **Offline** (Home Assistant not connected): the offline pose, the status card, HA dimmed to 35 %; Talk still works
   for the local reflexes.
 - **Conversation**: the wave (72 bars, the state colour), the phrase 48, the heard sentence while thinking and small

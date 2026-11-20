@@ -20,7 +20,7 @@ contributor or a coding assistant: [docs/android-port.md](docs/android-port.md).
 
 | Crate | What |
 |---|---|
-| `crates/home-companion` | the body: state machine (`core.rs`), Wyoming satellite, reflexes, timers, the screen (`ui/`: `screen.rs` controller, `cards.rs`, renderers fbdev/GPU/window/headless, `webview/` for the Home Assistant view) |
+| `crates/home-companion` | the body: state machine (`core.rs`), Wyoming satellite, reflexes, timers, the screen (`ui/`: `screen.rs` controller, `cards.rs`, renderers fbdev/GPU/window/headless, `webview/` for the Home Assistant view), `feeds/` (the widget's markets and other cities, through `curl`) |
 | `crates/spike-ui/ui/*.slint` | the screen layout (Slint), used by `home-companion` |
 | `crates/audio` | one owner of speaker and microphone (ALSA on Linux, `cpal` elsewhere) |
 | `crates/wakeword` | microWakeWord models on TensorFlow Lite Micro |

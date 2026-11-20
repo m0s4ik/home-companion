@@ -182,7 +182,8 @@ the video socket) is in `/var/lib/home-companion/airplay/`.
 ## The browser panel (`home-companion-panel`)
 
 Settings → Access from the browser (off until switched on there) lets a phone or a computer on the home network change
-the settings, the widgets and the shopping list at `http://<device>:8125/`. Plain HTTP, for the home network only: no
+the settings, the widgets (their order, the markets and cities, Home Assistant's sensors, player and people, what
+to check), the notes and the shopping list at `http://<device>:8125/`. Plain HTTP, for the home network only: no
 secret ever passes through it (no Home Assistant token or address, no keys, Wi-Fi, photos, recordings, memories,
 conversations, updates). Each device is allowed on the screen: a request shows a dialog with a 4-digit code the
 browser shows too (Refuse · Allow), or the QR code on that settings page, a one-time ticket good for two minutes, lets in
@@ -203,6 +204,17 @@ the phone that scans it. At most five devices, each for 30 days from its last us
 - Trying it without the device: `cargo run -p home-companion --example panel_body -- /tmp/panel-demo` (a body with
   sample data that allows every request after 4 s) and `cargo run -p panel -- --socket /tmp/panel-demo/panel.sock
   --listen 127.0.0.1:8125`.
+
+## The widget's data from the internet (optional)
+
+The home's widget can show markets and other cities chosen from the browser panel. Only then the body (its thread
+`feeds`, `crates/home-companion/src/feeds/`) runs `curl` (already a dependency, as for updates): HTTPS only, TLS 1.2+,
+10 s and 512 KiB at most per answer, no redirects, an empty environment but `PATH`, one request at a time, to
+`query1.finance.yahoo.com` (or `query2.` for six hours after it refused us), `api.coingecko.com`,
+`api.open-meteo.com` and `geocoding-api.open-meteo.com` (the panel's city search). Nothing else, nothing before a
+market or a city is chosen, nothing at night or with the screen off; errors back off up to six hours and a server's
+`Retry-After` is honoured. The last data is in `<state_dir>/feeds.json` (0600, written only when it changed). The
+firewall ([home-companion.nft](home-companion.nft)) filters incoming traffic only: no rule is needed.
 
 ## The brain (`home-companion-brain`, optional)
 
