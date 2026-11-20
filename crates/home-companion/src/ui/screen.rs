@@ -1246,7 +1246,40 @@ pub struct Ui<S: Screen> {
     /// the sessions are borrowed while a request is answered, the rest is drawn meanwhile.
     panel_sessions: RefCell<crate::panel::sessions::Sessions>,
     panel: RefCell<panel_ui::PanelUi>,
+    /// Settings applied but not written yet, and the timer that writes them (settings_model).
+    settings_pending: RefCell<Vec<Change>>,
+    settings_timer: Timer,
     this: RefCell<Weak<Self>>,
+}
+
+/// Settings changed within this are written together.
+const SETTINGS_WRITE_AFTER: Duration = Duration::from_secs(1);
+
+impl<S: Screen> Ui<S> {
+    /// The settings changed since the last write, written now.
+    pub fn flush_settings(&self) {
+        let pending = std::mem::take(&mut *self.settings_pending.borrow_mut());
+        if let Some(s) = &self.settings {
+            for c in &pending {
+                model::save(s, c);
+            }
+        }
+        self.settings_timer.stop();
+    }
+
+    /// A value still waiting to be written, for the keys the screen does not hold.
+    fn pending_value(&self, key: &str) -> Option<serde_json::Value> {
+        self.settings_pending
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|c| match (key, c) {
+                ("update_prerelease", Change::UpdatePrerelease(on)) => Some(json!(on)),
+                ("lists", Change::Lists(l)) => Some(json!(l)),
+                ("calendars", Change::Calendars(l)) => Some(json!(l)),
+                _ => None,
+            })
+    }
 }
 
 impl<S: Screen> model::Host for Ui<S> {
@@ -1254,11 +1287,57 @@ impl<S: Screen> model::Host for Ui<S> {
         self.settings.as_ref()
     }
 
+    /// What the screen holds now: every change is applied at once and written a second later.
     fn live(&self, key: &str) -> Option<serde_json::Value> {
-        match key {
-            "volume" => Some(json!(self.volume.get())),
-            "language" => Some(json!(self.locale.borrow().code)),
-            _ => None,
+        let (on, start, end) = self.desk.borrow().night;
+        let hub = self.hub_tx.borrow().is_some();
+        Some(match key {
+            "volume" => json!(self.volume.get()),
+            "language" => json!(self.locale.borrow().code),
+            "widgets" => json!(
+                self.widget_on
+                    .borrow()
+                    .iter()
+                    .map(|k| k.key())
+                    .collect::<Vec<_>>()
+            ),
+            "widgets_every" => json!(self.widget_every_secs().to_string()),
+            "night_on" => json!(on),
+            "night_start" => json!(start),
+            "night_end" => json!(end),
+            "home_compact" => json!(self.home_compact.get()),
+            "wake_sensitivity" => {
+                json!(WakeSensitivity::from_step(self.screen.get_wake_step()).key())
+            }
+            "keep_conversations" => json!(self.history.borrow().keeps()),
+            "lists" if hub => json!(self.choice.borrow().lists),
+            "calendars" if hub => json!(self.choice.borrow().calendars),
+            "panel" => json!(self.panel.borrow().on),
+            // Not held by the screen: the file (or a change still to write, below).
+            _ => return self.pending_value(key),
+        })
+    }
+
+    fn save(&self, change: &Change) {
+        if self.settings.is_none() {
+            return;
+        }
+        {
+            let mut p = self.settings_pending.borrow_mut();
+            // The latest of each kind: Night and Widgets carry their whole section.
+            p.retain(|c| std::mem::discriminant(c) != std::mem::discriminant(change));
+            p.push(change.clone());
+        }
+        if let Some(me) = self.this.borrow().upgrade() {
+            let w = Rc::downgrade(&me);
+            self.settings_timer
+                .start(TimerMode::SingleShot, SETTINGS_WRITE_AFTER, move || {
+                    if let Some(ui) = w.upgrade() {
+                        ui.flush_settings();
+                    }
+                });
+        } else {
+            self.flush_settings();
         }
     }
 
@@ -1619,6 +1698,8 @@ impl<S: Screen> Ui<S> {
             dnd: Cell::new(Dnd::default()),
             panel_sessions: panel_ui::load_sessions(opts_state_dir.as_deref()),
             panel: RefCell::new(panel_ui::PanelUi::new(opts_panel, panel_on)),
+            settings_pending: RefCell::new(Vec::new()),
+            settings_timer: Timer::default(),
             this: RefCell::new(Weak::new()),
         });
         *ui.this.borrow_mut() = Rc::downgrade(&ui);
@@ -2440,6 +2521,7 @@ impl<S: Screen> Ui<S> {
         if self.opts.demo.is_some() {
             return;
         }
+        self.panel.borrow_mut().keys_asleep = false;
         let now = Instant::now();
         if why == WakeSource::Touch {
             self.desk.borrow_mut().touched = Some(now);
@@ -2470,6 +2552,8 @@ impl<S: Screen> Ui<S> {
             return;
         }
         log::info!(event = "screen_sleep"; "screen: to sleep (Vol+ and Vol- together)");
+        // Put to sleep on purpose: no access dialog lights it up (the browser waits).
+        self.panel.borrow_mut().keys_asleep = true;
         self.motion.borrow_mut().awake.sleep(Instant::now());
         self.step();
     }
@@ -2724,6 +2808,7 @@ impl<S: Screen> Ui<S> {
 
     /// At exit: full brightness, so whatever uses the screen next is visible.
     pub fn on_exit(&self) {
+        self.flush_settings();
         if self.opts.demo.is_none() {
             let level = self.opts.screen.levels.active;
             self.motion.borrow_mut().backlight.set(level);
@@ -7157,6 +7242,9 @@ mod tests {
             vec![("todo.a".into(), "A".into()), ("todo.b".into(), "B".into())];
         set("lists", json!(["todo.b"]));
         assert_eq!(ui.choice.borrow().lists, ["todo.b"]);
+        // Written a second later, all at once.
+        assert!(!Settings::in_dir(&dir).home_compact());
+        ui.flush_settings();
         let saved = Settings::in_dir(&dir);
         assert!(saved.home_compact());
         assert_eq!(saved.night(), (false, 21, 7));
@@ -7198,6 +7286,7 @@ mod tests {
         assert!(!w.get_panel_on());
         tap(1172.0, 150.0);
         assert!(w.get_panel_on());
+        ui.flush_settings();
         assert!(Settings::in_dir(&dir).panel_on());
         assert!(w.get_panel_address().starts_with("http://"));
         // A request: the dialog with the code; Allow lets the browser in.
@@ -7207,6 +7296,10 @@ mod tests {
         assert_eq!(w.get_panel_ask_line(), "Chrome on macOS · 192.0.2.24");
         // A second one while it waits: busy, the dialog stays the first's.
         assert_eq!(ask("192.0.2.25")["error"], "busy");
+        // Just appeared: a tap does not answer it yet (700 ms, a timer in the real loop).
+        tap(975.0, 572.0);
+        assert_eq!(w.get_dialog(), "panel-ask");
+        w.set_panel_ask_ready(true);
         tap(975.0, 572.0);
         assert_eq!(w.get_dialog(), "");
         let st = ui.panel_call(&json!({"op": "pair.status", "id": r["id"]}));
@@ -7216,8 +7309,10 @@ mod tests {
         assert_eq!(hello["session"], true);
         ui.poll_panel();
         assert_eq!(w.get_panel_devices().row_count(), 1);
-        // Refuse.
+        // Refuse (the page closed: with it open, requests are let through again).
+        w.set_page("settings".into());
         let r = ask("192.0.2.26");
+        w.set_panel_ask_ready(true);
         tap(680.0, 572.0);
         assert_eq!(w.get_dialog(), "");
         let st = ui.panel_call(&json!({"op": "pair.status", "id": r["id"]}));
@@ -7236,11 +7331,16 @@ mod tests {
         ui.panel.borrow_mut().blocked = false;
         let r = ask("192.0.2.28");
         assert!(r["ok"].as_bool().unwrap());
+        w.set_panel_ask_ready(true);
         tap(680.0, 572.0);
         ui.tick_panel();
         assert!(ui.panel.borrow().blocked);
         assert!(ui.card_kinds.borrow().contains(&"panel"));
         assert_eq!(ask("192.0.2.29")["error"], "blocked");
+        // Opening the page lets requests through again.
+        w.set_page("panel".into());
+        ui.tick_panel();
+        assert!(!ui.panel.borrow().blocked);
         // The QR code's ticket lets in once.
         w.set_page("panel".into());
         ui.refresh_panel();
@@ -7293,8 +7393,21 @@ mod tests {
         ui.set_dnd(Some(now_unix() as u64 + 600));
         assert_eq!(ask("192.0.2.1")["error"], "cannot_ask");
         ui.set_dnd(None);
-        assert_eq!(ask("192.0.2.1")["ok"], true);
+        // Put to sleep with Vol+ and Vol−: nothing lights it up until it wakes.
+        ui.panel.borrow_mut().keys_asleep = true;
+        assert_eq!(ask("192.0.2.1")["error"], "cannot_ask");
+        ui.panel.borrow_mut().keys_asleep = false;
+        let r = ask("192.0.2.1");
+        assert_eq!(r["ok"], true);
         assert_eq!(ui.screen.get_dialog(), "panel-ask");
+        // Switched off while it waits: the dialog goes, the browser hears no, nobody counted.
+        crate::settings_model::commit(&*ui, Change::Panel(false));
+        assert_eq!(ui.screen.get_dialog(), "");
+        crate::settings_model::commit(&*ui, Change::Panel(true));
+        let st = ui.panel_call(&json!({"op": "pair.status", "id": r["id"]}));
+        assert_eq!(st["status"], "refused");
+        ui.panel_sessions.borrow_mut().skip_pause();
+        assert_eq!(ask("192.0.2.1")["ok"], true);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -7354,6 +7467,7 @@ mod tests {
         tap(960.0, 410.0);
         assert_eq!(w.get_widget_every(), 60);
         // Saved.
+        ui.flush_settings();
         let saved = Settings::in_dir(&dir).widgets();
         assert_eq!(saved, (vec![WidgetKind::Weather], 60));
         let _ = std::fs::remove_dir_all(&dir);

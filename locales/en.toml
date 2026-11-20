@@ -536,7 +536,7 @@ panel_waiting = "Waiting for an answer on the screen…"
 panel_refused = "Access was refused on the screen."
 panel_expired = "Nobody answered on the screen in time."
 panel_busy = "Another device is asking right now: try again in a minute."
-panel_blocked = "Too many requests went unanswered: try again in ten minutes."
+panel_blocked = "Too many requests went unanswered: scan the QR code in Settings > Access from the browser on the screen, or try again later."
 panel_wait = "Access was refused a moment ago: try again in ten minutes."
 panel_cannot_ask = "{name} cannot ask right now (night, do not disturb or busy): try again in a while."
 panel_full = "Five devices already have access: revoke one on the screen first."
@@ -577,7 +577,7 @@ panel_ask_text = "A device asks to set up {name}. Allow it only if its page show
 panel_allow = "Allow"
 panel_refuse = "Refuse"
 panel_blocked_title = "Access requests stopped"
-panel_blocked_text = "Too many unanswered: none for ten minutes."
+panel_blocked_text = "Too many unanswered: use the QR code in Settings."
 panel_device_detail = "{peer} · {when}"
 
 [sample]

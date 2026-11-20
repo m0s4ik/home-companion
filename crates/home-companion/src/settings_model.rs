@@ -188,6 +188,14 @@ pub trait Host {
     fn dynamic_options(&self, key: &str) -> Vec<(String, String)>;
     /// Applies a value just written.
     fn apply(&self, change: Change);
+    /// Writes a change to `settings.toml`: at once by default; the screen gathers them and
+    /// writes once a second at most (a flood of sets from the panel is not a flood of writes
+    /// on the device's flash), answering [`Host::live`] from what it holds meanwhile.
+    fn save(&self, change: &Change) {
+        if let Some(s) = self.settings() {
+            save(s, change);
+        }
+    }
 }
 
 pub fn find(key: &str) -> Option<&'static Item> {
@@ -313,16 +321,29 @@ fn strings(v: &Value) -> Vec<String> {
 pub fn change_for(host: &dyn Host, key: &str, value: &Value) -> Result<Change, SetError> {
     let item = find(key).ok_or(SetError::Unknown)?;
     let v = check(host, item, value).ok_or(SetError::Invalid)?;
-    let s = host.settings();
+    // The neighbours as they are now (what the host holds, else the file).
     let widgets = || {
-        s.map(Settings::widgets).unwrap_or_else(|| {
-            (
-                WidgetKind::ALL.to_vec(),
-                crate::ui::widgets::DEFAULT_EVERY.as_secs() as u32,
-            )
-        })
+        let on: Vec<WidgetKind> = get(host, "widgets")
+            .map(|v| {
+                let keys = strings(&v);
+                WidgetKind::ALL
+                    .into_iter()
+                    .filter(|k| keys.iter().any(|x| x == k.key()))
+                    .collect()
+            })
+            .unwrap_or_else(|| WidgetKind::ALL.to_vec());
+        let every = get(host, "widgets_every")
+            .and_then(|v| v.as_str().and_then(|e| e.parse().ok()))
+            .unwrap_or(crate::ui::widgets::DEFAULT_EVERY.as_secs() as u32);
+        (on, every)
     };
-    let night = || s.map(Settings::night).unwrap_or((true, 23, 7));
+    let night = || {
+        let n = |k: &str, d: i64| get(host, k).and_then(|v| v.as_i64()).unwrap_or(d) as u32;
+        let on = get(host, "night_on")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        (on, n("night_start", 23), n("night_end", 7))
+    };
     Ok(match key {
         "widgets" => {
             let keys = strings(&v);
@@ -395,9 +416,7 @@ pub fn save(s: &Settings, change: &Change) {
 /// A change written (when there is a settings file: not in the demos) and applied. The screen's
 /// switches that already know the whole change come here directly.
 pub fn commit(host: &dyn Host, change: Change) {
-    if let Some(s) = host.settings() {
-        save(s, &change);
-    }
+    host.save(&change);
     host.apply(change);
 }
 

@@ -1238,6 +1238,9 @@ export component Dialog inherits Rectangle {
     in property <string> confirm;
     in property <image> confirm-icon;
     in property <bool> closable: false;
+    // False: the buttons ignore touches (a dialog that just appeared, so a tap meant for what
+    // was there before does not answer it).
+    in property <bool> touch-enabled: true;
     // Working: the icon turns (a wait with nothing to touch); `busy-bar`: a light running
     // along a line under the text, so it is clearly alive.
     in property <bool> spinning: false;
@@ -1368,6 +1371,7 @@ export component Dialog inherits Rectangle {
                 vertical-alignment: center;
             }
             cancel-touch := TouchArea {
+                enabled: root.touch-enabled;
                 clicked => {
                     Feedback.tap();
                     root.answered(false);
@@ -1406,6 +1410,7 @@ export component Dialog inherits Rectangle {
                 }
             }
             confirm-touch := TouchArea {
+                enabled: root.touch-enabled;
                 clicked => {
                     Feedback.tap();
                     root.answered(true);

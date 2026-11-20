@@ -533,7 +533,7 @@ panel_waiting = "In attesa di una risposta sullo schermo…"
 panel_refused = "L'accesso è stato rifiutato sullo schermo."
 panel_expired = "Nessuno ha risposto sullo schermo in tempo."
 panel_busy = "Un altro dispositivo sta chiedendo ora: riprovi fra un minuto."
-panel_blocked = "Troppe richieste senza risposta: riprovi fra dieci minuti."
+panel_blocked = "Troppe richieste senza risposta: inquadri il QR in Impostazioni > Accesso dal browser sullo schermo, o riprovi più tardi."
 panel_wait = "L'accesso è stato rifiutato poco fa: riprovi fra dieci minuti."
 panel_cannot_ask = "{name} ora non può chiedere (notte, non disturbare o è occupato): riprovi fra poco."
 panel_full = "Cinque dispositivi hanno già l'accesso: ne revochi uno sullo schermo."
@@ -574,7 +574,7 @@ panel_ask_text = "Un dispositivo chiede di configurare {name}. Consenta solo se 
 panel_allow = "Consenti"
 panel_refuse = "Rifiuta"
 panel_blocked_title = "Richieste di accesso fermate"
-panel_blocked_text = "Troppe senza risposta: nessuna per dieci minuti."
+panel_blocked_text = "Troppe senza risposta: usi il QR in Impostazioni."
 panel_device_detail = "{peer} · {when}"
 
 [sample]

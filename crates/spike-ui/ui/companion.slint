@@ -808,6 +808,8 @@ export component CompanionWindow inherits Window {
     // The access dialog: who asks ("Chrome on macOS · 192.0.2.24") and the code their browser shows.
     in property <string> panel-ask-line: "";
     in property <string> panel-ask-code: "";
+    // The dialog's buttons answer only once it has been on screen a moment (700 ms).
+    in property <bool> panel-ask-ready: true;
     callback panel-toggled(bool);
     callback panel-revoke(string);
     callback panel-revoke-all();
@@ -4377,6 +4379,7 @@ export component CompanionWindow inherits Window {
         text: root.t.panel-ask-text;
         cancel: root.t.panel-refuse;
         confirm: root.t.panel-allow;
+        touch-enabled: root.panel-ask-ready;
         content-height: 32px + 16px + 64px;
         Text {
             x: 48px;

@@ -22,12 +22,14 @@ use crate::panel::socket::{self, PanelSocket};
 use crate::settings_model::Change;
 use crate::ui::lists::{self, ShopList};
 
+/// The access dialog's buttons answer only after it has been on screen this long.
+const ASK_READY_AFTER: Duration = Duration::from_millis(700);
 /// A Revoke touched once waits this long for its second touch.
 const ARMED_FOR: Duration = Duration::from_secs(3);
 
 /// The address and the ticket of the demos (`--state settings-panel`).
 const DEMO_ADDRESS: &str = "192.0.2.5";
-const DEMO_TICKET: &str = "0123456789abcdef0123456789abcdef";
+const DEMO_TICKET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 /// What the screen keeps about the panel.
 #[derive(Default)]
@@ -50,6 +52,12 @@ pub(super) struct PanelUi {
     address: Option<String>,
     /// Sample devices for the demos.
     demo: Vec<(String, String, String)>,
+    /// The screen was put to sleep with Vol+ and Vol− together: nothing is asked until it wakes.
+    pub(super) keys_asleep: bool,
+    /// Makes the dialog's buttons answer after [`ASK_READY_AFTER`].
+    ask_timer: slint::Timer,
+    /// The panel's words per language, loaded once.
+    words: std::collections::HashMap<String, Rc<locale::Locale>>,
 }
 
 impl PanelUi {
@@ -117,6 +125,8 @@ impl<S: Screen> Ui<S> {
             self.close_panel_ask();
             if let Ok(mut s) = self.panel_sessions.try_borrow_mut() {
                 s.drop_ticket();
+                // Its browser learns it was refused; nobody is counted for it.
+                s.cancel_waiting(now());
             }
         }
         self.refresh_panel();
@@ -132,7 +142,17 @@ impl<S: Screen> Ui<S> {
             let answer = self.panel_call(&c.request);
             let _ = c.reply.send(answer);
         }
-        if std::mem::take(&mut self.panel.borrow_mut().changed) {
+        self.refresh_panel_if_changed();
+    }
+
+    /// The page drawn again only when the devices really changed.
+    fn refresh_panel_if_changed(&self) {
+        let listed = self
+            .panel_sessions
+            .try_borrow_mut()
+            .is_ok_and(|mut s| std::mem::take(&mut s.changed));
+        let asked = std::mem::take(&mut self.panel.borrow_mut().changed);
+        if listed || asked {
             self.refresh_panel();
         }
     }
@@ -145,7 +165,6 @@ impl<S: Screen> Ui<S> {
             }
             Err(_) => serde_json::json!({"ok": false, "error": "busy"}),
         };
-        self.panel.borrow_mut().changed = true;
         answer
     }
 
@@ -159,7 +178,10 @@ impl<S: Screen> Ui<S> {
             };
             s.expire(t);
             let shown = self.panel.borrow().on && self.screen.get_page() == "panel";
-            if !shown {
+            if shown {
+                // Someone is looking at the page: requests may come again.
+                s.unblock();
+            } else {
                 s.drop_ticket();
             }
             (
@@ -189,11 +211,14 @@ impl<S: Screen> Ui<S> {
         }
         if disarm || new_ticket {
             self.refresh_panel();
+        } else {
+            self.refresh_panel_if_changed();
         }
     }
 
     fn close_panel_ask(&self) {
         self.panel.borrow_mut().asking = None;
+        self.panel.borrow().ask_timer.stop();
         if self.screen.get_dialog() == "panel-ask" {
             self.screen.set_dialog("");
         }
@@ -384,6 +409,9 @@ impl<S: Screen> PanelHost for Ui<S> {
     }
 
     fn can_ask(&self) -> bool {
+        if self.panel.borrow().keys_asleep {
+            return false;
+        }
         let d = self.desk.borrow();
         let busy = !matches!(self.view.get(), Phase::Home | Phase::Offline);
         !d.night_now
@@ -402,9 +430,25 @@ impl<S: Screen> PanelHost for Ui<S> {
 
     fn words(&self, lang: &str) -> Box<dyn Fn(&str) -> String + '_> {
         let name = self.character.name.clone();
-        match locale::load_or_english(&self.opts.locales, lang) {
-            Ok(l) => Box::new(move |k| word(&l, k, &name)),
-            Err(_) => Box::new(|k| k.to_string()),
+        // `lang` is one of `languages()` (protocol::pick_language): a handful at most.
+        let cached = self.panel.borrow().words.get(lang).cloned();
+        let l = match cached {
+            Some(l) => Some(l),
+            None => match locale::load_or_english(&self.opts.locales, lang) {
+                Ok(l) => {
+                    let l = Rc::new(l);
+                    self.panel
+                        .borrow_mut()
+                        .words
+                        .insert(lang.to_string(), l.clone());
+                    Some(l)
+                }
+                Err(_) => None,
+            },
+        };
+        match l {
+            Some(l) => Box::new(move |k| word(&l, k, &name)),
+            None => Box::new(|k| k.to_string()),
         }
     }
 
@@ -427,6 +471,20 @@ impl<S: Screen> PanelHost for Ui<S> {
         };
         self.panel.borrow_mut().asking = Some(r.id.clone());
         self.screen.set_panel_ask(&line, &r.code);
+        // A tap meant for what was on screen a moment ago does not answer it.
+        self.screen.set_panel_ask_ready(false);
+        if let Some(me) = self.this.borrow().upgrade() {
+            let w = Rc::downgrade(&me);
+            self.panel.borrow().ask_timer.start(
+                slint::TimerMode::SingleShot,
+                ASK_READY_AFTER,
+                move || {
+                    if let Some(ui) = w.upgrade() {
+                        ui.screen.set_panel_ask_ready(true);
+                    }
+                },
+            );
+        }
         self.screen.set_dialog("panel-ask");
         self.wake(WakeSource::Setup);
         self.send(UiEvent::Tap);

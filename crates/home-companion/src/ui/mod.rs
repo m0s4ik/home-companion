@@ -259,8 +259,9 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
         armed: &str,
         summary: &str,
     );
-    /// The access dialog's lines: who asks, the code.
+    /// The access dialog's lines: who asks, the code; whether its buttons answer yet.
     fn set_panel_ask(&self, line: &str, code: &str);
+    fn set_panel_ask_ready(&self, ready: bool);
     fn on_panel_toggled(&self, f: impl Fn(bool) + 'static);
     fn on_panel_revoke(&self, f: impl Fn(String) + 'static);
     fn on_panel_revoke_all(&self, f: impl Fn() + 'static);
@@ -452,6 +453,7 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn on_home_compact_changed(&self, f: impl Fn(bool) + 'static);
     /// Settings → how readily the character answers to his wake word (-1 less, 0, 1 more).
     fn set_wake_step(&self, step: i32);
+    fn get_wake_step(&self) -> i32;
     fn on_wake_step_changed(&self, f: impl Fn(i32) + 'static);
     /// The cloud services' use: the Home Assistant page's row ("" hides it) and its page.
     fn set_usage(&self, v: &UsageView);
@@ -868,6 +870,9 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_panel_devices(self, model!(rows));
                 $m::CompanionWindow::set_panel_armed(self, armed.into());
                 $m::CompanionWindow::set_panel_summary(self, summary.into());
+            }
+            fn set_panel_ask_ready(&self, ready: bool) {
+                $m::CompanionWindow::set_panel_ask_ready(self, ready);
             }
             fn set_panel_ask(&self, line: &str, code: &str) {
                 $m::CompanionWindow::set_panel_ask_line(self, line.into());
@@ -1566,6 +1571,9 @@ macro_rules! impl_screen {
             }
             fn on_home_compact_changed(&self, f: impl Fn(bool) + 'static) {
                 $m::CompanionWindow::on_home_compact_changed(self, f)
+            }
+            fn get_wake_step(&self) -> i32 {
+                $m::CompanionWindow::get_wake_step(self)
             }
             fn set_wake_step(&self, step: i32) {
                 $m::CompanionWindow::set_wake_step(self, step);
