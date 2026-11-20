@@ -1614,7 +1614,12 @@ export component CompanionWindow inherits Window {
         if root.widget-shown && !root.notifications-hidden && root.widget-slots > 0: WidgetPanel {
             x: Grid.col-x;
             y: Grid.cards-y + root.cards.length * (Grid.card-height + Grid.card-gap);
-            height: root.widget-slots * Grid.card-height + (root.widget-slots - 1) * Grid.card-gap;
+            // The free slots, but never taller than what it shows: a header and its rows (52 px
+            // each), or the weather's columns (112 px); the dots under it when it turns.
+            height: root.widget-slots <= 1 ? Grid.card-height : min(
+                root.widget-slots * Grid.card-height + (root.widget-slots - 1) * Grid.card-gap,
+                (root.widget-columns ? 60px + 8px + 112px + 24px : 60px + root.widget-rows.length * 52px + 16px)
+                    + (root.widget-count > 1 ? 16px : 0px));
             kind: root.widget-kind;
             title: root.widget-title;
             aside: root.widget-aside;

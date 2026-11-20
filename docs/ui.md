@@ -115,6 +115,8 @@ its ring and the gold fill) and No stays a target that wins.
   header, one item a row). It takes **the slots the cards leave free**, one rule for every case: 3 free (4 on the
   compact home) = a header (icon 28, the name in 20 Medium `text-3`, at the right a count or the time of old data)
   and 4 rows of 52 px (6), 2 = a header and 2 rows, 1 = one row as tall as a card without header, 0 = no widget.
+  It is never taller than what it shows: a page with fewer rows (or the weather's columns) ends under its
+  content and the band below stays empty, as under the cards.
   Rows that do not fit are cut, never shrunk; text never under 20 px, rows in 28. **Cards and widget**: with its
   page on, the next reminder and the shopping list are pages of the widget, not cards; everything that asks for
   attention or a gesture stays a card and wins its slot. A page with nothing to say is not in the turn (no "No

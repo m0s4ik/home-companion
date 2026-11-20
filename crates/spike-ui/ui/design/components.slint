@@ -1843,9 +1843,9 @@ export component WidgetPanel inherits Rectangle {
                     }
                 }
                 if root.columns: cols-box := Rectangle {
-                    // Columns under the header, centred in the space left: the hour, the sky, the
+                    // Columns under the header, 24 px off the bottom: the hour, the sky, the
                     // temperature.
-                    property <length> top: 60px + max(0px, (parent.height - 60px - 16px - 112px) / 2);
+                    property <length> top: 60px + max(0px, parent.height - 60px - 112px - 24px);
                     for c[i] in root.rows: Rectangle {
                         x: 24px + i * (parent.width - 48px) / root.rows.length;
                         y: cols-box.top;
