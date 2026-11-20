@@ -419,6 +419,66 @@ function feedSection(kind, w, g, values) {
   return s;
 }
 
+// The board: a note per line, Edit puts it back in the box, Remove asks twice; 280 at most.
+function notesSection(data) {
+  const s = el('section', 'card');
+  s.id = 'notes';
+  s.append(el('h2', null, t('panel_notes')));
+  if (!data || !data.ok) { s.append(el('p', 'hint', t('panel_no_brain'))); return s; }
+  const reload = async () => {
+    await new Promise(res => setTimeout(res, 700));
+    const fresh = await api('/api/notes');
+    document.getElementById('notes').replaceWith(notesSection(fresh));
+  };
+  const ul = el('ul', 'items');
+  if (data.notes.length === 0) ul.append(el('li', 'hint', t('panel_notes_empty')));
+  let editing = null;
+  const f = el('form', 'add column');
+  const box = el('textarea');
+  box.maxLength = 280;
+  box.rows = 2;
+  box.required = true;
+  box.placeholder = t('panel_notes_placeholder');
+  box.setAttribute('aria-label', t('panel_notes_placeholder'));
+  const count = el('span', 'hint', '0 / 280');
+  box.addEventListener('input', () => { count.textContent = box.value.length + ' / 280'; });
+  const b = el('button', 'primary', t('panel_add'));
+  for (const n of data.notes) {
+    const li = el('li');
+    li.append(el('span', 'grow', n.text));
+    const e = el('button', 'small ghost', t('panel_edit'));
+    e.addEventListener('click', () => {
+      editing = n.id; box.value = n.text; count.textContent = box.value.length + ' / 280';
+      b.textContent = t('panel_save'); box.focus();
+    });
+    const x = el('button', 'small ghost', t('panel_remove'));
+    x.addEventListener('click', async () => {
+      if (!arm(x, t('panel_remove'))) return;
+      const r = await api('/api/notes/remove', { id: n.id });
+      if (!r.ok) toast(errorText(r.error), true); else reload();
+    });
+    li.append(e, x);
+    ul.append(li);
+  }
+  const row = el('div', 'add');
+  row.append(count, b);
+  f.append(box, row);
+  f.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const text = box.value.trim();
+    if (!text) return;
+    b.disabled = true;
+    const r = editing === null ? await api('/api/notes/add', { text })
+      : await api('/api/notes/edit', { id: editing, text });
+    b.disabled = false;
+    if (!r.ok) { toast(errorText(r.error), true); return; }
+    toast(t('panel_saved'));
+    reload();
+  });
+  s.append(ul, f, el('p', 'hint', t('panel_notes_hint')));
+  return s;
+}
+
 function when(sec) {
   try {
     return new Date(sec * 1000).toLocaleString(lang, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
@@ -463,6 +523,7 @@ async function main() {
   const state = await api('/api/state');
   const shopping = await api('/api/shopping');
   const widgets = await api('/api/widgets');
+  const notes = await api('/api/notes');
   const devices = await api('/api/sessions');
   if (!schema.ok || !state.ok) return;
   if (location.search) history.replaceState(null, '', '/');
@@ -478,7 +539,7 @@ async function main() {
   } else if (wg) {
     left.append(settingsGroup(wg, values));
   }
-  left.append(shoppingSection(shopping));
+  left.append(notesSection(notes), shoppingSection(shopping));
   const settings = el('div');
   settings.append(el('h2', 'section', t('panel_section_settings')));
   for (const g of groups.filter(g => g.key !== 'widgets')) settings.append(settingsGroup(g, values));

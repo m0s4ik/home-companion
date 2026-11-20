@@ -13,6 +13,8 @@
 //! | `quotes.add` / `cities.add` | `search`, `ref` | as `widgets.get`; `list_full`, `exists`, `invalid` |
 //! | `quotes.remove` / `cities.remove` | `ref` | as `widgets.get` |
 //! | `quotes.move` / `cities.move` | `ref`, `to` | as `widgets.get` |
+//! | `notes.list` | — | `{notes:[{id,text}]}`; `no_brain` without the brain |
+//! | `notes.add` / `notes.edit` / `notes.remove` | `text`, `id` | `{}` (the brain answers, the list follows); `invalid`, `list_full`, `no_brain` |
 //!
 //! The panel never sends a name, a symbol or coordinates: it sends the `ref` of a hit of a
 //! search this same device made in the last ten minutes, and the body writes what the source
@@ -51,7 +53,39 @@ pub const OPS: &[&str] = &[
     "cities.add",
     "cities.remove",
     "cities.move",
+    "notes.list",
+    "notes.add",
+    "notes.edit",
+    "notes.remove",
 ];
+
+/// Notes on the board at most, and their length (the brain checks them again).
+pub const MAX_NOTES: usize = 20;
+pub const MAX_NOTE: usize = 280;
+
+/// A note's text from the panel: one line (breaks and tabs become spaces), no control or
+/// bidirectional characters, spaces squeezed, 1 to [`MAX_NOTE`] characters.
+pub fn clean_note(text: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut space = false;
+    for c in text.chars() {
+        if c.is_whitespace() {
+            space = !out.is_empty();
+            continue;
+        }
+        if c.is_control()
+            || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{200e}' | '\u{200f}')
+        {
+            continue;
+        }
+        if space {
+            out.push(' ');
+            space = false;
+        }
+        out.push(c);
+    }
+    (1..=MAX_NOTE).contains(&out.chars().count()).then_some(out)
+}
 
 /// The words of a search, trimmed, when they are fine for `what`.
 pub fn clean_query(what: What, q: &str) -> Option<String> {
@@ -318,6 +352,39 @@ pub fn handle(
             model::commit(host, Change::Cities(new));
             state(host, lang)
         }
+        "notes.list" => match host.notes() {
+            Some(n) => {
+                json!({"ok": true, "notes": n.iter().map(|(id, text)| json!({"id": id, "text": text})).collect::<Vec<_>>()})
+            }
+            None => err("no_brain"),
+        },
+        "notes.add" | "notes.edit" | "notes.remove" => {
+            let Some(notes) = host.notes() else {
+                return err("no_brain");
+            };
+            let id = req.get("id").and_then(Value::as_i64);
+            let known = id.is_some_and(|id| notes.iter().any(|(n, _)| *n == id));
+            match op {
+                "notes.remove" if known => host.note_remove(id.unwrap_or(0)),
+                "notes.remove" => return err("invalid"),
+                _ => {
+                    let Some(text) = clean_note(str_of(req, "text")) else {
+                        return err("invalid");
+                    };
+                    if op == "notes.add" {
+                        if notes.len() >= MAX_NOTES {
+                            return err("list_full");
+                        }
+                        host.note_add(&text);
+                    } else if known {
+                        host.note_edit(id.unwrap_or(0), &text);
+                    } else {
+                        return err("invalid");
+                    }
+                }
+            }
+            json!({"ok": true})
+        }
         _ => err("unknown_op"),
     }
 }
@@ -377,6 +444,18 @@ mod tests {
         assert!(!b.owned("s", "b", None, t0));
         assert!(!b.owned("s", "a", Some(What::Quote), t0));
         assert!(!b.owned("s", "a", None, t0 + Duration::from_secs(601)));
+    }
+
+    #[test]
+    fn notes_are_cleaned() {
+        assert_eq!(
+            clean_note(" Buy\nbread \t now "),
+            Some("Buy bread now".into())
+        );
+        assert_eq!(clean_note("\u{202e}x"), Some("x".into()));
+        assert!(clean_note("\n").is_none());
+        assert!(clean_note(&"é".repeat(MAX_NOTE)).is_some());
+        assert!(clean_note(&"é".repeat(MAX_NOTE + 1)).is_none());
     }
 
     #[test]

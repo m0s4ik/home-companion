@@ -498,7 +498,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 89] = [
+pub const DEMO_STATES: [&str; 91] = [
     "home",
     "cards",
     "cards-setup",
@@ -584,6 +584,8 @@ pub const DEMO_STATES: [&str; 89] = [
     "widget-cities",
     "trends",
     "city",
+    "widget-notes",
+    "notes",
     "settings-widgets",
     "settings-panel",
     "panel-ask",
@@ -817,12 +819,14 @@ impl Demo {
                 ..home.clone()
             },
             "widget" | "widget-weather" | "widget-shopping" | "widget-medium" | "widget-line"
-            | "widget-compact" | "widget-quotes" | "widget-quotes-line" | "widget-cities" => Demo {
+            | "widget-compact" | "widget-quotes" | "widget-quotes-line" | "widget-cities"
+            | "widget-notes" => Demo {
                 widget: Some(match s {
                     "widget-weather" => WidgetKind::Weather,
                     "widget-shopping" => WidgetKind::Shopping,
                     "widget-quotes" | "widget-quotes-line" => WidgetKind::Quotes,
                     "widget-cities" => WidgetKind::Cities,
+                    "widget-notes" => WidgetKind::Notes,
                     _ => WidgetKind::Next,
                 }),
                 widget_cards: match s {
@@ -851,6 +855,10 @@ impl Demo {
             "city" => Demo {
                 widget: Some(WidgetKind::Cities),
                 ..page("city")
+            },
+            "notes" => Demo {
+                widget: Some(WidgetKind::Notes),
+                ..page("notes")
             },
             "settings-panel" => Demo {
                 panel: 1,
@@ -1041,6 +1049,8 @@ struct Motion {
 enum Undo {
     Timer(String),
     Alarm(u32),
+    /// A note of the board (the brain's id).
+    Note(i64),
 }
 
 /// Freed sheets are many small blocks: glibc keeps them for later unless asked (`malloc_trim`).
@@ -2415,6 +2425,14 @@ impl<S: Screen> Ui<S> {
                 ui.undo_timer.stop();
                 ui.desk.borrow_mut().undo = None;
                 ui.refresh_desk();
+                ui.refresh_notes();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_note_delete(move |id| {
+            if let Some(ui) = ui.upgrade() {
+                log::info!(event = "notes", id = id; "note {id} removed on the screen");
+                ui.remove_later(Undo::Note(id));
             }
         });
         let ui = Rc::downgrade(self);
@@ -3221,6 +3239,19 @@ impl<S: Screen> Ui<S> {
         if d.widget == Some(WidgetKind::Quotes) {
             self.widget_data.borrow_mut().quotes = demo_quotes();
         }
+        if d.widget == Some(WidgetKind::Notes) {
+            let midnight = DEMO_NOW as i64 - DEMO_NOW as i64 % 86400;
+            *self.board.borrow_mut() = l
+                .sample("notes_board")
+                .split('|')
+                .enumerate()
+                .map(|(i, t)| brain_link::Note {
+                    id: i as i64 + 1,
+                    text: t.into(),
+                    created: midnight - (3 - i as i64) * 86400 + 9 * 3600,
+                })
+                .collect();
+        }
         if d.widget == Some(WidgetKind::Cities) {
             let (choices, weather) = demo_cities();
             *self.widget_cities.borrow_mut() = choices;
@@ -3242,6 +3273,9 @@ impl<S: Screen> Ui<S> {
             );
         }
         drop(desk);
+        if d.widget == Some(WidgetKind::Notes) {
+            self.refresh_notes();
+        }
         // The afternoon hour by hour, from the hour going on (14:00).
         let hour = DEMO_NOW as i64 - DEMO_NOW as i64 % 3600;
         *self.weather.borrow_mut() = Some(Weather::sample_week(DEMO_DATE).with_sample_hours(hour));
@@ -3722,6 +3756,7 @@ impl<S: Screen> Ui<S> {
         match d.page {
             "trends" => self.refresh_trends(),
             "city" => self.refresh_city(),
+            "notes" | "reminders" => self.refresh_notes(),
             _ => {}
         }
         if !d.dialog.is_empty() {
@@ -5989,6 +6024,38 @@ impl<S: Screen> Ui<S> {
         self.refresh_widget();
     }
 
+    /// The board: the widget's page and the notes' page, without the one waiting for Undo.
+    fn refresh_notes(&self) {
+        let hidden = match self.desk.borrow().undo {
+            Some(Undo::Note(id)) => Some(id),
+            _ => None,
+        };
+        let board: Vec<brain_link::Note> = self
+            .board
+            .borrow()
+            .iter()
+            .filter(|n| Some(n.id) != hidden)
+            .cloned()
+            .collect();
+        self.widget_data.borrow_mut().notes = board.iter().map(|n| n.text.clone()).collect();
+        let l = self.locale.borrow();
+        let rows: Vec<(i64, String, String)> = board
+            .iter()
+            .map(|n| (n.id, n.text.clone(), short_date(&l, n.created)))
+            .collect();
+        self.screen.set_notes(
+            &rows,
+            [
+                l.text("widget_notes"),
+                l.text("notes_hint"),
+                l.text("notes_empty"),
+                l.text("reminders"),
+            ],
+        );
+        drop(l);
+        self.refresh_widget();
+    }
+
     /// The markets' or the sensors' page, as the data is now.
     fn refresh_trends(&self) {
         let l = self.locale.borrow();
@@ -6172,6 +6239,7 @@ impl<S: Screen> Ui<S> {
         let undo = match &d.undo {
             Some(Undo::Timer(_)) => l.text("timer_cancelled"),
             Some(Undo::Alarm(_)) => l.text("alarm_deleted"),
+            Some(Undo::Note(_)) => l.text("note_removed"),
             None => "",
         };
         self.screen.set_undo(undo);
@@ -6782,6 +6850,7 @@ impl<S: Screen> Ui<S> {
         let mut changed = false;
         let mut home = false;
         let mut events_seen = false;
+        let mut notes_seen = false;
         let mut upcoming_seen: Option<Vec<(i64, String)>> = None;
         let mut timers: Vec<(u64, Option<String>)> = Vec::new();
         let mut cancels: Vec<String> = Vec::new();
@@ -6960,9 +7029,8 @@ impl<S: Screen> Ui<S> {
                 BrainMsg::ShowView(v) => house_cards.push(HouseEvent::View(v)),
                 BrainMsg::TakePhoto => house_cards.push(HouseEvent::Photo),
                 BrainMsg::Notes(notes) => {
-                    self.widget_data.borrow_mut().notes =
-                        notes.iter().map(|n| n.text.clone()).collect();
                     *self.board.borrow_mut() = notes;
+                    notes_seen = true;
                     changed = true;
                 }
                 BrainMsg::Upcoming(items) => {
@@ -7024,6 +7092,12 @@ impl<S: Screen> Ui<S> {
         }
         if events_seen && !home {
             self.refresh_home();
+        }
+        if notes_seen {
+            self.refresh_notes();
+            if !home {
+                self.refresh_home();
+            }
         }
         for e in house_cards {
             self.house_event(e);
@@ -7332,6 +7406,7 @@ impl<S: Screen> Ui<S> {
         self.desk.borrow_mut().undo = Some(what);
         self.refresh_home();
         self.refresh_timers();
+        self.refresh_notes();
         let ui = self.this.borrow().clone();
         self.undo_timer.start(TimerMode::SingleShot, UNDO, move || {
             if let Some(ui) = ui.upgrade() {
@@ -7347,6 +7422,7 @@ impl<S: Screen> Ui<S> {
         match what {
             Undo::Timer(id) => self.send(UiEvent::TimerCancel(id)),
             Undo::Alarm(id) => self.send(UiEvent::AlarmDelete(id)),
+            Undo::Note(id) => self.brain_do(brain_link::note_delete(id)),
         }
         self.screen.set_undo("");
     }
@@ -8043,6 +8119,31 @@ mod tests {
         // The second chip: Tokyo.
         tap(796.0, 144.0);
         assert_eq!(w.get_city_title(), "Tokyo");
+        // The board: its page from the widget, a note removed waits for Undo.
+        *ui.board.borrow_mut() = vec![
+            brain_link::Note {
+                id: 4,
+                text: "Water the plants".into(),
+                created: 1,
+            },
+            brain_link::Note {
+                id: 5,
+                text: "Call the plumber".into(),
+                created: 2,
+            },
+        ];
+        ui.refresh_notes();
+        show(WidgetKind::Notes);
+        tap(800.0, 420.0);
+        assert_eq!(w.get_page(), "notes");
+        assert_eq!(slint::Model::row_count(&w.get_note_rows()), 2);
+        ui.remove_later(Undo::Note(4));
+        assert_eq!(slint::Model::row_count(&w.get_note_rows()), 1);
+        assert_eq!(w.get_undo_text(), "Note removed");
+        ui.undo_timer.stop();
+        ui.desk.borrow_mut().undo = None;
+        ui.refresh_notes();
+        assert_eq!(slint::Model::row_count(&w.get_note_rows()), 2);
         ui.widget_data.borrow_mut().playing = Some(widgets::Playing {
             title: "Song".into(),
             artist: "Band".into(),

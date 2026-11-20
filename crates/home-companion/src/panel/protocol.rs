@@ -63,6 +63,12 @@ pub trait PanelHost: model::Host {
     fn search_state(&self, id: &str) -> crate::feeds::SearchState;
     /// What hit `key` of search `id` becomes (None: not one of its hits).
     fn search_choice(&self, id: &str, key: &str) -> Option<crate::feeds::Choice>;
+    /// The board's notes (id, text); None: no brain to keep them.
+    fn notes(&self) -> Option<Vec<(i64, String)>>;
+    /// Asks the brain to write, change, remove a note (already checked).
+    fn note_add(&self, text: &str);
+    fn note_edit(&self, id: i64, text: &str);
+    fn note_remove(&self, id: i64);
 }
 
 fn err(code: &str) -> Value {
@@ -176,6 +182,13 @@ pub const STRING_KEYS: &[&str] = &[
     "panel_invalid",
     "panel_feeds_privacy",
     "panel_feeds_credit",
+    "panel_notes",
+    "panel_notes_placeholder",
+    "panel_notes_empty",
+    "panel_notes_hint",
+    "panel_no_brain",
+    "panel_edit",
+    "panel_save",
 ];
 
 fn shopping_json(lists: &[ShopList]) -> Value {
@@ -365,6 +378,7 @@ mod tests {
         lists: RefCell<Vec<ShopList>>,
         calls: RefCell<Vec<String>>,
         searches: RefCell<std::collections::HashMap<String, crate::feeds::SearchState>>,
+        notes: RefCell<Option<Vec<(i64, String)>>>,
     }
 
     impl model::Host for Host {
@@ -475,6 +489,20 @@ mod tests {
                 .cloned()
                 .unwrap_or(crate::feeds::SearchState::Unknown)
         }
+        fn notes(&self) -> Option<Vec<(i64, String)>> {
+            self.notes.borrow().clone()
+        }
+        fn note_add(&self, text: &str) {
+            self.calls.borrow_mut().push(format!("note add {text}"));
+        }
+        fn note_edit(&self, id: i64, text: &str) {
+            self.calls
+                .borrow_mut()
+                .push(format!("note edit {id} {text}"));
+        }
+        fn note_remove(&self, id: i64) {
+            self.calls.borrow_mut().push(format!("note remove {id}"));
+        }
         fn search_choice(&self, id: &str, key: &str) -> Option<crate::feeds::Choice> {
             match self.searches.borrow().get(id) {
                 Some(crate::feeds::SearchState::Done(f)) => f
@@ -499,6 +527,7 @@ mod tests {
             }]),
             calls: RefCell::new(Vec::new()),
             searches: RefCell::new(Default::default()),
+            notes: RefCell::new(Some(vec![(1, "Water the plants".into())])),
         }
     }
 
@@ -563,6 +592,10 @@ mod tests {
         "cities.add",
         "cities.remove",
         "cities.move",
+        "notes.list",
+        "notes.add",
+        "notes.edit",
+        "notes.remove",
         "session.end",
     ];
 
@@ -889,6 +922,85 @@ mod tests {
             json!({"op": "set", "token": t, "key": "widgets_currency", "value": "chf"}),
         );
         assert_eq!(r["values"]["widgets_currency"], "chf");
+    }
+
+    #[test]
+    fn notes_from_the_browser() {
+        let h = host("notes");
+        let mut s = Sessions::default();
+        let t = pair(&h, &mut s);
+        let r = call(&h, &mut s, json!({"op": "notes.list", "token": t}));
+        assert_eq!(r["notes"], json!([{"id": 1, "text": "Water the plants"}]));
+        assert_eq!(
+            call(
+                &h,
+                &mut s,
+                json!({"op": "notes.add", "token": t, "text": " Pizza\ntonight "})
+            )["ok"],
+            true
+        );
+        assert_eq!(
+            call(
+                &h,
+                &mut s,
+                json!({"op": "notes.edit", "token": t, "id": 1, "text": "Water the basil"})
+            )["ok"],
+            true
+        );
+        assert_eq!(
+            call(
+                &h,
+                &mut s,
+                json!({"op": "notes.edit", "token": t, "id": 9, "text": "x"})
+            )["error"],
+            "invalid"
+        );
+        assert_eq!(
+            call(
+                &h,
+                &mut s,
+                json!({"op": "notes.remove", "token": t, "id": 9})
+            )["error"],
+            "invalid"
+        );
+        assert_eq!(
+            call(
+                &h,
+                &mut s,
+                json!({"op": "notes.remove", "token": t, "id": 1})
+            )["ok"],
+            true
+        );
+        assert_eq!(
+            call(
+                &h,
+                &mut s,
+                json!({"op": "notes.add", "token": t, "text": "x".repeat(281)})
+            )["error"],
+            "invalid"
+        );
+        assert_eq!(
+            *h.calls.borrow(),
+            [
+                "note add Pizza tonight",
+                "note edit 1 Water the basil",
+                "note remove 1"
+            ]
+        );
+        *h.notes.borrow_mut() = Some((0..20).map(|i| (i, format!("n{i}"))).collect());
+        assert_eq!(
+            call(
+                &h,
+                &mut s,
+                json!({"op": "notes.add", "token": t, "text": "one more"})
+            )["error"],
+            "list_full"
+        );
+        *h.notes.borrow_mut() = None;
+        assert_eq!(
+            call(&h, &mut s, json!({"op": "notes.list", "token": t}))["error"],
+            "no_brain"
+        );
     }
 
     #[test]

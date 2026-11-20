@@ -28,6 +28,7 @@ use serde_json::{Value, json};
 const ALLOW_AFTER: Duration = Duration::from_secs(4);
 
 struct Demo {
+    notes: RefCell<Vec<(i64, String)>>,
     searches: RefCell<std::collections::HashMap<String, SearchState>>,
     settings: Settings,
     lists: RefCell<Vec<ShopList>>,
@@ -209,6 +210,22 @@ impl PanelHost for Demo {
             .cloned()
             .unwrap_or(SearchState::Unknown)
     }
+    fn notes(&self) -> Option<Vec<(i64, String)>> {
+        Some(self.notes.borrow().clone())
+    }
+    fn note_add(&self, text: &str) {
+        let mut n = self.notes.borrow_mut();
+        let id = n.iter().map(|x| x.0).max().unwrap_or(0) + 1;
+        n.push((id, text.into()));
+    }
+    fn note_edit(&self, id: i64, text: &str) {
+        if let Some(x) = self.notes.borrow_mut().iter_mut().find(|x| x.0 == id) {
+            x.1 = text.into();
+        }
+    }
+    fn note_remove(&self, id: i64) {
+        self.notes.borrow_mut().retain(|x| x.0 != id);
+    }
     fn search_choice(&self, id: &str, key: &str) -> Option<Choice> {
         match self.searches.borrow().get(id) {
             Some(SearchState::Done(f)) => f
@@ -230,6 +247,10 @@ fn main() {
     std::fs::create_dir_all(&dir).expect("dir");
     let item = |u: &str, t: &str| (u.to_string(), t.to_string());
     let demo = Demo {
+        notes: RefCell::new(vec![
+            (1, "The plumber comes on Tuesday morning".into()),
+            (2, "Water the basil".into()),
+        ]),
         searches: RefCell::new(Default::default()),
         settings: Settings::in_dir(&dir),
         lists: RefCell::new(vec![

@@ -291,6 +291,10 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_timer_rows(&self, rows: &[TimerLineView]);
     fn set_alarm_rows(&self, rows: &[AlarmLineView]);
     fn set_undo(&self, text: &str);
+    /// The board's page: its notes (id, text, date), its words (title, hint, empty, the
+    /// reminders' chip).
+    fn set_notes(&self, rows: &[(i64, String, String)], words: [&str; 4]);
+    fn on_note_delete(&self, f: impl Fn(i64) + 'static);
     fn set_tiles(&self, chat: &str, timers: &str, settings: &str);
     fn set_settings_values(&self, v: &SettingsView);
     fn set_setup(&self, wifi: &str, ha: &str);
@@ -1120,6 +1124,24 @@ macro_rules! impl_screen {
             }
             fn set_undo(&self, text: &str) {
                 $m::CompanionWindow::set_undo_text(self, text.into())
+            }
+            fn set_notes(&self, rows: &[(i64, String, String)], words: [&str; 4]) {
+                let v: Vec<$m::JobRow> = rows
+                    .iter()
+                    .map(|(id, t, w)| $m::JobRow {
+                        id: *id as i32,
+                        text: t.as_str().into(),
+                        when: w.as_str().into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_note_rows(self, model!(v));
+                $m::CompanionWindow::set_notes_title(self, words[0].into());
+                $m::CompanionWindow::set_notes_hint(self, words[1].into());
+                $m::CompanionWindow::set_notes_empty(self, words[2].into());
+                $m::CompanionWindow::set_reminders_chip(self, words[3].into());
+            }
+            fn on_note_delete(&self, f: impl Fn(i64) + 'static) {
+                $m::CompanionWindow::on_note_delete(self, move |id| f(id as i64))
             }
             fn set_tiles(&self, chat: &str, timers: &str, settings: &str) {
                 $m::CompanionWindow::set_tile_chat(self, chat.into());

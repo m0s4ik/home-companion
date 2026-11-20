@@ -548,6 +548,28 @@ impl<S: Screen> PanelHost for Ui<S> {
     fn search_choice(&self, id: &str, key: &str) -> Option<crate::feeds::Choice> {
         self.feeds.borrow().search_choice(id, key)
     }
+    fn notes(&self) -> Option<Vec<(i64, String)>> {
+        self.brain.as_ref()?;
+        Some(
+            self.board
+                .borrow()
+                .iter()
+                .map(|n| (n.id, n.text.clone()))
+                .collect(),
+        )
+    }
+    fn note_add(&self, text: &str) {
+        log::info!(event = "notes"; "a note from the browser");
+        self.brain_do(crate::brain_link::note_add(text));
+    }
+    fn note_edit(&self, id: i64, text: &str) {
+        log::info!(event = "notes", id = id; "note {id} changed from the browser");
+        self.brain_do(crate::brain_link::note_edit(id, text));
+    }
+    fn note_remove(&self, id: i64) {
+        log::info!(event = "notes", id = id; "note {id} removed from the browser");
+        self.brain_do(crate::brain_link::note_delete(id));
+    }
 }
 
 impl<S: Screen> Ui<S> {

@@ -477,7 +477,25 @@ fn the_widgets_routes() {
         assert!(a.get("lat").is_none());
     }
     assert_eq!(status(&p, &post("/api/quotes/delete", "{}", &[])), 404);
-    assert_eq!(status(&p, &post("/api/notes/add", "{}", &[])), 404);
+    for (path, op) in [
+        ("/api/notes/add", "notes.add"),
+        ("/api/notes/edit", "notes.edit"),
+        ("/api/notes/remove", "notes.remove"),
+    ] {
+        assert_eq!(
+            status(&p, &post(path, r#"{"id":1,"text":"x","list":"y"}"#, &[])),
+            200
+        );
+        let a = last(&p);
+        assert_eq!(
+            (a["op"].as_str(), a["text"].as_str()),
+            (Some(op), Some("x"))
+        );
+        assert!(a.get("list").is_none());
+    }
+    assert_eq!(status(&p, &get("/api/notes")), 200);
+    assert_eq!(last(&p)["op"], "notes.list");
+    assert_eq!(status(&p, &post("/api/notes/clear", "{}", &[])), 404);
     // Without the same origin: refused before the body hears of it.
     let n = p.body.asked.lock().unwrap().len();
     let r = post("/api/quotes/add", "{}", &[("Sec-Fetch-Site", "cross-site")]);

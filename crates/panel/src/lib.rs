@@ -356,6 +356,7 @@ impl<B: Body> Panel<B> {
             (false, "/api/shopping") => relay(ask("shopping.list", json!({}))),
             (false, "/api/sessions") => relay(ask("sessions.list", json!({}))),
             (false, "/api/widgets") => relay(ask("widgets.get", json!({}))),
+            (false, "/api/notes") => relay(ask("notes.list", json!({}))),
             (false, p) if p.starts_with("/api/search/") => {
                 let id = &p["/api/search/".len()..];
                 if !is_hex(id, 32) {
@@ -413,6 +414,15 @@ impl<B: Body> Panel<B> {
                     &op,
                     json!({"search": field("search"), "ref": field("ref"), "to": field("to")}),
                 ))
+            }
+            (true, p) if p.starts_with("/api/notes/") => {
+                let op = match &p["/api/notes/".len()..] {
+                    "add" => "notes.add",
+                    "edit" => "notes.edit",
+                    "remove" => "notes.remove",
+                    _ => return error(404, "not_found"),
+                };
+                relay(ask(op, json!({"id": field("id"), "text": field("text")})))
             }
             (true, "/api/sessions/revoke") => {
                 relay(ask("sessions.revoke", json!({"id": field("id")})))

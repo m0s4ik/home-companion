@@ -308,6 +308,10 @@ trends_credit_markets = "Quotes from Yahoo Finance (unofficial) and CoinGecko, d
 # Another city's page: its time now.
 city_local_time = "{t} local time"
 city_credit = "Weather data by Open-Meteo.com (CC BY 4.0)"
+# The board's page (notes): under the notes, and when there are none; the undo chip.
+notes_hint = "To write one: by voice (\"write on the board that…\") or from the browser."
+notes_empty = "No notes."
+note_removed = "Note removed"
 
 # Settings → Home Assistant: the setup after the QR link, one row per check ({name} = the character's name)
 ha_title = "Home Assistant"
@@ -614,6 +618,13 @@ panel_exists = "Already there."
 panel_invalid = "That did not work: search again."
 panel_feeds_privacy = "{name} asks Yahoo Finance, CoinGecko and Open-Meteo for these data directly: those services see the markets and cities chosen and the home's internet address. Quotes are delayed and for information only."
 panel_feeds_credit = "Weather data by Open-Meteo.com (CC BY 4.0) · Crypto data by CoinGecko · Yahoo Finance is not an official API and may stop working."
+panel_notes = "Notes"
+panel_notes_placeholder = "A note for whoever is home"
+panel_notes_empty = "No notes."
+panel_notes_hint = "Shown on the screen for anyone to read; removed there or here."
+panel_no_brain = "The notes need home-companion-brain, which is not running."
+panel_edit = "Edit"
+panel_save = "Save"
 # Settings > Access from the browser (the panel) and its dialog, on the screen.
 panel_access = "Access from the browser"
 panel_access_on = "On"
@@ -653,6 +664,7 @@ memory_fact2 = "The cat is called Neve"
 memory_fact3 = "The neighbour is called Greta"
 reminder_text = "Call mum"
 shop_items = "Bread|2 kg of flour|Milk|Apples"
+notes_board = "The plumber comes on Tuesday morning|Water the basil|Pizza tonight: order by 7"
 
 # v0.2 ha
 ha_card_text = "The washing machine is done"

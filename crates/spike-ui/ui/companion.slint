@@ -952,6 +952,13 @@ export component CompanionWindow inherits Window {
     in property <[MemoryRow]> memory-rows: [];
     in property <[MemoryRow]> confirm-rows: [];
     in property <[JobRow]> job-rows: [];
+    // The board's notes (the brain), oldest first; a note removed waits 5 s for Undo.
+    in property <[JobRow]> note-rows: [];
+    in property <string> notes-title: "";
+    in property <string> notes-hint: "";
+    in property <string> notes-empty: "";
+    in property <string> reminders-chip: "";
+    callback note-delete(int);
     // The shopping list (`[lists] shopping`): on = configured; its open items.
     in property <bool> shopping-on: false;
     in property <[ShopRow]> shop-rows: [];
@@ -1731,6 +1738,9 @@ export component CompanionWindow inherits Window {
                     root.page = "trends";
                 } else if (root.widget-kind == "cities") {
                     root.page = "city";
+                } else if (root.widget-kind == "notes") {
+                    root.page-back = "home";
+                    root.page = "notes";
                 }
             }
             swiped(d) => {
@@ -3031,6 +3041,89 @@ export component CompanionWindow inherits Window {
         }
     }
 
+    // ---- The board's notes: a row each, removed with a second touch (Undo for 5 s); written
+    // by voice or from the browser (the line under them says so). Reached from the widget or
+    // from the reminders' chips.
+    if root.desk && root.desk-page == "notes": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.notes-title;
+            clock: root.clock;
+            back => {
+                root.page = root.page-back == "notes" ? "home" : root.page-back;
+            }
+        }
+        HorizontalLayout {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            height: 64px;
+            spacing: 12px;
+            alignment: start;
+            Chip {
+                width: 220px;
+                label: root.reminders-chip;
+                clicked => {
+                    root.page = "reminders";
+                }
+            }
+            Chip {
+                width: 220px;
+                label: root.notes-title;
+                chosen: true;
+            }
+        }
+        notes-flick := Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y + 80px;
+            width: Grid.col-width;
+            height: Grid.page-height - 80px;
+            content-height: max(self.height, notes-col.preferred-height + 16px);
+            notes-col := VerticalLayout {
+                alignment: start;
+                spacing: 8px;
+                for n in root.note-rows: DeletableRow {
+                    text: n.text;
+                    detail: n.when;
+                    ask: root.t.delete-question;
+                    delete => {
+                        root.note-delete(n.id);
+                    }
+                }
+                if root.note-rows.length == 0: Text {
+                    height: 72px;
+                    text: root.notes-empty;
+                    font-size: 24px;
+                    color: Theme.text-3;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.notes-hint;
+                    font-size: 20px;
+                    color: Theme.text-3;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        ScrollFade {
+            x: notes-flick.x;
+            y: notes-flick.y + notes-flick.height - self.height;
+            width: notes-flick.width;
+            more: notes-flick.content-height > notes-flick.height + 1px
+                && notes-flick.content-y > notes-flick.height - notes-flick.content-height + 1px;
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.microphone-44;
+            label: root.t.talk;
+            clicked => {
+                root.talk-clicked();
+            }
+        }
+    }
+
     // ---- The markets or the sensors chosen from the browser, one card each: name, value, the
     // change, the day's curve (520 x 96), its low and high; the sources' credit at the end.
     // Read only: they are chosen from the browser.
@@ -3390,11 +3483,31 @@ export component CompanionWindow inherits Window {
                 root.page = root.page-back;
             }
         }
-        Flickable {
+        // Reminders · Notes: the board lives next to the reminders (Altro has no room).
+        HorizontalLayout {
             x: Grid.col-x;
             y: Grid.page-y;
+            height: 64px;
+            spacing: 12px;
+            alignment: start;
+            Chip {
+                width: 220px;
+                label: root.reminders-chip;
+                chosen: true;
+            }
+            Chip {
+                width: 220px;
+                label: root.notes-title;
+                clicked => {
+                    root.page = "notes";
+                }
+            }
+        }
+        Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y + 80px;
             width: Grid.col-width;
-            height: Grid.page-height;
+            height: Grid.page-height - 80px;
             content-height: max(self.height, rem-col.preferred-height);
             rem-col := VerticalLayout {
                 alignment: start;

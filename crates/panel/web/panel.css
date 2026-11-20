@@ -46,7 +46,7 @@ input[role=switch]::after {
 }
 input[role=switch]:checked { background: var(--accent); border-color: var(--accent); }
 input[role=switch]:checked::after { transform: translateX(22px); background: var(--text); }
-select, input[type=text], input[type=search] {
+select, input[type=text], input[type=search], textarea {
   font: inherit; color: var(--text); background: var(--surface-2); border: 1px solid var(--line);
   border-radius: 12px; padding: 8px 12px; min-height: 42px;
 }
@@ -84,3 +84,6 @@ button:disabled { opacity: .5; }
 button.hit { width: 100%; text-align: left; border-radius: 12px; overflow-wrap: anywhere; }
 .pages li { padding: 6px 0; }
 .hint.small { font-size: 13px; }
+.add.column { flex-direction: column; }
+.add.column .add { justify-content: space-between; align-items: center; margin-top: 0; }
+textarea { width: 100%; resize: vertical; }
