@@ -1612,3 +1612,300 @@ export component LevelBar inherits Rectangle {
         }
     }
 }
+
+// --- The home's widget (ui/widgets.rs): one panel under the cards that takes the slots they
+// leave free and turns through what is around the house. Rows are data, filled by Rust; the
+// panel only draws them. `slots`: 1 = one row as tall as a card, no header; 2 = a header and
+// 2 rows; 3 = 4 rows; 4 (compact home) = 6 rows. `columns`: the rows are columns side by side
+// (the weather: `left` the hour, `note` the condition, `text` the temperature). The dots of the
+// turn sit in the band's last 16 px. A new page fades in once (180 ms, from `seq`); nothing
+// else moves.
+
+export struct WidgetRow {
+    left: string,
+    text: string,
+    right: string,
+    note: string,
+}
+
+// A weather condition's icon (Home Assistant's names), 32 px.
+export component WeatherGlyph inherits Icon {
+    in property <string> kind;
+    width: 32px;
+    height: 32px;
+    source: root.kind == "sunny" ? Icons.weather-sunny-32
+        : root.kind == "clear-night" ? Icons.weather-night-32
+        : root.kind == "partlycloudy" ? Icons.weather-partly-cloudy-32
+        : root.kind == "cloudy" ? Icons.weather-cloudy-32
+        : root.kind == "rainy" ? Icons.weather-rainy-32
+        : root.kind == "pouring" ? Icons.weather-pouring-32
+        : root.kind == "snowy" ? Icons.weather-snowy-32
+        : root.kind == "snowy-rainy" ? Icons.weather-snowy-rainy-32
+        : root.kind == "fog" ? Icons.weather-fog-32
+        : root.kind == "hail" ? Icons.weather-hail-32
+        : root.kind == "lightning" ? Icons.weather-lightning-32
+        : root.kind == "lightning-rainy" ? Icons.weather-lightning-rainy-32
+        : root.kind == "windy" ? Icons.weather-windy-32
+        : root.kind == "windy-variant" ? Icons.weather-windy-variant-32
+        : Icons.weather-cloudy-32;
+}
+
+export component WidgetPanel inherits Rectangle {
+    // "next", "weather", "shopping".
+    in property <string> kind;
+    in property <string> title;
+    in property <string> aside;
+    in property <[WidgetRow]> rows;
+    in property <bool> columns: false;
+    in property <int> slots: 3;
+    in property <int> index: 0;
+    in property <int> count: 1;
+    in property <int> seq: 0;
+    callback tapped();
+    // +1 the next page (a swipe to the left), -1 the previous one.
+    callback swiped(int);
+    width: Grid.col-width;
+    property <bool> line: root.slots <= 1;
+    property <bool> dots: root.count > 1 && !root.line;
+    // The fade: `fade` follows `seq` in 180 ms; between two whole numbers the content is
+    // partly drawn (0 at the start of the change, 1 at its end and at rest).
+    property <float> fade: root.seq;
+    animate fade { duration: 180ms; }
+    property <float> alpha: 1 - (ceil(root.fade) - root.fade);
+    property <image> icon: root.kind == "weather" ? Icons.weather-partly-cloudy-28
+        : root.kind == "shopping" ? Icons.cart-28 : Icons.calendar-clock-28;
+    panel := Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: root.dots ? parent.height - 16px : parent.height;
+        border-radius: Grid.card-radius;
+        background: touch.pressed ? Theme.surface-2 : Theme.surface;
+        border-width: 1px;
+        border-color: Theme.line;
+        Rectangle {
+            opacity: root.alpha;
+            // One row, as a card: the page's icon, then the row.
+            if root.line && !root.columns: Rectangle {
+                Icon {
+                    x: 28px;
+                    y: 30px;
+                    width: 28px;
+                    height: 28px;
+                    source: root.icon;
+                    color: Theme.accent;
+                }
+                HorizontalLayout {
+                    x: 92px;
+                    y: 0;
+                    width: parent.width - 92px - 28px;
+                    height: parent.height;
+                    spacing: 20px;
+                    if root.rows[0].left != "": Text {
+                        text: root.rows[0].left;
+                        font-family: "Inter Tnum";
+                        font-size: 28px;
+                        color: Theme.accent;
+                        vertical-alignment: center;
+                        horizontal-stretch: 0;
+                    }
+                    Text {
+                        text: root.rows[0].text;
+                        font-size: 28px;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    if root.rows[0].right != "": Text {
+                        text: root.rows[0].right;
+                        font-size: 24px;
+                        color: Theme.text-2;
+                        vertical-alignment: center;
+                        horizontal-stretch: 0;
+                    }
+                }
+            }
+            if root.line && root.columns: Rectangle {
+                Icon {
+                    x: 28px;
+                    y: 30px;
+                    width: 28px;
+                    height: 28px;
+                    source: root.icon;
+                    color: Theme.accent;
+                }
+                for c[i] in root.rows: Rectangle {
+                    x: 84px + i * (parent.width - 84px - 12px) / root.rows.length;
+                    width: (parent.width - 84px - 12px) / root.rows.length;
+                    HorizontalLayout {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        alignment: center;
+                        spacing: 8px;
+                        Text {
+                            text: c.left;
+                            font-family: "Inter Tnum";
+                            font-size: 20px;
+                            color: Theme.text-2;
+                            vertical-alignment: center;
+                        }
+                        Rectangle {
+                            width: 32px;
+                            WeatherGlyph {
+                                y: (parent.height - 32px) / 2;
+                                kind: c.note;
+                            }
+                        }
+                        Text {
+                            text: c.text;
+                            font-size: 24px;
+                            color: Theme.text;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+            // A header and rows.
+            if !root.line: Rectangle {
+                Icon {
+                    x: 24px;
+                    y: 24px;
+                    width: 28px;
+                    height: 28px;
+                    source: root.icon;
+                    color: Theme.accent;
+                }
+                Text {
+                    x: 64px;
+                    y: 16px;
+                    width: parent.width - 64px - 24px;
+                    height: 44px;
+                    text: root.title;
+                    font-size: 20px;
+                    font-weight: 500;
+                    letter-spacing: 1px;
+                    color: Theme.text-3;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                if root.aside != "": Text {
+                    x: parent.width - 24px - self.width;
+                    y: 16px;
+                    height: 44px;
+                    text: root.aside;
+                    font-size: 20px;
+                    color: Theme.text-3;
+                    vertical-alignment: center;
+                }
+                if !root.columns: rows-box := Rectangle {
+                    // Rows from y 60, 52 px each; the left column 148 px wide ("tomorrow") only if a row has one.
+                    property <bool> lefts: root.rows.length > 0 && (root.rows[0].left != ""
+                        || (root.rows.length > 1 && root.rows[1].left != ""));
+                    for r[i] in root.rows: Rectangle {
+                        x: 24px;
+                        y: 60px + i * 52px;
+                        width: parent.width - 48px;
+                        height: 52px;
+                        if r.left != "": Text {
+                            x: 0;
+                            width: 148px;
+                            height: parent.height;
+                            text: r.left;
+                            font-family: "Inter Tnum";
+                            font-size: 28px;
+                            color: Theme.accent;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        Text {
+                            x: rows-box.lefts ? 164px : 0px;
+                            width: parent.width - self.x - (r.right != "" ? right-text.preferred-width + 24px : 0px);
+                            height: parent.height;
+                            text: r.text;
+                            font-size: 28px;
+                            color: Theme.text;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        right-text := Text {
+                            x: parent.width - self.width;
+                            width: self.preferred-width;
+                            height: parent.height;
+                            text: r.right;
+                            font-family: "Inter Tnum";
+                            font-size: 28px;
+                            color: Theme.text-2;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                if root.columns: cols-box := Rectangle {
+                    // Columns under the header, centred in the space left: the hour, the sky, the
+                    // temperature.
+                    property <length> top: 60px + max(0px, (parent.height - 60px - 16px - 112px) / 2);
+                    for c[i] in root.rows: Rectangle {
+                        x: 24px + i * (parent.width - 48px) / root.rows.length;
+                        y: cols-box.top;
+                        width: (parent.width - 48px) / root.rows.length;
+                        height: 112px;
+                        Text {
+                            x: 0;
+                            y: 0px;
+                            width: parent.width;
+                            height: 28px;
+                            text: c.left;
+                            font-family: "Inter Tnum";
+                            font-size: 24px;
+                            color: Theme.text-2;
+                            horizontal-alignment: center;
+                        }
+                        WeatherGlyph {
+                            x: (parent.width - 32px) / 2;
+                            y: 36px;
+                            kind: c.note;
+                        }
+                        Text {
+                            x: 0;
+                            y: 76px;
+                            width: parent.width;
+                            height: 36px;
+                            text: c.text;
+                            font-size: 28px;
+                            color: Theme.text;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+        // A tap opens the page's own page; a swipe across (more than 48 px) turns it.
+        touch := TouchArea {
+            clicked => {
+                if (abs(self.mouse-x - self.pressed-x) > 48px) {
+                    root.swiped(self.mouse-x < self.pressed-x ? 1 : -1);
+                } else {
+                    Feedback.tap();
+                    root.tapped();
+                }
+            }
+        }
+    }
+    if root.dots: Rectangle {
+        x: 0;
+        y: parent.height - 16px;
+        width: parent.width;
+        height: 16px;
+        opacity: root.alpha;
+        for i in root.count: Rectangle {
+            x: (parent.width - root.count * 16px + 10px) / 2 + i * 16px;
+            y: 5px;
+            width: 6px;
+            height: 6px;
+            border-radius: 3px;
+            background: i == root.index ? Theme.accent : Theme.line;
+        }
+    }
+}

@@ -24,7 +24,7 @@ import { ScrollFade, MusicBar, CornerClock,
     Icon, BareButton, PrimaryButton, PillButton, InfoCard, TimerCard, NowPlayingCard, PageHeader,
     Tile, SectionTitle, Row, Group, TimerLine, AlarmLine, ChatUser, ChatCharacter, ChatSeparator,
     Step, Stepper, Chip, Dialog, Separator, VolumeHud, GlyphButton, ControlTile, LevelBar, Feedback,
-    DoneCard, Status
+    DoneCard, Status, WidgetPanel, WidgetRow
 } from "design/components.slint";
 import { CasaScreen, CasaBridge } from "casa.slint";
 import { WeatherPage, ListsPage, PickPage, EventRow, ForecastRow, ChoiceRow, PickRow } from "ha-pages.slint";
@@ -740,6 +740,20 @@ export component CompanionWindow inherits Window {
     in property <string> temperature: "14°";
     // The middle band of the home: at most three, the most urgent first.
     in property <[CardRow]> cards: [{ kind: "timer", title: "Pasta", left: "07:42", remaining: 0.77 }];
+    // The home's widget (ui/widgets.rs) under the cards, in the slots they leave free: its
+    // page (kind "next", "weather", "shopping"), header, rows, where it is in the turn.
+    in property <bool> widget-shown: false;
+    in property <string> widget-kind: "";
+    in property <string> widget-title: "";
+    in property <string> widget-aside: "";
+    in property <[WidgetRow]> widget-rows: [];
+    in property <bool> widget-columns: false;
+    in property <int> widget-slots: 0;
+    in property <int> widget-index: 0;
+    in property <int> widget-count: 0;
+    in property <int> widget-seq: 0;
+    callback widget-tapped();
+    callback widget-swiped(int);
     // Home Assistant is not connected (the HA action is dimmed; a status card says so).
     in property <bool> offline: false;
     // Start-up: the character's loading animation, its name, "Starting…"; no clock.
@@ -1460,8 +1474,8 @@ export component CompanionWindow inherits Window {
             }
         }
 
-        // Nothing alive: the invitation, quiet, in the middle of the band.
-        if root.cards.length == 0 || root.notifications-hidden: Text {
+        // Nothing alive and no widget: the invitation, quiet, in the middle of the band.
+        if (root.cards.length == 0 && !root.widget-shown) || root.notifications-hidden: Text {
             x: Grid.col-x;
             y: Grid.cards-y;
             width: Grid.col-width;
@@ -1575,6 +1589,38 @@ export component CompanionWindow inherits Window {
                         }
                     }
                 }
+            }
+        }
+
+        // The widget, in the slots the cards leave free.
+        if root.widget-shown && !root.notifications-hidden && root.widget-slots > 0: WidgetPanel {
+            x: Grid.col-x;
+            y: Grid.cards-y + root.cards.length * (Grid.card-height + Grid.card-gap);
+            height: root.widget-slots * Grid.card-height + (root.widget-slots - 1) * Grid.card-gap;
+            kind: root.widget-kind;
+            title: root.widget-title;
+            aside: root.widget-aside;
+            rows: root.widget-rows;
+            columns: root.widget-columns;
+            slots: root.widget-slots;
+            index: root.widget-index;
+            count: root.widget-count;
+            seq: root.widget-seq;
+            // A tap opens the page's own page (Rust holds the turn and logs it).
+            tapped => {
+                root.widget-tapped();
+                if (root.widget-kind == "weather") {
+                    root.page = "weather";
+                } else if (root.widget-kind == "shopping") {
+                    root.page-back = "home";
+                    root.page = "shopping";
+                } else {
+                    root.page-back = "home";
+                    root.page = "reminders";
+                }
+            }
+            swiped(d) => {
+                root.widget-swiped(d);
             }
         }
 

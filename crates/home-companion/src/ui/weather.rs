@@ -166,6 +166,39 @@ pub fn forecast_rows(w: &Weather, l: &Locale, today: &str, max: usize) -> Vec<Fo
         .collect()
 }
 
+/// "Mer 11": a day's short name (the locale's first three letters) and its day of the month.
+fn short_day(date: &str, l: &Locale) -> String {
+    let Some((n, dom)) = parse_date(date) else {
+        return date.to_string();
+    };
+    let wd = (n + 4).rem_euclid(7) as usize;
+    let name: String = l
+        .days
+        .get(wd)
+        .map(|d| title_case(d).chars().take(3).collect())
+        .unwrap_or_default();
+    format!("{name} {dom}")
+}
+
+/// The home widget's weather columns (widgets.rs: `left` the day, `note` the condition, `text`
+/// the high): the days after `today` ("2026-11-08"), at most four.
+pub fn widget_columns(w: &Weather, l: &Locale, today: &str) -> Vec<super::widgets::WidgetRow> {
+    w.today
+        .iter()
+        .chain(&w.next_days)
+        .filter(|d| d.date.as_str() > today)
+        .filter_map(|d| {
+            Some(super::widgets::WidgetRow {
+                left: short_day(&d.date, l),
+                text: format!("{}°", d.high?.round() as i64),
+                right: String::new(),
+                note: d.condition.clone(),
+            })
+        })
+        .take(4)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,5 +309,26 @@ mod tests {
         assert_eq!(it[1].rain, "2,5 mm");
         assert_eq!(it[3].rain, "");
         assert_eq!(it[0].condition, "Pioggia");
+    }
+
+    #[test]
+    fn widget_columns_are_the_next_four_days() {
+        let w = Weather::sample_week("2026-11-03");
+        let c = widget_columns(&w, &locale("it"), "2026-11-03");
+        let got: Vec<(&str, &str, &str)> = c
+            .iter()
+            .map(|r| (r.left.as_str(), r.note.as_str(), r.text.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("Mer 4", "rainy", "12°"),
+                ("Gio 5", "sunny", "14°"),
+                ("Ven 6", "partlycloudy", "13°"),
+                ("Sab 7", "rainy", "11°"),
+            ]
+        );
+        // Without a forecast: no columns (the page leaves the turn).
+        assert!(widget_columns(&Weather::sample(), &locale("en"), "2026-11-03").is_empty());
     }
 }

@@ -230,6 +230,11 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// removes it.
     fn set_weather(&self, w: Option<(&str, &str, &str)>);
     fn set_cards(&self, cards: &[CardView]);
+    /// The home's widget (widgets.rs): the page cut to its slots, or none.
+    fn set_widget(&self, w: &widgets::Shown);
+    fn on_widget_tapped(&self, f: impl Fn() + 'static);
+    /// +1 the next page, -1 the previous one.
+    fn on_widget_swiped(&self, f: impl Fn(i32) + 'static);
     /// The weather page: the condition's icon (MDI path data), today's high and low, the
     /// daily forecast.
     fn set_weather_page(&self, icon: &str, high: &str, low: &str, rows: &[weather::ForecastRow]);
@@ -805,6 +810,38 @@ macro_rules! impl_screen {
                     })
                     .collect();
                 $m::CompanionWindow::set_cards(self, model!(v))
+            }
+            fn set_widget(&self, w: &widgets::Shown) {
+                let Some(v) = &w.view else {
+                    $m::CompanionWindow::set_widget_shown(self, false);
+                    return;
+                };
+                let rows: Vec<$m::WidgetRow> = v
+                    .rows
+                    .iter()
+                    .map(|r| $m::WidgetRow {
+                        left: r.left.as_str().into(),
+                        text: r.text.as_str().into(),
+                        right: r.right.as_str().into(),
+                        note: r.note.as_str().into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_widget_kind(self, v.kind.key().into());
+                $m::CompanionWindow::set_widget_title(self, v.title.as_str().into());
+                $m::CompanionWindow::set_widget_aside(self, v.aside.as_str().into());
+                $m::CompanionWindow::set_widget_rows(self, model!(rows));
+                $m::CompanionWindow::set_widget_columns(self, v.columns);
+                $m::CompanionWindow::set_widget_slots(self, w.slots as i32);
+                $m::CompanionWindow::set_widget_index(self, w.index as i32);
+                $m::CompanionWindow::set_widget_count(self, w.count as i32);
+                $m::CompanionWindow::set_widget_seq(self, w.seq as i32);
+                $m::CompanionWindow::set_widget_shown(self, true);
+            }
+            fn on_widget_tapped(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_widget_tapped(self, f)
+            }
+            fn on_widget_swiped(&self, f: impl Fn(i32) + 'static) {
+                $m::CompanionWindow::on_widget_swiped(self, f)
             }
             fn set_offline(&self, offline: bool) {
                 $m::CompanionWindow::set_offline(self, offline)

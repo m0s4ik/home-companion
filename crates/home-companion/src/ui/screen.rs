@@ -26,6 +26,7 @@ use super::house::{self, Dnd, HouseCards};
 use super::light::{Auto, Curve};
 use super::lists::{self, Choice, ShopList};
 use super::next;
+use super::widgets::{self, Band, Kind as WidgetKind};
 use super::{
     AlarmLineView, MemoriesView, MemoryLine, MusicView, Screen, SettingsView, TimerLineView,
     UpdateView,
@@ -484,10 +485,14 @@ pub struct Demo {
     pub answer_early: bool,
     /// `--state ha-pick` / `ha-pick-voice`: what the choice page lists ("ai", "voice").
     pub pick: &'static str,
+    /// `--state widget*`: the home's widget on sample data, on this page.
+    pub widget: Option<WidgetKind>,
+    /// `--state widget-medium` / `widget-line`: one card (a timer) or two over it.
+    pub widget_cards: usize,
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 74] = [
+pub const DEMO_STATES: [&str; 80] = [
     "home",
     "cards",
     "cards-setup",
@@ -562,6 +567,12 @@ pub const DEMO_STATES: [&str; 74] = [
     "what",
     "update",
     "update-confirm",
+    "widget",
+    "widget-weather",
+    "widget-shopping",
+    "widget-medium",
+    "widget-line",
+    "widget-compact",
 ];
 
 impl Demo {
@@ -788,6 +799,21 @@ impl Demo {
             },
             "night" => Demo {
                 night: true,
+                ..home.clone()
+            },
+            "widget" | "widget-weather" | "widget-shopping" | "widget-medium" | "widget-line"
+            | "widget-compact" => Demo {
+                widget: Some(match s {
+                    "widget-weather" => WidgetKind::Weather,
+                    "widget-shopping" => WidgetKind::Shopping,
+                    _ => WidgetKind::Next,
+                }),
+                widget_cards: match s {
+                    "widget-medium" => 1,
+                    "widget-line" => 2,
+                    _ => 0,
+                },
+                compact: s == "widget-compact",
                 ..home.clone()
             },
             "starting" => Demo {
@@ -1171,6 +1197,10 @@ pub struct Ui<S: Screen> {
     ha_keep: Cell<Option<Instant>>,
     /// Settings → Screen → "Home compatta" (the clock higher, four cards).
     home_compact: Cell<bool>,
+    /// The home's widget (widgets.rs): its turn, the pages that are on (none: no widget, the
+    /// home as before).
+    widget: RefCell<Band>,
+    widget_on: RefCell<Vec<WidgetKind>>,
     /// The first start's welcome page is still to be answered.
     language_pending: Cell<bool>,
     /// The first start's search for Home Assistant on the network, while it runs.
@@ -1418,6 +1448,11 @@ impl<S: Screen> Ui<S> {
             Some(d) => d.compact,
             None => settings.as_ref().is_some_and(Settings::home_compact),
         };
+        // The widget's pages: in the demos the widget ones' (all of them), else none yet.
+        let widget_on = match &opts.demo {
+            Some(d) if d.widget.is_some() => WidgetKind::ALL.to_vec(),
+            _ => Vec::new(),
+        };
         let opts_auto = opts.screen.auto.filter(|_| !demo).map(Auto::new);
         let opts_linked = opts.ha_linked;
         let opts_first = opts.first_start;
@@ -1497,6 +1532,8 @@ impl<S: Screen> Ui<S> {
             usage_asked: Cell::new(None),
             ha_keep: Cell::new(None),
             home_compact: Cell::new(compact),
+            widget: RefCell::new(Band::new(Instant::now())),
+            widget_on: RefCell::new(widget_on),
             language_pending: Cell::new(opts_first.language),
             find: RefCell::new(None),
             restart_timer: Timer::default(),
@@ -2129,6 +2166,23 @@ impl<S: Screen> Ui<S> {
             }
         });
         let ui = Rc::downgrade(self);
+        self.screen.on_widget_tapped(move || {
+            if let Some(ui) = ui.upgrade()
+                && let Some(kind) = ui.widget.borrow_mut().tap(Instant::now())
+            {
+                log::info!(event = "widget", page = kind.key(), why = "tap"; "widget: {} opened", kind.key());
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_widget_swiped(move |dir| {
+            if let Some(ui) = ui.upgrade() {
+                let shown = ui.widget.borrow_mut().swipe(dir, Instant::now());
+                if let Some(s) = shown {
+                    ui.screen.set_widget(&s);
+                }
+            }
+        });
+        let ui = Rc::downgrade(self);
         self.screen.on_home_compact_changed(move |on| {
             if let Some(ui) = ui.upgrade() {
                 ui.home_compact.set(on);
@@ -2725,6 +2779,62 @@ impl<S: Screen> Ui<S> {
         }
     }
 
+    /// `--state widget*`: today's dentist and dinner, a reminder, tomorrow's holiday and car
+    /// service; the shopping list; the week's weather; no card, a timer, or a timer and a card
+    /// from Home Assistant.
+    fn show_demo_widget(&self, d: &Demo, l: &Locale) {
+        if d.widget.is_none() {
+            return;
+        }
+        let midnight = DEMO_NOW as i64 - DEMO_NOW as i64 % 86400;
+        let mut desk = self.desk.borrow_mut();
+        let mut events = demo_events(l);
+        let ev = |start: i64, title: &str| Upcoming {
+            start,
+            end: start + 3600,
+            all_day: false,
+            title: title.into(),
+            calendar: "calendar.demo0".into(),
+        };
+        events.push(ev(midnight + 19 * 3600 + 1800, l.sample("event_dinner")));
+        events.push(ev(midnight + 86400 + 9 * 3600, l.sample("event_car")));
+        desk.events = events;
+        desk.upcoming = vec![(midnight + 18 * 3600, l.sample("reminder_text").to_string())];
+        let items: Vec<(String, String)> = l
+            .sample("shop_items")
+            .split('|')
+            .enumerate()
+            .map(|(i, t)| (i.to_string(), t.to_string()))
+            .collect();
+        desk.shopping = Some(vec![ShopList {
+            entity: "todo.groceries".into(),
+            name: l
+                .sample("list_names")
+                .split('|')
+                .next()
+                .unwrap_or("")
+                .into(),
+            items,
+        }]);
+        desk.timers.truncate(d.widget_cards.min(1));
+        // The next alarm would be a card too: not in these.
+        desk.alarms.clear();
+        if d.widget_cards > 1 {
+            desk.ha_cards.apply(
+                crate::ha::events::CardEvent::Show(crate::ha::events::HaCard {
+                    id: Some("washing".into()),
+                    title: Some(l.sample("ha_card_title_sample").into()),
+                    text: l.sample("ha_card_text").into(),
+                    icon: Some("mdi:washing-machine".into()),
+                    seconds: None,
+                }),
+                Instant::now(),
+            );
+        }
+        drop(desk);
+        *self.weather.borrow_mut() = Some(Weather::sample_week(DEMO_DATE));
+    }
+
     fn show_demo(&self, d: Demo) {
         let l = self.locale.borrow().clone();
         let w = |k: &str| l.text(k).to_string();
@@ -2851,6 +2961,7 @@ impl<S: Screen> Ui<S> {
         }
         self.screen.set_music(self.desk.borrow().music.as_ref());
         self.show_demo_v02(&d, &l);
+        self.show_demo_widget(&d, &l);
         if let Some((w, h)) = d.mirror {
             let info = MirrorInfo {
                 source: l.sample("mirror_source").to_string(),
@@ -2899,6 +3010,18 @@ impl<S: Screen> Ui<S> {
         );
         self.screen.set_setup_link(qr_image(&sample), "", false);
         self.refresh_desk();
+        // The widget on the demo's page (as if swiped there).
+        if let Some(kind) = d.widget {
+            for _ in 0..WidgetKind::ALL.len() {
+                if self.widget.borrow().kind() == Some(kind) {
+                    break;
+                }
+                let shown = self.widget.borrow_mut().swipe(1, Instant::now());
+                if let Some(s) = shown {
+                    self.screen.set_widget(&s);
+                }
+            }
+        }
         if d.cards {
             let msgs = vec![(
                 l.sample("message_title").to_string(),
@@ -4920,6 +5043,7 @@ impl<S: Screen> Ui<S> {
         let l = self.locale.borrow();
         let w = |k: &str| l.text(k).to_string();
         let timers = self.visible_timers();
+        let on = self.widget_on.borrow().clone();
         let d = self.desk.borrow();
         let offline =
             self.view.get() == Phase::Offline && self.motion.borrow().loading_until.is_none();
@@ -5062,12 +5186,47 @@ impl<S: Screen> Ui<S> {
                 .last_answer
                 .as_ref()
                 .map(|(a, _)| (w("last_answer"), a.clone())),
-            next_in_widget: false,
-            shopping_in_widget: false,
+            next_in_widget: on.contains(&WidgetKind::Next),
+            shopping_in_widget: on.contains(&WidgetKind::Shopping),
         };
         let picked = cards::pick_n(&alive, &cw, self.max_cards());
         *self.card_kinds.borrow_mut() = picked.iter().map(|c| c.kind).collect();
         self.screen.set_cards(&picked);
+        // The widget in the slots the cards leave free.
+        let slots = if on.is_empty() {
+            0
+        } else {
+            self.max_cards().saturating_sub(picked.len())
+        };
+        let today = if self.opts.demo.is_some() {
+            DEMO_DATE.to_string()
+        } else {
+            crate::ha::local_date()
+        };
+        let columns = self
+            .weather
+            .borrow()
+            .as_ref()
+            .map(|w| super::weather::widget_columns(w, &l, &today))
+            .unwrap_or_default();
+        let words = widgets::Words {
+            next: l.text("widget_next"),
+            weather: l.text("widget_weather"),
+            shopping: l.text("widget_shopping"),
+            today: l.text("calendar_today"),
+            tomorrow: l.text("calendar_tomorrow"),
+            to_buy: l.text("tile_shopping"),
+        };
+        let sources = widgets::Sources {
+            next: &next,
+            weather: columns,
+            shopping: d.shopping.as_deref(),
+        };
+        let pages = widgets::pages(&sources, &on, &words, now, &local_hm);
+        let shown = self.widget.borrow_mut().offer(pages, slots, Instant::now());
+        if let Some(s) = shown {
+            self.screen.set_widget(&s);
+        }
     }
 
     fn refresh_ringing(&self) {
@@ -6307,6 +6466,8 @@ const BAR_ANSWER: usize = 70;
 const BRAIN: &str = "Home Assistant";
 /// "Now" in demo mode: 2026-11-03 14:25 UTC (tools/shoot-golden.sh runs with TZ=UTC).
 const DEMO_NOW: f64 = 1_793_715_900.0;
+/// DEMO_NOW's date.
+const DEMO_DATE: &str = "2026-11-03";
 /// The demo conversation's second session (seconds after the first).
 const SESSION_DEMO: i64 = 24 * 3600;
 
