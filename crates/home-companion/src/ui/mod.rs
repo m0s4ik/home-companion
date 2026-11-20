@@ -25,6 +25,7 @@ pub mod sensors;
 pub mod touch;
 pub mod weather;
 pub mod webview;
+pub mod widgets;
 
 use slint::{Color, ComponentHandle, Image, Model, ModelRc, VecModel};
 

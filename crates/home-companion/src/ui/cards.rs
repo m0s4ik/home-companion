@@ -56,6 +56,10 @@ pub struct Alive<'a> {
     pub music: Option<(String, String, bool)>,
     /// (title, the answer) while it is recent.
     pub answer: Option<(String, String)>,
+    /// The home's widget shows what comes next and the shopping (widgets.rs): those are its
+    /// pages then, not cards (each only when its page is on in Settings → Screen → Widgets).
+    pub next_in_widget: bool,
+    pub shopping_in_widget: bool,
 }
 
 /// The words the cards need: "{i} of {n}" for messages, "+{n} timers", "Paused".
@@ -139,10 +143,10 @@ pub fn pick_n(a: &Alive, w: &CardWords, max: usize) -> Vec<CardView> {
     if let Some((t, x)) = &a.alarm {
         out.push(card("alarm", t, x));
     }
-    if let Some((t, x)) = &a.upcoming {
+    if let Some((t, x)) = a.upcoming.as_ref().filter(|_| !a.next_in_widget) {
         out.push(card("upcoming", t, x));
     }
-    if let Some((t, x)) = &a.shopping {
+    if let Some((t, x)) = a.shopping.as_ref().filter(|_| !a.shopping_in_widget) {
         out.push(card("shopping", t, x));
     }
     if let Some((t, x, playing)) = &a.music {
@@ -385,6 +389,8 @@ mod tests {
             shopping: None,
             music: Some(("Clair de lune".into(), "Debussy · AirPlay".into(), true)),
             answer: None,
+            next_in_widget: false,
+            shopping_in_widget: false,
         };
         let c = pick(&a, &w);
         assert_eq!(kinds(&c), ["status", "reminder", "timer"]);
@@ -493,6 +499,32 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(kinds(&pick(&b, &w)), ["alarm", "upcoming"]);
+    }
+
+    #[test]
+    fn with_the_widget_next_and_shopping_are_its_pages() {
+        let (of, more) = words();
+        let w = CardWords {
+            of: &of,
+            more_timers: &more,
+            paused: "In pausa",
+        };
+        let timers = [timer("Pasta", "4:00")];
+        let a = Alive {
+            timers: &timers,
+            upcoming: Some(("Promemoria · oggi 15:00".into(), "dentista".into())),
+            shopping: Some(("Spesa · 2 da prendere".into(), "pane · latte".into())),
+            next_in_widget: true,
+            shopping_in_widget: true,
+            ..Default::default()
+        };
+        assert_eq!(kinds(&pick(&a, &w)), ["timer"]);
+        // Only the pages that are on leave the cards.
+        let b = Alive {
+            shopping_in_widget: false,
+            ..a
+        };
+        assert_eq!(kinds(&pick(&b, &w)), ["timer", "shopping"]);
     }
 
     fn ha(id: Option<&str>, text: &str, seconds: Option<u64>) -> CardEvent {

@@ -5062,6 +5062,8 @@ impl<S: Screen> Ui<S> {
                 .last_answer
                 .as_ref()
                 .map(|(a, _)| (w("last_answer"), a.clone())),
+            next_in_widget: false,
+            shopping_in_widget: false,
         };
         let picked = cards::pick_n(&alive, &cw, self.max_cards());
         *self.card_kinds.borrow_mut() = picked.iter().map(|c| c.kind).collect();
