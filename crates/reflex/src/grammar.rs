@@ -1086,6 +1086,8 @@ Uova = { bare = "uova" }
         assert_eq!(c("ja graag"), Some(Command::Yes));
         assert_eq!(c("nee laat maar"), Some(Command::No));
         assert_eq!(c("dank je wel"), Some(Command::Silence));
+        assert_eq!(c("maak een foto"), Some(Command::TakePhoto));
+        assert_eq!(c("maak een foto van mij"), Some(Command::TakePhoto));
         assert_eq!(c("doe de lampen aan"), None);
         let words = super::answer_words(include_str!("../../../characters/alfred/grammar/nl.toml"))
             .unwrap();
