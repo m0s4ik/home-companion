@@ -63,6 +63,11 @@ pub trait PanelHost: model::Host {
     fn search_state(&self, id: &str) -> crate::feeds::SearchState;
     /// What hit `key` of search `id` becomes (None: not one of its hits).
     fn search_choice(&self, id: &str, key: &str) -> Option<crate::feeds::Choice>;
+    /// What the widget asks of Home Assistant (the user's choices, whether its pages are on or
+    /// not), the catalogue of entities it may show, and a fresh catalogue asked for.
+    fn widget_ha(&self) -> crate::ha::widgets::Want;
+    fn ha_catalog(&self) -> Vec<crate::ha::widgets::Entity>;
+    fn ha_catalog_refresh(&self);
     /// The board's notes (id, text); None: no brain to keep them.
     fn notes(&self) -> Option<Vec<(i64, String)>>;
     /// Asks the brain to write, change, remove a note (already checked).
@@ -189,6 +194,17 @@ pub const STRING_KEYS: &[&str] = &[
     "panel_no_brain",
     "panel_edit",
     "panel_save",
+    "panel_sensors",
+    "panel_search_sensor",
+    "panel_sensors_empty",
+    "panel_player",
+    "panel_search_player",
+    "panel_player_none",
+    "panel_people",
+    "panel_people_hint",
+    "panel_check",
+    "panel_ha_privacy",
+    "panel_no_ha",
 ];
 
 fn shopping_json(lists: &[ShopList]) -> Value {
@@ -450,6 +466,11 @@ mod tests {
             }
             // A canned answer: the words searched become a hit's name (they are a source's
             // text now).
+            if matches!(what, What::Sensor | What::Player | What::Person) {
+                let f = crate::ha::widgets::search(&self.ha_catalog(), what, q);
+                s.insert(id.into(), SearchState::Done(f));
+                return true;
+            }
             let found = match what {
                 What::Quote => vec![Found {
                     hit: Hit {
@@ -463,7 +484,7 @@ mod tests {
                         name: clean_name(q),
                     }),
                 }],
-                What::City => vec![Found {
+                _ => vec![Found {
                     hit: Hit {
                         key: "city:7".into(),
                         name: q.into(),
@@ -492,6 +513,19 @@ mod tests {
         fn notes(&self) -> Option<Vec<(i64, String)>> {
             self.notes.borrow().clone()
         }
+        fn widget_ha(&self) -> crate::ha::widgets::Want {
+            model::widget_ha(self)
+        }
+        /// The catalogue of the fixture: it holds a lock, an alarm, a camera with a token.
+        fn ha_catalog(&self) -> Vec<crate::ha::widgets::Entity> {
+            let text = std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("fixtures/ha/widgets-get-states.json"),
+            )
+            .unwrap();
+            crate::ha::widgets::parse_catalog(&text).unwrap()
+        }
+        fn ha_catalog_refresh(&self) {}
         fn note_add(&self, text: &str) {
             self.calls.borrow_mut().push(format!("note add {text}"));
         }
@@ -922,6 +956,112 @@ mod tests {
             json!({"op": "set", "token": t, "key": "widgets_currency", "value": "chf"}),
         );
         assert_eq!(r["values"]["widgets_currency"], "chf");
+    }
+
+    /// Home Assistant's entities: only through a search of the catalogue (never a lock, an
+    /// alarm, a camera), the player set and cleared, the people from the catalogue only.
+    #[test]
+    fn home_assistant_entities_from_the_browser() {
+        let h = host("ha-entities");
+        let mut s = Sessions::default();
+        let t = pair(&h, &mut s);
+        let w = call(&h, &mut s, json!({"op": "widgets.get", "token": t}));
+        assert_eq!(w["ha"], true);
+        assert_eq!(w["people"]["all"].as_array().unwrap().len(), 2);
+        let a = w.to_string();
+        for bad in [
+            "lock.",
+            "alarm_control_panel",
+            "camera.",
+            "device_tracker",
+            "latitude",
+        ] {
+            assert!(!a.contains(bad), "{bad} in {a}");
+        }
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "search.start", "token": t, "what": "sensor", "q": "lock"}),
+        );
+        let st = call(
+            &h,
+            &mut s,
+            json!({"op": "search.status", "token": t, "id": r["id"]}),
+        );
+        assert_eq!(st["hits"], json!([]));
+        let mut at_s = 10;
+        let mut search = |h: &Host, s: &mut Sessions, what: &str, q: &str| -> String {
+            at_s += 3;
+            let r = handle(
+                h,
+                s,
+                &json!({"op": "search.start", "token": t, "what": what, "q": q}),
+                at(at_s),
+                &mut rng,
+            );
+            r["id"].as_str().unwrap().to_string()
+        };
+        let id = search(&h, &mut s, "sensor", "outdoor");
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "sensors.add", "token": t, "search": id,
+                                        "ref": "sensor.outdoor_temperature"}),
+        );
+        assert_eq!(
+            r["sensors"],
+            json!([{"ref": "sensor.outdoor_temperature", "name": "Outdoor temperature", "detail": "°C"}])
+        );
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "sensors.add", "token": t, "search": id, "ref": "lock.front"}),
+        );
+        assert_eq!(r["error"], "invalid");
+        let id = search(&h, &mut s, "player", "speaker");
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "player.set", "token": t, "search": id, "ref": "media_player.speaker"}),
+        );
+        assert_eq!(r["player"]["name"], "Speaker");
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "player.set", "token": t, "ref": ""}),
+        );
+        assert_eq!(r["player"], Value::Null);
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "people.set", "token": t, "refs": ["person.bob"]}),
+        );
+        assert_eq!(r["people"]["chosen"], json!(["person.bob"]));
+        for bad in [
+            json!(["device_tracker.phone_one"]),
+            json!(["person.zed"]),
+            json!("person.bob"),
+        ] {
+            let r = call(
+                &h,
+                &mut s,
+                json!({"op": "people.set", "token": t, "refs": bad}),
+            );
+            assert_eq!(r["error"], "invalid", "{bad}");
+        }
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "sensors.remove", "token": t, "ref": "sensor.outdoor_temperature"}),
+        );
+        assert_eq!(r["sensors"], json!([]));
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "set", "token": t, "key": "check_openings", "value": false}),
+        );
+        assert_eq!(r["values"]["check_openings"], false);
+        assert!(!h.model.settings.widget_ha().openings);
     }
 
     #[test]

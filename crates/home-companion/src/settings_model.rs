@@ -77,6 +77,18 @@ pub const ITEMS: &[Item] = &[
         "widgets",
         Kind::Choice,
     )),
+    on_panel(item(
+        "check_openings",
+        "check_openings",
+        "widgets",
+        Kind::Bool,
+    )),
+    on_panel(item(
+        "check_batteries",
+        "check_batteries",
+        "widgets",
+        Kind::Bool,
+    )),
     on_panel(item("night_on", "night_mode", "screen", Kind::Bool)),
     on_panel(item(
         "night_start",
@@ -146,6 +158,8 @@ pub const PANEL_KEYS: &[&str] = &[
     "widgets",
     "widgets_every",
     "widgets_currency",
+    "check_openings",
+    "check_batteries",
     "night_on",
     "night_start",
     "night_end",
@@ -169,6 +183,8 @@ pub enum Change {
     /// The markets and the other cities chosen from the browser panel.
     Quotes(Vec<crate::feeds::QuoteChoice>),
     Cities(Vec<crate::feeds::CityChoice>),
+    /// Home Assistant's entities for the widget and what to check.
+    WidgetHa(crate::ha::widgets::Want),
     Night(bool, u32, u32),
     HomeCompact(bool),
     Language(String),
@@ -276,6 +292,21 @@ pub fn widget_order(host: &dyn Host) -> Vec<WidgetKind> {
         .unwrap_or_else(|| WidgetKind::ALL.to_vec())
 }
 
+/// What the widget asks of Home Assistant now: the file's, with the checks as the host holds
+/// them.
+pub fn widget_ha(host: &dyn Host) -> crate::ha::widgets::Want {
+    let mut w = host.settings().map(|s| s.widget_ha()).unwrap_or_default();
+    for (k, f) in [
+        ("check_openings", &mut w.openings),
+        ("check_batteries", &mut w.batteries),
+    ] {
+        if let Some(v) = host.live(k).and_then(|v| v.as_bool()) {
+            *f = v;
+        }
+    }
+    w
+}
+
 fn int(v: i64) -> Value {
     json!(v)
 }
@@ -290,6 +321,8 @@ pub fn get(host: &dyn Host, key: &str) -> Option<Value> {
         "widgets" => json!(s.widgets().0.iter().map(|k| k.key()).collect::<Vec<_>>()),
         "widgets_every" => json!(s.widgets().1.to_string()),
         "widgets_currency" => json!(s.widget_currency()),
+        "check_openings" => json!(s.widget_ha().openings),
+        "check_batteries" => json!(s.widget_ha().batteries),
         "night_on" => json!(s.night().0),
         "night_start" => int(s.night().1 as i64),
         "night_end" => int(s.night().2 as i64),
@@ -407,6 +440,16 @@ pub fn change_for(host: &dyn Host, key: &str, value: &Value) -> Result<Change, S
             Change::Widgets(widgets().0, every)
         }
         "widgets_currency" => Change::WidgetCurrency(v.as_str().unwrap_or("usd").to_string()),
+        "check_openings" | "check_batteries" => {
+            let mut w = widget_ha(host);
+            let on = v.as_bool().unwrap_or(true);
+            if key == "check_openings" {
+                w.openings = on;
+            } else {
+                w.batteries = on;
+            }
+            Change::WidgetHa(w)
+        }
         "night_on" | "night_start" | "night_end" => {
             let (mut on, mut start, mut end) = night();
             match key {
@@ -451,6 +494,7 @@ pub fn save(s: &Settings, change: &Change) {
         Change::WidgetCurrency(c) => s.save_widget_currency(c),
         Change::Quotes(q) => s.save_quotes(q),
         Change::Cities(c) => s.save_cities(c),
+        Change::WidgetHa(w) => s.save_widget_ha(w),
         Change::Night(on, start, end) => s.save_night(*on, *start, *end),
         Change::HomeCompact(on) => s.save_home_compact(*on),
         Change::Language(code) => s.save_language(code),
@@ -628,6 +672,26 @@ pub(crate) mod tests {
                 "widgets_currency",
                 json!("eur"),
                 Change::WidgetCurrency("eur".into()),
+            ),
+            (
+                "check_openings",
+                json!(false),
+                Change::WidgetHa(crate::ha::widgets::Want {
+                    people: Some(vec![]),
+                    openings: false,
+                    batteries: true,
+                    ..Default::default()
+                }),
+            ),
+            (
+                "check_batteries",
+                json!(false),
+                Change::WidgetHa(crate::ha::widgets::Want {
+                    people: Some(vec![]),
+                    openings: false,
+                    batteries: false,
+                    ..Default::default()
+                }),
             ),
             ("night_on", json!(false), Change::Night(false, 23, 7)),
             ("night_start", json!(22), Change::Night(false, 22, 7)),

@@ -13,6 +13,10 @@
 //! | `quotes.add` / `cities.add` | `search`, `ref` | as `widgets.get`; `list_full`, `exists`, `invalid` |
 //! | `quotes.remove` / `cities.remove` | `ref` | as `widgets.get` |
 //! | `quotes.move` / `cities.move` | `ref`, `to` | as `widgets.get` |
+//! | `search.start` | `what: "sensor"\|"player"\|"person"`, `q` | answered at once from Home Assistant's catalogue (ha/widgets.rs) |
+//! | `sensors.add` / `sensors.remove` / `sensors.move` | `search`+`ref` / `ref` / `ref`+`to` | as `widgets.get` |
+//! | `player.set` | `search`+`ref`, or `ref: ""` (none) | as `widgets.get` |
+//! | `people.set` | `refs:[person.*]` (empty: everyone) | as `widgets.get` |
 //! | `notes.list` | — | `{notes:[{id,text}]}`; `no_brain` without the brain |
 //! | `notes.add` / `notes.edit` / `notes.remove` | `text`, `id` | `{}` (the brain answers, the list follows); `invalid`, `list_full`, `no_brain` |
 //!
@@ -53,6 +57,11 @@ pub const OPS: &[&str] = &[
     "cities.add",
     "cities.remove",
     "cities.move",
+    "sensors.add",
+    "sensors.remove",
+    "sensors.move",
+    "player.set",
+    "people.set",
     "notes.list",
     "notes.add",
     "notes.edit",
@@ -97,6 +106,9 @@ pub fn clean_query(what: What, q: &str) -> Option<String> {
     let ok = |c: char| match what {
         What::Quote => c.is_alphanumeric() || matches!(c, ' ' | '.' | '-' | '^' | '=' | '&'),
         What::City => c.is_alphabetic() || matches!(c, ' ' | '-' | '\'' | '.'),
+        What::Sensor | What::Player | What::Person => {
+            c.is_alphanumeric() || matches!(c, ' ' | '-' | '\'' | '.' | '_' | '(' | ')')
+        }
     };
     q.chars().all(ok).then(|| q.to_string())
 }
@@ -182,8 +194,29 @@ pub fn state(host: &dyn PanelHost, lang: &str) -> Value {
         .map(|c| json!({"ref": c.key(), "name": c.name, "detail": city_detail(c)}))
         .collect();
     let currency = model::get(host, "widgets_currency").unwrap_or(json!("usd"));
+    // Home Assistant's side: the entities chosen (with the catalogue's names), everyone who
+    // could be shown. Only ids, names and units: nothing else of an entity leaves the body.
+    host.ha_catalog_refresh();
+    let catalog = host.ha_catalog();
+    let named = |id: &str| -> Value {
+        let e = catalog.iter().find(|e| e.id == id);
+        json!({"ref": id, "name": e.map_or(id, |e| e.name.as_str()),
+               "detail": e.map_or(String::new(), |e| e.unit.clone())})
+    };
+    let ha = host.widget_ha();
+    let sensors: Vec<Value> = ha.sensors.iter().map(|id| named(id)).collect();
+    let player = (!ha.player.is_empty()).then(|| named(&ha.player));
+    let all_people: Vec<Value> = catalog
+        .iter()
+        .filter(|e| e.domain() == "person")
+        .map(|e| json!({"ref": e.id, "name": e.name}))
+        .collect();
     json!({"ok": true, "order": order, "quotes": quotes, "cities": cities, "currency": currency,
-           "limits": {"quotes": MAX_QUOTES, "cities": MAX_CITIES, "query": MAX_QUERY}})
+           "sensors": sensors, "player": player,
+           "people": {"all": all_people, "chosen": ha.people.unwrap_or_default()},
+           "ha": !catalog.is_empty(),
+           "limits": {"quotes": MAX_QUOTES, "cities": MAX_CITIES, "sensors": crate::ha::widgets::MAX_SENSORS,
+                      "query": MAX_QUERY}})
 }
 
 /// A search id: 16 random bytes in hex.
@@ -240,6 +273,9 @@ pub fn handle(
             let what = match str_of(req, "what") {
                 "quote" => What::Quote,
                 "city" => What::City,
+                "sensor" => What::Sensor,
+                "player" => What::Player,
+                "person" => What::Person,
                 _ => return err("invalid"),
             };
             let Some(q) = clean_query(what, str_of(req, "q")) else {
@@ -350,6 +386,78 @@ pub fn handle(
                 }
             };
             model::commit(host, Change::Cities(new));
+            state(host, lang)
+        }
+        "sensors.add" | "player.set" => {
+            let what = if op == "sensors.add" {
+                What::Sensor
+            } else {
+                What::Player
+            };
+            let mut ha = host.widget_ha();
+            let key = str_of(req, "ref");
+            if op == "player.set" && key.is_empty() {
+                ha.player.clear();
+            } else {
+                let search = str_of(req, "search");
+                if !book.owned(search, me, Some(what), t) {
+                    return err("invalid");
+                }
+                let Some(Choice::Entity(id)) = host.search_choice(search, key) else {
+                    return err("invalid");
+                };
+                if op == "player.set" {
+                    ha.player = id;
+                } else if ha.sensors.contains(&id) {
+                    return err("exists");
+                } else if ha.sensors.len() >= crate::ha::widgets::MAX_SENSORS {
+                    return err("list_full");
+                } else {
+                    ha.sensors.push(id);
+                }
+            }
+            model::commit(host, Change::WidgetHa(ha));
+            state(host, lang)
+        }
+        "sensors.remove" | "sensors.move" => {
+            let mut ha = host.widget_ha();
+            let Some(i) = ha.sensors.iter().position(|x| x == str_of(req, "ref")) else {
+                return err("invalid");
+            };
+            if op == "sensors.remove" {
+                ha.sensors.remove(i);
+            } else {
+                match req.get("to").and_then(Value::as_u64) {
+                    Some(to) if (to as usize) < ha.sensors.len() => {
+                        ha.sensors = moved(&ha.sensors, i, to as usize)
+                    }
+                    _ => return err("invalid"),
+                }
+            }
+            model::commit(host, Change::WidgetHa(ha));
+            state(host, lang)
+        }
+        "people.set" => {
+            let Some(refs) = req.get("refs").and_then(Value::as_array) else {
+                return err("invalid");
+            };
+            let catalog = host.ha_catalog();
+            let mut chosen: Vec<String> = Vec::new();
+            for r in refs {
+                match r.as_str() {
+                    Some(id)
+                        if catalog.iter().any(|e| e.id == id && e.domain() == "person")
+                            && !chosen.iter().any(|c| c == id) =>
+                    {
+                        chosen.push(id.to_string())
+                    }
+                    _ => return err("invalid"),
+                }
+            }
+            chosen.truncate(crate::ha::widgets::MAX_PEOPLE);
+            let mut ha = host.widget_ha();
+            ha.people = Some(chosen);
+            model::commit(host, Change::WidgetHa(ha));
             state(host, lang)
         }
         "notes.list" => match host.notes() {

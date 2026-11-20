@@ -15,7 +15,7 @@ import struct
 import sys
 import zlib
 
-STATES = ["home", "cards", "listening", "thinking", "speaking", "error", "offline", "ringing", "volume", "altro", "chat", "timers", "settings", "language", "screen", "music", "setup", "night", "starting", "suspend", "new-timer", "new-alarm", "widget", "widget-medium", "widget-line", "widget-compact", "widget-weather", "widget-quotes", "widget-quotes-line", "widget-cities", "trends", "city", "widget-notes", "notes", "settings-widgets", "settings-panel", "panel-ask", "panel-blocked"]
+STATES = ["home", "cards", "listening", "thinking", "speaking", "error", "offline", "ringing", "volume", "altro", "chat", "timers", "settings", "language", "screen", "music", "setup", "night", "starting", "suspend", "new-timer", "new-alarm", "widget", "widget-medium", "widget-line", "widget-compact", "widget-weather", "widget-quotes", "widget-quotes-line", "widget-cities", "trends", "city", "widget-notes", "notes", "widget-sensors", "widget-check", "widget-playing", "widget-home", "trends-sensors", "settings-widgets", "settings-panel", "panel-ask", "panel-blocked"]
 
 
 def paeth(a, b, c):

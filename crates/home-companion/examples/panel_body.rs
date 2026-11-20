@@ -133,7 +133,14 @@ impl PanelHost for Demo {
     }
     /// Canned hits (the real body asks Yahoo, CoinGecko, Open-Meteo); one name is markup, to
     /// show it stays text.
-    fn search_start(&self, id: &str, what: What, _q: &str, _lang: &str) -> bool {
+    fn search_start(&self, id: &str, what: What, q: &str, _lang: &str) -> bool {
+        if matches!(what, What::Sensor | What::Player | What::Person) {
+            let f = home_companion::ha::widgets::search(&self.ha_catalog(), what, q);
+            self.searches
+                .borrow_mut()
+                .insert(id.into(), SearchState::Done(f));
+            return true;
+        }
         let quote = |key: &str, src, id: &str, name: &str, detail: &str| Found {
             hit: Hit {
                 key: key.into(),
@@ -192,7 +199,7 @@ impl PanelHost for Demo {
                     "BTC · Crypto",
                 ),
             ],
-            What::City => vec![
+            _ => vec![
                 city(4409896, "Springfield", "Missouri", "US", 37.22, -93.3),
                 city(4250542, "Springfield", "Illinois", "US", 39.8, -89.64),
                 city(4951788, "Springfield", "Massachusetts", "US", 42.1, -72.59),
@@ -210,6 +217,35 @@ impl PanelHost for Demo {
             .cloned()
             .unwrap_or(SearchState::Unknown)
     }
+    fn widget_ha(&self) -> home_companion::ha::widgets::Want {
+        home_companion::settings_model::widget_ha(self)
+    }
+    /// A sample catalogue (invented entities).
+    fn ha_catalog(&self) -> Vec<home_companion::ha::widgets::Entity> {
+        use home_companion::ha::widgets::Entity;
+        let e = |id: &str, name: &str, unit: &str, class: &str| Entity {
+            id: id.into(),
+            name: name.into(),
+            unit: unit.into(),
+            device_class: class.into(),
+            statistics: true,
+        };
+        vec![
+            e("person.ada", "Ada", "", ""),
+            e("person.bob", "Bob", "", ""),
+            e("sensor.humidity", "Humidity", "%", "humidity"),
+            e("sensor.living_room", "Living room", "°C", "temperature"),
+            e(
+                "sensor.outdoor_temperature",
+                "Outdoor temperature",
+                "°C",
+                "temperature",
+            ),
+            e("sensor.power", "Power", "W", "power"),
+            e("media_player.speaker", "Speaker", "", ""),
+        ]
+    }
+    fn ha_catalog_refresh(&self) {}
     fn notes(&self) -> Option<Vec<(i64, String)>> {
         Some(self.notes.borrow().clone())
     }

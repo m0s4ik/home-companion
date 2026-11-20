@@ -404,7 +404,16 @@ impl<B: Body> Panel<B> {
                 "search.start",
                 json!({"what": field("what"), "q": field("q")}),
             )),
-            (true, p) if p.starts_with("/api/quotes/") || p.starts_with("/api/cities/") => {
+            (true, "/api/player") => relay(ask(
+                "player.set",
+                json!({"search": field("search"), "ref": field("ref")}),
+            )),
+            (true, "/api/people") => relay(ask("people.set", json!({"refs": field("refs")}))),
+            (true, p)
+                if p.starts_with("/api/quotes/")
+                    || p.starts_with("/api/cities/")
+                    || p.starts_with("/api/sensors/") =>
+            {
                 let (list, action) = p["/api/".len()..].split_once('/').unwrap_or(("", ""));
                 let op = match action {
                     "add" | "remove" | "move" => format!("{list}.{action}"),

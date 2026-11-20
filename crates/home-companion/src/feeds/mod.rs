@@ -231,6 +231,11 @@ pub enum What {
     /// Stocks, indices, currencies (Yahoo) and coins (CoinGecko).
     Quote,
     City,
+    /// Home Assistant's entities, answered by the screen from the catalogue (ha/widgets.rs),
+    /// never by this thread.
+    Sensor,
+    Player,
+    Person,
 }
 
 /// What a search's hit becomes when it is added.
@@ -238,6 +243,8 @@ pub enum What {
 pub enum Choice {
     Quote(QuoteChoice),
     City(CityChoice),
+    /// A Home Assistant entity id.
+    Entity(String),
 }
 
 /// A search's hit with its choice.
@@ -388,6 +395,17 @@ impl Feeds {
             self.set_search(id, SearchState::Failed);
         }
         Some(())
+    }
+
+    /// A search answered elsewhere (Home Assistant's entities): kept like the others.
+    pub fn put_search(&self, id: &str, st: SearchState) {
+        let mut s = self
+            .shared
+            .searches
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        s.retain(|_, (at, _)| at.elapsed() < SEARCH_KEPT);
+        s.insert(id.to_string(), (Instant::now(), st));
     }
 
     fn set_search(&self, id: &str, st: SearchState) {
@@ -801,6 +819,7 @@ impl Worker {
                     }));
                 }
             }
+            What::Sensor | What::Player | What::Person => {}
             What::City => {
                 let lang = if lang.len() == 2 && lang.bytes().all(|b| b.is_ascii_lowercase()) {
                     lang

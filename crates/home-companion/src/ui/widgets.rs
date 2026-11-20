@@ -103,9 +103,10 @@ impl Kind {
         self != Kind::Home
     }
 
-    /// A tap on the page opens a page of its own (now playing and who is home have none).
+    /// A tap on the page opens a page of its own (what to check, now playing and who is home
+    /// have none: the widget's window already goes through every row).
     pub fn tappable(self) -> bool {
-        !matches!(self, Kind::Playing | Kind::Home)
+        !matches!(self, Kind::Check | Kind::Playing | Kind::Home)
     }
 
     /// Its rows can be more than the slots: the page shows a window that moves on each time
@@ -488,7 +489,7 @@ pub fn change_text(t: &Trend, w: &Words) -> (String, i8) {
         }
         ((t.value - prev) / prev.abs() * 100.0, 1u8, "%")
     } else {
-        (t.value - prev, t.decimals.clamp(1, 2), "")
+        (t.value - prev, t.decimals.min(2), "")
     };
     let step = 0.5 * 10f64.powi(-(decimals as i32));
     if !d.is_finite() {

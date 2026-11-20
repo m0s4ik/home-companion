@@ -179,7 +179,7 @@ function control(item, value, onChange) {
 
 function settingsGroup(g, values) {
   const s = el('section', 'card');
-  s.append(el('h2', null, g.label));
+  if (g.label) s.append(el('h2', null, g.label));
   for (const item of g.items) {
     const row = el('div', item.kind === 'multi' ? 'row column' : 'row');
     const id = 'set-' + item.key;
@@ -343,7 +343,7 @@ function searchBox(what, kind, onChange) {
       add.append(el('span', null, h.name), el('span', 'hint', ' · ' + h.detail));
       add.addEventListener('click', async () => {
         add.disabled = true;
-        const a = await api('/api/' + kind + '/add', { search: r.id, ref: h.ref });
+        const a = await api(kind === 'player' ? '/api/player' : '/api/' + kind + '/add', { search: r.id, ref: h.ref });
         if (a.ok) { i.value = ''; out.replaceChildren(); toast(t('panel_saved')); }
         else { add.disabled = false; toast(errorText(a.error), true); }
         onChange(a);
@@ -396,6 +396,47 @@ function widgetsSection(w, g, values) {
   s.append(ul);
   const rest = settingsGroup({ label: '', items: g.items.filter(x => x.key === 'widgets_every') }, values);
   s.append(...rest.childNodes);
+  return s;
+}
+
+// Home Assistant's side: the sensors (a search of its catalogue), the player, the people, what
+// to check; one sentence on who sees them.
+function haSection(w, g, values) {
+  const s = el('section', 'card');
+  s.id = 'ha';
+  const redraw = r => { if (r && r.ok) { Object.assign(w, r); s.replaceWith(haSection(w, g, values)); } else if (r) toast(errorText(r.error), true); };
+  if (!w.ha) { s.append(el('h2', null, t('panel_sensors')), el('p', 'hint', t('panel_no_ha'))); return s; }
+  s.append(el('h2', null, t('panel_sensors')), chosenList('sensors', w.sensors || [], redraw));
+  if ((w.sensors || []).length < w.limits.sensors) s.append(searchBox('sensor', 'sensors', redraw));
+  s.append(el('h3', null, t('panel_player')));
+  const pl = el('ul', 'items');
+  const cur = el('li');
+  cur.append(el('span', 'grow', w.player ? w.player.name : t('panel_player_none')));
+  if (w.player) {
+    const x = el('button', 'small ghost', t('panel_remove'));
+    x.addEventListener('click', async () => redraw(await api('/api/player', { ref: '' })));
+    cur.append(x);
+  }
+  pl.append(cur);
+  s.append(pl, searchBox('player', 'player', redraw));
+  s.append(el('h3', null, t('panel_people')));
+  const box = el('div', 'multi');
+  for (const p of w.people.all) {
+    const l = el('label');
+    const c = el('input');
+    c.type = 'checkbox';
+    c.value = p.ref;
+    c.checked = w.people.chosen.includes(p.ref);
+    c.addEventListener('change', async () => {
+      redraw(await api('/api/people', { refs: Array.from(box.querySelectorAll('input:checked')).map(x => x.value) }));
+    });
+    l.append(c, el('span', null, p.name));
+    box.append(l);
+  }
+  s.append(box, el('p', 'hint', t('panel_people_hint')));
+  s.append(el('h3', null, t('panel_check')));
+  const checks = settingsGroup({ label: '', items: g.items.filter(x => x.key.startsWith('check_')) }, values);
+  s.append(...checks.childNodes, el('p', 'hint', t('panel_ha_privacy')));
   return s;
 }
 
@@ -535,7 +576,7 @@ async function main() {
   const wg = groups.find(g => g.key === 'widgets');
   if (wg && widgets.ok) {
     left.append(widgetsSection(widgets, wg, values), feedSection('quotes', widgets, wg, values),
-      feedSection('cities', widgets, wg, values));
+      feedSection('cities', widgets, wg, values), haSection(widgets, wg, values));
   } else if (wg) {
     left.append(settingsGroup(wg, values));
   }

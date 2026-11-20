@@ -84,6 +84,8 @@ pub enum HubMsg {
     Catalog(Vec<super::widgets::Entity>),
     /// The widget's data from Home Assistant, when it changed.
     Widgets(super::widgets::WidgetsData),
+    /// A sensor's last 24 hours (None: none to draw).
+    Curve(String, Option<super::widgets::Curve>),
 }
 
 /// What the hub knows of its link across connections: when the last message came (seconds since
@@ -533,8 +535,20 @@ fn session(
                 link.seen = unix_now();
                 // The catalogue's answer can be megabytes: read through its own struct, never
                 // as a JSON value.
+                let mid = message_id(&t);
+                if let Some(entity) = mid.and_then(|m| wd.curve_pending.remove(&m)) {
+                    let c = super::widgets::parse_curve(&t, &entity);
+                    if c.is_none() {
+                        log::debug!(event = "ha_widgets"; "widget: no curve for {entity}");
+                    }
+                    if tx.send(HubMsg::Curve(entity, c)).is_err() {
+                        ws.close();
+                        return Ok(());
+                    }
+                    continue;
+                }
                 if let Some(cid) = wd.catalog_id
-                    && message_id(&t) == Some(cid)
+                    && mid == Some(cid)
                 {
                     wd.catalog_id = None;
                     wd.catalog_at = Some(Instant::now());
@@ -650,6 +664,10 @@ fn session(
             ws.send_text(&json!({"id": take_id(), "type": "ping"}).to_string())
                 .map_err(lost)?;
         }
+        // A sensor's day, one request at a time, each again after half an hour.
+        if let Some(m) = wd.next_curve(want, &mut take_id) {
+            ws.send_text(&m).map_err(lost)?;
+        }
         // The catalogue again every six hours (entities come and go).
         if wd.catalog_id.is_none()
             && wd.needs_catalog(want)
@@ -682,9 +700,46 @@ struct WidgetSide {
     sub_ids: Vec<String>,
     states: super::widgets::States,
     told: Option<super::widgets::WidgetsData>,
+    /// Curves asked (message id → entity) and when each sensor's was asked last.
+    curve_pending: std::collections::HashMap<u64, String>,
+    curve_asked: std::collections::HashMap<String, Instant>,
+    last_curve: Option<Instant>,
 }
 
+/// A sensor's day is read again this often; two requests at least this far apart.
+const CURVE_EVERY: Duration = Duration::from_secs(30 * 60);
+const CURVE_GAP: Duration = Duration::from_secs(5);
+
 impl WidgetSide {
+    /// The next curve request due (`id` its message id), if any.
+    fn next_curve(
+        &mut self,
+        want: &super::widgets::Want,
+        take_id: &mut dyn FnMut() -> u64,
+    ) -> Option<String> {
+        let catalog = self.catalog.as_ref()?;
+        if !self.curve_pending.is_empty()
+            || self.last_curve.is_some_and(|t| t.elapsed() < CURVE_GAP)
+        {
+            return None;
+        }
+        let entity = want.sensors.iter().find(|s| {
+            self.curve_asked
+                .get(*s)
+                .is_none_or(|t| t.elapsed() >= CURVE_EVERY)
+        })?;
+        let stats = catalog
+            .iter()
+            .find(|e| e.id == *entity)
+            .is_some_and(|e| e.statistics);
+        let id = take_id();
+        self.curve_asked.insert(entity.clone(), Instant::now());
+        self.curve_pending.insert(id, entity.clone());
+        self.last_curve = Some(Instant::now());
+        let start = super::widgets::rfc3339(unix_now() - 24 * 3600);
+        Some(super::widgets::curve_request(id, entity, stats, &start))
+    }
+
     /// Something wants Home Assistant's data (and so the catalogue).
     fn needs_catalog(&self, w: &super::widgets::Want) -> bool {
         *w != super::widgets::Want::default()

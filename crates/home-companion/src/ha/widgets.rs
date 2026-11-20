@@ -422,6 +422,39 @@ pub fn view(w: &Want, catalog: &[Entity], s: &States) -> WidgetsData {
     }
 }
 
+/// The catalogue's entities for a search from the browser panel: those of the role whose name
+/// or id holds every word of `q`, by name, at most six.
+pub fn search(catalog: &[Entity], role: crate::feeds::What, q: &str) -> Vec<crate::feeds::Found> {
+    use crate::feeds::{Choice, Found, Hit, What};
+    let words: Vec<String> = q.split_whitespace().map(str::to_lowercase).collect();
+    catalog
+        .iter()
+        .filter(|e| match role {
+            What::Sensor => e.numeric(),
+            What::Player => e.domain() == "media_player",
+            What::Person => e.domain() == "person",
+            _ => false,
+        })
+        .filter(|e| {
+            let hay = format!("{} {}", e.name.to_lowercase(), e.id);
+            words.iter().all(|w| hay.contains(w.as_str()))
+        })
+        .take(crate::feeds::MAX_HITS)
+        .map(|e| Found {
+            hit: Hit {
+                key: e.id.clone(),
+                name: e.name.clone(),
+                detail: if e.unit.is_empty() {
+                    e.id.clone()
+                } else {
+                    format!("{} · {}", e.id, e.unit)
+                },
+            },
+            choice: Choice::Entity(e.id.clone()),
+        })
+        .collect()
+}
+
 /// A sensor's last day.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Curve {
@@ -671,6 +704,30 @@ mod tests {
         assert_eq!(v.sensors.len(), 1, "the input number was removed");
         // The same event again: nothing changes.
         assert!(!s.apply(&events[1]["event"]));
+    }
+
+    #[test]
+    fn searching_the_catalogue() {
+        use crate::feeds::What;
+        let c = parse_catalog(&fixture("widgets-get-states.json")).unwrap();
+        let keys = |role, q| {
+            search(&c, role, q)
+                .into_iter()
+                .map(|f| f.hit.key)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            keys(What::Sensor, "outdoor"),
+            ["sensor.outdoor_temperature"]
+        );
+        assert_eq!(keys(What::Sensor, "TARGET"), ["input_number.target"]);
+        assert!(
+            keys(What::Sensor, "window").is_empty(),
+            "an opening is not a sensor's number"
+        );
+        assert_eq!(keys(What::Player, "speak"), ["media_player.speaker"]);
+        assert_eq!(keys(What::Person, ""), ["person.ada", "person.bob"]);
+        assert!(keys(What::Sensor, "lock").is_empty() && keys(What::Person, "lock").is_empty());
     }
 
     #[test]

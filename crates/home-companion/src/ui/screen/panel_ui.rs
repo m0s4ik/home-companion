@@ -540,7 +540,25 @@ impl<S: Screen> PanelHost for Ui<S> {
         self.widget_cities.borrow().clone()
     }
     fn search_start(&self, id: &str, what: crate::feeds::What, q: &str, lang: &str) -> bool {
+        use crate::feeds::{SearchState, What};
+        if matches!(what, What::Sensor | What::Player | What::Person) {
+            // Answered at once from the catalogue in memory.
+            let found = crate::ha::widgets::search(&self.ha_catalog.borrow(), what, q);
+            self.feeds.borrow().put_search(id, SearchState::Done(found));
+            return true;
+        }
         self.feeds.borrow_mut().search(id, what, q, lang).is_some()
+    }
+    fn widget_ha(&self) -> crate::ha::widgets::Want {
+        self.widget_ha.borrow().clone()
+    }
+    fn ha_catalog(&self) -> Vec<crate::ha::widgets::Entity> {
+        self.ha_catalog.borrow().clone()
+    }
+    fn ha_catalog_refresh(&self) {
+        if let Some(tx) = self.hub_tx.borrow().as_ref() {
+            let _ = tx.send(crate::ha::hub::HubCmd::Catalog);
+        }
     }
     fn search_state(&self, id: &str) -> crate::feeds::SearchState {
         self.feeds.borrow().search_state(id)

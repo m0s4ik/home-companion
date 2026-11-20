@@ -243,6 +243,7 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// The markets' or the sensors' page: its title, the cards, the sources' credit.
     fn set_trends(&self, title: &str, cards: &[widgets::TrendCard], footer: &str);
     fn get_trends_kind(&self) -> String;
+    fn set_trends_kind(&self, kind: &str);
     /// Another city's page: the cities' names (chips), the one shown, its weather as the weather
     /// page shows it, the source's credit.
     fn set_city(&self, v: &weather::CityView);
@@ -834,6 +835,9 @@ macro_rules! impl_screen {
             }
             fn get_trends_kind(&self) -> String {
                 $m::CompanionWindow::get_trends_kind(self).into()
+            }
+            fn set_trends_kind(&self, kind: &str) {
+                $m::CompanionWindow::set_trends_kind(self, kind.into())
             }
             fn set_city(&self, v: &weather::CityView) {
                 let (title, names, index, text, condition, rows, footer) = (

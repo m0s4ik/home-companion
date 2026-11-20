@@ -498,7 +498,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 91] = [
+pub const DEMO_STATES: [&str; 96] = [
     "home",
     "cards",
     "cards-setup",
@@ -586,6 +586,11 @@ pub const DEMO_STATES: [&str; 91] = [
     "city",
     "widget-notes",
     "notes",
+    "widget-sensors",
+    "widget-check",
+    "widget-playing",
+    "widget-home",
+    "trends-sensors",
     "settings-widgets",
     "settings-panel",
     "panel-ask",
@@ -820,13 +825,18 @@ impl Demo {
             },
             "widget" | "widget-weather" | "widget-shopping" | "widget-medium" | "widget-line"
             | "widget-compact" | "widget-quotes" | "widget-quotes-line" | "widget-cities"
-            | "widget-notes" => Demo {
+            | "widget-notes" | "widget-sensors" | "widget-check" | "widget-playing"
+            | "widget-home" => Demo {
                 widget: Some(match s {
                     "widget-weather" => WidgetKind::Weather,
                     "widget-shopping" => WidgetKind::Shopping,
                     "widget-quotes" | "widget-quotes-line" => WidgetKind::Quotes,
                     "widget-cities" => WidgetKind::Cities,
                     "widget-notes" => WidgetKind::Notes,
+                    "widget-sensors" => WidgetKind::Sensors,
+                    "widget-check" => WidgetKind::Check,
+                    "widget-playing" => WidgetKind::Playing,
+                    "widget-home" => WidgetKind::Home,
                     _ => WidgetKind::Next,
                 }),
                 widget_cards: match s {
@@ -859,6 +869,10 @@ impl Demo {
             "notes" => Demo {
                 widget: Some(WidgetKind::Notes),
                 ..page("notes")
+            },
+            "trends-sensors" => Demo {
+                widget: Some(WidgetKind::Sensors),
+                ..page("trends")
             },
             "settings-panel" => Demo {
                 panel: 1,
@@ -1261,6 +1275,8 @@ pub struct Ui<S: Screen> {
     widget_ha: RefCell<crate::ha::widgets::Want>,
     ha_catalog: RefCell<Vec<crate::ha::widgets::Entity>>,
     ha_widgets: RefCell<crate::ha::widgets::WidgetsData>,
+    /// The sensors' last 24 hours, by entity.
+    ha_curves: RefCell<HashMap<String, crate::ha::widgets::Curve>>,
     /// The board's notes (the brain's `notes` event), oldest first.
     board: RefCell<Vec<brain_link::Note>>,
     /// The markets chosen from the browser (settings.toml), in their order, and the coins'
@@ -1349,6 +1365,8 @@ impl<S: Screen> model::Host for Ui<S> {
             ),
             "widgets_every" => json!(self.widget_every_secs().to_string()),
             "widgets_currency" => json!(self.widget_currency.borrow().clone()),
+            "check_openings" => json!(self.widget_ha.borrow().openings),
+            "check_batteries" => json!(self.widget_ha.borrow().batteries),
             "widget_order" => json!(
                 self.widget_order
                     .borrow()
@@ -1621,6 +1639,87 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     let y = yoe + era * 400 + i64::from(m <= 2);
     (y, m, d)
+}
+
+/// Home Assistant's side of the demos: invented sensors with their day, an open window and a
+/// low battery, a song, two people.
+fn demo_ha(
+    l: &Locale,
+) -> (
+    crate::ha::widgets::WidgetsData,
+    HashMap<String, crate::ha::widgets::Curve>,
+) {
+    use crate::ha::widgets::{Curve, SensorNow, WidgetsData};
+    let names: Vec<String> = l
+        .sample("ha_sensors")
+        .split('|')
+        .map(String::from)
+        .collect();
+    let name = |i: usize| names.get(i).cloned().unwrap_or_default();
+    let sensor = |i: usize, id: &str, value: f64, decimals: u8, unit: &str| SensorNow {
+        id: id.into(),
+        name: name(i),
+        value,
+        decimals,
+        unit: unit.into(),
+    };
+    let curve = |from: f64, to: f64, wave: f64| {
+        let pts: Vec<f64> = (0..48)
+            .map(|i| {
+                let t = i as f64 / 47.0;
+                from + (to - from) * t + (t * wave).sin() * (to - from).abs().max(0.5) * 0.8
+            })
+            .collect();
+        Curve {
+            points: widgets::downsample(&pts, widgets::CURVE_POINTS),
+            first: from,
+            low: pts.iter().copied().fold(f64::INFINITY, f64::min),
+            high: pts.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        }
+    };
+    let data = WidgetsData {
+        sensors: vec![
+            sensor(0, "sensor.outdoor", 12.5, 1, "°C"),
+            sensor(1, "sensor.living", 21.3, 1, "°C"),
+            sensor(2, "sensor.humidity", 48.0, 0, "%"),
+            sensor(3, "sensor.power", 412.0, 0, "W"),
+        ],
+        check: vec![
+            widgets::CheckRow {
+                name: name(4),
+                battery: None,
+            },
+            widgets::CheckRow {
+                name: name(5),
+                battery: Some(14),
+            },
+        ],
+        playing: Some(widgets::Playing {
+            title: "Clair de lune".into(),
+            artist: "Claude Debussy".into(),
+            player: name(6),
+        }),
+        people: vec![
+            widgets::Person {
+                name: "Ada".into(),
+                place: widgets::Place::Home,
+            },
+            widgets::Person {
+                name: "Bob".into(),
+                place: widgets::Place::Zone(name(7)),
+            },
+        ],
+    };
+    let curves = [
+        ("sensor.outdoor", curve(8.0, 12.5, 4.0)),
+        ("sensor.living", curve(20.1, 21.3, 6.0)),
+        ("sensor.humidity", curve(55.0, 48.0, 3.0)),
+        ("sensor.power", curve(380.0, 412.0, 9.0)),
+    ]
+    .into_iter()
+    .map(|(k, c)| (k.to_string(), c))
+    .collect();
+    (data, curves)
 }
 
 /// The other cities of the demos: public places, made-up weather.
@@ -1962,6 +2061,7 @@ impl<S: Screen> Ui<S> {
             widget_ha: RefCell::new(widget_ha),
             ha_catalog: RefCell::new(Vec::new()),
             ha_widgets: RefCell::new(Default::default()),
+            ha_curves: RefCell::new(HashMap::new()),
             widget_quotes: RefCell::new(widget_quotes),
             widget_currency: RefCell::new(widget_currency),
             widget_cities: RefCell::new(widget_cities),
@@ -3265,6 +3365,15 @@ impl<S: Screen> Ui<S> {
                 })
                 .collect();
         }
+        if matches!(
+            d.widget,
+            Some(WidgetKind::Sensors | WidgetKind::Check | WidgetKind::Playing | WidgetKind::Home)
+        ) {
+            let (data, curves) = demo_ha(l);
+            *self.ha_widgets.borrow_mut() = data;
+            *self.ha_curves.borrow_mut() = curves;
+            self.widget_on.borrow_mut().push(WidgetKind::Home);
+        }
         if d.widget == Some(WidgetKind::Cities) {
             let (choices, weather) = demo_cities();
             *self.widget_cities.borrow_mut() = choices;
@@ -3288,6 +3397,9 @@ impl<S: Screen> Ui<S> {
         drop(desk);
         if d.widget == Some(WidgetKind::Notes) {
             self.refresh_notes();
+        }
+        if !self.ha_widgets.borrow().sensors.is_empty() {
+            self.apply_ha_widgets();
         }
         // The afternoon hour by hour, from the hour going on (14:00).
         let hour = DEMO_NOW as i64 - DEMO_NOW as i64 % 3600;
@@ -3767,7 +3879,12 @@ impl<S: Screen> Ui<S> {
         }
         self.screen.set_page(d.page);
         match d.page {
-            "trends" => self.refresh_trends(),
+            "trends" => {
+                if d.widget == Some(WidgetKind::Sensors) {
+                    self.screen.set_trends_kind("sensors");
+                }
+                self.refresh_trends()
+            }
             "city" => self.refresh_city(),
             "notes" | "reminders" => self.refresh_notes(),
             _ => {}
@@ -5777,11 +5894,10 @@ impl<S: Screen> Ui<S> {
 
     /// How many items of a page are chosen from the browser (markets, cities, sensors).
     fn widget_chosen(&self, kind: WidgetKind) -> usize {
-        let d = self.widget_data.borrow();
         match kind {
             WidgetKind::Quotes => self.widget_quotes.borrow().len(),
             WidgetKind::Cities => self.widget_cities.borrow().len(),
-            WidgetKind::Sensors => d.sensors.len(),
+            WidgetKind::Sensors => self.widget_ha.borrow().sensors.len(),
             _ => 0,
         }
     }
@@ -5843,6 +5959,12 @@ impl<S: Screen> Ui<S> {
                 log::info!(event = "widget_settings"; "widget: the pages' order changed");
                 self.refresh_widget_settings();
                 self.refresh_home();
+            }
+            Change::WidgetHa(w) => {
+                log::info!(event = "widget_settings", sensors = w.sensors.len(); "widget: Home Assistant's entities chosen");
+                *self.widget_ha.borrow_mut() = w;
+                self.send_widget_want();
+                self.refresh_widget_settings();
             }
             Change::WidgetCurrency(c) => {
                 *self.widget_currency.borrow_mut() = c;
@@ -6617,28 +6739,32 @@ impl<S: Screen> Ui<S> {
         }
     }
 
-    /// Home Assistant's data in the widget's terms (the sensors without their curve until the
-    /// statistics come).
+    /// Home Assistant's data in the widget's terms: each sensor with its day when it came (the
+    /// change against 24 hours ago, never coloured).
     fn apply_ha_widgets(&self) {
         let d = self.ha_widgets.borrow().clone();
         let now = now_unix() as i64;
+        let curves = self.ha_curves.borrow();
         let mut data = self.widget_data.borrow_mut();
         data.sensors = d
             .sensors
             .iter()
-            .map(|s| widgets::Trend {
-                name: s.name.clone(),
-                value: s.value,
-                decimals: s.decimals,
-                unit: s.unit.clone(),
-                prev: None,
-                pct: false,
-                points: Vec::new(),
-                low: s.value,
-                high: s.value,
-                at: now,
-                fresh: i64::MAX / 4,
-                max_age: i64::MAX / 4,
+            .map(|s| {
+                let c = curves.get(&s.id);
+                widgets::Trend {
+                    name: s.name.clone(),
+                    value: s.value,
+                    decimals: s.decimals,
+                    unit: s.unit.clone(),
+                    prev: c.map(|c| c.first),
+                    pct: false,
+                    points: c.map(|c| c.points.clone()).unwrap_or_default(),
+                    low: c.map_or(s.value, |c| c.low.min(s.value)),
+                    high: c.map_or(s.value, |c| c.high.max(s.value)),
+                    at: now,
+                    fresh: i64::MAX / 4,
+                    max_age: i64::MAX / 4,
+                }
             })
             .collect();
         data.check = d.check.clone();
@@ -6649,6 +6775,7 @@ impl<S: Screen> Ui<S> {
             .filter(|_| self.desk.borrow().music.is_none());
         data.people = d.people.clone();
         drop(data);
+        drop(curves);
         self.refresh_widget();
     }
 
@@ -6656,6 +6783,13 @@ impl<S: Screen> Ui<S> {
     pub fn apply_hub(&self, m: HubMsg) {
         match m {
             HubMsg::Catalog(c) => *self.ha_catalog.borrow_mut() = c,
+            HubMsg::Curve(entity, c) => {
+                match c {
+                    Some(c) => self.ha_curves.borrow_mut().insert(entity, c),
+                    None => self.ha_curves.borrow_mut().remove(&entity),
+                };
+                self.apply_ha_widgets();
+            }
             HubMsg::Widgets(d) => {
                 *self.ha_widgets.borrow_mut() = d;
                 self.apply_ha_widgets();
@@ -8240,6 +8374,44 @@ mod tests {
         assert!(!w.get_widget_tappable());
         tap(800.0, 420.0);
         assert_eq!(w.get_page(), "home");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Home Assistant's data reaches the widget: each page from its message, a sensor's curve
+    /// when it comes; only what the pages that are on show is asked.
+    #[test]
+    fn home_assistant_data_in_the_widget() {
+        let (ui, dir) = headless_ui("widget-ha");
+        let (data, curves) = demo_ha(&ui.locale.borrow());
+        ui.apply_hub(HubMsg::Widgets(data));
+        {
+            let d = ui.widget_data.borrow();
+            assert_eq!(d.sensors.len(), 4);
+            assert!(d.sensors[0].points.is_empty() && d.sensors[0].prev.is_none());
+            assert_eq!(d.check.len(), 2);
+            assert!(d.playing.is_some());
+        }
+        let (k, c) = curves
+            .into_iter()
+            .find(|(k, _)| k == "sensor.outdoor")
+            .unwrap();
+        let first = c.first;
+        ui.apply_hub(HubMsg::Curve(k, Some(c)));
+        let d = ui.widget_data.borrow();
+        assert_eq!(d.sensors[0].prev, Some(first));
+        assert!(!d.sensors[0].points.is_empty());
+        drop(d);
+        *ui.widget_ha.borrow_mut() = crate::ha::widgets::Want {
+            sensors: vec!["sensor.a".into()],
+            player: "media_player.b".into(),
+            people: Some(vec![]),
+            openings: true,
+            batteries: true,
+        };
+        *ui.widget_on.borrow_mut() = vec![WidgetKind::Sensors];
+        let w = ui.widget_want();
+        assert_eq!(w.sensors, ["sensor.a"]);
+        assert!(w.player.is_empty() && w.people.is_none() && !w.openings && !w.batteries);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

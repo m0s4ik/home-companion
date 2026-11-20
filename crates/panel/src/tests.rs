@@ -465,6 +465,10 @@ fn the_widgets_routes() {
         ("/api/cities/remove", "cities.remove"),
         ("/api/cities/move", "cities.move"),
         ("/api/widgets/order", "widgets.order"),
+        ("/api/sensors/add", "sensors.add"),
+        ("/api/sensors/move", "sensors.move"),
+        ("/api/player", "player.set"),
+        ("/api/people", "people.set"),
     ] {
         let r = post(
             path,
@@ -477,6 +481,7 @@ fn the_widgets_routes() {
         assert!(a.get("lat").is_none());
     }
     assert_eq!(status(&p, &post("/api/quotes/delete", "{}", &[])), 404);
+    let p = panel();
     for (path, op) in [
         ("/api/notes/add", "notes.add"),
         ("/api/notes/edit", "notes.edit"),

@@ -12,7 +12,7 @@ bin=${2:-$root/target/release}
 mkdir -p "$out"
 cd "$root"
 export TZ=UTC
-for s in home cards listening thinking speaking error offline ringing volume altro chat timers settings language screen music setup night starting suspend new-timer new-alarm widget widget-medium widget-line widget-compact widget-weather widget-quotes widget-quotes-line widget-cities trends city widget-notes notes settings-widgets settings-panel panel-ask panel-blocked; do
+for s in home cards listening thinking speaking error offline ringing volume altro chat timers settings language screen music setup night starting suspend new-timer new-alarm widget widget-medium widget-line widget-compact widget-weather widget-quotes widget-quotes-line widget-cities trends city widget-notes notes widget-sensors widget-check widget-playing widget-home trends-sensors settings-widgets settings-panel panel-ask panel-blocked; do
     SLINT_SCALE_FACTOR=1 timeout 60 xvfb-run -a -s "-screen 0 1280x800x24" \
         "$bin/home-companion" --simulator --config crates/home-companion/ci/sim.toml --state "$s" \
         --screenshot "$out/$s.png" --exit-after 2 >"$out/$s.log" 2>&1 || {
