@@ -516,6 +516,13 @@ what_screen_say = "Spegni lo schermo | Non disturbare per un'ora | Basta"
 ring_timer_named = "Il timer «{name}» è finito."
 ring_timer = "Il timer di {duration} è finito."
 ring_alarm = "Sveglia delle {time}."
+# The settings as groups (the browser panel's sections) and the two lists' labels.
+panel_group_widgets = "Widget"
+panel_group_screen = "Schermo"
+panel_group_voice = "Voce e conversazioni"
+panel_group_lists = "Liste e calendari"
+lists_todo_label = "Liste mostrate"
+lists_calendars_label = "Calendari mostrati"
 
 [sample]
 # The first start's Home Assistant page (--state first-ha-found): a second instance's name.

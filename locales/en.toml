@@ -519,6 +519,13 @@ what_screen_say = "Turn off the screen | Do not disturb for an hour | Stop"
 ring_timer_named = "The \"{name}\" timer is done."
 ring_timer = "The {duration} timer is done."
 ring_alarm = "Alarm, {time}."
+# The settings as groups (the browser panel's sections) and the two lists' labels.
+panel_group_widgets = "Widgets"
+panel_group_screen = "Screen"
+panel_group_voice = "Voice and conversations"
+panel_group_lists = "Lists and calendars"
+lists_todo_label = "Lists shown"
+lists_calendars_label = "Calendars shown"
 
 [sample]
 # The first start's Home Assistant page (--state first-ha-found): a second instance's name.

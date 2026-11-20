@@ -19,6 +19,7 @@ pub mod logger;
 pub mod reflex;
 pub mod repeat;
 pub mod settings;
+pub mod settings_model;
 pub mod spectrum;
 pub mod subcommands;
 pub mod suspend;

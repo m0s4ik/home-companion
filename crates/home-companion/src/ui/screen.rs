@@ -38,6 +38,7 @@ use crate::ha::hub::{HubCmd, HubMsg};
 use crate::ha::weather::Weather;
 use crate::history::History;
 use crate::settings::{Settings, WakeSensitivity};
+use crate::settings_model::{self as model, Change};
 use crate::timers::{TimerView, now_unix};
 use serde_json::json;
 
@@ -1222,6 +1223,43 @@ pub struct Ui<S: Screen> {
     this: RefCell<Weak<Self>>,
 }
 
+impl<S: Screen> model::Host for Ui<S> {
+    fn settings(&self) -> Option<&Settings> {
+        self.settings.as_ref()
+    }
+
+    fn live(&self, key: &str) -> Option<serde_json::Value> {
+        match key {
+            "volume" => Some(json!(self.volume.get())),
+            "language" => Some(json!(self.locale.borrow().code)),
+            _ => None,
+        }
+    }
+
+    fn dynamic_options(&self, key: &str) -> Vec<(String, String)> {
+        match key {
+            "language" => self
+                .character
+                .languages()
+                .map(|code| {
+                    let name = locale::load(&self.opts.locales, code)
+                        .map_or_else(|_| code.to_uppercase(), |l| l.name);
+                    (code.to_string(), name)
+                })
+                .collect(),
+            "lists" => self.choice.borrow().known.todo.clone(),
+            "calendars" => self.choice.borrow().known.calendar.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn apply(&self, change: Change) {
+        self.apply_setting(change);
+        // A change from the panel shows on the open page; the screen's own as well.
+        self.refresh_settings();
+    }
+}
+
 /// Settings → Home Assistant, as the setup thread last told it.
 #[derive(Default)]
 struct HaPage {
@@ -1819,14 +1857,7 @@ impl<S: Screen> Ui<S> {
         let ui = Rc::downgrade(self);
         self.screen.on_update_prerelease(move |on| {
             if let Some(ui) = ui.upgrade() {
-                if let Some(s) = &ui.settings {
-                    s.save_update_prerelease(on);
-                }
-                if let Some(u) = &ui.updater {
-                    log::info!(event = "update", prerelease = on; "update: release candidates {}", if on { "offered" } else { "not offered" });
-                    u.set_prerelease(on);
-                }
-                ui.refresh_update();
+                model::commit(&*ui, Change::UpdatePrerelease(on));
             }
         });
         let ui = Rc::downgrade(self);
@@ -1975,28 +2006,9 @@ impl<S: Screen> Ui<S> {
             let _ = tx.send(CoreEvent::Ui(UiEvent::Screenshot));
         });
         let ui = Rc::downgrade(self);
-        self.screen.on_language_chosen(move |app, code| {
-            let Some(ui) = ui.upgrade() else { return };
-            match set_language(app, &ui.character, &ui.opts.locales, &code) {
-                Ok(l) => {
-                    *ui.locale.borrow_mut() = l;
-                    ui.render_weather();
-                    app.set_clock("");
-                    ui.tick_clock();
-                    ui.refresh_desk();
-                    // The brain's texts ("6 memories", the reminders' tile) are written when its
-                    // answers come: asked again so they come in the new language.
-                    ui.refresh_memories();
-                    ui.show(ui.view.get());
-                    ui.send(UiEvent::Language(code));
-                    if app.get_page() == "welcome" {
-                        ui.language_pending.set(false);
-                        let next = ui.first_page().unwrap_or("home");
-                        app.set_page(next);
-                        ui.on_page(next);
-                    }
-                }
-                Err(e) => log::warn!("language {code}: {e}"),
+        self.screen.on_language_chosen(move |_app, code| {
+            if let Some(ui) = ui.upgrade() {
+                model::commit(&*ui, Change::Language(code.to_string()));
             }
         });
         // Timers and alarms by touch.
@@ -2158,20 +2170,16 @@ impl<S: Screen> Ui<S> {
         let ui = Rc::downgrade(self);
         self.screen.on_save_chat_toggled(move |keep| {
             if let Some(ui) = ui.upgrade() {
-                ui.history.borrow_mut().set_keep(keep);
-                if let Some(s) = &ui.settings {
-                    s.save_keep_conversations(keep);
-                }
-                ui.refresh_desk();
+                model::commit(&*ui, Change::KeepConversations(keep));
             }
         });
         let ui = Rc::downgrade(self);
         self.screen.on_wake_step_changed(move |step| {
             if let Some(ui) = ui.upgrade() {
-                let s = WakeSensitivity::from_step(step);
-                ui.screen.set_wake_step(s.step());
-                // The core saves it and has the wake word thread apply it.
-                ui.send(UiEvent::WakeSensitivity(s));
+                model::commit(
+                    &*ui,
+                    Change::WakeSensitivity(WakeSensitivity::from_step(step)),
+                );
             }
         });
         let ui = Rc::downgrade(self);
@@ -2206,24 +2214,13 @@ impl<S: Screen> Ui<S> {
         let ui = Rc::downgrade(self);
         self.screen.on_home_compact_changed(move |on| {
             if let Some(ui) = ui.upgrade() {
-                ui.home_compact.set(on);
-                ui.screen.set_home_compact(on);
-                if let Some(s) = &ui.settings {
-                    s.save_home_compact(on);
-                }
-                log::info!(event = "home_compact", on = on; "home: {}", if on { "compact" } else { "normal" });
-                ui.refresh_desk();
+                model::commit(&*ui, Change::HomeCompact(on));
             }
         });
         let ui = Rc::downgrade(self);
         self.screen.on_night_changed(move |on, start, end| {
             if let Some(ui) = ui.upgrade() {
-                ui.desk.borrow_mut().night = (on, start, end);
-                if let Some(s) = &ui.settings {
-                    s.save_night(on, start, end);
-                }
-                ui.refresh_desk();
-                ui.tick_clock();
+                model::commit(&*ui, Change::Night(on, start, end));
             }
         });
         let ui = Rc::downgrade(self);
@@ -5290,40 +5287,115 @@ impl<S: Screen> Ui<S> {
         let Some(kind) = WidgetKind::from_key(key) else {
             return;
         };
-        {
-            let mut list = self.widget_on.borrow_mut();
-            let mut keep: Vec<WidgetKind> = list.iter().copied().filter(|k| *k != kind).collect();
-            if on {
-                keep.push(kind);
-            }
-            *list = WidgetKind::ALL
+        let list: Vec<WidgetKind> = {
+            let now = self.widget_on.borrow();
+            WidgetKind::ALL
                 .into_iter()
-                .filter(|k| keep.contains(k))
-                .collect();
-        }
-        self.save_widget_settings();
+                .filter(|k| if *k == kind { on } else { now.contains(k) })
+                .collect()
+        };
         log::info!(event = "widget_settings", page = key, on = on; "widget: {key} {}", if on { "on" } else { "off" });
-        self.refresh_widget_settings();
-        self.refresh_home();
+        model::commit(self, Change::Widgets(list, self.widget_every_secs()));
     }
 
     /// "Change every": one step along 20 s, 30 s, 1 min, by hand.
     fn widget_every_stepped(&self, d: i32) {
-        let now = self.widget_every.get().map_or(0, |e| e.as_secs() as u32);
+        let now = self.widget_every_secs();
         let choices = widgets::EVERY_CHOICES;
         let i = choices.iter().position(|c| *c == now).unwrap_or(0) as i32;
         let next = choices[(i + d.signum()).clamp(0, choices.len() as i32 - 1) as usize];
-        self.widget_every
-            .set((next > 0).then(|| Duration::from_secs(next as u64)));
-        self.save_widget_settings();
         log::info!(event = "widget_settings", every = next; "widget: every {next} s (0 = by hand)");
-        self.refresh_widget_settings();
+        let on = self.widget_on.borrow().clone();
+        model::commit(self, Change::Widgets(on, next));
     }
 
-    fn save_widget_settings(&self) {
-        if let Some(s) = &self.settings {
-            let every = self.widget_every.get().map_or(0, |d| d.as_secs() as u32);
-            s.save_widgets(&self.widget_on.borrow(), every);
+    fn widget_every_secs(&self) -> u32 {
+        self.widget_every.get().map_or(0, |d| d.as_secs() as u32)
+    }
+
+    /// A setting written (settings_model): what it changes, at once, on the screen and in the
+    /// core. The screen's own switches and the browser panel both end here.
+    fn apply_setting(&self, change: Change) {
+        match change {
+            Change::Widgets(on, every) => {
+                *self.widget_on.borrow_mut() = on;
+                self.widget_every
+                    .set((every > 0).then(|| Duration::from_secs(every as u64)));
+                self.refresh_widget_settings();
+                self.refresh_home();
+            }
+            Change::Night(on, start, end) => {
+                self.desk.borrow_mut().night = (on, start, end);
+                self.refresh_desk();
+                self.tick_clock();
+            }
+            Change::HomeCompact(on) => {
+                self.home_compact.set(on);
+                self.screen.set_home_compact(on);
+                log::info!(event = "home_compact", on = on; "home: {}", if on { "compact" } else { "normal" });
+                self.refresh_desk();
+            }
+            Change::Language(code) => self.apply_language(&code),
+            Change::Volume(p) => {
+                self.volume.set(p);
+                let r = crate::volume::VolumeRequest::Set(p);
+                let _ = self.core.send(CoreEvent::Volume(r));
+            }
+            Change::WakeSensitivity(s) => {
+                self.screen.set_wake_step(s.step());
+                // The core saves it too and has the wake word thread apply it.
+                self.send(UiEvent::WakeSensitivity(s));
+            }
+            Change::KeepConversations(keep) => {
+                self.history.borrow_mut().set_keep(keep);
+                self.refresh_desk();
+            }
+            Change::Lists(lists) => {
+                self.choice.borrow_mut().lists = lists.clone();
+                if let Some(tx) = self.hub_tx.borrow().as_ref() {
+                    let _ = tx.send(HubCmd::SetLists(lists));
+                }
+                self.render_choices();
+            }
+            Change::Calendars(calendars) => {
+                self.choice.borrow_mut().calendars = calendars;
+                self.render_choices();
+            }
+            Change::UpdatePrerelease(on) => {
+                if let Some(u) = &self.updater {
+                    log::info!(event = "update", prerelease = on; "update: release candidates {}", if on { "offered" } else { "not offered" });
+                    u.set_prerelease(on);
+                }
+                self.refresh_update();
+            }
+        }
+    }
+
+    /// Everything that depends on the language, in `code`'s words; the core told.
+    fn apply_language(&self, code: &str) {
+        let app = &self.screen;
+        match set_language(app, &self.character, &self.opts.locales, code) {
+            Ok(l) => {
+                *self.locale.borrow_mut() = l;
+                self.render_weather();
+                app.set_clock("");
+                self.tick_clock();
+                self.refresh_desk();
+                // The brain's texts ("6 memories", the reminders' tile) are written when its
+                // answers come: asked again so they come in the new language.
+                self.refresh_memories();
+                self.show(self.view.get());
+                self.send(UiEvent::Language(code.to_string()));
+                if app.get_page() == "welcome" {
+                    self.language_pending.set(false);
+                    let next = self.first_page().unwrap_or("home");
+                    app.set_page(next.into());
+                    if let Some(me) = self.this.borrow().upgrade() {
+                        me.on_page(next);
+                    }
+                }
+            }
+            Err(e) => log::warn!("language {code}: {e}"),
         }
     }
 
@@ -5820,24 +5892,16 @@ impl<S: Screen> Ui<S> {
 
     /// A tap on a row of Lists and calendars: saved, and the lists change at once.
     fn choice_toggled(&self, id: &str) {
-        let mut c = self.choice.borrow_mut();
+        let mut c = self.choice.borrow().clone();
         if !c.toggle(id) {
             return;
         }
-        if let Some(s) = &self.settings {
-            if id.starts_with("todo.") {
-                s.save_lists(&c.lists);
-            } else {
-                s.save_calendars(&c.calendars);
-            }
-        }
-        if id.starts_with("todo.")
-            && let Some(tx) = self.hub_tx.borrow().as_ref()
-        {
-            let _ = tx.send(HubCmd::SetLists(c.lists.clone()));
-        }
-        drop(c);
-        self.render_choices();
+        let change = if id.starts_with("todo.") {
+            Change::Lists(c.lists)
+        } else {
+            Change::Calendars(c.calendars)
+        };
+        model::commit(self, change);
     }
 
     fn render_choices(&self) {
@@ -7014,6 +7078,45 @@ mod tests {
         }];
         ui.refresh_home();
         assert_eq!(w.get_widget_slots(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The settings model on a real (headless) screen: every item set through it (as the browser
+    /// panel does) changes what the screen shows or does, and the file.
+    #[test]
+    fn settings_model_applies_on_the_screen() {
+        let (ui, dir) = headless_ui("model");
+        let set = |k: &str, v: serde_json::Value| model::set(&*ui, k, &v).unwrap();
+        set("home_compact", json!(true));
+        assert!(ui.home_compact.get());
+        assert!(ui.screen.get_home_compact());
+        set("night_start", json!(21));
+        set("night_on", json!(false));
+        assert_eq!(ui.desk.borrow().night, (false, 21, 7));
+        set("widgets", json!(["weather"]));
+        assert_eq!(*ui.widget_on.borrow(), [WidgetKind::Weather]);
+        set("widgets_every", json!("0"));
+        assert_eq!(ui.widget_every.get(), None);
+        set("keep_conversations", json!(false));
+        assert!(!ui.history.borrow().keeps());
+        set("wake_sensitivity", json!("less"));
+        assert_eq!(ui.screen.get_wake_step(), -1);
+        set("volume", json!(55));
+        assert_eq!(ui.volume.get(), 55);
+        assert_eq!(model::get(&*ui, "volume"), Some(json!(55)));
+        set("language", json!("it"));
+        assert_eq!(ui.locale.borrow().code, "it");
+        assert_eq!(model::get(&*ui, "language"), Some(json!("it")));
+        ui.choice.borrow_mut().known.todo =
+            vec![("todo.a".into(), "A".into()), ("todo.b".into(), "B".into())];
+        set("lists", json!(["todo.b"]));
+        assert_eq!(ui.choice.borrow().lists, ["todo.b"]);
+        let saved = Settings::in_dir(&dir);
+        assert!(saved.home_compact());
+        assert_eq!(saved.night(), (false, 21, 7));
+        assert_eq!(saved.widgets(), (vec![WidgetKind::Weather], 0));
+        assert_eq!(saved.lists(), ["todo.b"]);
+        assert_eq!(saved.language().as_deref(), Some("it"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
