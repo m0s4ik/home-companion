@@ -72,6 +72,8 @@ const IC = {
   sun: 'M12 8a4 4 0 100 8 4 4 0 000-8z M12 2v2 M12 20v2 M4.9 4.9l1.4 1.4 M17.7 17.7l1.4 1.4 M2 12h2 M20 12h2 M4.9 19.1l1.4-1.4 M17.7 6.3l1.4-1.4',
   cloud: 'M7 18h10a3.5 3.5 0 000-7 5 5 0 00-9.6-1A4 4 0 007 18z', rain: 'M7 15h10a3.5 3.5 0 000-7 5 5 0 00-9.6-1A4 4 0 007 15z M9 18l-1 2 M13 18l-1 2 M17 18l-1 2',
   snow: 'M7 15h10a3.5 3.5 0 000-7 5 5 0 00-9.6-1A4 4 0 007 15z M9 19h.1 M13 19h.1 M17 19h.1',
+  rise: 'M3 18h18 M7 18a5 5 0 0110 0 M12 3v6 M9 6l3-3 3 3', set: 'M3 18h18 M7 18a5 5 0 0110 0 M12 3v6 M9 6l3 3 3-3',
+  arrow: 'M12 3l6 17-6-4-6 4z',
   moon: 'M19 14A7 7 0 0110 5a7 7 0 109 9z', partly: 'M7 20h10a3.5 3.5 0 000-7 5 5 0 00-9.6-1A4 4 0 007 20z M12 4v1.5 M6 6.5l1 1 M18 6.5l-1 1',
 };
 // Home Assistant's conditions → an icon.
@@ -357,6 +359,7 @@ function drawCard(kind, model, win, empty) {
   if (w && w.aside) hd.append(el('span', 'a', w.aside));
   c.append(hd);
   if (model && model.layout === 'image') { c.append(el('div', 'ph', empty.text)); return wrapCard(c); }
+  if (model && model.layout === 'weather' && model.hero) return wrapCard(weatherCard(c, model.hero, w ? w.rows : []));
   if (!w || !w.rows.length) { c.append(el('div', 'empty', empty.text)); return wrapCard(c); }
   if (model.layout === 'hours') {
     const h = el('div', 'hours');
@@ -386,6 +389,48 @@ function drawCard(kind, model, win, empty) {
     c.append(row);
   }
   return wrapCard(c);
+}
+
+// The weather as the screen draws it with three slots: the sky big on the left, a dotted line,
+// what it is, the temperature big with its range beside it, sunrise, sunset and the wind's arrow;
+// the next hours small under it. No header: the block says what it is.
+function weatherCard(c, h, rows) {
+  c.replaceChildren();
+  c.classList.add('wx');
+  const top = el('div', 'top');
+  const sky = el('div', 'sky');
+  sky.append(ico(SKY[h.kind] || 'cloud', ''));
+  const right = el('div', 'main');
+  const temp = el('div', 'tr');
+  temp.append(el('span', 'tt', h.temp));
+  const range = el('span', 'rg');
+  for (const x of [h.high, h.low]) if (x) range.append(el('span', null, x));
+  temp.append(range);
+  const facts = el('div', 'fx');
+  if (h.sunrise) facts.append(ico('rise', 'g'), el('span', null, h.sunrise));
+  if (h.sunset) facts.append(ico('set', 'g'), el('span', null, h.sunset));
+  if (h.wind) {
+    if (h.wind_to >= 0) {
+      // Where the wind blows to: the path turned about the box's centre (an SVG attribute).
+      const a = ico('arrow', 'a');
+      a.firstChild.setAttribute('transform', 'rotate(' + Number(h.wind_to) + ' 12 12)');
+      facts.append(a);
+    }
+    facts.append(el('span', null, h.wind));
+  }
+  right.append(el('div', 'lb', h.label), temp, facts);
+  top.append(sky, el('div', 'dv'), right);
+  c.append(top);
+  if (rows.length) {
+    const hs = el('div', 'hrs');
+    for (const r of rows) {
+      const x = el('div');
+      x.append(el('span', 'h', r.left), ico(SKY[r.note] || 'cloud', ''), el('span', 'd', r.text));
+      hs.append(x);
+    }
+    c.append(hs);
+  }
+  return c;
 }
 
 function wrapCard(c) { const p = el('div', 'wp'); p.append(c); return p; }

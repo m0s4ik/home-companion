@@ -154,6 +154,8 @@ pub struct WidgetView {
     pub line: Option<WidgetRow>,
     /// With more rows than fit, the words of the window shown ("{a}-{b} of {n}"); "" = cut.
     pub window: String,
+    /// The weather's big block (now or tomorrow) above its columns; None on other pages.
+    pub hero: Option<super::weather::WeatherHero>,
 }
 
 /// The words of the pages.
@@ -279,6 +281,8 @@ pub struct Sources<'a> {
     pub next: &'a [NextItem],
     /// The weather's columns (hour or day, condition, temperature), soonest first.
     pub weather: Vec<WidgetRow>,
+    /// The weather's big block (now, or tomorrow in the evening).
+    pub weather_hero: Option<super::weather::WeatherHero>,
     pub shopping: Option<&'a [ShopList]>,
     pub quotes: &'a [Trend],
     pub cities: &'a [CityRow],
@@ -322,7 +326,7 @@ pub fn page(
 ) -> Option<WidgetView> {
     match kind {
         Kind::Next => next_page(s.next, w, now, local),
-        Kind::Weather => weather_page(&s.weather, w),
+        Kind::Weather => weather_page(&s.weather, s.weather_hero.as_ref(), w),
         Kind::Shopping => s.shopping.and_then(|l| shopping_page(l, w)),
         Kind::Quotes => trend_page(Kind::Quotes, w.quotes, s.quotes, w, now, local),
         Kind::Sensors => trend_page(Kind::Sensors, w.sensors, s.sensors, w, now, local),
@@ -411,6 +415,7 @@ fn waiting(kind: Kind, page: Option<WidgetView>, names: &[String], w: &Words) ->
         columns: false,
         line: None,
         window: w.window.to_string(),
+        hero: None,
     });
     let mut have = std::mem::take(&mut v.rows);
     for n in names {
@@ -477,11 +482,17 @@ fn next_page(
         columns: false,
         line,
         window: String::new(),
+        hero: None,
     })
 }
 
-fn weather_page(columns: &[WidgetRow], w: &Words) -> Option<WidgetView> {
-    if columns.is_empty() {
+/// The big block (now or tomorrow) and, under it, the next hours (or days) as columns.
+fn weather_page(
+    columns: &[WidgetRow],
+    hero: Option<&super::weather::WeatherHero>,
+    w: &Words,
+) -> Option<WidgetView> {
+    if columns.is_empty() && hero.is_none() {
         return None;
     }
     Some(WidgetView {
@@ -492,6 +503,7 @@ fn weather_page(columns: &[WidgetRow], w: &Words) -> Option<WidgetView> {
         columns: true,
         line: None,
         window: String::new(),
+        hero: hero.cloned(),
     })
 }
 
@@ -522,6 +534,7 @@ fn shopping_page(lists: &[ShopList], w: &Words) -> Option<WidgetView> {
             ..Default::default()
         }),
         window: String::new(),
+        hero: None,
     })
 }
 
@@ -793,6 +806,7 @@ fn trend_page(
         rows,
         columns: false,
         window: w.window.to_string(),
+        hero: None,
     })
 }
 
@@ -823,6 +837,7 @@ fn cities_page(
         rows,
         columns: false,
         window: w.window.to_string(),
+        hero: None,
     })
 }
 
@@ -852,6 +867,7 @@ fn notes_page(notes: &[String], w: &Words) -> Option<WidgetView> {
             ..Default::default()
         }),
         window: w.window.to_string(),
+        hero: None,
     })
 }
 
@@ -889,6 +905,7 @@ fn check_page(items: &[CheckRow], w: &Words) -> Option<WidgetView> {
         rows,
         columns: false,
         window: w.window.to_string(),
+        hero: None,
     })
 }
 
@@ -923,6 +940,7 @@ fn playing_page(p: &Playing, w: &Words) -> Option<WidgetView> {
         columns: false,
         line: Some(line),
         window: String::new(),
+        hero: None,
     })
 }
 
@@ -973,6 +991,7 @@ fn home_page(people: &[Person], w: &Words) -> Option<WidgetView> {
         rows,
         columns: false,
         window: w.window.to_string(),
+        hero: None,
     })
 }
 
@@ -1314,6 +1333,7 @@ mod tests {
             columns: false,
             line: None,
             window: String::new(),
+            hero: None,
         }
     }
 

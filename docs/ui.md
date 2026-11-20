@@ -112,8 +112,13 @@ its ring and the gold fill) and No stays a target that wins.
   through what is around the house, up to eight pages in the user's order: **Coming up** (reminders and calendar
   events of today and tomorrow: the time in gold on the left, "tomorrow" with the time on the right), **Markets**
   (stocks, indices, currencies, coins chosen from the browser: name, the day's curve, value, change), **Weather**
-  (five columns, the next hours: hour, sky, temperature; without an hourly forecast the next four days with their
-  high), **Other cities** (the time there in gold, the name, the sky, the temperature), **Shopping** ("4 to buy" in
+  (no header: a big block, the sky 112 px on the left (144 on the compact home), a dotted text-3 divider, then
+  "Now · Cloudy" in caption, the temperature in Light (96, 160 on the compact home) with high and low beside it,
+  and a line with sunrise, sunset and the wind's arrow (where it blows to) with its speed; after today's sunset
+  (`sun.sun`; 18:00 without it, or in polar day and night) it shows tomorrow: its sky, its high as the number,
+  its low and wind. Under it, with three slots or more, the next hours in one small line (hour, sky,
+  temperature; without an hourly forecast the next days with their high). Two slots: the block alone; one slot:
+  sky, temperature, what it is, the range), **Other cities** (the time there in gold, the name, the sky, the temperature), **Shopping** ("4 to buy" in
   the header, one item a row), **Notes** (the board, a note a row), **Sensors** (Home Assistant's numbers chosen from
   the browser: name, the last 24 hours' curve, value, change against 24 hours ago), **To check** (doors and windows
   open, then batteries under 20 % from the emptiest; only when there is something), **Now playing** (a chosen media

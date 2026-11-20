@@ -58,6 +58,14 @@ USED = {
     "weather-windy": [32], "weather-windy-variant": [32],
 }
 USED["weather-night"] = [32, 28]
+# the weather widget's big block: the sky (112 on the normal home, 144 on the compact one), the
+# sunrise and the sunset
+for _k in ["weather-sunny", "weather-night", "weather-partly-cloudy", "weather-cloudy",
+           "weather-rainy", "weather-pouring", "weather-snowy", "weather-snowy-rainy", "weather-fog",
+           "weather-hail", "weather-lightning", "weather-lightning-rainy", "weather-windy",
+           "weather-windy-variant"]:
+    USED[_k] = sorted(set(USED[_k]) | {112, 144}, reverse=True)
+USED.update({"weather-sunset-up": [24], "weather-sunset-down": [24]})
 # the widget's pages configured from the browser (markets, other cities, notes, Home Assistant's
 # sensors, what to check, what plays, who is home): their headers and the one-row card
 USED.update({"chart-line": [28], "earth": [28], "note-text": [28], "gauge": [28],

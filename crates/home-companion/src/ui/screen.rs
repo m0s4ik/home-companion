@@ -493,13 +493,16 @@ pub struct Demo {
     pub widget: Option<WidgetKind>,
     /// `--state widget-medium` / `widget-line`: one card (a timer) or two over it.
     pub widget_cards: usize,
+    /// `--state widget-weather-tomorrow*`: the same day at 19:10, after sunset (the weather
+    /// widget shows tomorrow).
+    pub evening: bool,
     /// `--state settings-panel` (1), `panel-ask` (2), `panel-blocked` (3): the browser panel's
     /// page, its access dialog, the home's card after too many requests.
     pub panel: u8,
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 96] = [
+pub const DEMO_STATES: [&str; 101] = [
     "home",
     "cards",
     "cards-setup",
@@ -576,6 +579,11 @@ pub const DEMO_STATES: [&str; 96] = [
     "update-confirm",
     "widget",
     "widget-weather",
+    "widget-weather-compact",
+    "widget-weather-tomorrow",
+    "widget-weather-tomorrow-compact",
+    "widget-weather-line",
+    "widget-weather-medium",
     "widget-shopping",
     "widget-medium",
     "widget-line",
@@ -824,12 +832,27 @@ impl Demo {
                 night: true,
                 ..home.clone()
             },
-            "widget" | "widget-weather" | "widget-shopping" | "widget-medium" | "widget-line"
-            | "widget-compact" | "widget-quotes" | "widget-quotes-line" | "widget-cities"
-            | "widget-notes" | "widget-sensors" | "widget-check" | "widget-playing"
+            "widget"
+            | "widget-weather"
+            | "widget-weather-compact"
+            | "widget-weather-tomorrow"
+            | "widget-weather-tomorrow-compact"
+            | "widget-weather-line"
+            | "widget-weather-medium"
+            | "widget-shopping"
+            | "widget-medium"
+            | "widget-line"
+            | "widget-compact"
+            | "widget-quotes"
+            | "widget-quotes-line"
+            | "widget-cities"
+            | "widget-notes"
+            | "widget-sensors"
+            | "widget-check"
+            | "widget-playing"
             | "widget-home" => Demo {
                 widget: Some(match s {
-                    "widget-weather" => WidgetKind::Weather,
+                    s if s.starts_with("widget-weather") => WidgetKind::Weather,
                     "widget-shopping" => WidgetKind::Shopping,
                     "widget-quotes" | "widget-quotes-line" => WidgetKind::Quotes,
                     "widget-cities" => WidgetKind::Cities,
@@ -841,11 +864,12 @@ impl Demo {
                     _ => WidgetKind::Next,
                 }),
                 widget_cards: match s {
-                    "widget-medium" => 1,
-                    "widget-line" | "widget-quotes-line" => 2,
+                    "widget-medium" | "widget-weather-medium" => 1,
+                    "widget-line" | "widget-quotes-line" | "widget-weather-line" => 2,
                     _ => 0,
                 },
-                compact: s == "widget-compact",
+                compact: s == "widget-compact" || s.ends_with("-compact"),
+                evening: s.starts_with("widget-weather-tomorrow"),
                 ..home.clone()
             },
             "starting" => Demo {
@@ -1605,8 +1629,7 @@ fn city_as_weather(w: &crate::feeds::openmeteo::CityWeather, now: i64) -> (Weath
         condition: d.cond.clone(),
         high: Some(d.high as f64),
         low: Some(d.low as f64),
-        precipitation: None,
-        precipitation_probability: None,
+        ..Default::default()
     });
     let today = date(now);
     let first = days.next();
@@ -1632,6 +1655,7 @@ fn city_as_weather(w: &crate::feeds::openmeteo::CityWeather, now: i64) -> (Weath
                     temperature: Some(h.temp as f64),
                 })
                 .collect(),
+            ..Default::default()
         },
         today,
     )
@@ -2887,8 +2911,12 @@ impl<S: Screen> Ui<S> {
 
     /// Seconds since the epoch; fixed in demo mode (the golden screenshots).
     fn now(&self) -> f64 {
-        if self.opts.demo.is_some() {
-            DEMO_NOW
+        if let Some(d) = &self.opts.demo {
+            if d.evening {
+                DEMO_NOW + DEMO_EVENING
+            } else {
+                DEMO_NOW
+            }
         } else {
             now_unix()
         }
@@ -3417,16 +3445,27 @@ impl<S: Screen> Ui<S> {
         if !self.ha_widgets.borrow().sensors.is_empty() {
             self.apply_ha_widgets();
         }
-        // The afternoon hour by hour, from the hour going on (14:00).
-        let hour = DEMO_NOW as i64 - DEMO_NOW as i64 % 3600;
-        *self.weather.borrow_mut() = Some(Weather::sample_week(DEMO_DATE).with_sample_hours(hour));
+        // The afternoon (or the evening) hour by hour, from the hour going on (14:00), and the
+        // day's sun.
+        let now = self.now() as i64;
+        let hour = now - now % 3600;
+        *self.weather.borrow_mut() = Some(
+            Weather::sample_week(DEMO_DATE)
+                .with_sample_hours(hour)
+                .with_sample_sun(DEMO_NOW as i64 / 86400, now),
+        );
     }
 
     fn show_demo(&self, d: Demo) {
         let l = self.locale.borrow().clone();
         let w = |k: &str| l.text(k).to_string();
-        self.screen
-            .set_clock(if d.night { "23:48" } else { "14:25" });
+        self.screen.set_clock(if d.night {
+            "23:48"
+        } else if d.evening {
+            "19:10"
+        } else {
+            "14:25"
+        });
         self.screen.set_date(&l.date(2, 3, 10));
         // Home Assistant unreachable: no weather either.
         self.screen.set_weather(
@@ -5842,11 +5881,16 @@ impl<S: Screen> Ui<S> {
         } else {
             crate::ha::local_date()
         };
-        let columns = self
+        let (columns, hero) = self
             .weather
             .borrow()
             .as_ref()
-            .map(|w| super::weather::widget_columns(w, &l, &today, now, &|t| local_hm(t).0))
+            .map(|w| {
+                (
+                    super::weather::widget_columns(w, &l, &today, now, &|t| local_hm(t).0),
+                    Some(super::weather::hero(w, &l, &today, now, &local_hm)),
+                )
+            })
             .unwrap_or_default();
         let words = widget_words(&l);
         if !self.city_weather.borrow().is_empty() {
@@ -5856,6 +5900,7 @@ impl<S: Screen> Ui<S> {
         let sources = widgets::Sources {
             next: &next,
             weather: columns,
+            weather_hero: hero,
             shopping: d.shopping.as_deref(),
             quotes: &data.quotes,
             cities: &data.cities,
@@ -7674,6 +7719,8 @@ const BAR_ANSWER: usize = 70;
 const BRAIN: &str = "Home Assistant";
 /// "Now" in demo mode: 2026-11-03 14:25 UTC (tools/shoot-golden.sh runs with TZ=UTC).
 const DEMO_NOW: f64 = 1_793_715_900.0;
+/// The evening demos' "now": DEMO_NOW + 4 h 45 min = 19:10, after the sample's sunset.
+const DEMO_EVENING: f64 = 17_100.0;
 /// DEMO_NOW's date.
 const DEMO_DATE: &str = "2026-11-03";
 /// The demo conversation's second session (seconds after the first).

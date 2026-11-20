@@ -350,6 +350,7 @@ impl PanelHost for Demo {
         let real = Sources {
             next: &s.next,
             weather: s.weather.clone(),
+            weather_hero: Some(s.weather_hero.clone()),
             shopping: Some(&lists),
             quotes: &q_trends,
             cities: &c_rows,

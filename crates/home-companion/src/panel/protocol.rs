@@ -1065,7 +1065,12 @@ mod tests {
         // Nothing chosen: no page; what to check shows an example.
         assert_eq!(page(&w, "quotes")["model"], Value::Null);
         assert_eq!(page(&w, "check")["model"]["sample"], true);
-        assert_eq!(page(&w, "weather")["model"]["layout"], "hours");
+        // The weather (an example here): its big block and the next hours under it.
+        let weather = &page(&w, "weather")["model"];
+        assert_eq!(weather["layout"], "weather");
+        assert_eq!(weather["hero"]["label"], "Adesso · Nuvoloso");
+        assert_eq!(weather["hero"]["temp"], "14°");
+        assert_eq!(weather["windows"][0]["rows"].as_array().unwrap().len(), 5);
         // A quote added: its row waits for the data.
         let r = call(
             &h,

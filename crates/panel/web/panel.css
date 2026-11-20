@@ -146,6 +146,27 @@ nav.tabs button[aria-current=page] { color: var(--accent); box-shadow: inset 0 2
 .wc .hours .h { font-size: 1.5em; color: var(--text-2); }
 .wc .hours .d { font-size: 1.75em; }
 .wc .hours svg { width: 2em; height: 2em; stroke: var(--text); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+/* The weather's big block (the screen with three slots): sky 112 px, label 20, temperature 96 Light,
+   range 28, facts 24; the next hours one small line under a hairline. */
+.wc.wx { padding: 1em 1.5em .9em; }
+.wc.wx .top { display: grid; grid-template-columns: 11.5em 2px minmax(0, 1fr); align-items: center; column-gap: 2em; }
+.wc.wx .sky { display: grid; place-items: center; }
+.wc.wx .sky svg { width: 7em; height: 7em; stroke: var(--accent); fill: none; stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
+.wc.wx .dv { align-self: stretch; margin: .25em 0; background: radial-gradient(circle, var(--text-3) 45%, transparent 50%) 0 0 / 2px .5em repeat-y; opacity: .6; }
+.wc.wx .lb { font-size: 1.25em; font-weight: 500; letter-spacing: .045em; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wc.wx .tr { display: flex; align-items: center; gap: 1.5em; }
+.wc.wx .tt { font-size: 6em; font-weight: 300; letter-spacing: -.02em; line-height: 1.12; font-variant-numeric: tabular-nums; }
+.wc.wx .rg { display: grid; gap: .15em; font-size: 1.75em; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.wc.wx .fx { display: flex; align-items: center; gap: .5em; font-size: 1.5em; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.wc.wx .fx span { margin-right: .5em; }
+.wc.wx .fx svg { width: 1em; height: 1em; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.wc.wx .fx svg.g { stroke: var(--accent); }
+.wc.wx .fx svg.a { stroke: var(--text-2); fill: var(--text-2); }
+.wc.wx .hrs { display: grid; grid-template-columns: repeat(5, 1fr); margin-top: 1em; padding-top: .9em; border-top: max(1px, .06em) solid var(--line-2); }
+.wc.wx .hrs div { display: flex; align-items: center; justify-content: center; gap: .5em; }
+.wc.wx .hrs .h { font-size: 1.25em; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.wc.wx .hrs .d { font-size: 1.5em; }
+.wc.wx .hrs svg { width: 2em; height: 2em; stroke: var(--text); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .wc .empty { height: 6.5em; display: grid; place-items: center; color: var(--text-3); font-size: 1.4em; text-align: center; padding: 0 2em; }
 .wc .ph { height: 12em; border-radius: .6em; margin: .4em 0 1em; background: repeating-linear-gradient(135deg, #191c23 0 1em, #14171d 1em 2em); display: grid; place-items: center; color: var(--text-3); font-size: 1.2em; }
 

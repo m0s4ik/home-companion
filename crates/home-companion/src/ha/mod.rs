@@ -361,7 +361,7 @@ fn session(
     // The home widget's next hours; refused by integrations without them (not an error).
     let subscribe_hourly = |id: u64| subscribe(id, "hourly");
     let subs = [
-        json!({"id": entities_id, "type": "subscribe_entities", "entity_ids": [cfg.entity]})
+        json!({"id": entities_id, "type": "subscribe_entities", "entity_ids": [cfg.entity, weather::SUN_ENTITY]})
             .to_string(),
         subscribe_forecast(forecast_id),
         subscribe_hourly(hourly_id),
@@ -566,7 +566,7 @@ mod tests {
         let sub: Value = serde_json::from_str(&read_frame(&mut s, &mut buf)).unwrap();
         assert_eq!(sub["type"], "subscribe_entities");
         assert_eq!(sub["id"], 1);
-        assert_eq!(sub["entity_ids"], json!(["weather.home"]));
+        assert_eq!(sub["entity_ids"], json!(["weather.home", "sun.sun"]));
         let fc: Value = serde_json::from_str(&read_frame(&mut s, &mut buf)).unwrap();
         assert_eq!(fc["type"], "weather/subscribe_forecast");
         assert_eq!(fc["id"], 2);

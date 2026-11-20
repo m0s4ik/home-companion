@@ -253,16 +253,28 @@ fn row_json(r: &WidgetRow) -> Value {
     Value::Object(o)
 }
 
-/// A page as the panel draws it: its title, its layout, the windows the screen turns through
-/// with [`PREVIEW_SLOTS`] free (each with its header's right side and its rows), whether it
-/// is an example.
+/// A page as the panel draws it: its title, its layout ("rows", "hours", or "weather" with the
+/// weather's big block in `hero`), the windows the screen turns through with [`PREVIEW_SLOTS`]
+/// free (each with its header's right side and its rows), whether it is an example.
 pub fn model(v: &WidgetView, sample: bool) -> Value {
     let windows: Vec<Value> = (0..widgets::windows(v, PREVIEW_SLOTS))
         .filter_map(|i| widgets::fit(v, PREVIEW_SLOTS, i as u32))
         .map(|f| json!({"aside": f.aside, "rows": f.rows.iter().map(row_json).collect::<Vec<_>>()}))
         .collect();
-    json!({"title": v.title, "layout": if v.columns { "hours" } else { "rows" },
-           "sample": sample, "windows": windows})
+    let layout = if v.hero.is_some() {
+        "weather"
+    } else if v.columns {
+        "hours"
+    } else {
+        "rows"
+    };
+    let mut m = json!({"title": v.title, "layout": layout, "sample": sample, "windows": windows});
+    if let Some(h) = &v.hero {
+        m["hero"] = json!({"label": h.label, "kind": h.kind, "temp": h.temp, "high": h.high,
+            "low": h.low, "sunrise": h.sunrise, "sunset": h.sunset, "wind": h.wind,
+            "wind_to": h.wind_to, "tomorrow": h.tomorrow});
+    }
+    m
 }
 
 /// The line under a page: what it shows and where from.

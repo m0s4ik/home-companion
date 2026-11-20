@@ -1004,6 +1004,22 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_widget_aside(self, v.aside.as_str().into());
                 $m::CompanionWindow::set_widget_rows(self, model!(rows));
                 $m::CompanionWindow::set_widget_columns(self, v.columns);
+                let h = v.hero.clone().unwrap_or_default();
+                $m::CompanionWindow::set_widget_hero(
+                    self,
+                    $m::WeatherHero {
+                        shown: v.hero.is_some(),
+                        label: h.label.into(),
+                        kind: h.kind.into(),
+                        temp: h.temp.into(),
+                        high: h.high.into(),
+                        low: h.low.into(),
+                        sunrise: h.sunrise.into(),
+                        sunset: h.sunset.into(),
+                        wind: h.wind.into(),
+                        wind_arrow: crate::ui::weather::arrow_path(h.wind_to).into(),
+                    },
+                );
                 $m::CompanionWindow::set_widget_slots(self, w.slots as i32);
                 $m::CompanionWindow::set_widget_index(self, w.index as i32);
                 $m::CompanionWindow::set_widget_count(self, w.count as i32);

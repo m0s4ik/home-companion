@@ -600,11 +600,16 @@ impl<S: Screen> PanelHost for Ui<S> {
         } else {
             crate::ha::local_date()
         };
-        let columns = self
+        let (columns, hero) = self
             .weather
             .borrow()
             .as_ref()
-            .map(|wt| crate::ui::weather::widget_columns(wt, &l, &today, now, &|t| local_hm(t).0))
+            .map(|wt| {
+                (
+                    crate::ui::weather::widget_columns(wt, &l, &today, now, &|t| local_hm(t).0),
+                    Some(crate::ui::weather::hero(wt, &l, &today, now, &local_hm)),
+                )
+            })
             .unwrap_or_default();
         let cities = self.city_rows(now);
         let d = self.desk.borrow();
@@ -613,6 +618,7 @@ impl<S: Screen> PanelHost for Ui<S> {
         let real = widgets::Sources {
             next: &next,
             weather: columns,
+            weather_hero: hero,
             shopping: d.shopping.as_deref(),
             quotes: &data.quotes,
             cities: if cities.is_empty() {

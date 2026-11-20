@@ -24,7 +24,7 @@ import { ScrollFade, MusicBar, CornerClock,
     Icon, BareButton, PrimaryButton, PillButton, InfoCard, TimerCard, NowPlayingCard, PageHeader,
     Tile, SectionTitle, Row, Group, TimerLine, AlarmLine, ChatUser, ChatCharacter, ChatSeparator,
     Step, Stepper, Chip, Dialog, Separator, VolumeHud, GlyphButton, ControlTile, LevelBar, Feedback,
-    DoneCard, Status, WidgetPanel, WidgetRow
+    DoneCard, Status, WidgetPanel, WidgetRow, WeatherHero
 } from "design/components.slint";
 import { CasaScreen, CasaBridge } from "casa.slint";
 import { WeatherPage, ListsPage, PickPage, EventRow, ForecastRow, ChoiceRow, PickRow } from "ha-pages.slint";
@@ -802,6 +802,7 @@ export component CompanionWindow inherits Window {
     in property <string> widget-aside: "";
     in property <[WidgetRow]> widget-rows: [];
     in property <bool> widget-columns: false;
+    in property <WeatherHero> widget-hero;
     in property <int> widget-slots: 0;
     in property <int> widget-index: 0;
     in property <int> widget-count: 0;
@@ -1707,8 +1708,11 @@ export component CompanionWindow inherits Window {
             x: Grid.col-x;
             y: Grid.cards-y + root.cards.length * (Grid.card-height + Grid.card-gap);
             // The free slots, but never taller than what it shows: a header and its rows (52 px
-            // each), or the weather's columns (112 px); the dots under it when it turns.
-            height: root.widget-slots <= 1 ? Grid.card-height : min(
+            // each), or the weather's columns (112 px); the weather's big block takes them all.
+            // The dots under it when it turns.
+            height: root.widget-slots <= 1 ? Grid.card-height : root.widget-hero.shown
+                ? root.widget-slots * Grid.card-height + (root.widget-slots - 1) * Grid.card-gap
+                : min(
                 root.widget-slots * Grid.card-height + (root.widget-slots - 1) * Grid.card-gap,
                 (root.widget-columns ? 60px + 8px + 112px + 24px : 60px + root.widget-rows.length * 52px + 16px)
                     + (root.widget-count > 1 ? 16px : 0px));
@@ -1717,6 +1721,7 @@ export component CompanionWindow inherits Window {
             aside: root.widget-aside;
             rows: root.widget-rows;
             columns: root.widget-columns;
+            hero: root.widget-hero;
             slots: root.widget-slots;
             index: root.widget-index;
             count: root.widget-count;

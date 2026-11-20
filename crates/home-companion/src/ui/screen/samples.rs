@@ -22,6 +22,7 @@ pub const NOW: i64 = DEMO_NOW as i64;
 pub struct Samples {
     pub next: Vec<NextItem>,
     pub weather: Vec<WidgetRow>,
+    pub weather_hero: crate::ui::weather::WeatherHero,
     pub shopping: Vec<ShopList>,
     pub quotes: Vec<Trend>,
     pub cities: Vec<CityRow>,
@@ -37,6 +38,7 @@ impl Samples {
         Sources {
             next: &self.next,
             weather: self.weather.clone(),
+            weather_hero: Some(self.weather_hero.clone()),
             shopping: Some(&self.shopping),
             quotes: &self.quotes,
             cities: &self.cities,
@@ -139,9 +141,12 @@ pub fn samples(l: &Locale) -> Samples {
     events.push(ev(midnight + 86400 + 9 * 3600, l.sample("event_car")));
     let reminders = vec![(midnight + 18 * 3600, l.sample("reminder_text").to_string())];
     let hour = NOW - NOW % 3600;
-    let weather = Weather::sample_week(DEMO_DATE).with_sample_hours(hour);
+    let weather = Weather::sample_week(DEMO_DATE)
+        .with_sample_hours(hour)
+        .with_sample_sun(NOW / 86400, NOW);
     let columns =
         crate::ui::weather::widget_columns(&weather, l, DEMO_DATE, NOW, &|t| local_hm(t).0);
+    let weather_hero = crate::ui::weather::hero(&weather, l, DEMO_DATE, NOW, &local_hm);
     let items: Vec<(String, String)> = l
         .sample("shop_items")
         .split('|')
@@ -184,6 +189,7 @@ pub fn samples(l: &Locale) -> Samples {
     Samples {
         next: next::merge(&reminders, &events, NOW),
         weather: columns,
+        weather_hero,
         shopping,
         quotes: demo_quotes(),
         cities: city_rows_of(&choices, &cities, NOW),
