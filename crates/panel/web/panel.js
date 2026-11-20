@@ -67,6 +67,7 @@ const IC = {
   grip: 'M9 6v.1 M15 6v.1 M9 12v.1 M15 12v.1 M9 18v.1 M15 18v.1', pause: 'M9 6v12 M15 6v12', play: 'M8 5l11 7-11 7z',
   grid: 'M4 4h7v7H4z M13 4h7v4h-7z M13 10h7v10h-7z M4 13h7v7H4z', sliders: 'M4 7h10 M18 7h2 M4 17h2 M10 17h10 M16 9a2 2 0 100-4 2 2 0 000 4z M8 19a2 2 0 100-4 2 2 0 000 4z',
   phone: 'M8 3h8v18H8z M11 18h2', house: 'M4 11l8-7 8 7 M6 10v10h12V10',
+  mic: 'M12 3a3 3 0 00-3 3v6a3 3 0 006 0V6a3 3 0 00-3-3z M6 11a6 6 0 0012 0 M12 17v4', dots: 'M5 12h.1 M12 12h.1 M19 12h.1',
   frame: 'M4 6h16v12H4z M7 10h6 M7 13h10', bolt: 'M13 3L5 14h6l-1 7 8-11h-6z', ok: 'M5 12l5 5 9-10',
   sun: 'M12 8a4 4 0 100 8 4 4 0 000-8z M12 2v2 M12 20v2 M4.9 4.9l1.4 1.4 M17.7 17.7l1.4 1.4 M2 12h2 M20 12h2 M4.9 19.1l1.4-1.4 M17.7 6.3l1.4-1.4',
   cloud: 'M7 18h10a3.5 3.5 0 000-7 5 5 0 00-9.6-1A4 4 0 007 18z', rain: 'M7 15h10a3.5 3.5 0 000-7 5 5 0 00-9.6-1A4 4 0 007 15z M9 18l-1 2 M13 18l-1 2 M17 18l-1 2',
@@ -144,17 +145,27 @@ function note() { return el('p', 'note', t('panel_lan_note')); }
 function chrome(inside) {
   document.body.classList.toggle('in', inside);
   nav.hidden = !inside;
+  if (!inside) app.className = '';
   if (!inside) document.querySelectorAll('.scrim').forEach(x => x.remove());
 }
 
 // ---- Without access: ask for it, or follow the QR code's answer.
 
+// The pairing pages: the device beside the words, showing where to look and what to touch.
+function pairPage(slot, pose, title, words) {
+  clear();
+  const stage = el('section', 'stage pair');
+  const side = el('div', 'side');
+  side.append(el('h2', null, title));
+  for (const w of words) side.append(w);
+  stage.append(device(slot, pose === 'sleeping' ? 'sleeping' : 'idle'), side);
+  app.append(stage, note());
+  return side;
+}
+
 function off() {
   chrome(false);
-  clear();
-  const c = el('section', 'card center');
-  c.append(el('p', null, t('panel_off')));
-  app.append(c, note());
+  pairPage(null, 'sleeping', t('panel_pair_title'), [says('sleeping', t('panel_off'))]);
 }
 
 let polling = 0;
@@ -162,22 +173,26 @@ let polling = 0;
 function login(message) {
   clearInterval(polling);
   chrome(false);
-  clear();
-  const c = el('section', 'card center');
-  if (message) c.append(el('p', 'warn', message));
   const b = el('button', 'primary', t('panel_ask'));
+  b.type = 'button';
   b.addEventListener('click', ask);
-  c.append(b, el('p', 'hint', t('panel_ask_hint')));
-  app.append(c, note());
+  const words = [message ? says('error', message) : says('listening', t('panel_alfred_ask')), b, el('p', 'hint', t('panel_ask_hint'))];
+  pairPage(null, 'idle', t('panel_pair_title'), words);
 }
 
 async function ask() {
   const r = await api('/api/pair', {});
   if (!r.ok) { login(errorText(r.error)); return; }
-  clear();
-  const c = el('section', 'card center');
-  c.append(el('p', null, t('panel_check_code')), el('p', 'code', r.code), el('p', 'hint', t('panel_waiting')));
-  app.append(c, note());
+  // The screen shows the same dialog: its code, and Allow to touch.
+  const dlg = el('div', 'ask');
+  const btns = el('div', 'btns');
+  btns.append(el('span', null, t('panel_refuse')), el('span', 'yes', t('panel_allow')));
+  dlg.append(el('b', null, t('panel_ask_title')), el('span', null, t('panel_ask_text')), el('div', 'code', r.code), btns);
+  pairPage(dlg, 'idle', t('panel_pair_title'), [
+    says('speaking', t('panel_check_code')),
+    el('p', 'code', r.code),
+    el('p', 'hint', t('panel_waiting')),
+  ]);
   let busy = false;
   polling = setInterval(async () => {
     if (busy) return;
@@ -502,6 +517,7 @@ function draw(keepScroll) {
   const y = scrollY;
   clearInterval(heroTimer);
   clear();
+  app.className = tab === 'widgets' ? '' : 'narrow';
   ({ widgets: drawWidgets, shopping: drawShopping, settings: drawSettings, access: drawAccess })[tab]();
   if (keepScroll) scrollTo(0, y);
 }
@@ -512,32 +528,85 @@ let heroAt = 0;
 let heroTimer = 0;
 let heroPaused = false;
 
+// One of Alfred's pictures (tools/make-art.py).
+function art(pose, cls) {
+  const i = el('img', cls);
+  i.src = '/art/' + pose + '.webp';
+  i.alt = '';
+  i.decoding = 'async';
+  return i;
+}
+
+// What Alfred says beside a page: his picture, a line in a balloon.
+function says(pose, text) {
+  const d = el('div', 'say');
+  d.append(art(pose), el('p', null, text));
+  return d;
+}
+
+// "14:25" and "Tuesday 3 November" now, as the screen writes them.
+function clockNow() {
+  const n = new Date();
+  const hm = String(n.getHours()).padStart(2, '0') + ':' + String(n.getMinutes()).padStart(2, '0');
+  let day = '';
+  try {
+    day = n.toLocaleDateString(lang === 'en' ? 'en-GB' : lang, { weekday: 'long', day: 'numeric', month: 'long' }).replace(',', '');
+  } catch (e) { day = ''; }
+  return [hm, day.charAt(0).toUpperCase() + day.slice(1)];
+}
+
+let clockTimer = 0;
+
+// The device with its home screen: Alfred on the left third, the clock and the date, `slot`
+// where the widget is (or what else the screen shows over it), the three keys at the bottom.
+function device(slot, pose) {
+  const dev = el('div', 'device');
+  const screen = el('div', 'screen');
+  const clock = el('div', 'clock');
+  const date = el('div', 'date');
+  const tick = () => { const [hm, day] = clockNow(); clock.textContent = hm; date.textContent = day; };
+  tick();
+  clearInterval(clockTimer);
+  clockTimer = setInterval(() => { if (clock.isConnected) tick(); else clearInterval(clockTimer); }, 10000);
+  screen.append(art(pose || 'idle', 'alfred'), clock, date);
+  const keys = el('div', 'keys');
+  for (const [icon, word, cls] of [['grid', 'HA', ''], ['mic', t('talk'), 'talk'], ['dots', t('more'), '']]) {
+    const k = el('span', cls);
+    k.append(ico(icon), el('span', null, word));
+    keys.append(k);
+  }
+  if (slot) screen.append(slot);
+  screen.append(keys);
+  screen.setAttribute('aria-hidden', slot && slot.querySelector('button') ? 'false' : 'true');
+  dev.append(el('div', 'grille'), screen);
+  return dev;
+}
+
 function drawWidgets() {
   if (!D.widgets || !D.widgets.ok) {
     app.append(settingsCard(['widgets_every']));
     return;
   }
   const pages = D.widgets.pages || [];
-  const cols = el('div', 'cols');
-  const hero = el('section', 'hero');
-  const right = el('div');
+  const stage = el('section', 'stage');
+  const side = el('div', 'side');
   // The turn: the pages that are on and have something to show now, as the screen skips the others.
   const turn = pages.filter(p => p.on && p.model && !p.model.sample);
   if (heroAt >= turn.length) heroAt = 0;
-  const stage = el('div');
+  const slot = el('div', 'slot');
   const dots = el('div', 'dots');
   const bar = el('div', 'bar');
   const nm = el('div', 'nm');
   const show = () => {
-    stage.replaceChildren(); dots.replaceChildren(); nm.replaceChildren();
-    if (!turn.length) { stage.append(el('p', 'hint', t('panel_turn_none'))); bar.hidden = true; return; }
+    slot.replaceChildren(); dots.replaceChildren(); nm.replaceChildren();
+    if (!turn.length) { bar.hidden = true; return; }
     const p = turn[heroAt];
     const b = el('button', 'tap');
     b.type = 'button';
     b.setAttribute('aria-label', t('panel_edit_widget', { w: p.label }));
     b.append(preview(p));
     b.addEventListener('click', () => openEditor(p.kind));
-    stage.append(b);
+    slot.append(b);
     turn.forEach((q, i) => {
       const d = el('button');
       d.type = 'button';
@@ -551,7 +620,10 @@ function drawWidgets() {
   const step = d => { heroAt = (heroAt + d + turn.length) % turn.length; show(); };
   const pp = ibtn(heroPaused ? 'play' : 'pause', t('panel_turn_pause'), () => { heroPaused = !heroPaused; draw(true); });
   bar.append(ibtn('left', t('panel_turn_prev'), () => step(-1)), nm, pp, ibtn('right', t('panel_turn_next'), () => step(1)));
-  hero.append(el('div', 'cap', t('panel_now_on_home')), stage, dots, bar);
+  const hero = el('div', 'hero');
+  hero.append(device(slot), dots);
+  side.append(el('div', 'cap', t('panel_now_on_home')), bar);
+  if (!turn.length) side.append(says('sleeping', t('panel_turn_none')));
   const every = item('widgets_every');
   if (every) {
     const l = el('label', 'every', t('panel_turn_every'));
@@ -560,13 +632,15 @@ function drawWidgets() {
       if (took(r)) toast(t('panel_saved')); else toast(errorText(r.error), true);
     });
     l.append(c);
-    hero.append(l);
+    side.append(l);
   }
-  hero.append(el('p', 'hint', t('panel_turn_skip')));
+  side.append(el('p', 'hint', t('panel_turn_skip')));
+  if (turn.length) side.append(says('idle', t('panel_alfred_widgets')));
   show();
   if (!heroPaused && turn.length > 1 && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
     heroTimer = setInterval(() => { if (!document.querySelector('.scrim') && !document.hidden) step(1); }, 4500);
   }
+  stage.append(hero, side);
   // The pages that are on, in the turn's order.
   const sec = el('div', 'sec');
   sec.append(el('h2', null, t('panel_your_widgets')), el('span', 'hint', t('panel_drag_hint')));
@@ -585,17 +659,15 @@ function drawWidgets() {
   add.type = 'button';
   add.append(ico('plus'), el('span', null, t('panel_add_widget')));
   add.addEventListener('click', openGallery);
-  right.append(sec, grid, add);
+  app.append(stage, sec, grid, add);
   const offs = pages.filter(p => !p.on);
   if (offs.length) {
     const s2 = el('div', 'sec');
-    s2.append(el('h2', null, t('panel_off_widgets')), el('span', 'hint', t('panel_off_hint')));
+    s2.append(art('sleeping'), el('h2', null, t('panel_off_widgets')), el('span', 'hint', t('panel_off_hint')));
     const g2 = el('div', 'grid');
     for (const p of offs) g2.append(widgetItem(p));
-    right.append(s2, g2);
+    app.append(s2, g2);
   }
-  cols.append(hero, right);
-  app.append(cols);
 }
 
 function widgetItem(p) {
@@ -636,9 +708,9 @@ function onoff(kind, after) {
 
 // ---- Sheets: the whole screen on a phone, a box on a desk; Esc and the back arrow close.
 
-function sheet(title, extra, onClose) {
+function sheet(title, extra, onClose, wide) {
   const scrim = el('div', 'scrim');
-  const sh = el('div', 'sheet');
+  const sh = el('div', wide ? 'sheet wide' : 'sheet');
   sh.setAttribute('role', 'dialog');
   sh.setAttribute('aria-modal', 'true');
   sh.setAttribute('aria-label', title);
@@ -678,7 +750,7 @@ async function openGallery() {
     if (!r.ok) { toast(errorText(r.error), true); return; }
     D.samples = r.samples;
   }
-  const { fix, body, close } = sheet(t('panel_add_widget'));
+  const { fix, body, close } = sheet(t('panel_add_widget'), null, null, true);
   fix.remove();
   body.append(el('p', 'hint', t('panel_gallery_intro')));
   const gal = el('div', 'gal');
@@ -841,7 +913,12 @@ function finder(what, kind, has, add) {
     out.replaceChildren();
     out.hidden = !st.q;
     if (!st.q) return;
-    if (st.hits === null) { out.append(el('li', 'empty', t('panel_searching'))); return; }
+    if (st.hits === null) {
+      const li = el('li', 'empty');
+      li.append(art('thinking', 'think'), el('span', null, t('panel_searching')));
+      out.append(li);
+      return;
+    }
     if (typeof st.hits === 'string') { out.append(el('li', 'empty', st.hits)); return; }
     if (!st.hits.length) { out.append(el('li', 'empty', t('panel_search_none'))); return; }
     for (const h of st.hits) {
@@ -1257,6 +1334,14 @@ async function start() {
   name = h.name;
   document.title = name;
   document.getElementById('name').textContent = name;
+  // The header: his portrait, his name, a greeting for the time of day.
+  const top = document.querySelector('header.top');
+  const face = art('face');
+  face.width = 48; face.height = 48;
+  const who = el('div', 'who');
+  const hour = new Date().getHours();
+  who.append(document.getElementById('name'), el('div', 'hi', t(hour < 5 || hour >= 18 ? 'panel_hello_evening' : hour < 12 ? 'panel_hello_morning' : 'panel_hello_afternoon')));
+  top.replaceChildren(face, who);
   for (const k of Object.keys(T)) T[k] = T[k].split('{name}').join(name);
   const qr = new URLSearchParams(location.search).get('qr');
   if (!h.on) off();

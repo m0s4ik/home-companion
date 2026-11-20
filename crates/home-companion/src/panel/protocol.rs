@@ -333,6 +333,18 @@ pub const STRING_KEYS: &[&str] = &[
     "panel_access_new_hint",
     "panel_last_used",
     "panel_search_rows_wait",
+    "panel_hello_morning",
+    "panel_hello_afternoon",
+    "panel_hello_evening",
+    "panel_alfred_widgets",
+    "panel_pair_title",
+    "panel_alfred_ask",
+    "panel_ask_title",
+    "panel_ask_text",
+    "panel_allow",
+    "panel_refuse",
+    "talk",
+    "more",
 ];
 
 fn shopping_json(lists: &[ShopList]) -> Value {

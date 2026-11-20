@@ -18,7 +18,7 @@
 //!   never sees it, and the body's answers carrying it are stripped before they leave;
 //! - every answer has a strict Content-Security-Policy (no inline script), `nosniff`,
 //!   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store` (the two
-//!   font files, the screen's Inter for the widget's previews: kept a day).
+//!   font files and Alfred's pictures: kept a day).
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -53,6 +53,62 @@ pub const FONT_REGULAR: &[u8] =
     include_bytes!("../../spike-ui/fixtures/fonts/Inter-Regular-subset.ttf");
 pub const FONT_MEDIUM: &[u8] =
     include_bytes!("../../spike-ui/fixtures/fonts/Inter-Medium-subset.ttf");
+/// The Light of the screen's clock (the panel's big numbers and titles).
+pub const FONT_LIGHT: &[u8] =
+    include_bytes!("../../spike-ui/fixtures/fonts/Inter-Light-subset.ttf");
+
+/// The files that never change within a version: the fonts and Alfred's pictures (CC0, made by
+/// tools/make-art.py from characters/alfred/poses). Served as they are, kept a day.
+pub const STATIC: &[(&str, &str, &[u8])] = &[
+    ("/inter-300.ttf", "font/ttf", FONT_LIGHT),
+    ("/inter-400.ttf", "font/ttf", FONT_REGULAR),
+    ("/inter-500.ttf", "font/ttf", FONT_MEDIUM),
+    (
+        "/art/face.webp",
+        "image/webp",
+        include_bytes!("../web/art/face.webp"),
+    ),
+    (
+        "/art/idle.webp",
+        "image/webp",
+        include_bytes!("../web/art/idle.webp"),
+    ),
+    (
+        "/art/sleeping.webp",
+        "image/webp",
+        include_bytes!("../web/art/sleeping.webp"),
+    ),
+    (
+        "/art/thinking.webp",
+        "image/webp",
+        include_bytes!("../web/art/thinking.webp"),
+    ),
+    (
+        "/art/listening.webp",
+        "image/webp",
+        include_bytes!("../web/art/listening.webp"),
+    ),
+    (
+        "/art/speaking.webp",
+        "image/webp",
+        include_bytes!("../web/art/speaking.webp"),
+    ),
+    (
+        "/art/error.webp",
+        "image/webp",
+        include_bytes!("../web/art/error.webp"),
+    ),
+    (
+        "/art/favicon-32.png",
+        "image/png",
+        include_bytes!("../web/art/favicon-32.png"),
+    ),
+    (
+        "/art/apple-touch-icon.png",
+        "image/png",
+        include_bytes!("../web/art/apple-touch-icon.png"),
+    ),
+];
 
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
                    font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; \
@@ -215,12 +271,13 @@ fn is_hex(s: &str, n: usize) -> bool {
 
 /// The headers every answer has.
 fn secure(r: Response) -> Response {
-    // The fonts never change within a version: kept a day (everything else: never kept).
-    let cache = if r
+    // The fonts and pictures never change within a version: kept a day (everything else:
+    // never kept).
+    let fixed = r
         .headers
         .iter()
-        .any(|(n, v)| n == "Content-Type" && v == "font/ttf")
-    {
+        .any(|(n, v)| n == "Content-Type" && (v.starts_with("font/") || v.starts_with("image/")));
+    let cache = if fixed {
         "public, max-age=86400"
     } else {
         "no-store"
@@ -341,8 +398,12 @@ impl<B: Body> Panel<B> {
             (false, "/") => Response::new(200).body("text/html; charset=utf-8", INDEX),
             (false, "/panel.css") => Response::new(200).body("text/css; charset=utf-8", CSS),
             (false, "/panel.js") => Response::new(200).body("text/javascript; charset=utf-8", JS),
-            (false, "/inter-400.ttf") => Response::new(200).body("font/ttf", FONT_REGULAR),
-            (false, "/inter-500.ttf") => Response::new(200).body("font/ttf", FONT_MEDIUM),
+            (false, p) if STATIC.iter().any(|(path, _, _)| *path == p) => {
+                match STATIC.iter().find(|(path, _, _)| *path == p) {
+                    Some((_, ct, bytes)) => Response::new(200).body(ct, *bytes),
+                    None => error(404, "not_found"),
+                }
+            }
             (false, p) if p.starts_with("/q/") => {
                 // The QR code's ticket: let in at once, then the page.
                 let ticket = &p[3..];

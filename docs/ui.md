@@ -154,6 +154,11 @@ its ring and the gold fill) and No stays a target that wins.
   sizes in `em` of 16 px at 808 px (`.wc` in panel.css): what changes there shows in its preview at once. A chosen
   item without data yet shows "…"; what to check and now playing show an example ("(example)"). Removing is a bin
   and an Undo for 7 s (the body keeps the last removal of each device for 15 s); only Revoke asks twice.
+  The page fills the window (gutters grow with it; forms and lists keep 880 px). The turn is a miniature of
+  this home screen in the device's frame (Alfred, the browser's clock, the widget where the screen puts it, the
+  three keys), as wide as there is room and never past 1:1; the widgets in columns of at least 440 px. Alfred's
+  portrait and poses (tools/make-art.py, ~110 KB of WebP and PNG) give the header, the pairing pages (the
+  screen's access dialog drawn on the device) and a few empty states their face; the icon is his face.
 - **The widget's pages** (opened by a tap): **trends** (the markets or the sensors: a card each, read only: name,
   symbol or "data from…", value 40 Tnum, change, the day's curve 520 x 96, high and low; the sources' credit under
   them), **city** (the weather page with another city's data in its own time zone: "local time 15:02" in the

@@ -106,23 +106,50 @@ fn pages_and_their_headers() {
         assert!(header(&r, "access-control-allow-origin").is_none());
         assert_eq!(header(&r, "cache-control"), Some("no-store"));
     }
-    // The previews' letters: the screen's Inter, kept a day, and nothing else of the disk.
-    for (path, len) in [
-        ("/inter-400.ttf", FONT_REGULAR.len()),
-        ("/inter-500.ttf", FONT_MEDIUM.len()),
-    ] {
+    // The fonts and Alfred's pictures: kept a day, under a small budget, nothing else of the disk.
+    for (path, ct, bytes) in STATIC {
         let r = p.route(&req("GET", path, &[], ""), lan(), Instant::now());
-        assert_eq!((r.status, r.body.len()), (200, len));
-        assert_eq!(header(&r, "content-type"), Some("font/ttf"));
+        assert_eq!((r.status, r.body.len()), (200, bytes.len()), "{path}");
+        assert_eq!(header(&r, "content-type"), Some(*ct));
         assert_eq!(header(&r, "cache-control"), Some("public, max-age=86400"));
         assert!(
             header(&r, "content-security-policy")
                 .unwrap()
                 .contains("font-src 'self'")
         );
+        let magic: &[u8] = match *ct {
+            "font/ttf" => &[0, 1, 0, 0],
+            "image/png" => b"\x89PNG",
+            _ => b"RIFF",
+        };
+        assert!(bytes.starts_with(magic), "{path}");
     }
-    assert!(FONT_REGULAR.starts_with(&[0, 1, 0, 0]) && FONT_MEDIUM.starts_with(&[0, 1, 0, 0]));
+    let art: usize = STATIC
+        .iter()
+        .filter(|(p, _, _)| p.starts_with("/art/"))
+        .map(|(_, _, b)| b.len())
+        .sum();
+    assert!(art < 150 * 1024, "{art} bytes of pictures");
+    for name in [
+        "face",
+        "idle",
+        "sleeping",
+        "thinking",
+        "listening",
+        "speaking",
+        "error",
+    ] {
+        assert!(
+            JS.contains(&format!("'{name}'")) || name == "face" || name == "idle",
+            "{name}"
+        );
+    }
+    assert!(INDEX.contains("/art/favicon-32.png") && INDEX.contains("/art/apple-touch-icon.png"));
+    // (a fresh panel: twenty requests a second from one address)
+    let p = panel();
     assert_eq!(status(&p, &req("GET", "/inter-700.ttf", &[], "")), 404);
+    assert_eq!(status(&p, &req("GET", "/art/../src/lib.rs", &[], "")), 404);
+    assert_eq!(status(&p, &req("GET", "/art/", &[], "")), 404);
     // An answer of the body is never kept.
     let r = p.route(&req("GET", "/api/hello", &[], ""), lan(), Instant::now());
     assert_eq!(header(&r, "cache-control"), Some("no-store"));
@@ -425,9 +452,10 @@ fn over_sockets_and_idle() {
 /// The pages are small (they are in the binary) and draw text only as text.
 #[test]
 fn pages_are_light() {
-    // About 60 KB since the widget's previews are drawn here (panel v2); the fonts apart.
+    // About 80 KB since the widget's previews and the device are drawn here (panel v2); the
+    // fonts and pictures apart.
     let total = INDEX.len() + CSS.len() + JS.len();
-    assert!(total < 72 * 1024, "{total} bytes");
+    assert!(total < 96 * 1024, "{total} bytes");
     // No style or script in the page itself, none set from the script as an attribute.
     assert!(!JS.contains("setAttribute('style'") && !JS.contains(".style."));
     assert!(
