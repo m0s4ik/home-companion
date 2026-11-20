@@ -64,7 +64,7 @@ const fn on_panel(mut i: Item) -> Item {
 
 /// Every setting, in the order the panel shows them.
 pub const ITEMS: &[Item] = &[
-    on_panel(item("widgets", "widgets", "widgets", Kind::Multi)),
+    on_panel(item("widgets", "widgets_pages", "widgets", Kind::Multi)),
     on_panel(item(
         "widgets_every",
         "widgets_every",

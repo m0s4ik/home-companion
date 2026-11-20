@@ -610,10 +610,7 @@ mod tests {
                     1 => {
                         v.remove(i);
                     }
-                    _ => v.insert(
-                        i,
-                        [b'\r', b'\n', b':', b' ', b'0', b'f'][(next() % 6) as usize],
-                    ),
+                    _ => v.insert(i, b"\r\n: 0f"[(next() % 6) as usize]),
                 }
             }
             if let Ok(r) = read_request(&mut &v[..], L) {

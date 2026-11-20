@@ -5432,7 +5432,7 @@ impl<S: Screen> Ui<S> {
                 if app.get_page() == "welcome" {
                     self.language_pending.set(false);
                     let next = self.first_page().unwrap_or("home");
-                    app.set_page(next.into());
+                    app.set_page(next);
                     if let Some(me) = self.this.borrow().upgrade() {
                         me.on_page(next);
                     }

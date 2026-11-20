@@ -517,6 +517,7 @@ ring_timer_named = "Il timer «{name}» è finito."
 ring_timer = "Il timer di {duration} è finito."
 ring_alarm = "Sveglia delle {time}."
 # The settings as groups (the browser panel's sections) and the two lists' labels.
+widgets_pages = "Pagine che girano"
 panel_group_widgets = "Widget"
 panel_group_screen = "Schermo"
 panel_group_voice = "Voce e conversazioni"

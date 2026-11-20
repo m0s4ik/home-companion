@@ -13,7 +13,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  NEW_CRATES: -p wyoming -p audio -p wakeword -p home-companion
+  NEW_CRATES: -p wyoming -p audio -p wakeword -p home-companion -p httpd -p panel
 
 jobs:
   check:
@@ -56,7 +56,7 @@ jobs:
       - name: build
         run: cargo build --workspace --release --exclude spike-native --exclude spike-audio --exclude spike-ui
       - name: test
-        run: cargo test --release -p wyoming -p audio -p wakeword -p home-companion -p character -p locale
+        run: cargo test --release -p wyoming -p audio -p wakeword -p home-companion -p character -p locale -p httpd -p panel
       - name: clippy
         run: cargo clippy --release $NEW_CRATES --all-targets -- -D warnings
       - name: end to end (home-companion <-> fake Home Assistant)
