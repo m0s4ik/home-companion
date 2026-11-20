@@ -149,7 +149,7 @@ fn main() {
     eprintln!("panel_body: {}", dir.join("panel.sock").display());
     loop {
         if let Ok(c) = sock.calls.recv_timeout(Duration::from_millis(200)) {
-            let now = home_companion::timers::now_unix() as u64;
+            let now = home_companion::panel::sessions::Now::system();
             let a = protocol::handle(
                 &demo,
                 &mut sessions,
@@ -165,7 +165,7 @@ fn main() {
             .as_ref()
             .is_some_and(|(_, at)| at.elapsed() >= ALLOW_AFTER);
         if due && let Some((id, _)) = demo.asked.borrow_mut().take() {
-            let now = home_companion::timers::now_unix() as u64;
+            let now = home_companion::panel::sessions::Now::system();
             sessions.answer(&id, !refuse, now, &mut sessions::system_random);
             eprintln!("screen: {}", if refuse { "Refuse" } else { "Allow" });
         }

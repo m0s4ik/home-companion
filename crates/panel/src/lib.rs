@@ -323,7 +323,11 @@ impl<B: Body> Panel<B> {
             (false, p) if p.starts_with("/q/") => {
                 // The QR code's ticket: let in at once, then the page.
                 let ticket = &p[3..];
-                if !is_hex(ticket, 32) {
+                // Only a GET spends the ticket (a HEAD, a link preview's probe, does not).
+                if req.method != "GET" {
+                    return Response::new(200).body("text/html; charset=utf-8", INDEX);
+                }
+                if !is_hex(ticket, 64) {
                     return Response::new(303).header("Location", "/?qr=bad_ticket");
                 }
                 match ask("pair.qr", json!({"ticket": ticket})) {

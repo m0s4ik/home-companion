@@ -20,7 +20,7 @@
 
 use serde_json::{Value, json};
 
-use super::sessions::{Agent, Refusal, Rng, Sessions, Status};
+use super::sessions::{Agent, Now, Refusal, Rng, Sessions, Status};
 use crate::settings_model::{self as model, SetError};
 use crate::ui::lists::ShopList;
 
@@ -164,12 +164,12 @@ pub fn clean_item(text: &str) -> Option<String> {
     Some(t.to_string())
 }
 
-/// One request → its answer. `now`: seconds since the epoch.
+/// One request → its answer.
 pub fn handle(
     host: &dyn PanelHost,
     sessions: &mut Sessions,
     req: &Value,
-    now: u64,
+    now: Now,
     rng: Rng,
 ) -> Value {
     let op = str_of(req, "op");
@@ -179,6 +179,15 @@ pub fn handle(
         .get("agent")
         .map(|a| Agent::clean(str_of(a, "browser"), str_of(a, "os")))
         .unwrap_or_default();
+    // Whatever needs no device let in is limited for everyone together: a flood from many
+    // addresses never keeps the screen's thread busy.
+    let open_op = matches!(
+        op,
+        "hello" | "strings" | "pair.request" | "pair.status" | "pair.qr"
+    );
+    if open_op && !sessions.open_call(now) {
+        return err("busy");
+    }
     match op {
         "hello" => {
             let session = host.panel_on() && sessions.check(token, now).is_some();
@@ -383,11 +392,11 @@ mod tests {
         }
     }
 
-    const T0: u64 = 1_800_000_000;
+    use crate::panel::sessions::tests::t as at;
 
     /// Random bytes that never repeat over a test run (a fresh counter would hand two devices
     /// the same token).
-    fn rng(out: &mut [u8]) {
+    fn rng(out: &mut [u8]) -> bool {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(1);
         for chunk in out.chunks_mut(8) {
@@ -396,10 +405,11 @@ mod tests {
                 .wrapping_mul(0x9e37_79b9_7f4a_7c15);
             chunk.copy_from_slice(&n.to_le_bytes()[..chunk.len()]);
         }
+        true
     }
 
     fn call(h: &Host, s: &mut Sessions, req: Value) -> Value {
-        handle(h, s, &req, T0, &mut rng)
+        handle(h, s, &req, at(0), &mut rng)
     }
 
     /// A device let in through the screen's dialog: (token).
@@ -416,7 +426,7 @@ mod tests {
             r["code"].as_str().unwrap()
         );
         let waiting = s.waiting().unwrap().id.clone();
-        s.answer(&waiting, true, T0, &mut rng);
+        s.answer(&waiting, true, at(0), &mut rng);
         let st = call(h, s, json!({"op": "pair.status", "id": id}));
         assert_eq!(st["status"], "allowed");
         st["token"].as_str().unwrap().to_string()
@@ -468,7 +478,7 @@ mod tests {
             call(&h, &mut s, json!({"op": "hello", "token": t}))["session"],
             true
         );
-        let id = s.list(T0)[0].id().to_string();
+        let id = s.list(at(0))[0].id().to_string();
         assert!(s.revoke(&id));
         let r = call(
             &h,
@@ -636,7 +646,7 @@ mod tests {
         let mut s = Sessions::default();
         let t = pair(&h, &mut s);
         // Another device's token must not show to this one either.
-        let qr = s.ticket(T0, &mut rng).unwrap().to_string();
+        let qr = s.ticket(at(0), &mut rng).unwrap().to_string();
         let other = call(
             &h,
             &mut s,
@@ -646,7 +656,7 @@ mod tests {
             .unwrap()
             .to_string();
         let mut secrets: Vec<String> = vec!["CANARY".into(), other.clone()];
-        secrets.extend(s.list(T0).iter().map(|x| x.hash.clone()));
+        secrets.extend(s.list(at(0)).iter().map(|x| x.hash.clone()));
         let ops = ["hello", "strings", "pair.request", "pair.status", "pair.qr"]
             .iter()
             .chain(SESSION_OPS.iter())
@@ -672,6 +682,6 @@ mod tests {
             }
         }
         // The other device is still in, and this one too (session.end was last, for "").
-        assert!(s.check(&other, T0).is_some());
+        assert!(s.check(&other, at(0)).is_some());
     }
 }

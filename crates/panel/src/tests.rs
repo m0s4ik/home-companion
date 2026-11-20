@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 const GOOD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const ALLOWED: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-const TICKET: &str = "cccccccccccccccccccccccccccccccc";
+const TICKET: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const ID: &str = "dddddddddddddddddddddddddddddddd";
 
 /// A body that answers like the real one, and remembers what it was asked.
@@ -228,12 +228,27 @@ fn the_token_only_in_the_cookie() {
             .starts_with(&format!("hc_panel={ALLOWED};"))
     );
     let r = p.route(
-        &req("GET", &format!("/q/{}", "e".repeat(32)), &[], ""),
+        &req("GET", &format!("/q/{}", "e".repeat(64)), &[], ""),
         lan(),
         Instant::now(),
     );
     assert_eq!(header(&r, "location"), Some("/?qr=bad_ticket"));
     assert!(header(&r, "set-cookie").is_none());
+    // A HEAD (a link preview's probe) does not spend it.
+    let before = p.body.asked.lock().unwrap().len();
+    let r = p.route(
+        &req("HEAD", &format!("/q/{TICKET}"), &[], ""),
+        lan(),
+        Instant::now(),
+    );
+    assert!(header(&r, "set-cookie").is_none());
+    assert_eq!(p.body.asked.lock().unwrap().len(), before);
+    let r = p.route(
+        &req("GET", &format!("/q/{}", "c".repeat(32)), &[], ""),
+        lan(),
+        Instant::now(),
+    );
+    assert_eq!(header(&r, "location"), Some("/?qr=bad_ticket"));
     // Log out: the cookie goes.
     let r = p.route(&post("/api/logout", "{}", &[]), lan(), Instant::now());
     assert!(header(&r, "set-cookie").unwrap().contains("Max-Age=0"));

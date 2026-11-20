@@ -20,7 +20,6 @@ use crate::panel::protocol::{self, PanelHost};
 use crate::panel::sessions::{self, Request, Sessions};
 use crate::panel::socket::{self, PanelSocket};
 use crate::settings_model::Change;
-use crate::timers::now_unix;
 use crate::ui::lists::{self, ShopList};
 
 /// A Revoke touched once waits this long for its second touch.
@@ -75,8 +74,8 @@ pub(super) fn load_sessions(dir: Option<&std::path::Path>) -> RefCell<Sessions> 
     RefCell::new(dir.map(Sessions::load).unwrap_or_default())
 }
 
-fn now() -> u64 {
-    now_unix() as u64
+fn now() -> sessions::Now {
+    sessions::Now::system()
 }
 
 impl<S: Screen> Ui<S> {

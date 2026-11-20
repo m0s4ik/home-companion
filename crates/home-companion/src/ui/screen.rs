@@ -7185,6 +7185,7 @@ mod tests {
                 .dispatch_event(WindowEvent::PointerReleased { position, button });
         };
         let ask = |peer: &str| {
+            ui.panel_sessions.borrow_mut().skip_pause();
             ui.panel_call(&json!({"op": "pair.request", "peer": peer,
                 "agent": {"browser": "Chrome", "os": "macOS"}}))
         };
@@ -7226,7 +7227,7 @@ mod tests {
         assert_eq!(w.get_dialog(), "panel-ask");
         ui.panel_sessions
             .borrow_mut()
-            .expire(now_unix() as u64 + 61);
+            .expire(crate::panel::sessions::Now::system().plus(Duration::from_secs(61)));
         ui.tick_panel();
         assert_eq!(w.get_dialog(), "");
         let st = ui.panel_call(&json!({"op": "pair.status", "id": r["id"]}));
