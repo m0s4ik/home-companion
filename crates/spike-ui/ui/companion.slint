@@ -40,6 +40,15 @@ export { Grid } from "design/tokens.slint";
 // One tile of the control center: `key` picks its icon ("wifi", "bluetooth", "airplay", "mic",
 // "night", "ha"); the words come from the body (crates/home-companion/src/ui/control.rs).
 // One step of an install (update.rs): "done", "now", "todo" or "failed".
+// Settings → Screen → Widgets: one page of the widget, in the turn's order.
+export struct WidgetPage {
+    key: string,
+    label: string,
+    on: bool,
+    // Under the switch (text-3): "3 quotes · chosen from the browser"; "" none.
+    hint: string,
+}
+
 export struct UpdateStep {
     label: string,
     detail: string,
@@ -783,16 +792,15 @@ export component CompanionWindow inherits Window {
     in property <int> widget-index: 0;
     in property <int> widget-count: 0;
     in property <int> widget-seq: 0;
+    in property <bool> widget-tappable: true;
     callback widget-tapped();
     callback widget-swiped(int);
-    // Settings → Screen → Widgets: the pages on, the interval in seconds (0 = by hand), the
-    // Screen page's line.
-    in property <bool> widget-next-on: true;
-    in property <bool> widget-weather-on: true;
-    in property <bool> widget-shopping-on: true;
+    // Settings → Screen → Widgets: every page in the turn's order with its switch, the interval
+    // in seconds (0 = by hand), the Screen page's line.
+    in property <[WidgetPage]> widget-pages: [];
     in property <int> widget-every: 20;
     in property <string> widget-summary: "";
-    // A page switched: ("next" | "weather" | "shopping", on).
+    // A page switched: (its key, on).
     callback widget-toggled(string, bool);
     // "Change every": -1 shorter, +1 longer (by hand is the longest).
     callback widget-every-stepped(int);
@@ -1674,6 +1682,7 @@ export component CompanionWindow inherits Window {
             index: root.widget-index;
             count: root.widget-count;
             seq: root.widget-seq;
+            tappable: root.widget-tappable;
             // A tap opens the page's own page (Rust holds the turn and logs it).
             tapped => {
                 root.widget-tapped();
@@ -1682,7 +1691,7 @@ export component CompanionWindow inherits Window {
                 } else if (root.widget-kind == "shopping") {
                     root.page-back = "home";
                     root.page = "shopping";
-                } else {
+                } else if (root.widget-kind == "next") {
                     root.page-back = "home";
                     root.page = "reminders";
                 }
@@ -3596,7 +3605,9 @@ export component CompanionWindow inherits Window {
         }
     }
 
-    // ---- Settings → Screen → Widgets: a switch per page of the home's widget, its interval.
+    // ---- Settings → Screen → Widgets: the interval, then a switch per page of the home's
+    // widget in the turn's order (what each shows is chosen from the browser: a line under
+    // it says so); the list scrolls.
     if root.desk && root.desk-page == "widgets": Rectangle {
         PageHeader {
             x: Grid.col-x;
@@ -3607,78 +3618,92 @@ export component CompanionWindow inherits Window {
                 root.page = "screen";
             }
         }
-        Group {
+        widgets-flick := Flickable {
             x: Grid.col-x;
-            y: Grid.page-y + 16px;
+            y: Grid.page-y;
             width: Grid.col-width;
-            height: 3 * 76px;
-            Row {
-                y: 0;
-                width: parent.width;
-                first: true;
-                kind: "toggle";
-                icon: Icons.calendar-clock-28;
-                label: root.t.widget-next;
-                on: root.widget-next-on;
-                toggled(v) => {
-                    root.widget-toggled("next", v);
+            height: Grid.page-height;
+            content-height: max(self.height, widgets-col.preferred-height + 32px);
+            widgets-col := VerticalLayout {
+                alignment: start;
+                padding-top: 16px;
+                spacing: 16px;
+                Group {
+                    height: 76px;
+                    Row {
+                        y: 0;
+                        width: parent.width;
+                        first: true;
+                        kind: "";
+                        label: root.t.widgets-every;
+                    }
+                    Stepper {
+                        x: parent.width - 16px - self.width;
+                        y: 6px;
+                        value-width: 160px;
+                        font-size: 34px;
+                        value: root.widget-every == 0 ? root.t.widgets-by-hand
+                            : root.widget-every < 60 ? root.widget-every + " s" : root.widget-every / 60 + " min";
+                        step(d) => {
+                            root.widget-every-stepped(d);
+                        }
+                    }
                 }
-            }
-            Row {
-                y: 76px;
-                width: parent.width;
-                kind: "toggle";
-                icon: Icons.weather-partly-cloudy-28;
-                label: root.t.widget-weather;
-                on: root.widget-weather-on;
-                toggled(v) => {
-                    root.widget-toggled("weather", v);
+                Group {
+                    height: widgets-rows.preferred-height;
+                    widgets-rows := VerticalLayout {
+                        for p[i] in root.widget-pages: Rectangle {
+                            height: p.hint != "" ? 76px + 28px : 76px;
+                            Row {
+                                y: 0;
+                                width: parent.width;
+                                first: i == 0;
+                                kind: "toggle";
+                                icon: p.key == "weather" ? Icons.weather-partly-cloudy-28
+                                    : p.key == "shopping" ? Icons.cart-28
+                                    : p.key == "quotes" ? Icons.chart-line-28
+                                    : p.key == "cities" ? Icons.earth-28
+                                    : p.key == "notes" ? Icons.note-text-28
+                                    : p.key == "sensors" ? Icons.gauge-28
+                                    : p.key == "check" ? Icons.door-open-28
+                                    : p.key == "playing" ? Icons.music-note-28
+                                    : p.key == "home" ? Icons.account-group-28
+                                    : Icons.calendar-clock-28;
+                                label: p.label;
+                                on: p.on;
+                                toggled(v) => {
+                                    root.widget-toggled(p.key, v);
+                                }
+                            }
+                            if p.hint != "": Text {
+                                x: 72px;
+                                y: 60px;
+                                width: parent.width - 72px - 28px;
+                                height: 32px;
+                                text: p.hint;
+                                font-size: 20px;
+                                color: Theme.text-3;
+                                vertical-alignment: top;
+                                overflow: elide;
+                            }
+                        }
+                    }
                 }
-            }
-            Row {
-                y: 152px;
-                width: parent.width;
-                kind: "toggle";
-                icon: Icons.cart-28;
-                label: root.t.widget-shopping;
-                on: root.widget-shopping-on;
-                toggled(v) => {
-                    root.widget-toggled("shopping", v);
+                Text {
+                    x: 8px;
+                    text: root.t.widgets-hint;
+                    font-size: 24px;
+                    color: Theme.text-3;
+                    wrap: word-wrap;
                 }
             }
         }
-        Group {
-            x: Grid.col-x;
-            y: Grid.page-y + 16px + 3 * 76px + 16px;
-            width: Grid.col-width;
-            height: 76px;
-            Row {
-                y: 0;
-                width: parent.width;
-                first: true;
-                kind: "";
-                label: root.t.widgets-every;
-            }
-            Stepper {
-                x: parent.width - 16px - self.width;
-                y: 6px;
-                value-width: 160px;
-                font-size: 34px;
-                value: root.widget-every == 0 ? root.t.widgets-by-hand
-                    : root.widget-every < 60 ? root.widget-every + " s" : root.widget-every / 60 + " min";
-                step(d) => {
-                    root.widget-every-stepped(d);
-                }
-            }
-        }
-        Text {
-            x: Grid.col-x + 8px;
-            y: Grid.page-y + 16px + 4 * 76px + 16px + 16px;
-            width: Grid.col-width - 16px;
-            text: root.t.widgets-hint;
-            font-size: 24px;
-            color: Theme.text-3;
-            wrap: word-wrap;
+        ScrollFade {
+            x: widgets-flick.x;
+            y: widgets-flick.y + widgets-flick.height - self.height;
+            width: widgets-flick.width;
+            more: widgets-flick.content-height > widgets-flick.height + 1px
+                && widgets-flick.content-y > widgets-flick.height - widgets-flick.content-height + 1px;
         }
     }
 

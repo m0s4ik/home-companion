@@ -498,7 +498,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 84] = [
+pub const DEMO_STATES: [&str; 86] = [
     "home",
     "cards",
     "cards-setup",
@@ -579,6 +579,8 @@ pub const DEMO_STATES: [&str; 84] = [
     "widget-medium",
     "widget-line",
     "widget-compact",
+    "widget-quotes",
+    "widget-quotes-line",
     "settings-widgets",
     "settings-panel",
     "panel-ask",
@@ -812,15 +814,16 @@ impl Demo {
                 ..home.clone()
             },
             "widget" | "widget-weather" | "widget-shopping" | "widget-medium" | "widget-line"
-            | "widget-compact" => Demo {
+            | "widget-compact" | "widget-quotes" | "widget-quotes-line" => Demo {
                 widget: Some(match s {
                     "widget-weather" => WidgetKind::Weather,
                     "widget-shopping" => WidgetKind::Shopping,
+                    "widget-quotes" | "widget-quotes-line" => WidgetKind::Quotes,
                     _ => WidgetKind::Next,
                 }),
                 widget_cards: match s {
                     "widget-medium" => 1,
-                    "widget-line" => 2,
+                    "widget-line" | "widget-quotes-line" => 2,
                     _ => 0,
                 },
                 compact: s == "widget-compact",
@@ -1226,7 +1229,11 @@ pub struct Ui<S: Screen> {
     /// home as before), the interval of the turn (None: by hand only).
     widget: RefCell<Band>,
     widget_on: RefCell<Vec<WidgetKind>>,
+    /// Every page in the turn's order (the ones off keep their place).
+    widget_order: RefCell<Vec<WidgetKind>>,
     widget_every: Cell<Option<Duration>>,
+    /// The data of the pages chosen from the browser and of Home Assistant's (feeds/, ha/).
+    widget_data: RefCell<widgets::Data>,
     /// The first start's welcome page is still to be answered.
     language_pending: Cell<bool>,
     /// The first start's search for Home Assistant on the network, while it runs.
@@ -1302,6 +1309,13 @@ impl<S: Screen> model::Host for Ui<S> {
                     .collect::<Vec<_>>()
             ),
             "widgets_every" => json!(self.widget_every_secs().to_string()),
+            "widget_order" => json!(
+                self.widget_order
+                    .borrow()
+                    .iter()
+                    .map(|k| k.key())
+                    .collect::<Vec<_>>()
+            ),
             "night_on" => json!(on),
             "night_start" => json!(start),
             "night_end" => json!(end),
@@ -1472,6 +1486,70 @@ fn short_date(l: &Locale, ts: i64) -> String {
 }
 
 /// "14:02" of a time in seconds since the epoch, and the day it is on (days since the epoch, local).
+/// The markets of the demos: public names, made-up prices, a day's curve each.
+fn demo_quotes() -> Vec<widgets::Trend> {
+    let at = DEMO_NOW as i64 - 300;
+    let q = |name: &str, unit: &str, decimals: u8, prev: f64, value: f64, wave: f64| {
+        let points: Vec<f64> = (0..32)
+            .map(|i| {
+                let t = i as f64 / 31.0;
+                prev + (value - prev) * t + (t * wave).sin() * (value - prev).abs() * 0.6
+            })
+            .collect();
+        let low = points.iter().copied().fold(f64::INFINITY, f64::min);
+        let high = points.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        widgets::Trend {
+            name: name.into(),
+            value,
+            decimals,
+            unit: unit.into(),
+            prev: Some(prev),
+            pct: true,
+            points: widgets::downsample(&points, widgets::CURVE_POINTS),
+            low,
+            high,
+            at,
+            fresh: 1800,
+            max_age: 48 * 3600,
+        }
+    };
+    vec![
+        q("Apple Inc.", "USD", 2, 186.95, 189.20, 7.0),
+        q("S&P 500", "", 2, 5640.10, 5612.42, 5.0),
+        q("Bitcoin", "USD", 0, 63120.0, 64250.0, 9.0),
+        q("EUR/USD", "", 4, 1.0835, 1.0812, 4.0),
+        q("Gold", "USD", 2, 2391.5, 2402.8, 6.0),
+    ]
+}
+
+/// The words of the widget's pages.
+fn widget_words(l: &Locale) -> widgets::Words<'_> {
+    let ch = |k: &str, d: char| l.text(k).chars().next().unwrap_or(d);
+    widgets::Words {
+        next: l.text("widget_next"),
+        weather: l.text("widget_weather"),
+        shopping: l.text("widget_shopping"),
+        quotes: l.text("widget_quotes"),
+        cities: l.text("widget_cities"),
+        notes: l.text("widget_notes"),
+        sensors: l.text("widget_sensors"),
+        check: l.text("widget_check"),
+        playing: l.text("widget_playing"),
+        home: l.text("widget_home"),
+        today: l.text("calendar_today"),
+        tomorrow: l.text("calendar_tomorrow"),
+        to_buy: l.text("tile_shopping"),
+        data_from: l.text("widget_data_from"),
+        window: l.text("widget_window"),
+        open: l.text("widget_open"),
+        check_line: l.text("widget_check_line"),
+        at_home: l.text("widget_at_home"),
+        away: l.text("widget_away"),
+        decimal: ch("number_decimal", '.'),
+        group: ch("number_group", ','),
+    }
+}
+
 pub(crate) fn local_hm(t: i64) -> (String, i64) {
     // SAFETY: localtime_r only writes into the struct we pass.
     let tm = unsafe {
@@ -1598,9 +1676,16 @@ impl<S: Screen> Ui<S> {
         let (widget_on, widget_every) = match (&opts.demo, &settings) {
             (None, Some(s)) => s.widgets(),
             _ => (
-                WidgetKind::ALL.to_vec(),
+                WidgetKind::ALL
+                    .into_iter()
+                    .filter(|k| k.default_on())
+                    .collect(),
                 widgets::DEFAULT_EVERY.as_secs() as u32,
             ),
+        };
+        let widget_order = match (&opts.demo, &settings) {
+            (None, Some(s)) => s.widget_order(),
+            _ => WidgetKind::ALL.to_vec(),
         };
         let opts_auto = opts.screen.auto.filter(|_| !demo).map(Auto::new);
         let opts_linked = opts.ha_linked;
@@ -1686,6 +1771,8 @@ impl<S: Screen> Ui<S> {
             home_compact: Cell::new(compact),
             widget: RefCell::new(Band::new(Instant::now())),
             widget_on: RefCell::new(widget_on),
+            widget_order: RefCell::new(widget_order),
+            widget_data: RefCell::new(widgets::Data::default()),
             widget_every: Cell::new(
                 (widget_every > 0).then(|| Duration::from_secs(widget_every as u64)),
             ),
@@ -2952,6 +3039,9 @@ impl<S: Screen> Ui<S> {
                 .into(),
             items,
         }]);
+        if d.widget == Some(WidgetKind::Quotes) {
+            self.widget_data.borrow_mut().quotes = demo_quotes();
+        }
         desk.timers.truncate(d.widget_cards.min(1));
         // The next alarm would be a card too: not in these.
         desk.alarms.clear();
@@ -5373,20 +5463,22 @@ impl<S: Screen> Ui<S> {
             .as_ref()
             .map(|w| super::weather::widget_columns(w, &l, &today, now, &|t| local_hm(t).0))
             .unwrap_or_default();
-        let words = widgets::Words {
-            next: l.text("widget_next"),
-            weather: l.text("widget_weather"),
-            shopping: l.text("widget_shopping"),
-            today: l.text("calendar_today"),
-            tomorrow: l.text("calendar_tomorrow"),
-            to_buy: l.text("tile_shopping"),
-        };
+        let words = widget_words(&l);
+        let data = self.widget_data.borrow();
         let sources = widgets::Sources {
             next: &next,
             weather: columns,
             shopping: d.shopping.as_deref(),
+            quotes: &data.quotes,
+            cities: &data.cities,
+            notes: &data.notes,
+            sensors: &data.sensors,
+            check: &data.check,
+            playing: data.playing.as_ref(),
+            people: &data.people,
         };
         let pages = widgets::pages(&sources, &on, &words, now, &local_hm);
+        drop(data);
         drop(d);
         drop(l);
         let shown = self.widget.borrow_mut().offer(pages, slots, Instant::now());
@@ -5404,8 +5496,52 @@ impl<S: Screen> Ui<S> {
         } else {
             l.text("widgets_on").replace("{n}", &on.len().to_string())
         };
+        let pages: Vec<widgets::PageSetting> = self
+            .widget_order
+            .borrow()
+            .iter()
+            .map(|k| widgets::PageSetting {
+                kind: *k,
+                label: l.text(&format!("widget_{}", k.key())).to_string(),
+                on: on.contains(k),
+                hint: self.widget_hint(*k, &l),
+            })
+            .collect();
         let every = self.widget_every.get().map_or(0, |d| d.as_secs() as u32);
-        self.screen.set_widget_settings(&on, every, &summary);
+        self.screen.set_widget_settings(&pages, every, &summary);
+    }
+
+    /// The line under a page in Settings → Screen → Widgets: what it shows is chosen from the
+    /// browser (and how many are chosen).
+    fn widget_hint(&self, kind: WidgetKind, l: &Locale) -> String {
+        let count = match kind {
+            WidgetKind::Quotes | WidgetKind::Cities | WidgetKind::Sensors => {
+                Some(self.widget_chosen(kind))
+            }
+            WidgetKind::Check | WidgetKind::Playing | WidgetKind::Home => None,
+            WidgetKind::Notes => return l.text("widgets_hint_notes").to_string(),
+            _ => return String::new(),
+        };
+        let browser = l.text("widgets_hint_browser");
+        match count {
+            Some(n) if n > 0 => format!(
+                "{} · {browser}",
+                l.text(&format!("widgets_hint_{}", kind.key()))
+                    .replace("{n}", &n.to_string())
+            ),
+            _ => browser.to_string(),
+        }
+    }
+
+    /// How many items of a page are chosen from the browser (markets, cities, sensors).
+    fn widget_chosen(&self, kind: WidgetKind) -> usize {
+        let d = self.widget_data.borrow();
+        match kind {
+            WidgetKind::Quotes => d.quotes.len(),
+            WidgetKind::Cities => d.cities.len(),
+            WidgetKind::Sensors => d.sensors.len(),
+            _ => 0,
+        }
     }
 
     /// A switch of Settings → Screen → Widgets: the page joins or leaves the turn (and Next and
@@ -5416,8 +5552,10 @@ impl<S: Screen> Ui<S> {
         };
         let list: Vec<WidgetKind> = {
             let now = self.widget_on.borrow();
-            WidgetKind::ALL
-                .into_iter()
+            self.widget_order
+                .borrow()
+                .iter()
+                .copied()
                 .filter(|k| if *k == kind { on } else { now.contains(k) })
                 .collect()
         };
@@ -7435,41 +7573,56 @@ mod tests {
         }]);
         ui.refresh_home();
         assert!(!ui.card_kinds.borrow().contains(&"shopping"));
+        use slint::Model;
         w.set_page("widgets".into());
         ui.refresh_settings();
-        assert!(w.get_widget_shopping_on());
-        assert_eq!(w.get_widget_summary(), "3 on");
-        // The third switch: Shopping off, a card again.
-        tap(1172.0, 318.0);
-        assert!(!w.get_widget_shopping_on());
+        let on = |i: usize| w.get_widget_pages().row_data(i).unwrap().on;
+        let key = |i: usize| w.get_widget_pages().row_data(i).unwrap().key.to_string();
+        assert_eq!(w.get_widget_pages().row_count(), WidgetKind::ALL.len());
         assert_eq!(
-            *ui.widget_on.borrow(),
-            [WidgetKind::Next, WidgetKind::Weather]
+            (key(0), key(2), key(9)),
+            ("next".into(), "weather".into(), "home".into())
         );
-        assert!(ui.card_kinds.borrow().contains(&"shopping"));
-        assert_eq!(w.get_widget_summary(), "2 on");
-        // The first and the second.
-        tap(1172.0, 166.0);
-        tap(1172.0, 242.0);
-        assert!(ui.widget_on.borrow().is_empty());
-        assert_eq!(w.get_widget_summary(), "Off");
-        tap(1172.0, 242.0);
-        assert_eq!(*ui.widget_on.borrow(), [WidgetKind::Weather]);
+        assert!(on(0) && on(2) && !on(9));
+        assert_eq!(w.get_widget_summary(), "9 on");
+        // The pages chosen from the browser say so under their switch.
+        assert_eq!(
+            w.get_widget_pages().row_data(1).unwrap().hint,
+            "Chosen from the browser"
+        );
+        // The first switch: Next off, a card again.
+        tap(1172.0, 258.0);
+        assert!(!on(0));
+        assert!(!ui.widget_on.borrow().contains(&WidgetKind::Next));
+        assert_eq!(w.get_widget_summary(), "8 on");
+        // The markets (a taller row) and the weather.
+        tap(1172.0, 334.0);
+        tap(1172.0, 438.0);
+        assert!(!on(1) && !on(2));
+        assert_eq!(
+            ui.widget_on.borrow()[..2],
+            [WidgetKind::Cities, WidgetKind::Shopping]
+        );
+        tap(1172.0, 438.0);
+        assert!(on(2));
+        assert_eq!(ui.widget_on.borrow()[0], WidgetKind::Weather);
         // "Change every": + to 30 s, 1 min, by hand (and no further), − back.
         assert_eq!(w.get_widget_every(), 20);
-        tap(1184.0, 410.0);
+        tap(1184.0, 166.0);
         assert_eq!(w.get_widget_every(), 30);
-        tap(1184.0, 410.0);
-        tap(1184.0, 410.0);
-        tap(1184.0, 410.0);
+        tap(1184.0, 166.0);
+        tap(1184.0, 166.0);
+        tap(1184.0, 166.0);
         assert_eq!(w.get_widget_every(), 0);
         assert_eq!(ui.widget_every.get(), None);
-        tap(960.0, 410.0);
+        tap(960.0, 166.0);
         assert_eq!(w.get_widget_every(), 60);
         // Saved.
         ui.flush_settings();
         let saved = Settings::in_dir(&dir).widgets();
-        assert_eq!(saved, (vec![WidgetKind::Weather], 60));
+        assert_eq!(saved.1, 60);
+        assert_eq!(saved.0[0], WidgetKind::Weather);
+        assert!(!saved.0.contains(&WidgetKind::Next) && !saved.0.contains(&WidgetKind::Home));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

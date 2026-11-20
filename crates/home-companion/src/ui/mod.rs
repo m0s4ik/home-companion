@@ -232,9 +232,9 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_cards(&self, cards: &[CardView]);
     /// The home's widget (widgets.rs): the page cut to its slots, or none.
     fn set_widget(&self, w: &widgets::Shown);
-    /// Settings → Screen → Widgets: the pages on, the interval in seconds (0 = by hand), and the
-    /// Screen page's line ("3 on", "Off").
-    fn set_widget_settings(&self, on: &[widgets::Kind], every: u32, summary: &str);
+    /// Settings → Screen → Widgets: every page in the turn's order (kind, label, on, the line
+    /// under it), the interval in seconds (0 = by hand), and the Screen page's line ("3 on").
+    fn set_widget_settings(&self, pages: &[widgets::PageSetting], every: u32, summary: &str);
     fn on_widget_toggled(&self, f: impl Fn(String, bool) + 'static);
     fn on_widget_every_stepped(&self, f: impl Fn(i32) + 'static);
     fn on_widget_tapped(&self, f: impl Fn() + 'static);
@@ -917,6 +917,9 @@ macro_rules! impl_screen {
                         text: r.text.as_str().into(),
                         right: r.right.as_str().into(),
                         note: r.note.as_str().into(),
+                        change: r.change.as_str().into(),
+                        trend: r.trend as i32,
+                        curve: widgets::curve_path(&r.curve).into(),
                     })
                     .collect();
                 $m::CompanionWindow::set_widget_kind(self, v.kind.key().into());
@@ -928,13 +931,25 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_widget_index(self, w.index as i32);
                 $m::CompanionWindow::set_widget_count(self, w.count as i32);
                 $m::CompanionWindow::set_widget_seq(self, w.seq as i32);
+                $m::CompanionWindow::set_widget_tappable(self, v.kind.tappable());
                 $m::CompanionWindow::set_widget_shown(self, true);
             }
-            fn set_widget_settings(&self, on: &[widgets::Kind], every: u32, summary: &str) {
-                use widgets::Kind;
-                $m::CompanionWindow::set_widget_next_on(self, on.contains(&Kind::Next));
-                $m::CompanionWindow::set_widget_weather_on(self, on.contains(&Kind::Weather));
-                $m::CompanionWindow::set_widget_shopping_on(self, on.contains(&Kind::Shopping));
+            fn set_widget_settings(
+                &self,
+                pages: &[widgets::PageSetting],
+                every: u32,
+                summary: &str,
+            ) {
+                let rows: Vec<$m::WidgetPage> = pages
+                    .iter()
+                    .map(|p| $m::WidgetPage {
+                        key: p.kind.key().into(),
+                        label: p.label.as_str().into(),
+                        on: p.on,
+                        hint: p.hint.as_str().into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_widget_pages(self, model!(rows));
                 $m::CompanionWindow::set_widget_every(self, every as i32);
                 $m::CompanionWindow::set_widget_summary(self, summary.into());
             }

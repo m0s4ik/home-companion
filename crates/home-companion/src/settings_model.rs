@@ -209,7 +209,7 @@ pub fn options(
     word: &dyn Fn(&str) -> String,
 ) -> Vec<(String, String)> {
     match item.key {
-        "widgets" => WidgetKind::ALL
+        "widgets" => widget_order(host)
             .iter()
             .map(|k| (k.key().to_string(), word(&format!("widget_{}", k.key()))))
             .collect(),
@@ -234,6 +234,28 @@ pub fn options(
         .collect(),
         k => host.dynamic_options(k),
     }
+}
+
+/// The order of the widget's pages now: what the host holds (`widget_order`), else the file,
+/// else the default.
+pub fn widget_order(host: &dyn Host) -> Vec<WidgetKind> {
+    if let Some(v) = host.live("widget_order") {
+        let keys = strings(&v);
+        let mut out: Vec<WidgetKind> = keys
+            .iter()
+            .filter_map(|k| WidgetKind::from_key(k))
+            .collect();
+        out.dedup();
+        for k in WidgetKind::ALL {
+            if !out.contains(&k) {
+                out.push(k);
+            }
+        }
+        return out;
+    }
+    host.settings()
+        .map(|s| s.widget_order())
+        .unwrap_or_else(|| WidgetKind::ALL.to_vec())
 }
 
 fn int(v: i64) -> Value {
@@ -326,12 +348,17 @@ pub fn change_for(host: &dyn Host, key: &str, value: &Value) -> Result<Change, S
         let on: Vec<WidgetKind> = get(host, "widgets")
             .map(|v| {
                 let keys = strings(&v);
-                WidgetKind::ALL
+                widget_order(host)
                     .into_iter()
                     .filter(|k| keys.iter().any(|x| x == k.key()))
                     .collect()
             })
-            .unwrap_or_else(|| WidgetKind::ALL.to_vec());
+            .unwrap_or_else(|| {
+                widget_order(host)
+                    .into_iter()
+                    .filter(|k| k.default_on())
+                    .collect()
+            });
         let every = get(host, "widgets_every")
             .and_then(|v| v.as_str().and_then(|e| e.parse().ok()))
             .unwrap_or(crate::ui::widgets::DEFAULT_EVERY.as_secs() as u32);
@@ -347,7 +374,7 @@ pub fn change_for(host: &dyn Host, key: &str, value: &Value) -> Result<Change, S
     Ok(match key {
         "widgets" => {
             let keys = strings(&v);
-            let on: Vec<WidgetKind> = WidgetKind::ALL
+            let on: Vec<WidgetKind> = widget_order(host)
                 .into_iter()
                 .filter(|k| keys.iter().any(|x| x == k.key()))
                 .collect();

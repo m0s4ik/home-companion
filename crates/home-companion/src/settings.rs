@@ -192,28 +192,87 @@ impl Settings {
         self.save_logged("home_compact", on.into());
     }
 
-    /// Settings → Screen → Widgets: the pages of the home's widget that are on (in the turn's
-    /// order) and its interval in seconds (0 = by hand only). `[widgets] on = ["next", ...]`,
-    /// `every = 20`; without the section every page is on, every 20 s. Unknown keys are left
-    /// out, an interval that is not one of the choices is the default.
+    /// The `[widgets]` section as it is (empty without one).
+    fn widgets_table(&self) -> toml::Table {
+        self.table()
+            .and_then(|t| t.get("widgets")?.as_table().cloned())
+            .unwrap_or_default()
+    }
+
+    /// Changes some keys of `[widgets]`, keeping the others (the markets, the cities...).
+    pub(crate) fn save_widgets_keys(&self, f: impl FnOnce(&mut toml::Table)) {
+        let mut t = self.widgets_table();
+        f(&mut t);
+        self.save_logged("widgets", t.into());
+    }
+
+    /// Settings → Screen → Widgets: the order of every page in the turn (`[widgets] order`):
+    /// the pages listed, unknown and repeated keys left out, then the others in their default
+    /// order. Without it: the pages that are on in their order, then the rest.
+    pub fn widget_order(&self) -> Vec<crate::ui::widgets::Kind> {
+        use crate::ui::widgets::Kind;
+        let t = self.widgets_table();
+        let listed = |key: &str| -> Vec<Kind> {
+            let mut out: Vec<Kind> = Vec::new();
+            for k in t
+                .get(key)
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().and_then(Kind::from_key))
+            {
+                if !out.contains(&k) {
+                    out.push(k);
+                }
+            }
+            out
+        };
+        let mut order = listed("order");
+        if order.is_empty() {
+            order = listed("on");
+        }
+        for k in Kind::ALL {
+            if !order.contains(&k) {
+                order.push(k);
+            }
+        }
+        order
+    }
+
+    pub fn save_widget_order(&self, order: &[crate::ui::widgets::Kind]) {
+        let keys: Vec<toml::Value> = order.iter().map(|k| k.key().into()).collect();
+        self.save_widgets_keys(|t| {
+            t.insert("order".into(), keys.into());
+        });
+    }
+
+    /// Settings → Screen → Widgets: the pages of the home's widget that are on, in the turn's
+    /// order, and its interval in seconds (0 = by hand only). `[widgets] on = ["next", ...]`,
+    /// `every = 20`; without the section every page is on but who is home, every 20 s. A page
+    /// this file has not seen yet (`seen`; without it: the first version's three) takes its
+    /// default once. An interval that is not one of the choices is the default.
     pub fn widgets(&self) -> (Vec<crate::ui::widgets::Kind>, u32) {
         use crate::ui::widgets::{DEFAULT_EVERY, EVERY_CHOICES, Kind};
         let default_every = DEFAULT_EVERY.as_secs() as u32;
-        let Some(t) = self
-            .table()
-            .and_then(|t| t.get("widgets")?.as_table().cloned())
-        else {
-            return (Kind::ALL.to_vec(), default_every);
+        let t = self.widgets_table();
+        let order = self.widget_order();
+        let keys = |key: &str| -> Option<Vec<Kind>> {
+            Some(
+                t.get(key)?
+                    .as_array()?
+                    .iter()
+                    .filter_map(|v| v.as_str().and_then(Kind::from_key))
+                    .collect(),
+            )
         };
-        let on: Vec<Kind> = match t.get("on").and_then(|v| v.as_array()) {
-            Some(list) => {
-                let keys: Vec<&str> = list.iter().filter_map(|v| v.as_str()).collect();
-                Kind::ALL
-                    .into_iter()
-                    .filter(|k| keys.contains(&k.key()))
-                    .collect()
-            }
-            None => Kind::ALL.to_vec(),
+        let seen = keys("seen").unwrap_or_else(|| Kind::FIRST.to_vec());
+        let on: Vec<Kind> = match keys("on") {
+            Some(listed) => order
+                .iter()
+                .copied()
+                .filter(|k| listed.contains(k) || (!seen.contains(k) && k.default_on()))
+                .collect(),
+            None => order.iter().copied().filter(|k| k.default_on()).collect(),
         };
         let every = t
             .get("every")
@@ -224,12 +283,20 @@ impl Settings {
         (on, every)
     }
 
+    /// The pages on and the interval; every page is then `seen` (its default never applies
+    /// again).
     pub fn save_widgets(&self, on: &[crate::ui::widgets::Kind], every: u32) {
-        let mut t = toml::Table::new();
+        use crate::ui::widgets::Kind;
         let keys: Vec<toml::Value> = on.iter().map(|k| k.key().into()).collect();
-        t.insert("on".into(), keys.into());
-        t.insert("every".into(), (every as i64).into());
-        self.save_logged("widgets", t.into());
+        let seen: Vec<toml::Value> = Kind::ALL.iter().map(|k| k.key().into()).collect();
+        // The places of the pages turned off are kept: the whole order is written once.
+        let order: Vec<toml::Value> = self.widget_order().iter().map(|k| k.key().into()).collect();
+        self.save_widgets_keys(|t| {
+            t.entry("order").or_insert(order.into());
+            t.insert("on".into(), keys.into());
+            t.insert("every".into(), (every as i64).into());
+            t.insert("seen".into(), seen.into());
+        });
     }
 
     /// Updates (Settings → Info): offer the release candidates too; None = as the configuration
@@ -491,21 +558,55 @@ mod tests {
             std::env::temp_dir().join(format!("home-companion-widgets-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let s = Settings::in_dir(&dir);
-        assert_eq!(s.widgets(), (Kind::ALL.to_vec(), 20));
-        s.save_widgets(&[Kind::Shopping, Kind::Next], 0);
-        // The turn's order whatever the order saved; 0 = by hand.
-        assert_eq!(s.widgets(), (vec![Kind::Next, Kind::Shopping], 0));
+        let defaults: Vec<Kind> = Kind::ALL.into_iter().filter(|k| *k != Kind::Home).collect();
+        assert_eq!(s.widgets(), (defaults.clone(), 20));
+        assert_eq!(s.widget_order(), Kind::ALL.to_vec());
+        // The order is the user's.
+        s.save_widget_order(&[Kind::Shopping, Kind::Next]);
+        assert_eq!(
+            &s.widget_order()[..3],
+            [Kind::Shopping, Kind::Next, Kind::Quotes]
+        );
+        s.save_widgets(&[Kind::Next, Kind::Shopping], 0);
+        assert_eq!(s.widgets(), (vec![Kind::Shopping, Kind::Next], 0));
         s.save_widgets(&[], 60);
         assert_eq!(s.widgets(), (Vec::new(), 60));
-        // Other keys are kept.
+        // Other keys are kept, and the order too.
         s.save_home_compact(true);
         assert_eq!(s.widgets(), (Vec::new(), 60));
+        assert_eq!(s.widget_order()[0], Kind::Shopping);
+        s.save_widgets_keys(|t| {
+            t.insert("currency".into(), "eur".into());
+        });
+        s.save_widgets(&[Kind::Home], 20);
+        assert!(s.table().unwrap()["widgets"].get("currency").is_some());
+        assert_eq!(s.widgets(), (vec![Kind::Home], 20));
+        // The first version's file: its pages in its order, the new ones on at the end
+        // (who is home stays off); a page turned off there stays off.
         std::fs::write(
             &s.path,
-            "[widgets]\non = [\"weather\", \"stocks\"]\nevery = 7\n",
+            "[widgets]\non = [\"shopping\", \"stocks\", \"next\"]\nevery = 7\n",
         )
         .unwrap();
-        assert_eq!(s.widgets(), (vec![Kind::Weather], 20));
+        let (on, every) = s.widgets();
+        assert_eq!(every, 20);
+        assert_eq!(
+            on,
+            [
+                Kind::Shopping,
+                Kind::Next,
+                Kind::Quotes,
+                Kind::Cities,
+                Kind::Notes,
+                Kind::Sensors,
+                Kind::Check,
+                Kind::Playing
+            ]
+        );
+        // Saved once: every page seen, turning one off sticks.
+        s.save_widgets(&[Kind::Next], 20);
+        assert_eq!(s.widgets().0, [Kind::Next]);
+        assert_eq!(s.widget_order()[0], Kind::Shopping);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

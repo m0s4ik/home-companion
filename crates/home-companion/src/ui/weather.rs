@@ -200,8 +200,8 @@ pub fn widget_columns(
             Some(WidgetRow {
                 left: hm(h.at),
                 text: format!("{}°", h.temperature?.round() as i64),
-                right: String::new(),
                 note: h.condition.clone(),
+                ..Default::default()
             })
         })
         .take(5)
@@ -217,8 +217,8 @@ pub fn widget_columns(
             Some(WidgetRow {
                 left: short_day(&d.date, l),
                 text: format!("{}°", d.high?.round() as i64),
-                right: String::new(),
                 note: d.condition.clone(),
+                ..Default::default()
             })
         })
         .take(4)

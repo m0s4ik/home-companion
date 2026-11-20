@@ -58,6 +58,11 @@ USED = {
     "weather-windy": [32], "weather-windy-variant": [32],
 }
 USED["weather-night"] = [32, 28]
+# the widget's pages configured from the browser (markets, other cities, notes, Home Assistant's
+# sensors, what to check, what plays, who is home): their headers and the one-row card
+USED.update({"chart-line": [28], "earth": [28], "note-text": [28], "gauge": [28],
+             "door-open": [28], "account-group": [28]})
+USED["music-note"] = [48, 32, 28]
 
 
 def main():
