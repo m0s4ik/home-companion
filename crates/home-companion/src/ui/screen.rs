@@ -1234,8 +1234,10 @@ pub struct Ui<S: Screen> {
     widget_every: Cell<Option<Duration>>,
     /// The data of the pages chosen from the browser and of Home Assistant's (feeds/, ha/).
     widget_data: RefCell<widgets::Data>,
-    /// The markets chosen from the browser (settings.toml), in their order.
+    /// The markets chosen from the browser (settings.toml), in their order, and the coins'
+    /// currency.
     widget_quotes: RefCell<Vec<crate::feeds::QuoteChoice>>,
+    widget_currency: RefCell<String>,
     /// The feeds' thread (feeds/) and the revision of its data last shown.
     feeds: RefCell<crate::feeds::Feeds>,
     feeds_rev: Cell<u64>,
@@ -1692,9 +1694,9 @@ impl<S: Screen> Ui<S> {
             (None, Some(s)) => s.widget_order(),
             _ => WidgetKind::ALL.to_vec(),
         };
-        let widget_quotes = match (&opts.demo, &settings) {
-            (None, Some(s)) => s.quotes(),
-            _ => Vec::new(),
+        let (widget_quotes, widget_currency) = match (&opts.demo, &settings) {
+            (None, Some(s)) => (s.quotes(), s.widget_currency()),
+            _ => (Vec::new(), "usd".to_string()),
         };
         // The demos never ask the internet (no cache, nothing chosen).
         let feeds = crate::feeds::Feeds::new(if demo { None } else { opts.state_dir.clone() });
@@ -1785,6 +1787,7 @@ impl<S: Screen> Ui<S> {
             widget_order: RefCell::new(widget_order),
             widget_data: RefCell::new(widgets::Data::default()),
             widget_quotes: RefCell::new(widget_quotes),
+            widget_currency: RefCell::new(widget_currency),
             feeds: RefCell::new(feeds),
             feeds_rev: Cell::new(0),
             widget_every: Cell::new(
@@ -5698,6 +5701,7 @@ impl<S: Screen> Ui<S> {
     fn configure_feeds(&self) {
         let config = crate::feeds::FeedsConfig {
             quotes: self.widget_quotes.borrow().clone(),
+            currency: self.widget_currency.borrow().clone(),
         };
         self.feeds.borrow_mut().configure(config);
     }
@@ -5732,10 +5736,11 @@ impl<S: Screen> Ui<S> {
             .iter()
             .filter_map(|c| {
                 let q = snap.quote(&c.key())?;
-                let interval = if q.market_open {
-                    crate::feeds::plan::YAHOO_OPEN
-                } else {
-                    crate::feeds::plan::YAHOO_CLOSED
+                use crate::feeds::{Source, plan};
+                let interval = match (c.source, q.market_open) {
+                    (Source::Coingecko, _) => plan::COINGECKO,
+                    (_, true) => plan::YAHOO_OPEN,
+                    (_, false) => plan::YAHOO_CLOSED,
                 };
                 Some(widgets::Trend {
                     name: c.name.clone(),

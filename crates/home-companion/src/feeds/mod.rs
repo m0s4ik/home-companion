@@ -11,6 +11,7 @@
 //! answers picked up later ([`Feeds::search_status`]).
 
 pub mod cache;
+pub mod coingecko;
 pub mod http;
 pub mod plan;
 pub mod yahoo;
@@ -185,6 +186,8 @@ impl Snapshot {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FeedsConfig {
     pub quotes: Vec<QuoteChoice>,
+    /// The coins' currency ("usd"; [`coingecko::CURRENCIES`]).
+    pub currency: String,
 }
 
 impl FeedsConfig {
@@ -334,6 +337,8 @@ struct Worker {
     active: bool,
     /// One job per Yahoo symbol, by the choice's key.
     yahoo: HashMap<String, Job>,
+    /// All the coins in one request.
+    coins: Job,
     host: YahooHost,
     /// The last Yahoo request (requests are [`plan::YAHOO_GAP`] apart).
     last_yahoo: f64,
@@ -350,6 +355,7 @@ impl Worker {
             config: FeedsConfig::default(),
             active: false,
             yahoo: HashMap::new(),
+            coins: Job::new(),
             host: YahooHost::default(),
             last_yahoo: f64::NEG_INFINITY,
             start: Instant::now(),
@@ -389,8 +395,26 @@ impl Worker {
         for k in &keys {
             self.yahoo.entry(k.clone()).or_default();
         }
-        // What is no longer chosen leaves the data and the cache.
-        let all: Vec<String> = c.quotes.iter().map(|q| q.key()).collect();
+        // A new coin or another currency: the coins at once.
+        let coins = |c: &FeedsConfig| -> Vec<String> {
+            c.quotes
+                .iter()
+                .filter(|q| q.source == Source::Coingecko)
+                .map(|q| q.key())
+                .collect()
+        };
+        let new_currency = c.currency != self.config.currency;
+        if new_currency || coins(&c).iter().any(|k| !coins(&self.config).contains(k)) {
+            self.coins = Job::new();
+        }
+        // What is no longer chosen (and the coins in another currency) leaves the data and the
+        // cache.
+        let all: Vec<String> = c
+            .quotes
+            .iter()
+            .filter(|q| !(new_currency && q.source == Source::Coingecko))
+            .map(|q| q.key())
+            .collect();
         let changed = {
             let mut s = self
                 .shared
@@ -419,9 +443,24 @@ impl Worker {
 
     /// Back to work: what is overdue goes within 20 s, spread.
     fn wake(&mut self, now: f64) {
-        for j in self.yahoo.values_mut() {
-            j.wake(now, (plan::jitter() + 1.0) / 2.0 * self.spread);
+        let spread = self.spread;
+        for j in self
+            .yahoo
+            .values_mut()
+            .chain(std::iter::once(&mut self.coins))
+        {
+            j.wake(now, (plan::jitter() + 1.0) / 2.0 * spread);
         }
+    }
+
+    /// The chosen coins' ids.
+    fn coin_ids(&self) -> Vec<String> {
+        self.config
+            .quotes
+            .iter()
+            .filter(|q| q.source == Source::Coingecko)
+            .map(|q| q.id.clone())
+            .collect()
     }
 
     /// The next time something is due (None: nothing to do).
@@ -429,16 +468,25 @@ impl Worker {
         if !self.active {
             return None;
         }
+        let coins = (!self.coin_ids().is_empty()).then_some(self.coins.due);
         self.yahoo
             .values()
             .map(|j| j.due.max(self.last_yahoo + plan::YAHOO_GAP))
+            .chain(coins)
             .fold(None, |a: Option<f64>, t| Some(a.map_or(t, |a| a.min(t))))
             .map(|t| t.max(now))
     }
 
     /// Does at most one request that is due. `unix` dates the data.
     fn step(&mut self, now: f64, unix: i64) -> bool {
-        if !self.active || now < self.last_yahoo + plan::YAHOO_GAP {
+        if !self.active {
+            return false;
+        }
+        if self.coins.is_due(now) && !self.coin_ids().is_empty() {
+            self.fetch_coins(now, unix);
+            return true;
+        }
+        if now < self.last_yahoo + plan::YAHOO_GAP {
             return false;
         }
         let due = self
@@ -501,6 +549,38 @@ impl Worker {
             Err(e) => {
                 job.failure(now, plan::YAHOO_OPEN, retry, plan::jitter());
                 log::info!(event = "feeds", source = "yahoo", errors = job.errors; "feeds: {key}: {e}");
+            }
+        }
+    }
+
+    fn fetch_coins(&mut self, now: f64, unix: i64) {
+        let ids = self.coin_ids();
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let currency = self.config.currency.clone();
+        let (result, retry) = match self.fetch.get(&coingecko::markets_url(&ids, &currency)) {
+            Outcome::Ok(body) => (coingecko::parse_markets(&body, &currency, unix), None),
+            Outcome::Http(code, retry) => (Err(format!("HTTP {code}")), retry.map(|r| r as f64)),
+            Outcome::Timeout => (Err("timeout".into()), None),
+            Outcome::Failed(e) => (Err(e), None),
+        };
+        match result {
+            Ok(quotes) => {
+                self.coins.success(now, plan::COINGECKO, plan::jitter());
+                let mut s = self
+                    .shared
+                    .snapshot
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                for q in quotes {
+                    s.put_quote(q);
+                }
+                drop(s);
+                self.publish();
+            }
+            Err(e) => {
+                self.coins
+                    .failure(now, plan::COINGECKO, retry, plan::jitter());
+                log::info!(event = "feeds", source = "coingecko", errors = self.coins.errors; "feeds: coins: {e}");
             }
         }
     }
@@ -610,6 +690,7 @@ pub(crate) mod tests {
         w.configure(
             FeedsConfig {
                 quotes: vec![yahoo("AAPL"), yahoo("^GSPC")],
+                ..Default::default()
             },
             0.0,
         );
@@ -637,6 +718,7 @@ pub(crate) mod tests {
         w.configure(
             FeedsConfig {
                 quotes: vec![yahoo("AAPL")],
+                ..Default::default()
             },
             200.0,
         );
@@ -655,6 +737,7 @@ pub(crate) mod tests {
         w.configure(
             FeedsConfig {
                 quotes: vec![yahoo("AAPL")],
+                ..Default::default()
             },
             0.0,
         );
@@ -676,6 +759,7 @@ pub(crate) mod tests {
         w.configure(
             FeedsConfig {
                 quotes: vec![yahoo("AAPL")],
+                ..Default::default()
             },
             0.0,
         );
@@ -683,6 +767,37 @@ pub(crate) mod tests {
         assert!(w.step(30.0, 0));
         assert!(w.shared.snapshot.lock().unwrap().quotes.is_empty());
         assert_eq!(w.yahoo["yahoo:AAPL"].errors, 1);
+    }
+
+    #[test]
+    fn the_coins_in_one_request_and_again_in_another_currency() {
+        let f = FakeFetch::default();
+        f.answer(
+            "coins/markets",
+            Outcome::Ok(fixture("coingecko-markets-eur.json")),
+        );
+        let mut w = worker(&f);
+        let coin = |id: &str| QuoteChoice {
+            source: Source::Coingecko,
+            id: id.into(),
+            name: id.into(),
+        };
+        let mut c = FeedsConfig {
+            quotes: vec![coin("bitcoin"), coin("ethereum"), yahoo("AAPL")],
+            currency: "eur".into(),
+        };
+        w.configure(c.clone(), 0.0);
+        w.set_active(true, 0.0);
+        assert!(w.step(25.0, 9));
+        assert!(f.asked()[0].contains("vs_currency=eur&ids=bitcoin%2Cethereum&sparkline=true"));
+        assert_eq!(w.shared.snapshot.lock().unwrap().quotes.len(), 2);
+        // Ten minutes, whatever Yahoo does meanwhile.
+        assert!((25.0 + 540.0..=25.0 + 660.0).contains(&w.coins.due));
+        // Another currency: the coins' data goes and they are due at once.
+        c.currency = "usd".into();
+        w.configure(c, 30.0);
+        assert!(w.shared.snapshot.lock().unwrap().quotes.is_empty());
+        assert!(w.coins.due <= 50.0, "within the 20 s of a wake");
     }
 
     #[test]
@@ -714,6 +829,7 @@ pub(crate) mod tests {
         assert!(feeds.tx.is_none(), "nothing chosen: no thread");
         feeds.configure(FeedsConfig {
             quotes: vec![yahoo("AAPL")],
+            ..Default::default()
         });
         assert!(feeds.tx.is_some());
         std::thread::sleep(Duration::from_millis(100));

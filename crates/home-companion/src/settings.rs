@@ -317,6 +317,23 @@ impl Settings {
         });
     }
 
+    /// The currency of the coins (`[widgets] currency`): "usd" unless one of the choices.
+    pub fn widget_currency(&self) -> String {
+        self.widgets_table()
+            .get("currency")
+            .and_then(|v| v.as_str())
+            .filter(|c| crate::feeds::coingecko::valid_currency(c))
+            .unwrap_or("usd")
+            .to_string()
+    }
+
+    pub fn save_widget_currency(&self, currency: &str) {
+        let c = currency.to_string();
+        self.save_widgets_keys(|t| {
+            t.insert("currency".into(), c.into());
+        });
+    }
+
     /// The pages on and the interval; every page is then `seen` (its default never applies
     /// again).
     pub fn save_widgets(&self, on: &[crate::ui::widgets::Kind], every: u32) {
@@ -617,6 +634,11 @@ mod tests {
             .collect();
         s.save_quotes(&many);
         assert_eq!(s.quotes().len(), crate::feeds::MAX_QUOTES);
+        assert_eq!(s.widget_currency(), "usd");
+        s.save_widget_currency("chf");
+        assert_eq!(s.widget_currency(), "chf");
+        s.save_widget_currency("btc");
+        assert_eq!(s.widget_currency(), "usd");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
