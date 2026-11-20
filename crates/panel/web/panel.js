@@ -315,9 +315,11 @@ function devicesSection(data) {
 }
 
 async function main() {
-  const [schema, state, shopping, devices] = await Promise.all([
-    api('/api/schema'), api('/api/state'), api('/api/shopping'), api('/api/sessions'),
-  ]);
+  // One after the other: the panel takes few connections from one address at once.
+  const schema = await api('/api/schema');
+  const state = await api('/api/state');
+  const shopping = await api('/api/shopping');
+  const devices = await api('/api/sessions');
   if (!schema.ok || !state.ok) return;
   if (location.search) history.replaceState(null, '', '/');
   clear();

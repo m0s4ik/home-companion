@@ -375,7 +375,7 @@ fn over_sockets_and_idle() {
         (64 << 10) + 1
     );
     assert!(raw(big).starts_with("HTTP/1.1 413"));
-    // Three slow connections from one address: a fourth is closed at once.
+    // As many slow connections from one address as allowed: one more is closed at once.
     let slow: Vec<TcpStream> = (0..PER_ADDRESS)
         .map(|_| {
             let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();

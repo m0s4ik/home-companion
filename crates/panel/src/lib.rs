@@ -35,8 +35,9 @@ pub const LIMITS: Limits = Limits::new(16 << 10, 64 << 10);
 /// A whole request (head and body) within this.
 pub const REQUEST_WITHIN: Duration = Duration::from_secs(5);
 pub const MAX_CONNECTIONS: usize = 8;
-/// From one address at once: one browser cannot take all of them.
-pub const PER_ADDRESS: usize = 3;
+/// From one address at once: one browser cannot take all of them. Four, not fewer: a page load
+/// asks for its stylesheet and script together (the page itself fetches one thing at a time).
+pub const PER_ADDRESS: usize = 4;
 pub const PER_SECOND: u32 = 20;
 pub const COOKIE: &str = "hc_panel";
 /// The cookie lasts as long as a session can (the body ends it sooner when unused).
