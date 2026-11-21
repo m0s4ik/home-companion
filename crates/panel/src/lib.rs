@@ -89,11 +89,6 @@ pub const STATIC: &[(&str, &str, &[u8])] = &[
         include_bytes!("../web/art/listening.webp"),
     ),
     (
-        "/art/speaking.webp",
-        "image/webp",
-        include_bytes!("../web/art/speaking.webp"),
-    ),
-    (
         "/art/error.webp",
         "image/webp",
         include_bytes!("../web/art/error.webp"),

@@ -41,7 +41,6 @@ def main():
         "sleeping": 300,
         "thinking": 300,
         "listening": 300,
-        "speaking": 300,
         "error": 300,
     }
     for name, h in poses.items():

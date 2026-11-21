@@ -130,15 +130,7 @@ fn pages_and_their_headers() {
         .map(|(_, _, b)| b.len())
         .sum();
     assert!(art < 150 * 1024, "{art} bytes of pictures");
-    for name in [
-        "face",
-        "idle",
-        "sleeping",
-        "thinking",
-        "listening",
-        "speaking",
-        "error",
-    ] {
+    for name in ["face", "idle", "sleeping", "thinking", "listening", "error"] {
         assert!(
             JS.contains(&format!("'{name}'")) || name == "face" || name == "idle",
             "{name}"
@@ -452,10 +444,10 @@ fn over_sockets_and_idle() {
 /// The pages are small (they are in the binary) and draw text only as text.
 #[test]
 fn pages_are_light() {
-    // About 80 KB since the widget's previews and the device are drawn here (panel v2); the
-    // fonts and pictures apart.
+    // About 70 KB with the widget's cards drawn here (panel v5: no device, gallery or sheets
+    // any more); the fonts and pictures apart.
     let total = INDEX.len() + CSS.len() + JS.len();
-    assert!(total < 96 * 1024, "{total} bytes");
+    assert!(total < 80 * 1024, "{total} bytes");
     // No style or script in the page itself, none set from the script as an attribute.
     assert!(!JS.contains("setAttribute('style'") && !JS.contains(".style."));
     assert!(
