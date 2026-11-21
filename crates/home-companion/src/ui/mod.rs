@@ -285,8 +285,8 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// Settings → Info: the page of updates.
     fn set_update(&self, u: &UpdateView);
     fn on_update_check(&self, f: impl Fn() + 'static);
-    /// Settings → Scenes: (name, label, value, installed) per scene of the catalogue.
-    fn set_scene_rows(&self, rows: &[(String, String, String, bool)]);
+    /// Settings → Scenes: a row per scene of the catalogue.
+    fn set_scene_rows(&self, rows: &[SceneRowData]);
     /// What is going on (looking, downloading, a failure); "" = nothing to say.
     fn set_scenes_state(&self, s: &str);
     fn set_scenes_busy(&self, busy: bool);
@@ -482,6 +482,9 @@ pub struct MemoriesView {
     /// Calendar events of today and tomorrow: (when, what), after the reminders.
     pub events: Vec<(String, String)>,
 }
+
+/// A row of Settings → Scenes: name, label, value (its size), installed, being downloaded.
+pub type SceneRowData = (String, String, String, bool, bool);
 
 /// Words of `Words` (companion.slint) and their keys in locales/*.toml (`[text]`).
 macro_rules! words {
@@ -1024,14 +1027,15 @@ macro_rules! impl_screen {
             fn on_update_check(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_update_check(self, f)
             }
-            fn set_scene_rows(&self, rows: &[(String, String, String, bool)]) {
+            fn set_scene_rows(&self, rows: &[SceneRowData]) {
                 let v: Vec<$m::SceneRow> = rows
                     .iter()
-                    .map(|(n, l, v, on)| $m::SceneRow {
+                    .map(|(n, l, v, on, busy)| $m::SceneRow {
                         name: n.into(),
                         label: l.into(),
                         value: v.into(),
                         on: *on,
+                        busy: *busy,
                     })
                     .collect();
                 $m::CompanionWindow::set_scene_rows(self, model!(v))

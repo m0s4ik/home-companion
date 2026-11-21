@@ -142,12 +142,14 @@ export struct FindRow {
     url: string,
 }
 
-// Settings → Scenes: one scene of the catalogue (src/scenes.rs); `on` = installed.
+// Settings → Scenes: one scene of the catalogue (src/scenes.rs); `on` = installed, `busy` = being
+// downloaded (a turning sign instead of its switch).
 export struct SceneRow {
     name: string,
     label: string,
     value: string,
     on: bool,
+    busy: bool,
 }
 
 export struct LanguageRow {
@@ -3214,7 +3216,7 @@ export component CompanionWindow inherits Window {
                         y: i * 76px;
                         width: parent.width;
                         first: i == 0;
-                        kind: "toggle";
+                        kind: r.busy ? "busy" : "toggle";
                         label: r.label;
                         value: r.value;
                         on: r.on;

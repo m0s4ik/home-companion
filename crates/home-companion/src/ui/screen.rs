@@ -5138,7 +5138,14 @@ impl<S: Screen> Ui<S> {
         if self.scene_view.borrow().busy.is_some() {
             return;
         }
-        self.scene_view.borrow_mut().failed = None;
+        {
+            let mut v = self.scene_view.borrow_mut();
+            v.failed = None;
+            // The turning sign at once, before the thread says so.
+            if on {
+                v.busy = Some(name.to_string());
+            }
+        }
         let _ = tx.send(if on {
             crate::scenes::Cmd::Install(name.to_string())
         } else {
@@ -5227,7 +5234,7 @@ impl<S: Screen> Ui<S> {
                 .map(|s| s.title(&lang))
                 .unwrap_or_else(|| n.to_string())
         };
-        let rows: Vec<(String, String, String, bool)> = scenes
+        let rows: Vec<super::SceneRowData> = scenes
             .iter()
             .map(|s| {
                 let mb = s.size() as f64 / 1_048_576.0;
@@ -5236,6 +5243,7 @@ impl<S: Screen> Ui<S> {
                     s.title(&lang),
                     format!("{mb:.1} MB"),
                     installed(&s.name),
+                    v.busy.as_deref() == Some(s.name.as_str()),
                 )
             })
             .collect();
@@ -5259,21 +5267,22 @@ impl<S: Screen> Ui<S> {
         self.screen.set_scenes_state(&state);
     }
 
-    /// `--state scenes`: the page on sample data (two of four installed).
+    /// `--state scenes`: the page on sample data (two of four installed, one downloading).
     fn render_scenes_demo(&self) {
         let l = self.locale.borrow();
-        let rows: Vec<(String, String, String, bool)> = [
-            ("laundry", "Laundry", "7.2 MB", true),
-            ("barbecue", "Barbecue", "4.1 MB", false),
-            ("waste", "Rubbish out", "5.3 MB", true),
-            ("vacuum", "Robot vacuum", "4.4 MB", false),
+        let rows: Vec<super::SceneRowData> = [
+            ("laundry", "Laundry", "7.2 MB", true, false),
+            ("barbecue", "Barbecue", "4.1 MB", false, true),
+            ("waste", "Rubbish out", "5.3 MB", true, false),
+            ("vacuum", "Robot vacuum", "4.4 MB", false, false),
         ]
         .iter()
-        .map(|(n, t, v, on)| (n.to_string(), t.to_string(), v.to_string(), *on))
+        .map(|(n, t, v, on, busy)| (n.to_string(), t.to_string(), v.to_string(), *on, *busy))
         .collect();
         self.screen.set_scene_rows(&rows);
-        self.screen.set_scenes_busy(false);
-        self.screen.set_scenes_state("");
+        self.screen.set_scenes_busy(true);
+        self.screen
+            .set_scenes_state(&l.text("scenes_busy").replace("{title}", "Barbecue"));
         self.screen
             .set_scenes_value(&l.text("scenes_installed").replace("{n}", "2"));
     }
