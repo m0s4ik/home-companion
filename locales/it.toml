@@ -515,6 +515,7 @@ scenes_failed = "Non sono riuscito a leggere le scene (niente rete, o GitHub non
 scenes_busy = "Scarico {title}…"
 scenes_failed_one = "{title} non è andata: {why}"
 scenes_installed = "{n} installate"
+scenes_unlisted = "Non più nell'elenco · {size}"
 
 [sample]
 # The first start's Home Assistant page (--state first-ha-found): a second instance's name.

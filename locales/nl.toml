@@ -463,6 +463,7 @@ scenes_failed = "De scènes konden niet gelezen worden (geen netwerk, of GitHub 
 scenes_busy = "{title} downloaden…"
 scenes_failed_one = "{title} is niet gelukt: {why}"
 scenes_installed = "{n} geïnstalleerd"
+scenes_unlisted = "Niet meer in de lijst · {size}"
 
 [sample]
 # The first start's Home Assistant page (--state first-ha-found): a second instance's name.

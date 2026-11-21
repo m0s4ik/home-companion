@@ -205,6 +205,37 @@ pub fn installed(dir: &Path, name: &str) -> bool {
     dir.join(format!("{name}.png")).is_file()
 }
 
+/// The scenes in `dir` that the catalogue no longer lists (`known`: its names), with the size of
+/// their files: shown so they can still be taken away.
+pub fn unlisted(dir: &Path, known: &[&str]) -> Vec<(String, u64)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, u64)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let file = e.file_name().to_string_lossy().to_string();
+            let name = file.strip_suffix(".png")?;
+            (!name.ends_with("-anim") && valid_name(name) && !known.contains(&name))
+                .then(|| name.to_string())
+        })
+        .map(|name| {
+            let size = [
+                format!("{name}.png"),
+                format!("{name}.toml"),
+                format!("{name}-anim.png"),
+            ]
+            .iter()
+            .filter_map(|f| std::fs::metadata(dir.join(f)).ok())
+            .map(|m| m.len())
+            .sum();
+            (name, size)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
 /// Puts `scene` in `dir`: every file fetched into a temporary directory next to it by `fetch(url,
 /// path)`, checked against its size and `hash(path)`, then moved in (the picture last, so a scene
 /// is never half there). Nothing of it stays when a file fails.
@@ -496,6 +527,30 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn scenes_the_catalogue_no_longer_lists() {
+        let dir =
+            std::env::temp_dir().join(format!("home-companion-unlisted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (f, n) in [
+            ("laundry_done.png", 3),
+            ("washing.png", 2),
+            ("washing.toml", 1),
+            ("washing-anim.png", 4),
+            ("Bad Name.png", 1),
+            (".download-x", 1),
+        ] {
+            std::fs::write(dir.join(f), vec![0u8; n]).unwrap();
+        }
+        assert_eq!(
+            unlisted(&dir, &["laundry_done"]),
+            vec![("washing".to_string(), 7)]
+        );
+        assert!(unlisted(&dir.join("missing"), &[]).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

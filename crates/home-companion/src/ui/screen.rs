@@ -5234,19 +5234,28 @@ impl<S: Screen> Ui<S> {
                 .map(|s| s.title(&lang))
                 .unwrap_or_else(|| n.to_string())
         };
-        let rows: Vec<super::SceneRowData> = scenes
+        let mb = |bytes: u64| format!("{:.1} MB", bytes as f64 / 1_048_576.0);
+        let mut rows: Vec<super::SceneRowData> = scenes
             .iter()
             .map(|s| {
-                let mb = s.size() as f64 / 1_048_576.0;
                 (
                     s.name.clone(),
                     s.title(&lang),
-                    format!("{mb:.1} MB"),
+                    mb(s.size()),
                     installed(&s.name),
                     v.busy.as_deref() == Some(s.name.as_str()),
                 )
             })
             .collect();
+        // Installed scenes the catalogue no longer lists (renamed, withdrawn): still there to take
+        // away. Only against a catalogue that was read: while looking, every scene is unknown.
+        if let (Some(Ok(_)), Some(d)) = (&v.catalogue, dir.as_deref()) {
+            let known: Vec<&str> = scenes.iter().map(|s| s.name.as_str()).collect();
+            for (name, size) in crate::scenes::unlisted(d, &known) {
+                let value = l.text("scenes_unlisted").replace("{size}", &mb(size));
+                rows.push((name.clone(), name, value, true, false));
+            }
+        }
         self.screen.set_scene_rows(&rows);
         self.screen.set_scenes_busy(v.busy.is_some());
         let state = if let Some(b) = &v.busy {

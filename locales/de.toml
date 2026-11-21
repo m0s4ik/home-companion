@@ -433,6 +433,7 @@ scenes_failed = "Die Szenen konnten nicht gelesen werden (kein Netz, oder GitHub
 scenes_busy = "{title} wird heruntergeladen…"
 scenes_failed_one = "{title} hat nicht geklappt: {why}"
 scenes_installed = "{n} installiert"
+scenes_unlisted = "Nicht mehr gelistet · {size}"
 
 [sample]
 find_second = "Ferienhaus"
