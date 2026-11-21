@@ -114,6 +114,24 @@ frames = [0, 64]
 fps = 16
 rect = [203.9, 40.3, 827.1, 986.0]
 
+# On holiday while Home Assistant cannot be reached: he sips his cocktail in the deck chair. With the
+# microphone switch off: earmuffs on, a small resigned shrug. Wan 2.2 I2V A14B (fal.ai's turbo) from the
+# pose as first and last frame with the source package's style block, seed 42, every second frame
+# (16 fps), the last one dropped; make-animation.py --threshold 12. In a loop while the state lasts.
+[animations.offline]
+file = "animations/offline.png"
+size = [687, 868]
+frames = [0, 80]
+fps = 16
+rect = [141.1, 46.0, 875.4, 973.7]
+
+[animations.muted]
+file = "animations/muted.png"
+size = [450, 882]
+frames = [0, 80]
+fps = 16
+rect = [277.8, 45.7, 756.9, 984.7]
+
 # A house command went through: a bow, right hand on the chest (0-19 down, 20-28 held, 29-47 back
 # to the idle pose). Pose drawn with gpt-image-2.5-flare from poses/idle.png, frames by Wan 2.2.
 [animations.done]

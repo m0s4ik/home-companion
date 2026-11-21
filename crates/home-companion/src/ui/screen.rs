@@ -406,6 +406,41 @@ pub fn save_png<S: Screen>(app: &S, path: &Path) -> Result<(), String> {
 }
 
 /// Screen state and pose of a phase.
+/// How long a reflex's nod stays on the home.
+const NOD_FOR: Duration = Duration::from_secs(3);
+/// How long the satisfied pose stays after a job went well.
+const SATISFIED_FOR: Duration = Duration::from_secs(10);
+/// The bow after the Home Assistant setup (the `done` clip): the satisfied pose comes after it.
+const BOW: Duration = Duration::from_secs(3);
+
+/// What decides the home's pose besides idle.
+#[derive(Debug, Clone, Copy, Default)]
+struct HomeMoment {
+    mic_off: bool,
+    linking: bool,
+    working: bool,
+    satisfied: bool,
+    nod: bool,
+}
+
+/// The home's pose for the moment, the most lasting first: the microphone off, the link pages,
+/// a job under way, one gone well, a reflex's nod; else idle.
+fn home_state_of(m: HomeMoment) -> State {
+    if m.mic_off {
+        State::Muted
+    } else if m.linking {
+        State::Link
+    } else if m.working {
+        State::Working
+    } else if m.satisfied {
+        State::Satisfied
+    } else if m.nod {
+        State::Nod
+    } else {
+        State::Idle
+    }
+}
+
 fn view(p: Phase) -> (&'static str, State) {
     match p {
         Phase::Home => ("home", State::Idle),
@@ -1389,6 +1424,15 @@ pub struct Ui<S: Screen> {
     /// Settings applied but not written yet, and the timer that writes them (settings_model).
     settings_pending: RefCell<Vec<Change>>,
     settings_timer: Timer,
+    /// The home's pose of the moment besides idle (`link`, `working`, `satisfied`, `nod`,
+    /// `muted`): the one drawn last, a reflex's nod waiting for the home, and until when the nod
+    /// and the satisfied pose last (the satisfied one from when).
+    home_pose: Cell<State>,
+    /// The microphone is off, as the core said last (UiCommand::Control): not before it says so.
+    mic_off: Cell<bool>,
+    nod_pending: Cell<bool>,
+    nod_until: Cell<Option<Instant>>,
+    satisfied: Cell<Option<(Instant, Instant)>>,
     this: RefCell<Weak<Self>>,
 }
 
@@ -2174,6 +2218,11 @@ impl<S: Screen> Ui<S> {
             }),
             settings_pending: RefCell::new(Vec::new()),
             settings_timer: Timer::default(),
+            home_pose: Cell::new(State::Idle),
+            mic_off: Cell::new(false),
+            nod_pending: Cell::new(false),
+            nod_until: Cell::new(None),
+            satisfied: Cell::new(None),
             this: RefCell::new(Weak::new()),
         });
         *ui.this.borrow_mut() = Rc::downgrade(&ui);
@@ -2855,7 +2904,83 @@ impl<S: Screen> Ui<S> {
             app.set_pose(night);
             return;
         }
+        let state = if state == State::Idle {
+            self.home_state()
+        } else {
+            state
+        };
         app.set_pose(self.pose(state));
+    }
+
+    /// The home's pose now: idle, or what the moment asks if the character has its pose (else
+    /// idle, as without it).
+    fn home_state(&self) -> State {
+        let now = Instant::now();
+        let page = self.screen.get_page();
+        let s = home_state_of(HomeMoment {
+            mic_off: self.mic_off.get(),
+            linking: matches!(page.as_str(), "setup" | "find-ha"),
+            working: self.update_going() || self.ha_page.borrow().busy,
+            satisfied: self
+                .satisfied
+                .get()
+                .is_some_and(|(from, until)| from <= now && now < until),
+            nod: self.nod_until.get().is_some_and(|t| now < t),
+        });
+        // The settings and More pages have their own animation over idle: only a job or the
+        // link shows over them.
+        let paged = SETTINGS_PAGES.contains(&page.as_str()) || page.as_str() == "altro";
+        if self.character.has_pose(s) && !(paged && !matches!(s, State::Link | State::Working)) {
+            s
+        } else {
+            State::Idle
+        }
+    }
+
+    /// How the home moves with its pose: `wake` and `idle` over idle, the muted pose's own loop,
+    /// the others still (an idle clip would draw idle over them).
+    fn home_mode(&self, s: State) -> Mode {
+        match s {
+            State::Idle => Mode::Home,
+            State::Muted => self
+                .character
+                .animation("muted")
+                .and_then(|a| anim::static_name(&a.name))
+                .map_or(Mode::Still, Mode::Loop),
+            _ => Mode::Still,
+        }
+    }
+
+    /// The home's pose again when the moment changed it (once a second, and when something
+    /// that decides it changes).
+    fn refresh_home_pose(&self) {
+        let s = self.home_state();
+        if s == self.home_pose.get() {
+            return;
+        }
+        self.home_pose.set(s);
+        if self.view.get() != Phase::Home
+            || self.motion.borrow().loading_until.is_some()
+            || self.desk.borrow().night_shown
+            || self.opts.demo.is_some()
+        {
+            return;
+        }
+        log::info!(event = "home_pose", pose = s.name(); "home pose: {}", s.name());
+        self.set_pose(&self.screen, State::Idle);
+        let mode = self.motion_mode(Phase::Home, State::Idle, false);
+        self.motion.borrow_mut().seq.set_mode(mode, Instant::now());
+        self.step();
+    }
+
+    /// A reflex was done: the nod, now on the home or when the home comes back.
+    fn nod(&self) {
+        if self.view.get() == Phase::Home {
+            self.nod_until.set(Some(Instant::now() + NOD_FOR));
+            self.refresh_home_pose();
+        } else {
+            self.nod_pending.set(true);
+        }
     }
 
     fn pose(&self, state: State) -> Image {
@@ -2916,6 +3041,9 @@ impl<S: Screen> Ui<S> {
         }
         if !p.in_conversation() {
             self.end_exchange();
+        }
+        if p == Phase::Home && self.nod_pending.take() {
+            self.nod_until.set(Some(now + NOD_FOR));
         }
         {
             let mut d = self.desk.borrow_mut();
@@ -2985,12 +3113,24 @@ impl<S: Screen> Ui<S> {
         }
         match p {
             Phase::Home if night => Mode::Night,
-            Phase::Home if SETTINGS_PAGES.contains(&self.screen.get_page().as_str()) => {
-                Mode::Settings
+            Phase::Home => {
+                // The moment's pose (home_state: idle on the settings and More pages unless a
+                // job or the link asks), else the page's own animation.
+                let s = self.home_state();
+                self.home_pose.set(s);
+                let page = self.screen.get_page();
+                match s {
+                    State::Idle if SETTINGS_PAGES.contains(&page.as_str()) => Mode::Settings,
+                    State::Idle if page.as_str() == "altro" => Mode::More,
+                    _ => self.home_mode(s),
+                }
             }
-            Phase::Home if self.screen.get_page().as_str() == "altro" => Mode::More,
-            Phase::Home => Mode::Home,
-            Phase::Offline => Mode::Still,
+            // Its own loop if the character has one (Alfred in the deck chair).
+            Phase::Offline => self
+                .character
+                .animation("offline")
+                .and_then(|a| anim::static_name(&a.name))
+                .map_or(Mode::Still, Mode::Loop),
             _ => self
                 .character
                 .state_animation(pose)
@@ -3429,6 +3569,8 @@ impl<S: Screen> Ui<S> {
             // The night clips are aligned on idle too (they start or end there).
             "loading" | "wake" | "idle" | "fall_asleep" | "sleeping" | "wake_from_sleep"
             | "settings_in" | "settings_hold" | "settings_out" => State::Idle,
+            "muted" => State::Muted,
+            "offline" => State::Offline,
             _ => view(self.view.get()).1,
         };
         let (_, crop) = self.character.pose(state);
@@ -4514,8 +4656,11 @@ impl<S: Screen> Ui<S> {
                 let line = self.locale.borrow().text("mic_off_line").to_string();
                 self.screen.set_mic_off(!mic_on, &line);
                 self.refresh_control();
+                self.mic_off.set(!mic_on);
+                self.refresh_home_pose();
             }
             UiCommand::MicSwitch(on) => self.show_mic_switch(on),
+            UiCommand::ReflexDone => self.nod(),
             UiCommand::Usage(v) => self.show_usage(&v),
             UiCommand::Screenshot(path) => {
                 if let Err(e) = save_png(&self.screen, &path) {
@@ -4626,6 +4771,7 @@ impl<S: Screen> Ui<S> {
         }
         self.tick_panel();
         self.tick_remote();
+        self.refresh_home_pose();
         self.feed_light();
         let now = Instant::now();
         if self.desk.borrow_mut().ha_cards.expire(now) {
@@ -5080,6 +5226,10 @@ impl<S: Screen> Ui<S> {
         }
         let l = self.locale.borrow();
         let current = env!("CARGO_PKG_VERSION");
+        if s.phase == "done" {
+            let now = Instant::now();
+            self.satisfied.set(Some((now, now + SATISFIED_FOR)));
+        }
         let (title, text, ok) = match s.phase.as_str() {
             "done" => (
                 l.text("update_result_done_title").to_string(),
@@ -5760,6 +5910,8 @@ impl<S: Screen> Ui<S> {
     fn on_page(self: &Rc<Self>, page: &str) {
         // Before anything is drawn: the remote screen's capture learns what may be sent.
         self.sync_remote();
+        // The link pages have their pose ("plug it in").
+        self.refresh_home_pose();
         if self
             .back_pending
             .take()
@@ -6872,7 +7024,11 @@ impl<S: Screen> Ui<S> {
                             // says it.
                             p.done = true;
                             drop(p);
-                            self.motion.borrow_mut().seq.done(Instant::now());
+                            let now = Instant::now();
+                            self.motion.borrow_mut().seq.done(now);
+                            // After the bow (anim's `done`, 3 s).
+                            self.satisfied
+                                .set(Some((now + BOW, now + BOW + SATISFIED_FOR)));
                             let said =
                                 word(&self.locale.borrow(), "ha_ready_say", &self.character.name);
                             self.send(UiEvent::Say(said));
@@ -8067,6 +8223,45 @@ mod tests {
         let late = DEMO_NOW as i64 + 10 * 3600;
         assert_eq!(city_as_weather(&cities[1], late).1, "2026-11-04");
         assert!(w.today.is_some() && w.next_days.len() == 4);
+    }
+
+    #[test]
+    fn the_home_pose_of_the_moment() {
+        let m = HomeMoment::default();
+        assert_eq!(home_state_of(m), State::Idle);
+        assert_eq!(home_state_of(HomeMoment { nod: true, ..m }), State::Nod);
+        assert_eq!(
+            home_state_of(HomeMoment {
+                satisfied: true,
+                nod: true,
+                ..m
+            }),
+            State::Satisfied
+        );
+        assert_eq!(
+            home_state_of(HomeMoment {
+                working: true,
+                satisfied: true,
+                ..m
+            }),
+            State::Working
+        );
+        assert_eq!(
+            home_state_of(HomeMoment {
+                linking: true,
+                working: true,
+                ..m
+            }),
+            State::Link
+        );
+        assert_eq!(
+            home_state_of(HomeMoment {
+                mic_off: true,
+                linking: true,
+                ..m
+            }),
+            State::Muted
+        );
     }
 
     #[test]
