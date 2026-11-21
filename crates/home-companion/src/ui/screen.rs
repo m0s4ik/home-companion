@@ -82,6 +82,46 @@ pub fn load_pose(path: &Path, crop: Crop, bg: Rgb) -> Result<Image, String> {
     Ok(Image::from_rgba8(buf))
 }
 
+/// The first of `dirs` that has the scene `name` (its `<name>.png`).
+fn scene_dir(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
+    dirs.iter()
+        .find(|d| d.join(format!("{name}.png")).is_file())
+        .cloned()
+}
+
+/// A scene's animation table (`scenes/<name>.toml`): `file` (in `dir`), `size`, `frames`, `fps`,
+/// `pause` (optional) and `rect`, as an animation of character.toml.
+fn scene_animation(text: &str, dir: &Path) -> Result<Animation, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Raw {
+        file: String,
+        size: [u32; 2],
+        frames: [u32; 2],
+        fps: f32,
+        #[serde(default)]
+        pause: f32,
+        rect: [f32; 4],
+    }
+    let r: Raw = toml::from_str(text).map_err(|e| e.to_string())?;
+    if r.file.contains('/') || r.file.contains("..") {
+        return Err(format!("file = {:?}: a file of scenes/", r.file));
+    }
+    if r.frames[1] <= r.frames[0] || !(r.fps > 0.0 && r.fps <= 60.0) {
+        return Err("frames = [first, end] with end > first, fps 1 to 60".into());
+    }
+    Ok(Animation {
+        name: anim::SCENE.into(),
+        file: dir.join(r.file),
+        size: (r.size[0], r.size[1]),
+        first: r.frames[0],
+        end: r.frames[1],
+        fps: r.fps,
+        pause: r.pause,
+        rect: r.rect,
+    })
+}
+
 /// A whole picture of the character that is not a pose (the do not disturb prop), with the
 /// background snapped as the poses'; none (an empty image) when the character has no such file.
 fn load_prop(path: &Path, bg: Rgb) -> Image {
@@ -487,7 +527,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 74] = [
+pub const DEMO_STATES: [&str; 75] = [
     "home",
     "cards",
     "cards-setup",
@@ -562,6 +602,7 @@ pub const DEMO_STATES: [&str; 74] = [
     "what",
     "update",
     "update-confirm",
+    "scenes",
 ];
 
 impl Demo {
@@ -800,6 +841,7 @@ impl Demo {
                 page(DEMO_STATES.into_iter().find(|x| *x == s)?)
             }
             "update" => page("update"),
+            "scenes" => page("scenes"),
             "update-confirm" => Demo {
                 dialog: "update",
                 ..page("update")
@@ -957,6 +999,8 @@ struct Motion {
     seq: Sequencer,
     clips: HashMap<&'static str, Arc<Clip>>,
     incoming: Option<Receiver<Clip>>,
+    /// The sheet of the scene of Home Assistant's cards, being decoded.
+    scene_incoming: Option<Receiver<Clip>>,
     playhead: Option<Playhead>,
     shown: Show,
     awake: Awake,
@@ -966,6 +1010,20 @@ struct Motion {
     /// Frames presented and their CPU time, for the stats line.
     presented: u64,
     present_time: Duration,
+}
+
+/// The scenes' pictures read so far, by name (None: no such scene).
+type ScenePictures = HashMap<String, Option<Image>>;
+
+/// Settings → Scenes as the downloads' thread told it last.
+#[derive(Debug, Default)]
+struct SceneView {
+    /// The catalogue's scenes of the character (None: not read yet), or why it could not be read.
+    catalogue: Option<Result<Vec<crate::scenes::Scene>, String>>,
+    /// The scene being downloaded.
+    busy: Option<String>,
+    /// The last failure: (scene, why).
+    failed: Option<(String, String)>,
 }
 
 /// Something removed by touch, kept for [`UNDO`] before it is really gone.
@@ -1181,6 +1239,17 @@ pub struct Ui<S: Screen> {
     ask_left: Cell<f32>,
     /// Do not disturb (UiCommand::DoNotDisturb).
     dnd: Cell<Dnd>,
+    /// The scene of Home Assistant's cards on the screen (its name, if the character has its
+    /// picture), and the pictures of the scenes read so far.
+    house_pose: RefCell<(Option<String>, ScenePictures)>,
+    /// An announcement plays (UiCommand::Announcing): a scene stays on while it is said.
+    announcing: Cell<bool>,
+    /// Settings → Scenes: the downloads' thread (src/scenes.rs), and what it said last.
+    scenes: Option<(
+        Sender<crate::scenes::Cmd>,
+        RefCell<Receiver<crate::scenes::Msg>>,
+    )>,
+    scene_view: RefCell<SceneView>,
     this: RefCell<Weak<Self>>,
 }
 
@@ -1390,6 +1459,7 @@ impl<S: Screen> Ui<S> {
             clips: HashMap::new(),
             incoming: (!wanted.is_empty())
                 .then(|| anim::load_in_background(wanted, character.background)),
+            scene_incoming: None,
             playhead: None,
             shown: Show::Pose,
             awake: Awake::new(opts.screen.awake_seconds),
@@ -1424,6 +1494,19 @@ impl<S: Screen> Ui<S> {
             }
             c
         });
+        // Settings → Scenes: from the releases of the updates' repository, into the state.
+        let scenes = opts_update
+            .as_ref()
+            .filter(|c| !demo && crate::update::valid_repo(&c.repo))
+            .zip(opts.state_dir.as_ref())
+            .map(|(c, state)| {
+                let (tx, rx) = crate::scenes::spawn(
+                    c.repo.clone(),
+                    character.id.clone(),
+                    state.join("scenes").join(&character.id),
+                );
+                (tx, RefCell::new(rx))
+            });
         let ui = Rc::new(Ui {
             screen,
             mirror: RefCell::new(None),
@@ -1497,6 +1580,10 @@ impl<S: Screen> Ui<S> {
             asking: Cell::new(None),
             ask_left: Cell::new(0.0),
             dnd: Cell::new(Dnd::default()),
+            house_pose: RefCell::new((None, HashMap::new())),
+            announcing: Cell::new(false),
+            scenes,
+            scene_view: RefCell::new(SceneView::default()),
             this: RefCell::new(Weak::new()),
         });
         *ui.this.borrow_mut() = Rc::downgrade(&ui);
@@ -1752,6 +1839,18 @@ impl<S: Screen> Ui<S> {
         self.screen.on_photo_delete(move || {
             if let Some(ui) = ui.upgrade() {
                 ui.photo_delete();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_scene_toggled(move |name, on| {
+            if let Some(ui) = ui.upgrade() {
+                ui.scene_toggled(&name, on);
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_scenes_check(move || {
+            if let Some(ui) = ui.upgrade() {
+                ui.scenes_refresh();
             }
         });
         let ui = Rc::downgrade(self);
@@ -2172,6 +2271,15 @@ impl<S: Screen> Ui<S> {
             app.set_pose(night);
             return;
         }
+        // The scene of a card on the home, and while an announcement is said over it (the
+        // probe's temperature over Alfred at the barbecue).
+        let announcing = state == State::Speaking && self.announcing.get();
+        if (state == State::Idle || announcing)
+            && let Some(scene) = self.house_scene()
+        {
+            app.set_pose(scene);
+            return;
+        }
         app.set_pose(self.pose(state));
     }
 
@@ -2267,7 +2375,12 @@ impl<S: Screen> Ui<S> {
         } else {
             match p {
                 Phase::Home if night => Mode::Night,
+                // A scene of Home Assistant's cards: still, nothing moves over it.
+                Phase::Home if self.house_scene().is_some() => Mode::Loop(anim::SCENE),
                 Phase::Home => Mode::Home,
+                Phase::Speaking if self.announcing.get() && self.house_scene().is_some() => {
+                    Mode::Loop(anim::SCENE)
+                }
                 Phase::Offline => Mode::Still,
                 _ => self
                     .character
@@ -2370,9 +2483,22 @@ impl<S: Screen> Ui<S> {
         self.poll_brain();
         self.poll_ha();
         self.poll_house();
+        self.poll_scenes();
         let mut added = false;
         {
             let mut m = self.motion.borrow_mut();
+            if let Some(rx) = &m.scene_incoming {
+                match rx.try_recv() {
+                    Ok(c) => {
+                        m.seq.add(anim::SCENE, Timing::of(&c.anim));
+                        m.clips.insert(anim::SCENE, Arc::new(c));
+                        m.scene_incoming = None;
+                        added = true;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => m.scene_incoming = None,
+                }
+            }
             if let Some(rx) = &m.incoming {
                 let mut got = Vec::new();
                 loop {
@@ -2630,6 +2756,8 @@ impl<S: Screen> Ui<S> {
             "loading" | "wake" | "idle" | "fall_asleep" | "sleeping" | "wake_from_sleep" => {
                 State::Idle
             }
+            // A scene is drawn as the idle pose is (render_house_pose).
+            anim::SCENE => State::Idle,
             _ => view(self.view.get()).1,
         };
         let (_, crop) = self.character.pose(state);
@@ -2664,6 +2792,8 @@ impl<S: Screen> Ui<S> {
                             text: l.sample("ha_card_text").into(),
                             icon: Some("mdi:washing-machine".into()),
                             seconds: None,
+                            // Shown only if the character has scenes/laundry.png (Alfred has none).
+                            pose: Some("laundry".into()),
                         }),
                         Instant::now(),
                     );
@@ -3050,6 +3180,9 @@ impl<S: Screen> Ui<S> {
                 &l.text("tile_shopping")
                     .replace("{n}", &items.len().to_string()),
             );
+        }
+        if matches!(d.page, "scenes" | "settings") {
+            self.render_scenes_demo();
         }
         if (d.page == "ha" && d.ha <= 2) || d.page == "ha-pick" {
             use crate::ha::setup::{Level, Row};
@@ -3473,7 +3606,10 @@ impl<S: Screen> Ui<S> {
                 }
             }
             UiCommand::DoNotDisturb(until) => self.set_dnd(until),
-            UiCommand::Announcing(on) => self.screen.set_announcing(on),
+            UiCommand::Announcing(on) => {
+                self.announcing.set(on);
+                self.screen.set_announcing(on);
+            }
             UiCommand::Conversation {
                 state,
                 trigger,
@@ -4813,6 +4949,12 @@ impl<S: Screen> Ui<S> {
             // Leaving the page closes the port.
             self.link.borrow_mut().take();
         }
+        if page == "scenes" {
+            self.scenes_refresh();
+        } else if page == "settings" {
+            // The row's count of installed scenes.
+            self.render_scenes();
+        }
         if page == "update" {
             self.refresh_update();
             let ui = Rc::downgrade(self);
@@ -4897,7 +5039,282 @@ impl<S: Screen> Ui<S> {
             .collect()
     }
 
+    /// The scene of Home Assistant's cards (`pose` of `home_companion_card`): the character's
+    /// `scenes/<name>.png` instead of its home pose while such a card shows (by day; nothing
+    /// moves over it). A name without its picture is as no scene.
+    fn render_house_pose(&self) {
+        let want = self.desk.borrow().ha_cards.pose().map(String::from);
+        let want = want.filter(|name| {
+            let mut hp = self.house_pose.borrow_mut();
+            hp.1.entry(name.clone())
+                .or_insert_with(|| {
+                    let Some(dir) = scene_dir(&self.scene_dirs(), name) else {
+                        log::warn!("card pose {name:?}: no scenes/{name}.png");
+                        return None;
+                    };
+                    let path = dir.join(format!("{name}.png"));
+                    // Drawn as the idle pose is (its crop): it stands where the character does.
+                    let (_, crop) = self.character.pose(State::Idle);
+                    load_pose(&path, crop, self.character.background)
+                        .map_err(|e| log::warn!("card pose {name:?}: {e}"))
+                        .ok()
+                })
+                .is_some()
+        });
+        if self.house_pose.borrow().0 == want {
+            return;
+        }
+        self.load_scene_animation(want.as_deref());
+        self.house_pose.borrow_mut().0 = want;
+        if self.view.get() == Phase::Home && self.motion.borrow().loading_until.is_none() {
+            self.set_pose(&self.screen, State::Idle);
+            let night = self.desk.borrow().night_shown;
+            if !night && self.opts.demo.is_none() {
+                let mode = if self.house_scene().is_some() {
+                    Mode::Loop(anim::SCENE)
+                } else {
+                    Mode::Home
+                };
+                self.motion.borrow_mut().seq.set_mode(mode, Instant::now());
+                self.step();
+            }
+        }
+    }
+
+    /// The animation of a scene (`scenes/<name>.toml`, an animation table as in character.toml
+    /// without its name, its `file` in `scenes/`): the old scene's sheet goes, the new one is
+    /// decoded in the background and loops over the scene once it is there.
+    fn load_scene_animation(&self, name: Option<&str>) {
+        let mut m = self.motion.borrow_mut();
+        m.scene_incoming = None;
+        if m.clips.remove(anim::SCENE).is_some() {
+            m.seq.remove(anim::SCENE);
+            if matches!(m.shown, Show::Frame { clip, .. } if clip == anim::SCENE) {
+                m.shown = Show::Pose;
+                m.playhead = None;
+                self.screen.set_frame(Image::default());
+            }
+        }
+        let Some(name) = name else { return };
+        if self.opts.demo.is_some() || !self.opts.screen.animations {
+            return;
+        }
+        // The animation of the same directory as the picture.
+        let Some(dir) = scene_dir(&self.scene_dirs(), name) else {
+            return;
+        };
+        let path = dir.join(format!("{name}.toml"));
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return; // a still scene
+        };
+        match scene_animation(&text, &dir) {
+            Ok(a) => {
+                log::info!("scene {name:?}: animation {}", a.file.display());
+                m.scene_incoming =
+                    Some(anim::load_in_background(vec![a], self.character.background));
+            }
+            Err(e) => log::warn!("{}: {e} (the scene stays still)", path.display()),
+        }
+    }
+
+    /// Settings → Scenes opened, or "Look again": the catalogue is read again.
+    fn scenes_refresh(&self) {
+        let Some((tx, _)) = &self.scenes else {
+            self.render_scenes();
+            return;
+        };
+        {
+            let mut v = self.scene_view.borrow_mut();
+            v.catalogue = None;
+            v.failed = None;
+        }
+        let _ = tx.send(crate::scenes::Cmd::Refresh);
+        self.render_scenes();
+    }
+
+    /// A scene's switch: download it (on) or take it away (off).
+    fn scene_toggled(&self, name: &str, on: bool) {
+        let Some((tx, _)) = &self.scenes else { return };
+        if self.scene_view.borrow().busy.is_some() {
+            return;
+        }
+        {
+            let mut v = self.scene_view.borrow_mut();
+            v.failed = None;
+            // The turning sign at once, before the thread says so.
+            if on {
+                v.busy = Some(name.to_string());
+            }
+        }
+        let _ = tx.send(if on {
+            crate::scenes::Cmd::Install(name.to_string())
+        } else {
+            crate::scenes::Cmd::Remove(name.to_string())
+        });
+        self.render_scenes();
+    }
+
+    /// What the downloads' thread says.
+    fn poll_scenes(&self) {
+        let Some((_, rx)) = &self.scenes else { return };
+        let mut changed = Vec::new();
+        let mut any = false;
+        while let Ok(m) = rx.borrow().try_recv() {
+            any = true;
+            let mut v = self.scene_view.borrow_mut();
+            match m {
+                crate::scenes::Msg::Catalogue(c) => v.catalogue = Some(c),
+                crate::scenes::Msg::Busy(b) => v.busy = b,
+                crate::scenes::Msg::Changed(n) => changed.push(n),
+                crate::scenes::Msg::Failed(n, why) => v.failed = Some((n, why)),
+            }
+        }
+        for n in changed {
+            self.scene_files_changed(&n);
+        }
+        if any {
+            self.render_scenes();
+        }
+    }
+
+    /// A scene came or went: read again, and shown again if a card asks for it.
+    fn scene_files_changed(&self, name: &str) {
+        let showing = {
+            let mut hp = self.house_pose.borrow_mut();
+            hp.1.remove(name);
+            hp.0.as_deref() == Some(name)
+        };
+        if showing {
+            // Not the name any more, so render_house_pose takes the scene again (or its absence).
+            self.house_pose.borrow_mut().0 = Some(String::new());
+        }
+        self.render_house_pose();
+    }
+
+    /// Settings → Scenes and its row: the catalogue with a switch per scene, what is going on,
+    /// how many are installed.
+    fn render_scenes(&self) {
+        if self.opts.demo.is_some() {
+            return self.render_scenes_demo();
+        }
+        let l = self.locale.borrow();
+        let lang = l.code.clone();
+        let dir = self.scene_dirs().into_iter().next();
+        let installed = |n: &str| {
+            dir.as_deref()
+                .is_some_and(|d| crate::scenes::installed(d, n))
+        };
+        let count = dir
+            .as_deref()
+            .and_then(|d| std::fs::read_dir(d).ok())
+            .map(|it| {
+                it.filter_map(Result::ok)
+                    .filter(|e| {
+                        let n = e.file_name().to_string_lossy().to_string();
+                        n.ends_with(".png") && !n.ends_with("-anim.png")
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        self.screen.set_scenes_value(&if count > 0 {
+            l.text("scenes_installed")
+                .replace("{n}", &count.to_string())
+        } else {
+            String::new()
+        });
+        let v = self.scene_view.borrow();
+        let scenes = match &v.catalogue {
+            Some(Ok(s)) => s.as_slice(),
+            _ => &[],
+        };
+        let title = |n: &str| {
+            scenes
+                .iter()
+                .find(|s| s.name == n)
+                .map(|s| s.title(&lang))
+                .unwrap_or_else(|| n.to_string())
+        };
+        let mb = |bytes: u64| format!("{:.1} MB", bytes as f64 / 1_048_576.0);
+        let mut rows: Vec<super::SceneRowData> = scenes
+            .iter()
+            .map(|s| {
+                (
+                    s.name.clone(),
+                    s.title(&lang),
+                    mb(s.size()),
+                    installed(&s.name),
+                    v.busy.as_deref() == Some(s.name.as_str()),
+                )
+            })
+            .collect();
+        // Installed scenes the catalogue no longer lists (renamed, withdrawn): still there to take
+        // away. Only against a catalogue that was read: while looking, every scene is unknown.
+        if let (Some(Ok(_)), Some(d)) = (&v.catalogue, dir.as_deref()) {
+            let known: Vec<&str> = scenes.iter().map(|s| s.name.as_str()).collect();
+            for (name, size) in crate::scenes::unlisted(d, &known) {
+                let value = l.text("scenes_unlisted").replace("{size}", &mb(size));
+                rows.push((name.clone(), name, value, true, false));
+            }
+        }
+        self.screen.set_scene_rows(&rows);
+        self.screen.set_scenes_busy(v.busy.is_some());
+        let state = if let Some(b) = &v.busy {
+            l.text("scenes_busy").replace("{title}", &title(b))
+        } else if let Some((n, why)) = &v.failed {
+            l.text("scenes_failed_one")
+                .replace("{title}", &title(n))
+                .replace("{why}", why)
+        } else {
+            match &v.catalogue {
+                None if self.scenes.is_some() => l.text("scenes_loading").to_string(),
+                Some(Err(_)) => l.text("scenes_failed").to_string(),
+                Some(Ok(s)) if s.is_empty() => l.text("scenes_none").to_string(),
+                None => l.text("scenes_none").to_string(),
+                Some(Ok(_)) => String::new(),
+            }
+        };
+        self.screen.set_scenes_state(&state);
+    }
+
+    /// `--state scenes`: the page on sample data (two of four installed, one downloading).
+    fn render_scenes_demo(&self) {
+        let l = self.locale.borrow();
+        let rows: Vec<super::SceneRowData> = [
+            ("laundry", "Laundry", "7.2 MB", true, false),
+            ("barbecue", "Barbecue", "4.1 MB", false, true),
+            ("waste", "Rubbish out", "5.3 MB", true, false),
+            ("vacuum", "Robot vacuum", "4.4 MB", false, false),
+        ]
+        .iter()
+        .map(|(n, t, v, on, busy)| (n.to_string(), t.to_string(), v.to_string(), *on, *busy))
+        .collect();
+        self.screen.set_scene_rows(&rows);
+        self.screen.set_scenes_busy(true);
+        self.screen
+            .set_scenes_state(&l.text("scenes_busy").replace("{title}", "Barbecue"));
+        self.screen
+            .set_scenes_value(&l.text("scenes_installed").replace("{n}", "2"));
+    }
+
+    /// Where scenes are looked for, in order: the user's (`<state_dir>/scenes/<character>/`,
+    /// kept by updates), then the character's own (`<character>/scenes/`).
+    fn scene_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        if let Some(state) = &self.opts.state_dir {
+            dirs.push(state.join("scenes").join(&self.character.id));
+        }
+        dirs.push(self.character.dir.join("scenes"));
+        dirs
+    }
+
+    /// The picture of the scene on the screen, if any.
+    fn house_scene(&self) -> Option<Image> {
+        let hp = self.house_pose.borrow();
+        hp.0.as_ref().and_then(|n| hp.1.get(n).cloned().flatten())
+    }
+
     fn refresh_home(&self) {
+        self.render_house_pose();
         if self.opts.demo.as_ref().is_some_and(|d| d.cards) {
             return;
         }
@@ -6397,6 +6814,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn scenes_of_the_user_come_first() {
+        let root =
+            std::env::temp_dir().join(format!("home-companion-scenes-{}", std::process::id()));
+        let user = root.join("state/scenes/alfred");
+        let own = root.join("alfred/scenes");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join("laundry.png"), b"x").unwrap();
+        std::fs::write(own.join("barbecue.png"), b"x").unwrap();
+        std::fs::write(user.join("laundry.png"), b"x").unwrap();
+        // Only an animation, no picture: not a scene.
+        std::fs::write(user.join("vacuum.toml"), b"x").unwrap();
+        let dirs = [user.clone(), own.clone()];
+        assert_eq!(scene_dir(&dirs, "laundry"), Some(user));
+        assert_eq!(scene_dir(&dirs, "barbecue"), Some(own));
+        assert_eq!(scene_dir(&dirs, "vacuum"), None);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_scene_animation_table() {
+        let dir = Path::new("/x/scenes");
+        let a = scene_animation(
+            "file = \"laundry-anim.png\"\nsize = [454, 880]\nframes = [0, 80]\nfps = 16\nrect = [271.0, 44.8, 755.1, 983.5]\n",
+            dir,
+        )
+        .unwrap();
+        assert_eq!(a.name, anim::SCENE);
+        assert_eq!(a.file, dir.join("laundry-anim.png"));
+        assert_eq!(
+            (a.size, a.first, a.end, a.fps, a.pause),
+            ((454, 880), 0, 80, 16.0, 0.0)
+        );
+        for bad in [
+            "file = \"../poses/idle.png\"\nsize = [1, 1]\nframes = [0, 2]\nfps = 16\nrect = [0.0, 0.0, 1.0, 1.0]\n",
+            "file = \"a.png\"\nsize = [1, 1]\nframes = [2, 2]\nfps = 16\nrect = [0.0, 0.0, 1.0, 1.0]\n",
+            "file = \"a.png\"\nsize = [1, 1]\nframes = [0, 2]\nfps = 0\nrect = [0.0, 0.0, 1.0, 1.0]\n",
+            "file = \"a.png\"\nsize = [1, 1]\nframes = [0, 2]\nfps = 16\nrect = [0.0, 0.0, 1.0, 1.0]\nname = \"idle\"\n",
+        ] {
+            assert!(scene_animation(bad, dir).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn memories_tile_says_what_waits() {
         let l = locale::load(&locale::repo_locales(), "it").unwrap();
         assert_eq!(memories_tile(&l, "6 ricordi", 0), "6 ricordi");
@@ -6598,6 +7059,7 @@ mod tests {
                 text: "Text".into(),
                 icon: None,
                 seconds: None,
+                pose: None,
             }))
         };
         // The OK of the first card of Home Assistant on the home, whatever else is shown.

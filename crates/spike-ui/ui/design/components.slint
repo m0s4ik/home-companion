@@ -800,7 +800,8 @@ export component Row inherits Rectangle {
     in property <string> label;
     in property <string> value;
     in property <bool> first: false;
-    // "page" (chevron), "check", "toggle" or "" (information only).
+    // "page" (chevron), "check", "toggle", "busy" (a turning sign where the toggle goes, while
+    // what it switches is under way) or "" (information only).
     in property <string> kind: "page";
     in property <bool> on: false;
     callback clicked();
@@ -829,7 +830,7 @@ export component Row inherits Rectangle {
         vertical-alignment: center;
         overflow: elide;
     }
-    property <length> end: root.kind == "" ? 28px : root.kind == "toggle" ? 116px : 64px;
+    property <length> end: root.kind == "" ? 28px : root.kind == "toggle" || root.kind == "busy" ? 116px : 64px;
     if root.value != "": Text {
         x: parent.width - root.end - self.width;
         width: min(self.preferred-width, 320px);
@@ -863,6 +864,16 @@ export component Row inherits Rectangle {
             Feedback.tap();
             root.clicked();
         }
+    }
+    if root.kind == "busy": Icon {
+        // In the middle of where the toggle is.
+        x: parent.width - 12px - 48px - 14px;
+        y: 24px;
+        width: 28px;
+        height: 28px;
+        source: Icons.sync-28;
+        color: Theme.accent;
+        transform-rotation: -mod(animation-tick() / 1ms, 1400) / 1400 * 360deg;
     }
     if root.kind == "toggle": Toggle {
         x: parent.width - 12px - self.width;
