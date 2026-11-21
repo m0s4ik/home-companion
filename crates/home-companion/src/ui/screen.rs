@@ -527,7 +527,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 74] = [
+pub const DEMO_STATES: [&str; 75] = [
     "home",
     "cards",
     "cards-setup",
@@ -602,6 +602,7 @@ pub const DEMO_STATES: [&str; 74] = [
     "what",
     "update",
     "update-confirm",
+    "scenes",
 ];
 
 impl Demo {
@@ -840,6 +841,7 @@ impl Demo {
                 page(DEMO_STATES.into_iter().find(|x| *x == s)?)
             }
             "update" => page("update"),
+            "scenes" => page("scenes"),
             "update-confirm" => Demo {
                 dialog: "update",
                 ..page("update")
@@ -1012,6 +1014,17 @@ struct Motion {
 
 /// The scenes' pictures read so far, by name (None: no such scene).
 type ScenePictures = HashMap<String, Option<Image>>;
+
+/// Settings → Scenes as the downloads' thread told it last.
+#[derive(Debug, Default)]
+struct SceneView {
+    /// The catalogue's scenes of the character (None: not read yet), or why it could not be read.
+    catalogue: Option<Result<Vec<crate::scenes::Scene>, String>>,
+    /// The scene being downloaded.
+    busy: Option<String>,
+    /// The last failure: (scene, why).
+    failed: Option<(String, String)>,
+}
 
 /// Something removed by touch, kept for [`UNDO`] before it is really gone.
 #[derive(Debug, Clone)]
@@ -1231,6 +1244,12 @@ pub struct Ui<S: Screen> {
     house_pose: RefCell<(Option<String>, ScenePictures)>,
     /// An announcement plays (UiCommand::Announcing): a scene stays on while it is said.
     announcing: Cell<bool>,
+    /// Settings → Scenes: the downloads' thread (src/scenes.rs), and what it said last.
+    scenes: Option<(
+        Sender<crate::scenes::Cmd>,
+        RefCell<Receiver<crate::scenes::Msg>>,
+    )>,
+    scene_view: RefCell<SceneView>,
     this: RefCell<Weak<Self>>,
 }
 
@@ -1475,6 +1494,19 @@ impl<S: Screen> Ui<S> {
             }
             c
         });
+        // Settings → Scenes: from the releases of the updates' repository, into the state.
+        let scenes = opts_update
+            .as_ref()
+            .filter(|c| !demo && crate::update::valid_repo(&c.repo))
+            .zip(opts.state_dir.as_ref())
+            .map(|(c, state)| {
+                let (tx, rx) = crate::scenes::spawn(
+                    c.repo.clone(),
+                    character.id.clone(),
+                    state.join("scenes").join(&character.id),
+                );
+                (tx, RefCell::new(rx))
+            });
         let ui = Rc::new(Ui {
             screen,
             mirror: RefCell::new(None),
@@ -1550,6 +1582,8 @@ impl<S: Screen> Ui<S> {
             dnd: Cell::new(Dnd::default()),
             house_pose: RefCell::new((None, HashMap::new())),
             announcing: Cell::new(false),
+            scenes,
+            scene_view: RefCell::new(SceneView::default()),
             this: RefCell::new(Weak::new()),
         });
         *ui.this.borrow_mut() = Rc::downgrade(&ui);
@@ -1805,6 +1839,18 @@ impl<S: Screen> Ui<S> {
         self.screen.on_photo_delete(move || {
             if let Some(ui) = ui.upgrade() {
                 ui.photo_delete();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_scene_toggled(move |name, on| {
+            if let Some(ui) = ui.upgrade() {
+                ui.scene_toggled(&name, on);
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_scenes_check(move || {
+            if let Some(ui) = ui.upgrade() {
+                ui.scenes_refresh();
             }
         });
         let ui = Rc::downgrade(self);
@@ -2437,6 +2483,7 @@ impl<S: Screen> Ui<S> {
         self.poll_brain();
         self.poll_ha();
         self.poll_house();
+        self.poll_scenes();
         let mut added = false;
         {
             let mut m = self.motion.borrow_mut();
@@ -3133,6 +3180,9 @@ impl<S: Screen> Ui<S> {
                 &l.text("tile_shopping")
                     .replace("{n}", &items.len().to_string()),
             );
+        }
+        if matches!(d.page, "scenes" | "settings") {
+            self.render_scenes_demo();
         }
         if (d.page == "ha" && d.ha <= 2) || d.page == "ha-pick" {
             use crate::ha::setup::{Level, Row};
@@ -4899,6 +4949,12 @@ impl<S: Screen> Ui<S> {
             // Leaving the page closes the port.
             self.link.borrow_mut().take();
         }
+        if page == "scenes" {
+            self.scenes_refresh();
+        } else if page == "settings" {
+            // The row's count of installed scenes.
+            self.render_scenes();
+        }
         if page == "update" {
             self.refresh_update();
             let ui = Rc::downgrade(self);
@@ -5059,6 +5115,167 @@ impl<S: Screen> Ui<S> {
             }
             Err(e) => log::warn!("{}: {e} (the scene stays still)", path.display()),
         }
+    }
+
+    /// Settings → Scenes opened, or "Look again": the catalogue is read again.
+    fn scenes_refresh(&self) {
+        let Some((tx, _)) = &self.scenes else {
+            self.render_scenes();
+            return;
+        };
+        {
+            let mut v = self.scene_view.borrow_mut();
+            v.catalogue = None;
+            v.failed = None;
+        }
+        let _ = tx.send(crate::scenes::Cmd::Refresh);
+        self.render_scenes();
+    }
+
+    /// A scene's switch: download it (on) or take it away (off).
+    fn scene_toggled(&self, name: &str, on: bool) {
+        let Some((tx, _)) = &self.scenes else { return };
+        if self.scene_view.borrow().busy.is_some() {
+            return;
+        }
+        self.scene_view.borrow_mut().failed = None;
+        let _ = tx.send(if on {
+            crate::scenes::Cmd::Install(name.to_string())
+        } else {
+            crate::scenes::Cmd::Remove(name.to_string())
+        });
+        self.render_scenes();
+    }
+
+    /// What the downloads' thread says.
+    fn poll_scenes(&self) {
+        let Some((_, rx)) = &self.scenes else { return };
+        let mut changed = Vec::new();
+        let mut any = false;
+        while let Ok(m) = rx.borrow().try_recv() {
+            any = true;
+            let mut v = self.scene_view.borrow_mut();
+            match m {
+                crate::scenes::Msg::Catalogue(c) => v.catalogue = Some(c),
+                crate::scenes::Msg::Busy(b) => v.busy = b,
+                crate::scenes::Msg::Changed(n) => changed.push(n),
+                crate::scenes::Msg::Failed(n, why) => v.failed = Some((n, why)),
+            }
+        }
+        for n in changed {
+            self.scene_files_changed(&n);
+        }
+        if any {
+            self.render_scenes();
+        }
+    }
+
+    /// A scene came or went: read again, and shown again if a card asks for it.
+    fn scene_files_changed(&self, name: &str) {
+        let showing = {
+            let mut hp = self.house_pose.borrow_mut();
+            hp.1.remove(name);
+            hp.0.as_deref() == Some(name)
+        };
+        if showing {
+            // Not the name any more, so render_house_pose takes the scene again (or its absence).
+            self.house_pose.borrow_mut().0 = Some(String::new());
+        }
+        self.render_house_pose();
+    }
+
+    /// Settings → Scenes and its row: the catalogue with a switch per scene, what is going on,
+    /// how many are installed.
+    fn render_scenes(&self) {
+        if self.opts.demo.is_some() {
+            return self.render_scenes_demo();
+        }
+        let l = self.locale.borrow();
+        let lang = l.code.clone();
+        let dir = self.scene_dirs().into_iter().next();
+        let installed = |n: &str| {
+            dir.as_deref()
+                .is_some_and(|d| crate::scenes::installed(d, n))
+        };
+        let count = dir
+            .as_deref()
+            .and_then(|d| std::fs::read_dir(d).ok())
+            .map(|it| {
+                it.filter_map(Result::ok)
+                    .filter(|e| {
+                        let n = e.file_name().to_string_lossy().to_string();
+                        n.ends_with(".png") && !n.ends_with("-anim.png")
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        self.screen.set_scenes_value(&if count > 0 {
+            l.text("scenes_installed")
+                .replace("{n}", &count.to_string())
+        } else {
+            String::new()
+        });
+        let v = self.scene_view.borrow();
+        let scenes = match &v.catalogue {
+            Some(Ok(s)) => s.as_slice(),
+            _ => &[],
+        };
+        let title = |n: &str| {
+            scenes
+                .iter()
+                .find(|s| s.name == n)
+                .map(|s| s.title(&lang))
+                .unwrap_or_else(|| n.to_string())
+        };
+        let rows: Vec<(String, String, String, bool)> = scenes
+            .iter()
+            .map(|s| {
+                let mb = s.size() as f64 / 1_048_576.0;
+                (
+                    s.name.clone(),
+                    s.title(&lang),
+                    format!("{mb:.1} MB"),
+                    installed(&s.name),
+                )
+            })
+            .collect();
+        self.screen.set_scene_rows(&rows);
+        self.screen.set_scenes_busy(v.busy.is_some());
+        let state = if let Some(b) = &v.busy {
+            l.text("scenes_busy").replace("{title}", &title(b))
+        } else if let Some((n, why)) = &v.failed {
+            l.text("scenes_failed_one")
+                .replace("{title}", &title(n))
+                .replace("{why}", why)
+        } else {
+            match &v.catalogue {
+                None if self.scenes.is_some() => l.text("scenes_loading").to_string(),
+                Some(Err(_)) => l.text("scenes_failed").to_string(),
+                Some(Ok(s)) if s.is_empty() => l.text("scenes_none").to_string(),
+                None => l.text("scenes_none").to_string(),
+                Some(Ok(_)) => String::new(),
+            }
+        };
+        self.screen.set_scenes_state(&state);
+    }
+
+    /// `--state scenes`: the page on sample data (two of four installed).
+    fn render_scenes_demo(&self) {
+        let l = self.locale.borrow();
+        let rows: Vec<(String, String, String, bool)> = [
+            ("laundry", "Laundry", "7.2 MB", true),
+            ("barbecue", "Barbecue", "4.1 MB", false),
+            ("waste", "Rubbish out", "5.3 MB", true),
+            ("vacuum", "Robot vacuum", "4.4 MB", false),
+        ]
+        .iter()
+        .map(|(n, t, v, on)| (n.to_string(), t.to_string(), v.to_string(), *on))
+        .collect();
+        self.screen.set_scene_rows(&rows);
+        self.screen.set_scenes_busy(false);
+        self.screen.set_scenes_state("");
+        self.screen
+            .set_scenes_value(&l.text("scenes_installed").replace("{n}", "2"));
     }
 
     /// Where scenes are looked for, in order: the user's (`<state_dir>/scenes/<character>/`,

@@ -505,6 +505,17 @@ ring_timer_named = "Il timer «{name}» è finito."
 ring_timer = "Il timer di {duration} è finito."
 ring_alarm = "Sveglia delle {time}."
 
+# Impostazioni → Scene (src/scenes.rs): scene del personaggio da scaricare, per le schede di Home Assistant.
+scenes_title = "Scene"
+scenes_intro = "Immagini del personaggio al lavoro, mostrate quando una scheda di Home Assistant ne chiede una (pose). Attivane una per scaricarla."
+scenes_check = "Controlla di nuovo"
+scenes_loading = "Cerco le scene…"
+scenes_none = "Ancora nessuna scena per questo personaggio."
+scenes_failed = "Non sono riuscito a leggere le scene (niente rete, o GitHub non ha risposto)."
+scenes_busy = "Scarico {title}…"
+scenes_failed_one = "{title} non è andata: {why}"
+scenes_installed = "{n} installate"
+
 [sample]
 # The first start's Home Assistant page (--state first-ha-found): a second instance's name.
 find_second = "Casa al mare"

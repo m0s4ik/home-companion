@@ -43,6 +43,8 @@ feet on the same line as in `idle` and the scene as tall as the figure where the
 lowercase letters, digits, `-` and `_`. A character ships none, or the ones that suit it: they are the house's
 (taking out the washing, at the barbecue), so a user adds their own in `<state_dir>/scenes/<character id>/` (on the
 device `/var/lib/home-companion/scenes/alfred/`, kept by updates), which comes before the character's `scenes/`.
+Scenes can also be offered for download (Settings → Scenes): a release of the repository tagged `scenes-…` with
+[tools/make-scene-catalogue.py](../tools/make-scene-catalogue.py)'s files, so a scene need not be in this repository.
 
 A scene may move: `scenes/<name>.toml` is its animation, a table as in character.toml (`file`, `size`, `frames`,
 `fps`, optional `pause`, `rect`) without the `[animations.…]` header, its `file` a sheet in the same directory made with

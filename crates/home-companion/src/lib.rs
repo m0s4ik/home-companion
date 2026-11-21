@@ -18,6 +18,7 @@ pub mod history;
 pub mod logger;
 pub mod reflex;
 pub mod repeat;
+pub mod scenes;
 pub mod settings;
 pub mod spectrum;
 pub mod subcommands;
