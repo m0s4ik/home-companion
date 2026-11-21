@@ -43,5 +43,14 @@ and the rules a new drawing must keep (canvas, feet in the same place, the flat 
 close on their first frame). Rebuild a sheet with `tools/make-animation.py`, look at it with a headless screenshot of
 its state, and open a pull request: contributions to the character are CC0 as well.
 
-Missing today: poses for "plug it in" (the Home Assistant link page), "at work", "satisfied" and "a nod", and
-animations for the offline and muted poses.
+- **The moment's poses** (2026-11): `link.png` (a power plug held up, the cable over his arm: the Home Assistant
+  link pages), `working.png` (typing on a laptop on his forearm: an update installs, the setup checks),
+  `satisfied.png` (a hand on his chest, a thumbs-up: such a job went well), `nod.png` (a small nod: a reflex was
+  done). Drawn as POSES.md says (gpt-image-2, `quality: high`, the image edit endpoint with `idle.png`, its style,
+  "Same character…", the character, then the pose), then fitted to idle's figure (height, feet) on `#03050D`.
+- **Offline and muted animations** (2026-11): `animations/offline.png` (he sips his cocktail in the deck chair) and
+  `animations/muted.png` (a small resigned shrug), Wan 2.2 I2V A14B with the source package's style block, seed 42,
+  the pose as first and last frame (fal.ai's turbo variant, not the package's ComfyUI workflow), every second frame
+  kept (16 fps), the last one dropped, `make-animation.py --threshold 12`.
+
+Missing today: an animation for the moment's poses (`link`, `working`, `satisfied`, `nod` stand still).

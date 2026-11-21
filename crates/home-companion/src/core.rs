@@ -216,6 +216,8 @@ pub enum UiCommand {
     /// An announcement (a reminder said by Home Assistant) plays: a due reminder on the screen
     /// stays, the voice over it, no conversation screen.
     Announcing(bool),
+    /// A reflex was done (the character nods when its home comes back).
+    ReflexDone,
     /// "Stop" or "basta" over a due reminder: its OK.
     NoticeStop,
     /// A conversation started or ended: Home Assistant is told (`home_companion_conversation`).
@@ -2129,6 +2131,10 @@ impl Core {
         };
         self.stop_recorder();
         log::info!(event = "reflex_done", heard = heard, answer = answer.as_str(); "reflex done: {heard:?} → {answer:?}");
+        // A nod, but not for the photo's countdown nor for a yes to the house (its card answers).
+        if !matches!(cmd, Reflex::TakePhoto | Reflex::Yes) {
+            after.push(UiCommand::ReflexDone);
+        }
         // Each reflex has its own sound: it is clear the body did it (Home Assistant answers aloud).
         let cue_name: Option<&'static str> = match &cmd {
             Reflex::Time => Some("time"),
