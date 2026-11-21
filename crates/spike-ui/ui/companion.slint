@@ -167,6 +167,16 @@ export struct FindRow {
     url: string,
 }
 
+// Settings → Scenes: one scene of the catalogue (src/scenes.rs); `on` = installed, `busy` = being
+// downloaded (a turning sign instead of its switch).
+export struct SceneRow {
+    name: string,
+    label: string,
+    value: string,
+    on: bool,
+    busy: bool,
+}
+
 export struct LanguageRow {
     code: string,
     name: string,
@@ -325,6 +335,9 @@ export struct Words {
     update_title: string,
     update_check: string,
     update_prerelease: string,
+    scenes_title: string,
+    scenes_intro: string,
+    scenes_check: string,
     camera: string,
     camera_shoot: string,
     camera_covered: string,
@@ -1136,6 +1149,14 @@ export component CompanionWindow inherits Window {
     in property <string> update-question;
     in property <string> update-confirm-text;
     callback update-check();
+    // Settings → Scenes (src/scenes.rs): the catalogue's scenes of the character, what is going
+    // on (looking, downloading, a failure) and the number installed (the settings row).
+    in property <[SceneRow]> scene-rows;
+    in property <string> scenes-state;
+    in property <bool> scenes-busy;
+    in property <string> scenes-value;
+    callback scene-toggled(string, bool);
+    callback scenes-check();
     callback update-install-clicked();
     callback photo-open(int);
     callback music-toggle();
@@ -2714,7 +2735,7 @@ export component CompanionWindow inherits Window {
                     text: root.character-name.to-uppercase();
                 }
                 Group {
-                    height: 3 * 76px;
+                    height: 4 * 76px;
                     Row {
                         y: 0;
                         width: parent.width;
@@ -2754,6 +2775,17 @@ export component CompanionWindow inherits Window {
                         value: root.wake-step < 0 ? root.t.wake-less : root.wake-step > 0 ? root.t.wake-more : root.t.wake-normal;
                         step(d) => {
                             root.wake-step-changed(max(-1, min(1, root.wake-step + d)));
+                        }
+                    }
+                    // Scenes of the character to download, for Home Assistant's cards.
+                    Row {
+                        y: 228px;
+                        width: parent.width;
+                        icon: Icons.image-multiple-28;
+                        label: root.t.scenes-title;
+                        value: root.scenes-value;
+                        clicked => {
+                            root.page = "scenes";
                         }
                     }
                 }
@@ -3664,6 +3696,70 @@ export component CompanionWindow inherits Window {
     // ---- Settings → Screen: the night hours.
     // ---- Settings → Info: updates. What is going on, the facts in one small line, the release
     // notes of a newer version, its SHA-256 in small (for whoever wants to compare it).
+    // ---- Settings → Scenes: the catalogue's scenes of the character, a switch each (on =
+    // downloaded and installed, off = removed); src/scenes.rs.
+    if root.desk && root.desk-page == "scenes": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.scenes-title;
+            clock: root.clock;
+            back => {
+                root.page = "settings";
+            }
+        }
+        scenes-flick := Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: Grid.band-y - Grid.page-y - 16px;
+            content-height: max(self.height, scenes-col.preferred-height);
+            scenes-col := VerticalLayout {
+                alignment: start;
+                spacing: 12px;
+                Text {
+                    text: root.t.scenes-intro;
+                    font-size: 22px;
+                    color: Theme.text-2;
+                    wrap: word-wrap;
+                }
+                if root.scenes-state != "": Text {
+                    text: root.scenes-state;
+                    font-size: 22px;
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                if root.scene-rows.length > 0: Group {
+                    height: root.scene-rows.length * 76px;
+                    for r[i] in root.scene-rows: Row {
+                        y: i * 76px;
+                        width: parent.width;
+                        first: i == 0;
+                        kind: r.busy ? "busy" : "toggle";
+                        label: r.label;
+                        value: r.value;
+                        on: r.on;
+                        toggled(v) => {
+                            if !root.scenes-busy {
+                                root.scene-toggled(r.name, v);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        BareButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.refresh-48;
+            label: root.t.scenes-check;
+            enabled: !root.scenes-busy;
+            clicked => {
+                root.scenes-check();
+            }
+        }
+    }
+
     if root.desk && root.desk-page == "update": Rectangle {
         PageHeader {
             x: Grid.col-x;

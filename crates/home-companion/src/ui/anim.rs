@@ -695,8 +695,15 @@ pub fn load_in_background(anims: Vec<Animation>, bg: character::Rgb) -> Receiver
     rx
 }
 
+/// The animation of the scene a card of Home Assistant shows (`scenes/<name>.toml`): one at a
+/// time, under this name.
+pub const SCENE: &str = "scene";
+
 /// The name as a `&'static str` (the sequencer's keys), if it is a known animation.
 pub fn static_name(name: &str) -> Option<&'static str> {
+    if name == SCENE {
+        return Some(SCENE);
+    }
     character::ANIMATIONS.into_iter().find(|n| *n == name)
 }
 

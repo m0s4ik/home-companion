@@ -425,6 +425,18 @@ ring_timer_named = "Der Timer \"{name}\" ist abgelaufen."
 ring_timer = "Der Timer über {duration} ist abgelaufen."
 ring_alarm = "Wecker, {time}."
 
+# Einstellungen → Szenen (src/scenes.rs): Szenen der Figur zum Herunterladen, für die Karten von Home Assistant.
+scenes_title = "Szenen"
+scenes_intro = "Bilder der Figur bei der Arbeit, gezeigt, solange eine Karte von Home Assistant eines verlangt (pose). Schalte eines ein, um es herunterzuladen."
+scenes_check = "Erneut suchen"
+scenes_loading = "Szenen werden gesucht…"
+scenes_none = "Noch keine Szenen für diese Figur."
+scenes_failed = "Die Szenen konnten nicht gelesen werden (kein Netz, oder GitHub hat nicht geantwortet)."
+scenes_busy = "{title} wird heruntergeladen…"
+scenes_failed_one = "{title} hat nicht geklappt: {why}"
+scenes_installed = "{n} installiert"
+scenes_unlisted = "Nicht mehr gelistet · {size}"
+
 [sample]
 find_second = "Ferienhaus"
 temperature = "13,7°C"

@@ -20,6 +20,7 @@ pub mod logger;
 pub mod panel;
 pub mod reflex;
 pub mod repeat;
+pub mod scenes;
 pub mod settings;
 pub mod settings_model;
 pub mod spectrum;

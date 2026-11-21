@@ -290,6 +290,12 @@ impl HaCards {
         self.items.is_empty()
     }
 
+    /// The scene to show instead of the character's home pose: the one of the last card that
+    /// has one (the cards' own order: a card replaced by its id keeps its place).
+    pub fn pose(&self) -> Option<&str> {
+        self.items.iter().rev().find_map(|e| e.card.pose.as_deref())
+    }
+
     /// (title, text, kind) for [`Alive::ha`]; `default_title` for a card without one.
     pub fn views(&self, default_title: &str) -> Vec<(String, String, &'static str)> {
         self.items
@@ -559,6 +565,31 @@ mod tests {
         assert!(c.expire(t0 + Duration::from_secs(11)));
         assert_eq!(c.views("M").len(), 2);
         assert!(!c.expire(t0 + Duration::from_secs(9999)));
+    }
+
+    #[test]
+    fn ha_cards_pose_of_the_last_card_that_has_one() {
+        let t0 = Instant::now();
+        let with = |id: &str, pose: Option<&str>| {
+            CardEvent::Show(HaCard {
+                id: Some(id.into()),
+                text: id.into(),
+                pose: pose.map(String::from),
+                ..Default::default()
+            })
+        };
+        let mut c = HaCards::default();
+        assert_eq!(c.pose(), None);
+        c.apply(with("laundry", Some("laundry")), t0);
+        c.apply(with("note", None), t0);
+        assert_eq!(c.pose(), Some("laundry"));
+        c.apply(with("bbq", Some("kamado")), t0);
+        assert_eq!(c.pose(), Some("kamado"));
+        c.apply(CardEvent::Dismiss("bbq".into()), t0);
+        assert_eq!(c.pose(), Some("laundry"));
+        // Sent again without a pose, the card no longer brings one.
+        c.apply(with("laundry", None), t0);
+        assert_eq!(c.pose(), None);
     }
 
     #[test]

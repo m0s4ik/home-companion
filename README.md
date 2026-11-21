@@ -247,10 +247,24 @@ event_data:
   icon: mdi:washing-machine   # optional
   seconds: 600         # optional: the card goes away by itself
   device: Alfred       # optional: only the device with this name (default: every device)
+  pose: laundry        # optional: a scene of the character instead of its pose while the card shows
 ```
 
 The card plays the soft reminder sound by day and goes away with its OK. `home_companion_card_dismiss` with an `id`
 takes a card away.
+
+With `pose`, a scene of the character takes the place of its pose on the home for as long as the card shows (the
+character taking the washing out of the machine, at the barbecue), with its own animation if it has one and still
+otherwise, also while an announcement is said over it; not at night, and the conversation's poses stay as they are.
+The scene `<pose>.png` is looked for in `/var/lib/home-companion/scenes/<character>/` (yours: updates keep it), then in
+the character's own `scenes/`. Lowercase letters, digits, `-` and `_`; without such a picture the card shows alone. See
+[characters/README.md](characters/README.md) for the picture.
+
+**Settings → Scenes** downloads scenes: the newest release of `[update] repo` (the updates' repository, from the
+root-owned configuration only) whose tag starts with `scenes-` lists them in its `scenes.json`; a switch per scene of
+the character downloads it (every file checked against its size and SHA-256) into
+`/var/lib/home-companion/scenes/<character>/`, or takes it away. A card uses it by its name. Making such a release:
+[tools/make-scene-catalogue.py](tools/make-scene-catalogue.py).
 
 The screen can be put to sleep and woken the same way, for example from a presence sensor:
 

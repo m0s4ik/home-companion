@@ -414,7 +414,7 @@ fn run(
 }
 
 /// The repository's releases, newest first (GitHub's API through curl: no TLS in the body).
-fn fetch(repo: &str) -> Result<Value, String> {
+pub(crate) fn fetch(repo: &str) -> Result<Value, String> {
     let url = format!("https://api.github.com/repos/{repo}/releases?per_page=20");
     let out = Command::new("curl")
         .args([

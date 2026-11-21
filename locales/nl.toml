@@ -453,6 +453,18 @@ ring_timer_named = "De timer \"{name}\" is afgelopen."
 ring_timer = "De timer van {duration} is afgelopen."
 ring_alarm = "Wekker, {time}."
 
+# Instellingen → Scènes (src/scenes.rs): scènes van het personage om te downloaden, voor de kaarten van Home Assistant.
+scenes_title = "Scènes"
+scenes_intro = "Plaatjes van het personage aan het werk, getoond zolang een kaart van Home Assistant erom vraagt (pose). Zet er een aan om hem te downloaden."
+scenes_check = "Opnieuw kijken"
+scenes_loading = "Scènes zoeken…"
+scenes_none = "Nog geen scènes voor dit personage."
+scenes_failed = "De scènes konden niet gelezen worden (geen netwerk, of GitHub gaf geen antwoord)."
+scenes_busy = "{title} downloaden…"
+scenes_failed_one = "{title} is niet gelukt: {why}"
+scenes_installed = "{n} geïnstalleerd"
+scenes_unlisted = "Niet meer in de lijst · {size}"
+
 [sample]
 # The first start's Home Assistant page (--state first-ha-found): a second instance's name.
 find_second = "Vakantiehuis"
