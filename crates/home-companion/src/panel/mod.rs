@@ -7,6 +7,7 @@
 //! request comes here, and the screen's thread answers it.
 
 pub mod protocol;
+pub mod remote;
 pub mod sessions;
 pub mod sha256;
 pub mod socket;

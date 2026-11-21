@@ -10,7 +10,8 @@
 //! `shopping.list|add|done|remove`, `sessions.list|revoke`, and the widget's (widget_ops.rs:
 //! `widgets.get|order|samples`, `search.start|status`, `quotes|cities|sensors.add|remove|move`,
 //! `player.set`, `people.set`, `notes.list|add|edit|remove`, `undo`; their answers carry the pages'
-//! previews as the screen draws them, `pages`). With the panel switched off every
+//! previews as the screen draws them, `pages`), and the remote screen's (remote.rs:
+//! `screen.status|start|frame|input|home|stop`). With the panel switched off every
 //! op but `hello` and `strings` answers `off`.
 //!
 //! Every answer is built here from what the body chooses to say: settings through
@@ -23,6 +24,7 @@
 
 use serde_json::{Value, json};
 
+use super::remote::{Controller, End, Refusal as RemoteRefusal, parse_events};
 use super::sessions::{Agent, Now, Refusal, Rng, Sessions, Status};
 use crate::settings_model::{self as model, SetError};
 use crate::ui::lists::ShopList;
@@ -98,6 +100,30 @@ pub trait PanelHost: model::Host {
     ) -> Option<Vec<(String, crate::ui::widgets::WidgetRow)>> {
         let _ = (id, lang);
         None
+    }
+    /// Settings → Access from the browser → Remote screen is on (on the device only).
+    fn remote_enabled(&self) -> bool {
+        false
+    }
+    /// Why the screen must not be sent or touched now ("camera", "qr"…); None: it may.
+    fn remote_hidden(&self) -> Option<&'static str> {
+        None
+    }
+    /// The latest frame of the screen, the capture kept going (Ok(None): none yet); Err: this
+    /// screen cannot be read (why).
+    fn remote_frame(&self) -> Result<Option<crate::ui::capture::Frame>, &'static str> {
+        Err("renderer")
+    }
+    /// A touch of the remote, in the picture's 0-1 coordinates.
+    fn remote_touch(&self, touch: super::remote::Touch) {
+        let _ = touch;
+    }
+    /// The remote asks for the home (out of a page that is not sent, where it cannot see to
+    /// touch its way back).
+    fn remote_home(&self) {}
+    /// The session began (Some) or ended (None): the sign on the screen, the capture.
+    fn remote_changed(&self, controller: Option<&super::remote::Controller>) {
+        let _ = controller;
     }
 }
 
@@ -294,6 +320,19 @@ pub const STRING_KEYS: &[&str] = &[
     "panel_off_title",
     "panel_qr_old_title",
     "panel_pair_title",
+    "panel_tab_screen",
+    "panel_screen_title",
+    "panel_screen_lead",
+    "panel_screen_start",
+    "panel_screen_stop",
+    "panel_screen_live",
+    "panel_screen_off",
+    "panel_screen_busy",
+    "panel_screen_stopped",
+    "panel_screen_ended",
+    "panel_screen_hidden",
+    "panel_screen_unavailable",
+    "panel_screen_home",
 ];
 
 fn shopping_json(lists: &[ShopList]) -> Value {
@@ -387,9 +426,15 @@ pub fn handle(
         }
         _ => {}
     }
-    let Some(me) = sessions.check(token, now).map(|s| s.hash.clone()) else {
+    let Some((me, my_agent)) = sessions
+        .check(token, now)
+        .map(|s| (s.hash.clone(), s.agent.clone()))
+    else {
         return err("no_session");
     };
+    if op.starts_with("screen.") {
+        return screen_op(host, sessions, &me, &my_agent, peer, op, req, now);
+    }
     if super::widget_ops::OPS.contains(&op) {
         let alive: Vec<String> = sessions.list(now).iter().map(|s| s.hash.clone()).collect();
         sessions.searches.keep_only(&alive);
@@ -404,6 +449,7 @@ pub fn handle(
     match op {
         "session.end" => {
             sessions.end(token);
+            remote_sweep(host, sessions, now);
             host.sessions_changed();
             ok(json!({}))
         }
@@ -475,8 +521,139 @@ pub fn handle(
         }
         "sessions.revoke" => {
             let gone = sessions.revoke(str_of(req, "id"));
+            remote_sweep(host, sessions, now);
             host.sessions_changed();
             if gone { ok(json!({})) } else { err("invalid") }
+        }
+        _ => err("unknown_op"),
+    }
+}
+
+/// Ends the remote screen's session when its device went quiet or is no longer let in (the
+/// screen calls it every second too).
+pub fn remote_sweep(host: &dyn PanelHost, sessions: &mut Sessions, now: Now) {
+    let alive: Vec<String> = sessions.list(now).iter().map(|s| s.hash.clone()).collect();
+    let gone = match sessions.remote.keep_only(&alive) {
+        Some(c) => Some((c, End::Revoked)),
+        None => sessions.remote.expire(now.mono).map(|c| (c, End::Idle)),
+    };
+    if let Some((c, why)) = gone {
+        remote_ended(host, &c, why);
+    }
+}
+
+/// Ends the remote screen's session (if any) for `why`: Stop on the screen, the switch off.
+pub fn remote_stop(host: &dyn PanelHost, sessions: &mut Sessions, why: End, now: Now) {
+    if let Some(c) = sessions.remote.stop(why, now.mono) {
+        remote_ended(host, &c, why);
+    }
+}
+
+fn remote_ended(host: &dyn PanelHost, c: &Controller, why: End) {
+    log::info!(event = "remote_screen", action = "stop", why = why.key(), peer = c.peer.as_str(),
+               secs = c.since.elapsed().as_secs();
+               "remote screen: {} on {} ({}) stopped: {}", c.agent.browser, c.agent.os, c.peer, why.key());
+    host.remote_changed(None);
+}
+
+/// `screen.*`: the remote screen (remote.rs), for a device let in (`me`).
+#[allow(clippy::too_many_arguments)]
+fn screen_op(
+    host: &dyn PanelHost,
+    sessions: &mut Sessions,
+    me: &str,
+    agent: &Agent,
+    peer: &str,
+    op: &str,
+    req: &Value,
+    now: Now,
+) -> Value {
+    remote_sweep(host, sessions, now);
+    let t = now.mono;
+    let refused = |r: RemoteRefusal| {
+        if matches!(
+            r,
+            RemoteRefusal::Off | RemoteRefusal::Busy | RemoteRefusal::Stopped
+        ) {
+            log::info!(event = "remote_screen", action = "denied", why = r.key(), peer = peer;
+                       "remote screen: {} on {} ({peer}) refused: {}", agent.browser, agent.os, r.key());
+        }
+        err(r.key())
+    };
+    match op {
+        "screen.status" => {
+            let c = sessions.remote.controller.as_ref();
+            ok(json!({
+                "enabled": host.remote_enabled(),
+                "active": c.is_some(),
+                "mine": c.is_some_and(|c| c.hash == me),
+            }))
+        }
+        "screen.start" => {
+            match sessions
+                .remote
+                .start(me, agent, peer, host.remote_enabled(), t)
+            {
+                Ok(replaced) => {
+                    if replaced.is_none() {
+                        log::info!(event = "remote_screen", action = "start", peer = peer;
+                                   "remote screen: {} on {} ({peer}) in control", agent.browser, agent.os);
+                    }
+                    host.remote_changed(sessions.remote.controller.as_ref());
+                    ok(json!({}))
+                }
+                Err(r) => refused(r),
+            }
+        }
+        "screen.stop" => {
+            if sessions.remote.check(me, t).is_ok() {
+                remote_stop(host, sessions, End::Browser, now);
+            }
+            ok(json!({}))
+        }
+        "screen.frame" => {
+            if let Err(r) = sessions.remote.check(me, t) {
+                return refused(r);
+            }
+            if let Some(why) = host.remote_hidden() {
+                return ok(json!({"hidden": why}));
+            }
+            let after = req.get("after").and_then(Value::as_u64).unwrap_or(0);
+            match host.remote_frame() {
+                Ok(Some(f)) if f.seq != after => ok(json!({
+                    "seq": f.seq,
+                    "width": f.width,
+                    "height": f.height,
+                    "jpeg": crate::ui::capture::base64(&f.jpeg),
+                })),
+                Ok(_) => ok(json!({"same": true})),
+                Err(why) => json!({"ok": false, "error": "screen_unavailable", "why": why}),
+            }
+        }
+        "screen.home" => {
+            if let Err(r) = sessions.remote.check(me, t) {
+                return refused(r);
+            }
+            host.remote_home();
+            ok(json!({}))
+        }
+        "screen.input" => {
+            if let Err(r) = sessions.remote.check(me, t) {
+                return refused(r);
+            }
+            if host.remote_hidden().is_some() {
+                return err("screen_hidden");
+            }
+            let Some(events) = parse_events(req.get("events").unwrap_or(&Value::Null)) else {
+                return err("invalid");
+            };
+            if !sessions.remote.allow_events(events.len(), t) {
+                return refused(RemoteRefusal::SlowDown);
+            }
+            for e in events {
+                host.remote_touch(e);
+            }
+            ok(json!({}))
         }
         _ => err("unknown_op"),
     }
@@ -497,6 +674,10 @@ mod tests {
         calls: RefCell<Vec<String>>,
         searches: RefCell<std::collections::HashMap<String, crate::feeds::SearchState>>,
         notes: RefCell<Option<Vec<(i64, String)>>>,
+        remote_on: Cell<bool>,
+        hidden: Cell<Option<&'static str>>,
+        touches: RefCell<Vec<crate::panel::remote::Touch>>,
+        signs: RefCell<Vec<Option<String>>>,
     }
 
     impl model::Host for Host {
@@ -549,6 +730,28 @@ mod tests {
             crate::ui::lists::remove(&mut self.lists.borrow_mut(), list, uid);
         }
         fn sessions_changed(&self) {}
+        fn remote_enabled(&self) -> bool {
+            self.remote_on.get()
+        }
+        fn remote_hidden(&self) -> Option<&'static str> {
+            self.hidden.get()
+        }
+        fn remote_frame(&self) -> Result<Option<crate::ui::capture::Frame>, &'static str> {
+            Ok(Some(crate::ui::capture::Frame {
+                seq: 3,
+                width: 2,
+                height: 1,
+                jpeg: std::sync::Arc::new(b"jpeg".to_vec()),
+            }))
+        }
+        fn remote_touch(&self, t: crate::panel::remote::Touch) {
+            self.touches.borrow_mut().push(t);
+        }
+        fn remote_changed(&self, c: Option<&crate::panel::remote::Controller>) {
+            self.signs
+                .borrow_mut()
+                .push(c.map(|c| format!("{} {}", c.agent.browser, c.agent.os)));
+        }
         fn widget_pages(&self) -> Vec<(crate::ui::widgets::Kind, bool)> {
             let order = model::widget_order(self);
             let on = self.model.settings.widgets().0;
@@ -736,6 +939,10 @@ mod tests {
             calls: RefCell::new(Vec::new()),
             searches: RefCell::new(Default::default()),
             notes: RefCell::new(Some(vec![(1, "Water the plants".into())])),
+            remote_on: Cell::new(false),
+            hidden: Cell::new(None),
+            touches: RefCell::new(Vec::new()),
+            signs: RefCell::new(Vec::new()),
         }
     }
 
@@ -811,6 +1018,12 @@ mod tests {
         "notes.remove",
         "widgets.samples",
         "undo",
+        "screen.status",
+        "screen.start",
+        "screen.frame",
+        "screen.input",
+        "screen.home",
+        "screen.stop",
         "session.end",
     ];
 
@@ -1471,7 +1684,11 @@ mod tests {
         let r = call(&h, &mut s, json!({"op": "strings", "lang": ["it"]}));
         for k in STRING_KEYS {
             let v = r["strings"][k].as_str().unwrap();
-            assert!(!v.is_empty() && v != *k, "{k} missing in it");
+            assert!(
+                !v.is_empty() && v != *k,
+                "{k} missing in it: {v:?} {}",
+                r["lang"]
+            );
         }
     }
 
@@ -1533,5 +1750,110 @@ mod tests {
         }
         // The other device is still in, and this one too (session.end was last, for "").
         assert!(s.check(&other, at(0)).is_some());
+    }
+
+    #[test]
+    fn the_remote_screen_only_when_switched_on_and_for_one_device() {
+        let h = host("remote");
+        let mut s = Sessions::default();
+        let a = pair(&h, &mut s);
+        s.skip_pause();
+        let b = pair(&h, &mut s);
+        let ask = |s: &mut Sessions, t: &str, op: &str, extra: Value| {
+            let mut r = json!({"op": op, "token": t, "peer": "192.0.2.24"});
+            for (k, v) in extra.as_object().unwrap() {
+                r[k] = v.clone();
+            }
+            call(&h, s, r)
+        };
+        // Off on the device: nothing.
+        assert_eq!(
+            ask(&mut s, &a, "screen.start", json!({}))["error"],
+            "screen_off"
+        );
+        assert_eq!(
+            ask(&mut s, &a, "screen.frame", json!({}))["error"],
+            "screen_ended"
+        );
+        h.remote_on.set(true);
+        assert_eq!(ask(&mut s, &a, "screen.start", json!({}))["ok"], true);
+        assert_eq!(
+            h.signs.borrow().last().unwrap().as_deref(),
+            Some("Chrome macOS")
+        );
+        // One at a time.
+        assert_eq!(
+            ask(&mut s, &b, "screen.start", json!({}))["error"],
+            "screen_busy"
+        );
+        assert_eq!(
+            ask(&mut s, &b, "screen.frame", json!({}))["error"],
+            "screen_ended"
+        );
+        let st = ask(&mut s, &b, "screen.status", json!({}));
+        assert_eq!(
+            st,
+            json!({"ok": true, "enabled": true, "active": true, "mine": false})
+        );
+        // The frame, then nothing new for the same seq.
+        let f = ask(&mut s, &a, "screen.frame", json!({"after": 0}));
+        assert_eq!(f["seq"], 3);
+        assert_eq!(f["jpeg"], "anBlZw==");
+        assert!(f.get("token").is_none());
+        assert_eq!(
+            ask(&mut s, &a, "screen.frame", json!({"after": 3}))["same"],
+            true
+        );
+        // Touches: checked whole, then passed on.
+        let ev =
+            json!({"events": [{"k": "d", "x": 0.5, "y": 0.5}, {"k": "u", "x": 0.5, "y": 0.5}]});
+        assert_eq!(ask(&mut s, &a, "screen.input", ev.clone())["ok"], true);
+        assert_eq!(h.touches.borrow().len(), 2);
+        let bad = json!({"events": [{"k": "d", "x": 2, "y": 0.5}]});
+        assert_eq!(ask(&mut s, &a, "screen.input", bad)["error"], "invalid");
+        assert_eq!(
+            ask(&mut s, &b, "screen.input", ev.clone())["error"],
+            "screen_ended"
+        );
+        assert_eq!(h.touches.borrow().len(), 2);
+        // A private page: no picture, no touch.
+        h.hidden.set(Some("camera"));
+        assert_eq!(
+            ask(&mut s, &a, "screen.frame", json!({}))["hidden"],
+            "camera"
+        );
+        assert_eq!(
+            ask(&mut s, &a, "screen.input", ev.clone())["error"],
+            "screen_hidden"
+        );
+        assert_eq!(h.touches.borrow().len(), 2);
+        h.hidden.set(None);
+        // Revoked: the session ends with it.
+        let a_id = {
+            let me = s.check(&a, at(0)).unwrap().hash.clone();
+            s.list(at(0))
+                .iter()
+                .find(|x| x.hash == me)
+                .unwrap()
+                .id()
+                .to_string()
+        };
+        assert_eq!(
+            ask(&mut s, &b, "sessions.revoke", json!({"id": a_id}))["ok"],
+            true
+        );
+        assert!(!s.remote.active());
+        assert_eq!(h.signs.borrow().last().unwrap(), &None);
+        // Now the other may; Stop in the browser ends it.
+        assert_eq!(ask(&mut s, &b, "screen.start", json!({}))["ok"], true);
+        assert_eq!(ask(&mut s, &b, "screen.stop", json!({}))["ok"], true);
+        assert!(!s.remote.active());
+        // Stop on the screen: nobody for a while.
+        assert_eq!(ask(&mut s, &b, "screen.start", json!({}))["ok"], true);
+        remote_stop(&h, &mut s, End::Screen, at(0));
+        assert_eq!(
+            ask(&mut s, &b, "screen.start", json!({}))["error"],
+            "screen_stopped"
+        );
     }
 }

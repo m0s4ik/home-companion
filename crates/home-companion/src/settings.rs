@@ -470,8 +470,27 @@ impl Settings {
     }
 
     pub fn save_panel_on(&self, on: bool) {
-        let mut t = toml::Table::new();
-        t.insert("on".into(), on.into());
+        self.save_panel_key("on", on);
+    }
+
+    /// Settings → Access from the browser → Remote screen: `[panel] screen`; off by default.
+    pub fn panel_screen(&self) -> bool {
+        self.table()
+            .and_then(|t| t.get("panel")?.as_table()?.get("screen")?.as_bool())
+            .unwrap_or(false)
+    }
+
+    pub fn save_panel_screen(&self, on: bool) {
+        self.save_panel_key("screen", on);
+    }
+
+    /// One key of `[panel]`, the others kept.
+    fn save_panel_key(&self, key: &str, on: bool) {
+        let mut t = self
+            .table()
+            .and_then(|t| t.get("panel")?.as_table().cloned())
+            .unwrap_or_default();
+        t.insert(key.into(), on.into());
         self.save_logged("panel", t.into());
     }
 

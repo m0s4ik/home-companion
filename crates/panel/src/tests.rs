@@ -29,6 +29,11 @@ impl Body for Fake {
             "pair.qr" => json!({"ok": false, "error": "bad_ticket"}),
             _ if !session => json!({"ok": false, "error": "no_session"}),
             "set" if r["key"] == "nope" => json!({"ok": false, "error": "unknown_key"}),
+            // A JPEG's first bytes (FF D8 FF), then the same frame.
+            "screen.frame" if r["after"] == 0 => json!({"ok": true, "seq": 7, "jpeg": "/9j/"}),
+            "screen.frame" if r["after"] == 1 => json!({"ok": true, "seq": 8, "jpeg": "AAAA"}),
+            "screen.frame" if r["after"] == 2 => json!({"ok": true, "hidden": "camera"}),
+            "screen.frame" => json!({"ok": true, "same": true}),
             _ => json!({"ok": true, "values": {}}),
         })
     }
@@ -39,6 +44,7 @@ fn panel() -> Panel<Fake> {
         body: Fake::default(),
         hostname: "thinksmart".into(),
         rate: RateLimit::default(),
+        screen_rate: RateLimit::default(),
     }
 }
 
@@ -396,6 +402,7 @@ fn over_sockets_and_idle() {
         body: SocketBody { path: sock },
         hostname: String::new(),
         rate: RateLimit::default(),
+        screen_rate: RateLimit::default(),
     });
     let server = std::thread::spawn(move || run(p, listener, Duration::from_millis(1500)));
     let raw = |r: String| {
@@ -560,4 +567,116 @@ fn the_widgets_routes() {
     let r = post("/api/quotes/add", "{}", &[("Sec-Fetch-Site", "cross-site")]);
     assert_eq!(status(&p, &r), 403);
     assert_eq!(p.body.asked.lock().unwrap().len(), n);
+}
+
+fn get_with_cookie(target: &str) -> Request {
+    req(
+        "GET",
+        target,
+        &[(
+            "Cookie",
+            "hc_panel=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )],
+        "",
+    )
+}
+
+#[test]
+fn the_remote_screens_frames_come_as_pictures() {
+    let p = panel();
+    let r = p.route(
+        &get_with_cookie("/api/screen/frame?after=0"),
+        lan(),
+        Instant::now(),
+    );
+    assert_eq!(r.status, 200);
+    assert_eq!(header(&r, "content-type"), Some("image/jpeg"));
+    assert_eq!(header(&r, "x-frame-seq"), Some("7"));
+    assert_eq!(header(&r, "cache-control"), Some("no-store"));
+    assert_eq!(r.body, vec![0xFF, 0xD8, 0xFF]);
+    // Not a JPEG: not passed on.
+    let r = p.route(
+        &get_with_cookie("/api/screen/frame?after=1"),
+        lan(),
+        Instant::now(),
+    );
+    assert_eq!(r.status, 502);
+    // Hidden: the body's word, as JSON.
+    let r = p.route(
+        &get_with_cookie("/api/screen/frame?after=2"),
+        lan(),
+        Instant::now(),
+    );
+    assert_eq!(r.status, 200);
+    assert!(String::from_utf8_lossy(&r.body).contains("camera"));
+    // Nothing new: the request waits, then answers empty.
+    let t = Instant::now();
+    let r = p.route(
+        &get_with_cookie("/api/screen/frame?after=9"),
+        lan(),
+        Instant::now(),
+    );
+    assert_eq!(r.status, 204);
+    assert!(
+        t.elapsed() >= FRAME_WAIT - FRAME_POLL && t.elapsed() < FRAME_WAIT + Duration::from_secs(1)
+    );
+    // Without a session: the body says no.
+    let r = p.route(
+        &req("GET", "/api/screen/frame", &[], ""),
+        lan(),
+        Instant::now(),
+    );
+    assert_eq!(r.status, 401);
+    // Touches: only the events field goes on; a write needs the same origin.
+    let r = p.route(
+        &post(
+            "/api/screen/input",
+            r#"{"events":[{"k":"d","x":0.5,"y":0.5}],"op":"set"}"#,
+            &[],
+        ),
+        lan(),
+        Instant::now(),
+    );
+    assert_eq!(r.status, 200);
+    let last = p.body.asked.lock().unwrap().last().unwrap().clone();
+    assert_eq!(last["op"], "screen.input");
+    assert_eq!(last["events"][0]["k"], "d");
+    let mut bad = post("/api/screen/start", "{}", &[]);
+    bad.headers.retain(|(n, _)| n != "Origin");
+    assert_eq!(status(&p, &bad), 403);
+}
+
+#[test]
+fn watching_has_its_own_budget() {
+    let p = panel();
+    let now = Instant::now();
+    for _ in 0..SCREEN_PER_SECOND {
+        assert_eq!(
+            p.route(&post("/api/screen/stop", "{}", &[]), lan(), now)
+                .status,
+            200
+        );
+    }
+    assert_eq!(
+        p.route(&post("/api/screen/stop", "{}", &[]), lan(), now)
+            .status,
+        429
+    );
+    // The rest of the page is still served.
+    assert_eq!(
+        p.route(&req("GET", "/api/state", &[], ""), lan(), now)
+            .status,
+        401
+    );
+}
+
+#[test]
+fn base64_back_to_bytes() {
+    assert_eq!(base64_decode("").unwrap(), b"");
+    assert_eq!(base64_decode("Zg==").unwrap(), b"f");
+    assert_eq!(base64_decode("Zm8=").unwrap(), b"fo");
+    assert_eq!(base64_decode("Zm9vYmFy").unwrap(), b"foobar");
+    for bad in ["Zg=", "Z===", "Zg==Zg==", "Zm9v!mFy", "Zm9\n"] {
+        assert!(base64_decode(bad).is_none(), "{bad}");
+    }
 }

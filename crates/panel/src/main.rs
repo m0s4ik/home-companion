@@ -46,6 +46,7 @@ fn main() -> ExitCode {
         body: SocketBody { path: socket },
         hostname: panel::hostname(),
         rate: RateLimit::default(),
+        screen_rate: RateLimit::default(),
     });
     match panel::run(p, listener, idle) {
         Ok(()) => ExitCode::SUCCESS,

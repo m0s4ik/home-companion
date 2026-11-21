@@ -7,7 +7,7 @@
 // Panel v5: on a desk (from 900 px) a column of sections on the left, and the widgets as a
 // list with the chosen one's page beside it; on a phone one thing per page. The address says
 // which page (#home, #w/<kind>, #aggiungi, #ordine, #spesa, #impostazioni[/<group>],
-// #accessi, #menu): the browser's back key works.
+// #schermo, #accessi, #menu): the browser's back key works.
 'use strict';
 
 const app = document.getElementById('app');
@@ -80,7 +80,7 @@ const IC = {
   search: 'M11 4a7 7 0 100 14 7 7 0 000-14z M16 16l4 4', pencil: 'M4 20l1-4L16 5l3 3L8 19z', left: 'M14 6l-6 6 6 6', right: 'M10 6l6 6-6 6',
   bars: 'M5 9h14 M5 15h14', menu: 'M4 7h16 M4 12h16 M4 17h16', x: 'M6 6l12 12 M18 6L6 18',
   grid: 'M4 4h7v7H4z M13 4h7v4h-7z M13 10h7v10h-7z M4 13h7v7H4z', sliders: 'M4 7h10 M18 7h2 M4 17h2 M10 17h10 M16 9a2 2 0 100-4 2 2 0 000 4z M8 19a2 2 0 100-4 2 2 0 000 4z',
-  phone: 'M8 3h8v18H8z M11 18h2', ok: 'M5 12l5 5 9-10',
+  phone: 'M8 3h8v18H8z M11 18h2', ok: 'M5 12l5 5 9-10', screen: 'M3 5h18v11H3z M9 20h6 M12 16v4',
   sun: 'M12 8a4 4 0 100 8 4 4 0 000-8z M12 2v2 M12 20v2 M4.9 4.9l1.4 1.4 M17.7 17.7l1.4 1.4 M2 12h2 M20 12h2 M4.9 19.1l1.4-1.4 M17.7 6.3l1.4-1.4',
   cloud: 'M7 18h10a3.5 3.5 0 000-7 5 5 0 00-9.6-1A4 4 0 007 18z', rain: 'M7 15h10a3.5 3.5 0 000-7 5 5 0 00-9.6-1A4 4 0 007 15z M9 18l-1 2 M13 18l-1 2 M17 18l-1 2',
   snow: 'M7 15h10a3.5 3.5 0 000-7 5 5 0 00-9.6-1A4 4 0 007 15z M9 19h.1 M13 19h.1 M17 19h.1',
@@ -564,7 +564,8 @@ function refocus(id) {
 // ---- The page drawn from the address.
 
 const SECTIONS = [['home', 'panel_tab_widgets', 'grid'], ['spesa', 'panel_tab_shopping', 'shopping'],
-  ['impostazioni', 'panel_tab_settings', 'sliders'], ['accessi', 'panel_tab_access', 'phone']];
+  ['impostazioni', 'panel_tab_settings', 'sliders'], ['schermo', 'panel_tab_screen', 'screen'],
+  ['accessi', 'panel_tab_access', 'phone']];
 const GROUPS = ['screen', 'voice', 'lists'];
 // The addresses of the panel before v5.
 const OLD = { widgets: 'home', shopping: 'spesa', settings: 'impostazioni', access: 'accessi' };
@@ -599,6 +600,7 @@ function render(keep) {
   else if (r.p === 'impostazioni' && GROUPS.includes(r.k)) { back = ['impostazioni', t('panel_tab_settings')]; body = settingsGroup(r.k, 'h1'); }
   else if (r.p === 'impostazioni') body = settingsMenu();
   else if (r.p === 'accessi') body = access();
+  else if (r.p === 'schermo') body = screenPage();
   else body = home();
   drawSide(r);
   drawHead(r, back);
@@ -612,7 +614,7 @@ function render(keep) {
 
 // The column on the left (a desk): Alfred, then the four sections.
 function drawSide(r) {
-  const sec = ['spesa', 'impostazioni', 'accessi'].includes(r.p) ? r.p : 'home';
+  const sec = ['spesa', 'impostazioni', 'schermo', 'accessi'].includes(r.p) ? r.p : 'home';
   const who = el('div', 'who');
   const face = art('face');
   face.width = 40; face.height = 40;
@@ -1324,6 +1326,167 @@ function access() {
   return d;
 }
 
+// ---- Screen: the device's screen, live, touched from here (crates/home-companion/src/panel/
+// remote.rs). Frames are asked one at a time (the panel waits for a new one), only while this
+// page is open and visible; touches go in small batches. The device shows who is in control.
+
+const R = { box: null, canvas: null, note: null, bar: null, live: false, seq: 0, run: 0, queue: [], flush: 0, down: false, size: null };
+
+function screenNote(text, home) {
+  R.note.replaceChildren();
+  R.note.hidden = !text;
+  if (!text) return;
+  R.note.append(el('p', null, text));
+  if (home) R.note.append(button('ghost small', t('panel_screen_home'), async () => { await api('/api/screen/home', {}); }));
+}
+
+function screenBar() {
+  const b = R.bar;
+  b.replaceChildren();
+  if (R.live) {
+    const dot = el('span', 'livedot', t('panel_screen_live'));
+    b.append(dot, button('ghost small', t('panel_screen_stop'), () => screenStop(true)));
+  } else {
+    b.append(button('primary', t('panel_screen_start'), screenStart));
+  }
+}
+
+function screenBuild() {
+  if (R.box) return;
+  R.box = el('div', 'screenbox');
+  const frame = el('div', 'screenframe');
+  R.canvas = el('canvas');
+  R.canvas.width = 640; R.canvas.height = 400;
+  R.canvas.setAttribute('aria-label', t('panel_screen_title'));
+  R.note = el('div', 'screennote');
+  R.note.hidden = true;
+  frame.append(R.canvas, R.note);
+  R.bar = el('div', 'screenbar');
+  R.box.append(frame, R.bar);
+  const at = e => {
+    const b = R.canvas.getBoundingClientRect();
+    const c = v => Math.min(1, Math.max(0, v));
+    return { x: c((e.clientX - b.left) / b.width), y: c((e.clientY - b.top) / b.height) };
+  };
+  R.canvas.addEventListener('pointerdown', e => {
+    if (!R.live || R.down) return;
+    R.down = true;
+    R.canvas.setPointerCapture(e.pointerId);
+    R.queue.push({ k: 'd', ...at(e) });
+    screenFlush();
+    e.preventDefault();
+  });
+  R.canvas.addEventListener('pointermove', e => {
+    if (!R.live || !R.down) return;
+    const p = at(e);
+    const last = R.queue[R.queue.length - 1];
+    // Within one batch only the last move counts.
+    if (last && last.k === 'm') { last.x = p.x; last.y = p.y; } else R.queue.push({ k: 'm', ...p });
+    if (!R.flush) R.flush = setTimeout(screenFlush, 70);
+  });
+  const up = e => {
+    if (!R.down) return;
+    R.down = false;
+    R.queue.push({ k: 'u', ...at(e) });
+    screenFlush();
+  };
+  R.canvas.addEventListener('pointerup', up);
+  R.canvas.addEventListener('pointercancel', up);
+}
+
+async function screenFlush() {
+  clearTimeout(R.flush);
+  R.flush = 0;
+  if (!R.queue.length || !R.live) { R.queue = []; return; }
+  const events = R.queue.splice(0, 32);
+  const r = await api('/api/screen/input', { events });
+  if (!r.ok && r.error !== 'screen_hidden' && r.error !== 'slow_down') screenEnded(r.error);
+  if (R.queue.length) screenFlush();
+}
+
+async function screenStart() {
+  const r = await api('/api/screen/start', {});
+  if (!r.ok) { screenNote(errorText(r.error)); return; }
+  R.live = true;
+  R.seq = 0;
+  screenNote('');
+  screenBar();
+  screenLoop(++R.run);
+}
+
+function screenEnded(code) {
+  R.live = false;
+  R.run++;
+  screenBar();
+  screenNote(code ? errorText(code) : '');
+}
+
+async function screenStop(tell) {
+  if (!R.live) return;
+  R.live = false;
+  R.run++;
+  if (R.bar) screenBar();
+  if (tell) await api('/api/screen/stop', {});
+}
+
+// One frame after the other while this run lasts.
+async function screenLoop(run) {
+  const ctx = R.canvas.getContext('2d');
+  while (R.live && run === R.run) {
+    let r;
+    try {
+      r = await fetch('/api/screen/frame?after=' + R.seq, { credentials: 'same-origin', cache: 'no-store' });
+    } catch (e) {
+      await new Promise(res => setTimeout(res, 1000));
+      continue;
+    }
+    if (run !== R.run) return;
+    if (r.status === 204) continue;
+    if (r.status === 429) { await new Promise(res => setTimeout(res, 1000)); continue; }
+    const type = r.headers.get('Content-Type') || '';
+    if (r.ok && type.startsWith('image/jpeg')) {
+      R.seq = Number(r.headers.get('X-Frame-Seq')) || 0;
+      try {
+        const bmp = await createImageBitmap(await r.blob());
+        if (R.canvas.width !== bmp.width || R.canvas.height !== bmp.height) {
+          R.canvas.width = bmp.width; R.canvas.height = bmp.height;
+        }
+        ctx.drawImage(bmp, 0, 0);
+        bmp.close();
+        if (!R.note.hidden) screenNote('');
+      } catch (e) { /* a broken frame: the next one */ }
+      continue;
+    }
+    let j = {};
+    try { j = await r.json(); } catch (e) { j = { ok: false, error: 'network' }; }
+    if (r.status === 401) { screenEnded(); login(); return; }
+    if (j.ok && j.hidden) {
+      ctx.fillStyle = '#03050d';
+      ctx.fillRect(0, 0, R.canvas.width, R.canvas.height);
+      R.seq = 0;
+      screenNote(t('panel_screen_hidden'), true);
+      await new Promise(res => setTimeout(res, 700));
+      continue;
+    }
+    screenEnded(j.error);
+    return;
+  }
+}
+
+function screenPage() {
+  screenBuild();
+  const d = el('div', 'narrow wide');
+  d.append(el('h1', null, t('panel_screen_title')), el('p', 'help lead', t('panel_screen_lead')), R.box);
+  screenBar();
+  // Whether it may, and whether this device is in control already (another tab, a reload).
+  api('/api/screen').then(s => {
+    if (!s.ok) return;
+    if (!s.enabled) { screenStop(false); screenNote(t('panel_screen_off')); R.bar.replaceChildren(); return; }
+    if (s.mine && !R.live) screenStart();
+  });
+  return d;
+}
+
 // ---- Start.
 
 async function main() {
@@ -1362,10 +1525,19 @@ async function start() {
   else login(qr ? errorText(qr) : '');
 }
 
-addEventListener('hashchange', () => { S.sorting = {}; render(); scrollTo(0, 0); });
+addEventListener('hashchange', () => {
+  // Leaving the screen's page ends the session (nothing is captured for nobody).
+  if (route().p !== 'schermo') screenStop(true);
+  S.sorting = {}; render(); scrollTo(0, 0);
+});
+addEventListener('pagehide', () => {
+  if (R.live) { R.live = false; fetch('/api/screen/stop', { method: 'POST', keepalive: true, credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}' }); }
+});
 wideQ.addEventListener('change', () => render(true));
 // Back to the front: the data again.
 document.addEventListener('visibilitychange', () => {
+  // Hidden: no frames for nobody (the device ends the session after a few seconds anyway).
+  if (document.visibilityState === 'hidden') screenStop(true);
   if (document.visibilityState === 'visible' && inside && !document.querySelector('.dragging')) main();
 });
 
