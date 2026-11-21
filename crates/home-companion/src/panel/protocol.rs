@@ -1304,7 +1304,12 @@ mod tests {
         // The weather (an example here): its big block and the next hours under it.
         let weather = &page(&w, "weather")["model"];
         assert_eq!(weather["layout"], "weather");
-        assert_eq!(weather["hero"]["label"], "Nuvoloso, pioggia dalle 18:00");
+        // The hour is the sample's in the machine's own time zone (CI runs in UTC).
+        let label = weather["hero"]["label"].as_str().unwrap();
+        assert!(
+            label.starts_with("Nuvoloso, pioggia dalle ") && label.ends_with(":00"),
+            "{label}"
+        );
         assert_eq!(weather["hero"]["range"], "Oggi tra 8° e 15°");
         assert_eq!(weather["windows"][0]["rows"].as_array().unwrap().len(), 4);
         // A quote added: its row waits for the data.
