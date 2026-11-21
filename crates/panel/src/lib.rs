@@ -16,6 +16,9 @@
 //!   no CORS header is ever sent);
 //! - the session's token lives only in a cookie `HttpOnly; SameSite=Strict`: the pages' script
 //!   never sees it, and the body's answers carrying it are stripped before they leave;
+//! - the remote screen (`/api/screen/*`): its own budget per address ([`SCREEN_PER_SECOND`]), a
+//!   frame request waits here for a new frame (at most [`FRAME_WAIT`], asking the body every
+//!   [`FRAME_POLL`]) and gets the JPEG itself (the body sends it as base64 in its JSON line);
 //! - every answer has a strict Content-Security-Policy (no inline script), `nosniff`,
 //!   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store` (the two
 //!   font files and Alfred's pictures: kept a day).
@@ -41,6 +44,15 @@ pub const MAX_CONNECTIONS: usize = 8;
 pub const PER_ADDRESS: usize = 4;
 pub const PER_SECOND: u32 = 20;
 pub const COOKIE: &str = "hc_panel";
+/// The remote screen's requests from one address in a second (frames and touches; apart from
+/// [`PER_SECOND`], so watching does not starve the rest of the page).
+pub const SCREEN_PER_SECOND: u32 = 30;
+/// A frame request waits this long at most for a frame newer than the browser's…
+pub const FRAME_WAIT: Duration = Duration::from_millis(1500);
+/// …asking the body this often.
+pub const FRAME_POLL: Duration = Duration::from_millis(100);
+/// A frame bigger than this is not passed on.
+pub const MAX_FRAME: usize = 1 << 20;
 /// The cookie lasts as long as a session can (the body ends it sooner when unused).
 const COOKIE_AGE: u64 = 30 * 86400;
 
@@ -141,6 +153,11 @@ pub struct RateLimit {
 impl RateLimit {
     /// True if `ip` may make one more request now.
     pub fn allow(&self, ip: IpAddr, now: Instant) -> bool {
+        self.allow_up_to(ip, now, PER_SECOND)
+    }
+
+    /// True if `ip` may make one more request now, `limit` a second.
+    pub fn allow_up_to(&self, ip: IpAddr, now: Instant, limit: u32) -> bool {
         let mut m = self.seen.lock().unwrap_or_else(|e| e.into_inner());
         if m.len() > 1024 {
             m.retain(|_, (t, _)| now.duration_since(*t) < Duration::from_secs(1));
@@ -150,7 +167,7 @@ impl RateLimit {
             *e = (now, 0);
         }
         e.1 += 1;
-        e.1 <= PER_SECOND
+        e.1 <= limit
     }
 }
 
@@ -160,6 +177,8 @@ pub struct Panel<B: Body> {
     /// This device's host name (`<name>.local` and `<name>` are good `Host`s).
     pub hostname: String,
     pub rate: RateLimit,
+    /// The remote screen's own budget.
+    pub screen_rate: RateLimit,
 }
 
 /// The host part of a `Host` header ("192.0.2.5:8125" → "192.0.2.5", "[fd00::1]:8125" →
@@ -268,10 +287,11 @@ fn is_hex(s: &str, n: usize) -> bool {
 fn secure(r: Response) -> Response {
     // The fonts and pictures never change within a version: kept a day (everything else:
     // never kept).
-    let fixed = r
-        .headers
-        .iter()
-        .any(|(n, v)| n == "Content-Type" && (v.starts_with("font/") || v.starts_with("image/")));
+    let fixed = r.headers.iter().any(|(n, v)| {
+        n == "Content-Type"
+            && (v.starts_with("font/") || v.starts_with("image/"))
+            && v != "image/jpeg"
+    });
     let cache = if fixed {
         "public, max-age=86400"
     } else {
@@ -329,6 +349,62 @@ fn relay(answer: Option<Value>) -> Response {
     json_response(status, &a)
 }
 
+/// `name=<digits>` of a query string.
+fn query_u64(q: &str, name: &str) -> Option<u64> {
+    q.split('&')
+        .filter_map(|p| p.split_once('='))
+        .find(|(k, _)| *k == name)
+        .and_then(|(_, v)| (v.len() <= 20).then(|| v.parse().ok()).flatten())
+}
+
+/// The body's frame (`{seq, jpeg: base64}`) as the picture itself.
+fn frame(v: &Value) -> Response {
+    let Some(jpeg) = v["jpeg"].as_str().and_then(base64_decode) else {
+        return error(502, "bad_frame");
+    };
+    if jpeg.len() > MAX_FRAME || !jpeg.starts_with(&[0xFF, 0xD8]) {
+        return error(502, "bad_frame");
+    }
+    let seq = v["seq"].as_u64().unwrap_or(0).to_string();
+    Response::new(200)
+        .header("X-Frame-Seq", &seq)
+        .body("image/jpeg", jpeg)
+}
+
+/// Base64 with padding (RFC 4648); None if anything else is in it.
+pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u32> {
+        Some(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        } as u32)
+    }
+    let b = s.as_bytes();
+    if b.len() % 4 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(b.len() / 4 * 3);
+    for (i, c) in b.chunks(4).enumerate() {
+        let last = i == b.len() / 4 - 1;
+        let pad = c.iter().rev().take_while(|&&x| x == b'=').count();
+        if pad > 2 || (pad > 0 && !last) {
+            return None;
+        }
+        let mut n = 0u32;
+        for &x in &c[..4 - pad] {
+            n = n << 6 | val(x)?;
+        }
+        n <<= 6 * pad as u32;
+        let bytes = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
+        out.extend_from_slice(&bytes[..3 - pad]);
+    }
+    Some(out)
+}
+
 impl<B: Body> Panel<B> {
     /// One request → its answer. `peer`: the browser's address.
     pub fn route(&self, req: &Request, peer: IpAddr, now: Instant) -> Response {
@@ -339,7 +415,13 @@ impl<B: Body> Panel<B> {
         if !httpd::is_private(peer) {
             return error(403, "not_local");
         }
-        if !self.rate.allow(peer, now) {
+        let screen = req.path().starts_with("/api/screen");
+        let allowed = if screen {
+            self.screen_rate.allow_up_to(peer, now, SCREEN_PER_SECOND)
+        } else {
+            self.rate.allow(peer, now)
+        };
+        if !allowed {
             return error(429, "slow_down").header("Retry-After", "1");
         }
         let host = req.header("host");
@@ -515,6 +597,32 @@ impl<B: Body> Panel<B> {
                 relay(ask("sessions.revoke", json!({"id": field("id")})))
             }
             (true, "/api/logout") => clear_cookie(relay(ask("session.end", json!({})))),
+            (false, "/api/screen") => relay(ask("screen.status", json!({}))),
+            (false, "/api/screen/frame") => {
+                let after = query_u64(req.query(), "after").unwrap_or(0);
+                let started = Instant::now();
+                loop {
+                    let a = ask("screen.frame", json!({"after": after}));
+                    match &a {
+                        Some(v) if v["ok"] == true && v["same"] == true => {
+                            if started.elapsed() + FRAME_POLL > FRAME_WAIT {
+                                return Response::new(204);
+                            }
+                            std::thread::sleep(FRAME_POLL);
+                        }
+                        Some(v) if v["ok"] == true && v["jpeg"].is_string() => {
+                            return frame(v);
+                        }
+                        _ => return relay(a),
+                    }
+                }
+            }
+            (true, "/api/screen/start") => relay(ask("screen.start", json!({}))),
+            (true, "/api/screen/stop") => relay(ask("screen.stop", json!({}))),
+            (true, "/api/screen/home") => relay(ask("screen.home", json!({}))),
+            (true, "/api/screen/input") => {
+                relay(ask("screen.input", json!({"events": field("events")})))
+            }
             (true, _) => error(404, "not_found"),
             (false, _) => error(404, "not_found"),
         }
