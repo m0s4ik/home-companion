@@ -36,6 +36,11 @@ of home-companion.
   (144-175: the toolbox put away, back to `idle.png`), aligned on `idle.png` and matched to its brightness. The pose with the tools (drawn with
   gpt-image-2.5-flare from `idle.png`) was the clips' key frame; there is no still pose for it: between two rounds
   the body keeps the loop's last frame.
+- **More**: `animations/more.png` (96 frames, 220x605, 16 fps) holds `more_in` (0-15: he turns his head to the
+  page's tiles), `more_hold` (16-79, 4 s, every 8 s while the More page is open: he looks at them, a blink) and
+  `more_out` (80-95: he looks ahead again), aligned on `idle.png` and matched to its brightness; its key frame was a
+  pose drawn with gpt-image-2.5-flare from `idle.png`. Going from More to the settings pages he looks ahead first,
+  then takes out the toolbox (and the other way round).
 - **How the animations were made**: Wan 2.2 I2V A14B (fp8, with the lightx2v 4-step LoRA; weights under
   Apache-2.0) in ComfyUI, from the poses, one clip per state.
 

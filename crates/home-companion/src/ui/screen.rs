@@ -2988,6 +2988,7 @@ impl<S: Screen> Ui<S> {
             Phase::Home if SETTINGS_PAGES.contains(&self.screen.get_page().as_str()) => {
                 Mode::Settings
             }
+            Phase::Home if self.screen.get_page().as_str() == "altro" => Mode::More,
             Phase::Home => Mode::Home,
             Phase::Offline => Mode::Still,
             _ => self

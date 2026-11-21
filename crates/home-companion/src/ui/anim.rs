@@ -23,6 +23,9 @@
 //!   under way is finished, then `settings_out`, then the home as by day (its pause, `idle`).
 //!   Opening them again while `settings_out` plays finishes it first. A conversation cuts these
 //!   at once (decoration).
+//! - **the More page**: the same with `more_in` (he turns to its tiles), `more_hold` now and then
+//!   and `more_out`. Going from one of these pages to the other puts the first page's things
+//!   away (its `_out`) before the second's `_in`.
 //! - **a house command went through**: `done` once (a bow) on the home, then as after `wake`;
 //!   when it comes during the conversation, it plays when the home comes back (within
 //!   [`DONE_WAIT`]).
@@ -90,12 +93,49 @@ pub enum Mode {
     Night,
     /// A settings page: `settings_in`, then `settings_hold` now and then.
     Settings,
+    /// The More page: `more_in`, then `more_hold` now and then.
+    More,
     /// One fixed frame (the demos' screenshots of an animation).
     Frame(&'static str, u32),
 }
 
-/// The settings clips that end on the tools held (leaving plays `settings_out` after them).
-const TOOLS_HELD: [&str; 2] = ["settings_in", "settings_hold"];
+/// A page with its own clips: `into` once, then `hold` now and then, `out` when it is left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Act {
+    into: &'static str,
+    hold: &'static str,
+    out: &'static str,
+}
+
+const SETTINGS: Act = Act {
+    into: "settings_in",
+    hold: "settings_hold",
+    out: "settings_out",
+};
+const MORE: Act = Act {
+    into: "more_in",
+    hold: "more_hold",
+    out: "more_out",
+};
+
+impl Mode {
+    /// The page's clips, for the modes that have them.
+    fn act(self) -> Option<Act> {
+        match self {
+            Mode::Settings => Some(SETTINGS),
+            Mode::More => Some(MORE),
+            _ => None,
+        }
+    }
+}
+
+/// The page whose `into` or `hold` this clip is (it ends with the things held: leaving plays
+/// that page's `out` after it).
+fn held_by(clip: &str) -> Option<Act> {
+    [SETTINGS, MORE]
+        .into_iter()
+        .find(|a| clip == a.into || clip == a.hold)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Tools {
@@ -196,23 +236,37 @@ impl Sequencer {
         self.since = now;
         self.home = Home::Still;
         match (prev, mode) {
-            (_, Mode::Settings) => {
-                self.tools = match home {
-                    Home::Clip { clip, start } if prev == Mode::Home => {
+            (_, Mode::Settings | Mode::More) => {
+                self.tools = match (prev.act(), home, tools) {
+                    (None, Home::Clip { clip, start }, _) if prev == Mode::Home => {
                         Tools::Finish { clip, start }
                     }
+                    // From the other page: its clip under way, or its things put away.
+                    (Some(_), _, Tools::Finish { clip, start } | Tools::Clip { clip, start }) => {
+                        Tools::Finish { clip, start }
+                    }
+                    (Some(_), _, Tools::Still { clip, .. }) => match self.put_away(clip) {
+                        Some(out) => Tools::Finish {
+                            clip: out,
+                            start: now,
+                        },
+                        None => self.tools_in(now),
+                    },
                     _ => self.tools_in(now),
                 };
             }
-            // Leaving the settings pages: the settings clip under way, then the tools put away.
-            (Mode::Settings, Mode::Home) => {
+            // Leaving the page: its clip under way, then its things put away.
+            (Mode::Settings | Mode::More, Mode::Home) => {
                 self.done_until = None;
                 self.home = match tools {
                     Tools::Finish { clip, start } => Home::Clip { clip, start },
                     Tools::Clip { clip, start } => Home::Clip { clip, start },
-                    Tools::Still { .. } if self.clips.contains_key("settings_out") => Home::Clip {
-                        clip: "settings_out",
-                        start: now,
+                    Tools::Still { clip, .. } => match self.put_away(clip) {
+                        Some(out) => Home::Clip {
+                            clip: out,
+                            start: now,
+                        },
+                        None => Home::Still,
                     },
                     _ => Home::Still,
                 };
@@ -247,12 +301,22 @@ impl Sequencer {
         }
     }
 
-    /// `settings_in` from `start`; without it `settings_hold`; without either the pose.
+    /// The page's `into` from `start`; without it its `hold`; without either the pose.
     fn tools_in(&self, start: Instant) -> Tools {
-        ["settings_in", "settings_hold"]
+        let Some(act) = self.mode.act() else {
+            return Tools::Wait;
+        };
+        [act.into, act.hold]
             .into_iter()
             .find(|n| self.clips.contains_key(n))
             .map_or(Tools::Wait, |clip| Tools::Clip { clip, start })
+    }
+
+    /// The `out` that follows `clip` when it ends with a page's things held (and is there).
+    fn put_away(&self, clip: &str) -> Option<&'static str> {
+        held_by(clip)
+            .map(|a| a.out)
+            .filter(|out| self.clips.contains_key(out))
     }
 
     /// A settings clip is on screen or still to play (its sheet must stay).
@@ -260,6 +324,7 @@ impl Sequencer {
         let settings = |c: &str| c.starts_with("settings_");
         match self.mode {
             Mode::Settings => true,
+            Mode::More => matches!(self.tools, Tools::Finish { clip, .. } if settings(clip)),
             Mode::Home => match self.home {
                 Home::Clip { clip, .. } | Home::Pause { clip, .. } => settings(clip),
                 Home::Still => false,
@@ -299,7 +364,7 @@ impl Sequencer {
             Mode::Loop(name) => self.looped(name, now),
             Mode::Home => self.home(now, awake),
             Mode::Night => self.night(now),
-            Mode::Settings => self.tools(now, awake),
+            Mode::Settings | Mode::More => self.tools(now, awake),
             Mode::Frame(clip, index) => match self.clips.get(clip) {
                 Some(t) => Show::Frame {
                     clip,
@@ -321,7 +386,9 @@ impl Sequencer {
                     || self.home != Home::Still
             }
             Mode::Night => !matches!(self.night, Night::Still { .. }),
-            Mode::Settings => matches!(self.tools, Tools::Finish { .. } | Tools::Clip { .. }),
+            Mode::Settings | Mode::More => {
+                matches!(self.tools, Tools::Finish { .. } | Tools::Clip { .. })
+            }
             Mode::Frame(..) => false,
         }
     }
@@ -392,25 +459,42 @@ impl Sequencer {
                         let index = t.at(now - start).min(t.frames - 1);
                         return Show::Frame { clip, index };
                     }
-                    self.tools = if matches!(self.tools, Tools::Finish { .. }) {
-                        self.tools_in(end)
-                    } else {
-                        let pause = self
-                            .clips
-                            .get("settings_hold")
-                            .map_or(f32::INFINITY, |h| h.pause.max(0.0));
-                        Tools::Still {
-                            clip,
-                            until: end + Duration::from_secs_f32(pause.min(86400.0)),
+                    let act = self.mode.act();
+                    let finished = matches!(self.tools, Tools::Finish { .. });
+                    self.tools = match held_by(clip) {
+                        // The other page's things: put away first.
+                        Some(other) if finished && Some(other) != act => {
+                            match self.put_away(clip) {
+                                Some(out) => Tools::Finish {
+                                    clip: out,
+                                    start: end,
+                                },
+                                None => self.tools_in(end),
+                            }
                         }
+                        // This page's things held (a clip of it, or one carried from the home):
+                        // still until the next round.
+                        Some(_) => {
+                            let pause = act
+                                .and_then(|a| self.clips.get(a.hold))
+                                .map_or(f32::INFINITY, |h| h.pause.max(0.0));
+                            Tools::Still {
+                                clip,
+                                until: end + Duration::from_secs_f32(pause.min(86400.0)),
+                            }
+                        }
+                        None => self.tools_in(end),
                     };
                 }
                 Tools::Still { clip, until } => {
                     // From now, not from `until` (the clock ticks once a second while still);
                     // only while the screen is awake.
-                    if awake && now >= until && self.clips.contains_key("settings_hold") {
+                    let hold = self.mode.act().map(|a| a.hold);
+                    if let Some(hold) =
+                        hold.filter(|h| awake && now >= until && self.clips.contains_key(h))
+                    {
                         self.tools = Tools::Clip {
-                            clip: "settings_hold",
+                            clip: hold,
                             start: now,
                         };
                         continue;
@@ -453,15 +537,14 @@ impl Sequencer {
                         let index = t.at(now - start).min(t.frames - 1);
                         return Show::Frame { clip, index };
                     }
-                    // The settings clip finished after the page was left: the tools go away.
-                    if TOOLS_HELD.contains(&clip) {
-                        self.home = if self.clips.contains_key("settings_out") {
-                            Home::Clip {
-                                clip: "settings_out",
+                    // A page's clip finished after the page was left: its things go away.
+                    if held_by(clip).is_some() {
+                        self.home = match self.put_away(clip) {
+                            Some(out) => Home::Clip {
+                                clip: out,
                                 start: end,
-                            }
-                        } else {
-                            Home::Still
+                            },
+                            None => Home::Still,
                         };
                         continue;
                     }
@@ -1046,5 +1129,63 @@ mod tests {
         assert!(!s.moving(true));
         s.set_mode(Mode::Frame("missing", 0), t0);
         assert_eq!(s.show(t0, true), Show::Pose);
+    }
+
+    /// `tools_seq` with the More page's clips too, 4 frames (0.25 s) each, hold pause 1 s.
+    fn both_seq(t0: Instant) -> Sequencer {
+        let mut s = tools_seq(t0);
+        for (name, pause) in [("more_in", 0.0), ("more_hold", 1.0), ("more_out", 0.0)] {
+            s.add(
+                name,
+                Timing {
+                    frames: 4,
+                    fps: 16.0,
+                    pause,
+                },
+            );
+        }
+        s
+    }
+
+    #[test]
+    fn more_looks_at_the_tiles_and_back() {
+        let t0 = Instant::now();
+        let mut s = both_seq(t0);
+        s.set_mode(Mode::More, t0);
+        assert!(!s.uses_settings());
+        assert_eq!(s.show(t0, true), frame("more_in", 0));
+        assert_eq!(s.show(t0 + ms(300), true), frame("more_in", 3));
+        // Now and then: one round of more_hold.
+        assert_eq!(s.show(t0 + ms(1250), true), frame("more_hold", 0));
+        assert_eq!(s.show(t0 + ms(1600), true), frame("more_hold", 3));
+        // Back home: looks ahead again, then the home.
+        s.set_mode(Mode::Home, t0 + ms(1700));
+        assert_eq!(s.show(t0 + ms(1700), true), frame("more_out", 0));
+        assert_eq!(s.show(t0 + ms(1940), true), frame("more_out", 3));
+    }
+
+    #[test]
+    fn from_more_to_settings_he_looks_ahead_first() {
+        let t0 = Instant::now();
+        let mut s = both_seq(t0);
+        s.set_mode(Mode::More, t0);
+        assert_eq!(s.show(t0 + ms(300), true), frame("more_in", 3));
+        // Settings opened from More: more_out, then the tools come out.
+        s.set_mode(Mode::Settings, t0 + ms(400));
+        assert!(s.uses_settings());
+        assert_eq!(s.show(t0 + ms(400), true), frame("more_out", 0));
+        assert_eq!(s.show(t0 + ms(640), true), frame("more_out", 3));
+        assert_eq!(s.show(t0 + ms(660), true), frame("settings_in", 0));
+        // Back to More from the settings: the tools put away, then he turns to the tiles.
+        assert_eq!(s.show(t0 + ms(950), true), frame("settings_in", 3));
+        s.set_mode(Mode::More, t0 + ms(1000));
+        assert!(s.uses_settings());
+        assert_eq!(s.show(t0 + ms(1000), true), frame("settings_out", 0));
+        assert_eq!(s.show(t0 + ms(1260), true), frame("more_in", 0));
+        assert!(!s.uses_settings());
+        // A More clip under way when Settings opens is finished, then put away.
+        s.set_mode(Mode::Settings, t0 + ms(1300));
+        assert_eq!(s.show(t0 + ms(1300), true), frame("more_in", 0));
+        assert_eq!(s.show(t0 + ms(1520), true), frame("more_out", 0));
     }
 }

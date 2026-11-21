@@ -149,7 +149,7 @@ pub struct Character {
 }
 
 /// The animations a character may have (characters/README.md, "Animations").
-pub const ANIMATIONS: [&str; 14] = [
+pub const ANIMATIONS: [&str; 17] = [
     "loading",
     "wake",
     "idle",
@@ -166,6 +166,10 @@ pub const ANIMATIONS: [&str; 14] = [
     "settings_in",
     "settings_hold",
     "settings_out",
+    // The "More" page: he looks at its tiles, now and then a blink, then ahead again.
+    "more_in",
+    "more_hold",
+    "more_out",
 ];
 
 /// One animation: frames `first..end` of a sheet, shown in `rect` (pose pixels) at `fps`.
