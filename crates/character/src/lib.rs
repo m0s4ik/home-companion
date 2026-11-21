@@ -30,10 +30,18 @@ pub enum State {
     TimerFinished,
     /// Night mode (the body's schedule): asleep. Without its own pose the body dims idle.
     Sleeping,
+    /// The pages that link Home Assistant: "plug it in".
+    Link,
+    /// Something longer under way (an update installs, the setup checks and repairs): at work.
+    Working,
+    /// Such a job went well: satisfied, for a little while.
+    Satisfied,
+    /// A reflex was done: a nod, for a moment.
+    Nod,
 }
 
 impl State {
-    pub const ALL: [State; 9] = [
+    pub const ALL: [State; 13] = [
         State::Idle,
         State::Listening,
         State::Thinking,
@@ -43,6 +51,10 @@ impl State {
         State::Muted,
         State::TimerFinished,
         State::Sleeping,
+        State::Link,
+        State::Working,
+        State::Satisfied,
+        State::Nod,
     ];
 
     pub fn name(self) -> &'static str {
@@ -56,13 +68,23 @@ impl State {
             State::Muted => "muted",
             State::TimerFinished => "timer_finished",
             State::Sleeping => "sleeping",
+            State::Link => "link",
+            State::Working => "working",
+            State::Satisfied => "satisfied",
+            State::Nod => "nod",
         }
     }
 
     /// The pose drawn when this state has none; `None` for the required states.
     pub fn fallback(self) -> Option<State> {
         match self {
-            State::Offline | State::Muted | State::Sleeping => Some(State::Idle),
+            State::Offline
+            | State::Muted
+            | State::Sleeping
+            | State::Link
+            | State::Working
+            | State::Satisfied
+            | State::Nod => Some(State::Idle),
             // The presenting hand: "here it is" (the error pose looked sorry about the eggs).
             State::TimerFinished => Some(State::Speaking),
             _ => None,
@@ -149,7 +171,7 @@ pub struct Character {
 }
 
 /// The animations a character may have (characters/README.md, "Animations").
-pub const ANIMATIONS: [&str; 11] = [
+pub const ANIMATIONS: [&str; 13] = [
     "loading",
     "wake",
     "idle",
@@ -162,6 +184,9 @@ pub const ANIMATIONS: [&str; 11] = [
     "fall_asleep",
     "sleeping",
     "wake_from_sleep",
+    // In a loop while Home Assistant cannot be reached, and while the microphone switch is off.
+    "offline",
+    "muted",
 ];
 
 /// One animation: frames `first..end` of a sheet, shown in `rect` (pose pixels) at `fps`.
@@ -915,6 +940,15 @@ pub fn repo_characters() -> PathBuf {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_moments_poses_fall_back_to_idle() {
+        for s in [State::Link, State::Working, State::Satisfied, State::Nod] {
+            assert_eq!(s.fallback(), Some(State::Idle), "{s}");
+            assert_eq!(State::from_name(s.name()), Some(s));
+        }
+        assert!(ANIMATIONS.contains(&"offline") && ANIMATIONS.contains(&"muted"));
+    }
+
     /// Every character in the repository follows the format, poses aligned
     /// included (the check for pull requests).
     #[test]
@@ -985,7 +1019,8 @@ mod tests {
             "speaking"
         );
         assert!(c.state_animation(State::Idle).is_none());
-        assert!(c.state_animation(State::Offline).is_none());
+        assert_eq!(c.state_animation(State::Offline).unwrap().name, "offline");
+        assert_eq!(c.state_animation(State::Muted).unwrap().name, "muted");
     }
 
     /// The sheet format: frame 0 complete, then only the changed pixels.
