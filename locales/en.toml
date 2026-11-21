@@ -759,7 +759,7 @@ panel_blocked_title = "Access requests stopped"
 panel_blocked_text = "Too many unanswered: use the QR code in Settings."
 panel_device_detail = "{peer} · {when}"
 panel_screen = "Remote screen"
-panel_screen_hint = "On, the devices allowed here can see this screen from the browser and touch it. While one does, a sign at the top says which, and Stop ends it at once. The camera, the photos and the codes that let devices in are never shown."
+panel_screen_hint = "On, the devices allowed here can see this screen from the browser and touch it. While one does, a sign at the top says which, and Stop ends it at once. The camera, the photos and the codes that let devices in are never shown. Whoever controls it can also use the Home Assistant view, as with a finger on the screen."
 remote_controlled = "Controlled by {who}"
 remote_stop = "Stop"
 # The browser panel's Screen section.

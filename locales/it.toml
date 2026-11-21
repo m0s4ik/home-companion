@@ -747,7 +747,7 @@ panel_blocked_title = "Richieste di accesso fermate"
 panel_blocked_text = "Troppe senza risposta: usi il QR in Impostazioni."
 panel_device_detail = "{peer} · {when}"
 panel_screen = "Schermo a distanza"
-panel_screen_hint = "Acceso, i dispositivi consentiti qui possono vedere questo schermo dal browser e toccarlo. Mentre lo fanno, un avviso in alto dice quale, e Interrompi lo chiude subito. La fotocamera, le foto e i codici che fanno entrare i dispositivi non si vedono mai."
+panel_screen_hint = "Acceso, i dispositivi consentiti qui possono vedere questo schermo dal browser e toccarlo. Mentre lo fanno, un avviso in alto dice quale, e Interrompi lo chiude subito. La fotocamera, le foto e i codici che fanno entrare i dispositivi non si vedono mai. Chi lo controlla può usare anche la vista di Home Assistant, come con un dito sullo schermo."
 remote_controlled = "Controllato da {who}"
 remote_stop = "Interrompi"
 # The browser panel's Screen section.

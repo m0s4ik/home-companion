@@ -20,6 +20,7 @@ pub mod mirror;
 pub mod mirror_video;
 pub mod next;
 pub mod platform_fb;
+pub mod remote_input;
 pub mod renderer;
 pub mod screen;
 pub mod sensors;
@@ -281,6 +282,8 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_remote(&self, on: bool, sign: &str);
     fn on_remote_toggled(&self, f: impl Fn(bool) + 'static);
     fn on_remote_stop(&self, f: impl Fn() + 'static);
+    /// The sign's rectangle in logical pixels (x, y, width, height), while it is shown.
+    fn remote_sign_rect(&self) -> Option<(f32, f32, f32, f32)>;
     fn set_offline(&self, offline: bool);
     fn set_starting(&self, starting: bool);
     /// Nothing moves by itself (demo screenshots): the start-up line, the ringing ring.
@@ -976,6 +979,17 @@ macro_rules! impl_screen {
             }
             fn on_remote_stop(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_remote_stop(self, f)
+            }
+            fn remote_sign_rect(&self) -> Option<(f32, f32, f32, f32)> {
+                if $m::CompanionWindow::get_remote_sign(self).is_empty() {
+                    return None;
+                }
+                Some((
+                    $m::CompanionWindow::get_remote_sign_x(self),
+                    $m::CompanionWindow::get_remote_sign_y(self),
+                    $m::CompanionWindow::get_remote_sign_w(self),
+                    $m::CompanionWindow::get_remote_sign_h(self),
+                ))
             }
             fn on_panel_revoke(&self, f: impl Fn(String) + 'static) {
                 $m::CompanionWindow::on_panel_revoke(self, move |id| f(id.into()))
