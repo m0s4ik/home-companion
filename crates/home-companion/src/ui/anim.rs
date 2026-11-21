@@ -83,8 +83,21 @@ impl Timing {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Show {
     Pose,
-    Frame { clip: &'static str, index: u32 },
+    Frame {
+        clip: &'static str,
+        index: u32,
+    },
+    /// A frame of a clip that started by fading from the picture on screen (a loop left
+    /// halfway): `step` of [`FADE_FRAMES`], blended over what was shown before it.
+    Fade {
+        clip: &'static str,
+        index: u32,
+        step: u32,
+    },
 }
+
+/// How many frames a clip started from the middle of a loop fades in over the loop's picture.
+pub const FADE_FRAMES: u32 = 4;
 
 /// What the sequencer plays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +120,10 @@ pub enum Mode {
     Muted,
     /// The Home Assistant page: `ha_in` (the laptop), then `ha_hold` in a loop.
     Ha,
+    /// The Home Assistant link pages: `link_in` (the plug), then `link_hold` in a loop.
+    Link,
+    /// A job went well: `satisfied_in`, then `satisfied_hold` in a loop.
+    Satisfied,
     /// The Home Assistant page while a job runs: the laptop out, `ha_type_in`, then `ha_type`
     /// in a loop.
     HaBusy,
@@ -118,12 +135,31 @@ pub enum Mode {
 /// (every `pause` seconds of the hold animation; at once when it is 0: a loop), `out` when they
 /// go away. `mirrored`: `out` is `into` played backwards frame by frame, so a change of mind
 /// turns the clip under way back from the same picture.
+///
+/// `leave`: how a round of `hold` under way is left when the things must change. `linger`: once
+/// `into` has started, at least one whole round of `hold` plays before `out` while the outer
+/// things stay (the typing reads as typing even when the job was short).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Act {
     into: &'static str,
     hold: &'static str,
     out: &'static str,
     mirrored: bool,
+    leave: Leave,
+    linger: bool,
+}
+
+/// How a round of an act's `hold` under way is left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Leave {
+    /// Played to its end (a gesture: the spanner looked at, a blink).
+    Finish,
+    /// At once from any frame: the loop hardly moves (every frame is as close to the next clip
+    /// as the loop's own end is to its start).
+    Cut,
+    /// At once from any frame, the next clip fading in over [`FADE_FRAMES`] frames (a breath
+    /// moves the whole figure a little; same sheet, same box).
+    Fade,
 }
 
 const SETTINGS: Act = Act {
@@ -131,24 +167,32 @@ const SETTINGS: Act = Act {
     hold: "settings_hold",
     out: "settings_out",
     mirrored: false,
+    leave: Leave::Finish,
+    linger: false,
 };
 const MORE: Act = Act {
     into: "more_in",
     hold: "more_hold",
     out: "more_out",
     mirrored: false,
+    leave: Leave::Finish,
+    linger: false,
 };
 const MUTED: Act = Act {
     into: "muted_in",
     hold: "muted",
     out: "muted_out",
     mirrored: true,
+    leave: Leave::Cut,
+    linger: false,
 };
 const HA: Act = Act {
     into: "ha_in",
     hold: "ha_hold",
     out: "ha_out",
     mirrored: false,
+    leave: Leave::Fade,
+    linger: false,
 };
 /// The hands on the laptop's keys: only with the laptop out ([`HA`] first).
 const TYPING: Act = Act {
@@ -156,10 +200,37 @@ const TYPING: Act = Act {
     hold: "ha_type",
     out: "ha_type_out",
     mirrored: true,
+    leave: Leave::Fade,
+    linger: true,
+};
+
+const LINK: Act = Act {
+    into: "link_in",
+    hold: "link_hold",
+    out: "link_out",
+    mirrored: false,
+    leave: Leave::Fade,
+    linger: false,
+};
+const SATISFIED: Act = Act {
+    into: "satisfied_in",
+    hold: "satisfied_hold",
+    out: "satisfied_out",
+    mirrored: true,
+    leave: Leave::Cut,
+    linger: false,
 };
 
 /// What the character can hold, outermost first: the modes' things.
-const STACKS: [&[Act]; 5] = [&[SETTINGS], &[MORE], &[MUTED], &[HA], &[HA, TYPING]];
+const STACKS: [&[Act]; 7] = [
+    &[SETTINGS],
+    &[MORE],
+    &[MUTED],
+    &[HA],
+    &[HA, TYPING],
+    &[LINK],
+    &[SATISFIED],
+];
 
 impl Mode {
     /// What the character holds in this mode, outermost first (nothing: none of these).
@@ -170,6 +241,8 @@ impl Mode {
             Mode::Muted => STACKS[2],
             Mode::Ha => STACKS[3],
             Mode::HaBusy => STACKS[4],
+            Mode::Link => STACKS[5],
+            Mode::Satisfied => STACKS[6],
             _ => &[],
         }
     }
@@ -260,8 +333,12 @@ pub struct Sequencer {
     home: Home,
     night: Night,
     tools: Tools,
-    /// `done` waiting for the home, until then.
-    done_until: Option<Instant>,
+    /// A clip played once on the home (`done`, `nod`) waiting for the home, until then.
+    once: Option<(&'static str, Instant)>,
+    /// The clip (and its start) that fades in over the picture before it.
+    fade_in: Option<(&'static str, Instant)>,
+    /// The round of a lingering act's hold that must play whole (`Act::linger`).
+    protect: Option<(&'static str, Instant)>,
 }
 
 impl Sequencer {
@@ -273,26 +350,41 @@ impl Sequencer {
             home: Home::Still,
             night: Night::Still { until: None },
             tools: Tools::Wait,
-            done_until: None,
+            once: None,
+            fade_in: None,
+            protect: None,
         }
     }
 
-    /// A house command went through: `done` now on the home, or when the home comes back
-    /// within [`DONE_WAIT`]. Nothing without the animation, or at night.
+    /// A house command went through: `done` (a bow) once, as [`Sequencer::once`].
     pub fn done(&mut self, now: Instant) {
-        if !self.clips.contains_key("done") {
+        self.once("done", now);
+    }
+
+    /// `clip` once on the home: now, or at the end of the home clip under way (they all start and
+    /// end on idle, nothing is cut), or when the home comes back within [`DONE_WAIT`]. Nothing
+    /// without the animation, or at night.
+    pub fn once(&mut self, clip: &'static str, now: Instant) {
+        if !self.has(clip) {
             return;
         }
         match self.mode {
             Mode::Home => {
-                self.home = Home::Clip {
-                    clip: "done",
-                    start: now,
+                let under_way = match self.home {
+                    Home::Clip { clip: c, start } => {
+                        self.clips.get(c).is_some_and(|t| now < start + t.length())
+                    }
+                    _ => false,
                 };
-                self.done_until = None;
+                if under_way {
+                    self.once = Some((clip, now + DONE_WAIT));
+                } else {
+                    self.home = Home::Clip { clip, start: now };
+                    self.once = None;
+                }
             }
-            Mode::Night => self.done_until = None,
-            _ => self.done_until = Some(now + DONE_WAIT),
+            Mode::Night => self.once = None,
+            _ => self.once = Some((clip, now + DONE_WAIT)),
         }
     }
 
@@ -338,7 +430,7 @@ impl Sequencer {
             (_, m) if m.staged() => {
                 self.tools = match under {
                     Some(Under::Playing(clip, start)) => {
-                        let (clip, start) = self.turn(clip, start, now);
+                        let (clip, start) = self.go_on(clip, start, now);
                         Tools::Clip { clip, start }
                     }
                     Some(Under::Ended(clip)) => self.after(clip, now),
@@ -347,10 +439,10 @@ impl Sequencer {
             }
             // Leaving the things: the clip under way, then they are put away.
             (p, Mode::Home) if p.staged() => {
-                self.done_until = None;
+                self.once = None;
                 self.home = match under {
                     Some(Under::Playing(clip, start)) => {
-                        let (clip, start) = self.turn(clip, start, now);
+                        let (clip, start) = self.go_on(clip, start, now);
                         Home::Clip { clip, start }
                     }
                     Some(Under::Ended(clip)) => match self.next(held_after(clip)) {
@@ -377,11 +469,10 @@ impl Sequencer {
                     self.home = Home::Clip { clip, start };
                 }
             }
-            (_, Mode::Home) if self.done_until.take().is_some_and(|t| now < t) => {
-                self.home = Home::Clip {
-                    clip: "done",
-                    start: now,
-                };
+            (_, Mode::Home) if self.once.is_some_and(|(_, t)| now < t) => {
+                if let Some((clip, _)) = self.once.take() {
+                    self.home = Home::Clip { clip, start: now };
+                }
             }
             (Mode::Night, Mode::Home) if self.has("wake_from_sleep") => {
                 self.home = Home::Clip {
@@ -426,8 +517,26 @@ impl Sequencer {
         }
     }
 
+    /// `clip` is the `into` of a lingering act whose outer things stay: one whole round of its
+    /// hold follows, wanted or not (`Act::linger`).
+    fn lingers(&self, clip: &str) -> Option<Act> {
+        let want = self.mode.stack();
+        STACKS.into_iter().find_map(|s| {
+            let a = s[s.len() - 1];
+            (a.linger && clip == a.into && want.starts_with(&s[..s.len() - 1]) && self.has(a.hold))
+                .then_some(a)
+        })
+    }
+
     /// What follows `clip`, ended at `end`, in a mode with things.
-    fn after(&self, clip: &'static str, end: Instant) -> Tools {
+    fn after(&mut self, clip: &'static str, end: Instant) -> Tools {
+        if let Some(a) = self.lingers(clip) {
+            self.protect = Some((a.hold, end));
+            return Tools::Clip {
+                clip: a.hold,
+                start: end,
+            };
+        }
         match self.next(held_after(clip)) {
             Next::Play(c) => Tools::Clip {
                 clip: c,
@@ -448,6 +557,40 @@ impl Sequencer {
         }
     }
 
+    /// The clip under way when the mode changed, as it goes on: turned back ([`Sequencer::turn`]),
+    /// or a round of a hold left at once when its act allows it ([`Leave`]; not the protected
+    /// round of a lingering act while its outer things stay), else played to its end.
+    fn go_on(
+        &mut self,
+        clip: &'static str,
+        start: Instant,
+        now: Instant,
+    ) -> (&'static str, Instant) {
+        let turned = self.turn(clip, start, now);
+        if turned != (clip, start) {
+            return turned;
+        }
+        let held = held_after(clip);
+        let Some(a) = held.last().filter(|a| a.hold == clip) else {
+            return (clip, start);
+        };
+        let want = self.mode.stack();
+        let protected =
+            self.protect == Some((clip, start)) && want.starts_with(&held[..held.len() - 1]);
+        if a.leave == Leave::Finish || protected {
+            return (clip, start);
+        }
+        match self.next(held) {
+            Next::Play(n) => {
+                if a.leave == Leave::Fade {
+                    self.fade_in = Some((n, now));
+                }
+                (n, now)
+            }
+            _ => (clip, start),
+        }
+    }
+
     /// The clip under way when the mode changed, as it goes on: the `into` of a mirrored act
     /// whose things are no longer wanted turns into its `out` at the same picture, the `out` of
     /// things wanted again into the `into`; any other clip plays to its end.
@@ -457,7 +600,7 @@ impl Sequencer {
             let a = s[s.len() - 1];
             let back = if !a.mirrored {
                 continue;
-            } else if clip == a.into && !want.starts_with(s) {
+            } else if clip == a.into && !want.starts_with(s) && self.lingers(clip).is_none() {
                 a.out
             } else if clip == a.out && want.starts_with(s) {
                 a.into
@@ -520,15 +663,41 @@ impl Sequencer {
 
     /// The picture at `now` (advances the home sequence).
     pub fn show(&mut self, now: Instant, awake: bool) -> Show {
+        let show = self.picture(now, awake);
+        let current = match (self.mode, self.home, self.tools) {
+            (Mode::Home, Home::Clip { clip, start }, _) => Some((clip, start)),
+            (m, _, Tools::Clip { clip, start }) if m.staged() => Some((clip, start)),
+            _ => None,
+        };
+        if self.fade_in.is_some() && self.fade_in != current {
+            self.fade_in = None;
+        }
+        match show {
+            Show::Frame { clip, index } if self.fade_in.is_some() && index < FADE_FRAMES => {
+                Show::Fade {
+                    clip,
+                    index,
+                    step: index + 1,
+                }
+            }
+            s => s,
+        }
+    }
+
+    fn picture(&mut self, now: Instant, awake: bool) -> Show {
         match self.mode {
             Mode::Still => Show::Pose,
             Mode::Loading => self.looped("loading", now),
             Mode::Loop(name) => self.looped(name, now),
             Mode::Home => self.home(now, awake),
             Mode::Night => self.night(now),
-            Mode::Settings | Mode::More | Mode::Muted | Mode::Ha | Mode::HaBusy => {
-                self.tools(now, awake)
-            }
+            Mode::Settings
+            | Mode::More
+            | Mode::Muted
+            | Mode::Ha
+            | Mode::HaBusy
+            | Mode::Link
+            | Mode::Satisfied => self.tools(now, awake),
             Mode::Frame(clip, index) => match self.clips.get(clip) {
                 Some(t) => Show::Frame {
                     clip,
@@ -549,13 +718,17 @@ impl Sequencer {
                 (awake && (self.has("idle") || self.has("wake"))) || self.home != Home::Still
             }
             Mode::Night => !matches!(self.night, Night::Still { .. }),
-            Mode::Settings | Mode::More | Mode::Muted | Mode::Ha | Mode::HaBusy => {
-                match self.tools {
-                    Tools::Clip { .. } => true,
-                    Tools::Still { seamless, .. } => seamless && awake,
-                    Tools::Wait => false,
-                }
-            }
+            Mode::Settings
+            | Mode::More
+            | Mode::Muted
+            | Mode::Ha
+            | Mode::HaBusy
+            | Mode::Link
+            | Mode::Satisfied => match self.tools {
+                Tools::Clip { .. } => true,
+                Tools::Still { seamless, .. } => seamless && awake,
+                Tools::Wait => false,
+            },
             Mode::Frame(..) => false,
         }
     }
@@ -694,6 +867,15 @@ impl Sequencer {
                                 start: end,
                             },
                             _ => Home::Still,
+                        };
+                        continue;
+                    }
+                    // A clip asked for once while this one played: now.
+                    if let Some((next, _)) = self.once.filter(|(c, t)| end < *t && self.has(c)) {
+                        self.once = None;
+                        self.home = Home::Clip {
+                            clip: next,
+                            start: end,
                         };
                         continue;
                     }
@@ -1383,15 +1565,16 @@ mod tests {
         assert_eq!(s.show(t0 + ms(1000), false), frame("muted", 3));
         assert!(!s.moving(false));
         assert_eq!(s.show(t0 + ms(2000), true), frame("muted", 0));
-        // The microphone on again: the round ends, then the earmuffs come off, then idle.
+        // The microphone on again halfway through a round: the earmuffs come off at once (the
+        // loop hardly moves), then idle.
+        assert_eq!(s.show(t0 + ms(2080), true), frame("muted", 1));
         s.set_mode(Mode::Home, t0 + ms(2100));
         assert!(s.uses(&MUTED_CLIPS));
-        assert_eq!(s.show(t0 + ms(2100), true), frame("muted", 1));
-        assert_eq!(s.show(t0 + ms(2250), true), frame("muted_out", 0));
-        assert_eq!(s.show(t0 + ms(2700), true), frame("muted_out", 7));
+        assert_eq!(s.show(t0 + ms(2100), true), frame("muted_out", 0));
+        assert_eq!(s.show(t0 + ms(2550), true), frame("muted_out", 7));
         // The idle pause on its last frame (the idle pose), then idle; the sheet may go.
         assert_eq!(s.show(t0 + ms(3000), true), frame("muted_out", 7));
-        assert_eq!(s.show(t0 + ms(3750), true), frame("idle", 0));
+        assert_eq!(s.show(t0 + ms(3600), true), frame("idle", 0));
         assert!(!s.uses(&MUTED_CLIPS));
     }
 
@@ -1462,12 +1645,11 @@ mod tests {
         s.set_mode(Mode::Muted, t0 + ms(400));
         assert_eq!(s.show(t0 + ms(400), true), frame("settings_out", 0));
         assert_eq!(s.show(t0 + ms(650), true), frame("muted_in", 0));
-        // And from the muted loop to the settings: the earmuffs off first.
+        // And from the muted loop to the settings: the earmuffs off at once, then the tools.
         assert_eq!(s.show(t0 + ms(1200), true), frame("muted", 0));
         s.set_mode(Mode::Settings, t0 + ms(1210));
-        assert_eq!(s.show(t0 + ms(1390), true), frame("muted", 3));
-        assert_eq!(s.show(t0 + ms(1450), true), frame("muted_out", 0));
-        assert_eq!(s.show(t0 + ms(1950), true), frame("settings_in", 0));
+        assert_eq!(s.show(t0 + ms(1210), true), frame("muted_out", 0));
+        assert_eq!(s.show(t0 + ms(1720), true), frame("settings_in", 0));
     }
 
     /// `seq` with the laptop: ha_in and ha_out 8 frames (0.5 s), ha_hold 4 (0.25 s, a loop),
@@ -1503,6 +1685,14 @@ mod tests {
         "ha_out",
     ];
 
+    fn fade(clip: &'static str, index: u32) -> Show {
+        Show::Fade {
+            clip,
+            index,
+            step: index + 1,
+        }
+    }
+
     #[test]
     fn ha_laptop_out_held_typed_on_and_put_away() {
         let t0 = Instant::now();
@@ -1512,38 +1702,47 @@ mod tests {
         assert_eq!(s.show(t0, true), frame("ha_in", 0));
         assert_eq!(s.show(t0 + ms(500), true), frame("ha_hold", 0));
         assert_eq!(s.show(t0 + ms(800), true), frame("ha_hold", 0)); // the loop again
-        // A job: the hold round ends, the fingers go to the keys, typing in a loop.
+        // A job: the fingers go to the keys at once, fading in over the breath's picture.
         s.set_mode(Mode::HaBusy, t0 + ms(820));
-        assert_eq!(s.show(t0 + ms(820), true), frame("ha_hold", 1));
-        assert_eq!(s.show(t0 + ms(1000), true), frame("ha_type_in", 0));
-        assert_eq!(s.show(t0 + ms(1250), true), frame("ha_type", 0));
-        assert_eq!(s.show(t0 + ms(1500), true), frame("ha_type", 0));
-        // Done: the round ends, the hands off the keys, holding again.
-        s.set_mode(Mode::Ha, t0 + ms(1560));
-        assert_eq!(s.show(t0 + ms(1700), true), frame("ha_type", 3));
-        assert_eq!(s.show(t0 + ms(1750), true), frame("ha_type_out", 0));
-        assert_eq!(s.show(t0 + ms(2000), true), frame("ha_hold", 0));
-        // Leaving the page: the round ends, the laptop goes away, then the home.
-        s.set_mode(Mode::Home, t0 + ms(2100));
-        assert_eq!(s.show(t0 + ms(2250), true), frame("ha_out", 0));
-        assert_eq!(s.show(t0 + ms(2700), true), frame("ha_out", 7));
+        assert_eq!(s.show(t0 + ms(820), true), fade("ha_type_in", 0));
+        assert_eq!(s.show(t0 + ms(890), true), fade("ha_type_in", 1));
+        assert_eq!(s.show(t0 + ms(1080), true), frame("ha_type", 0));
+        // A short job, over already: the first round of typing plays whole all the same.
+        s.set_mode(Mode::Ha, t0 + ms(1100));
+        assert_eq!(s.show(t0 + ms(1300), true), frame("ha_type", 3));
+        assert_eq!(s.show(t0 + ms(1330), true), frame("ha_type_out", 0));
+        assert_eq!(s.show(t0 + ms(1580), true), frame("ha_hold", 0));
+        // Another job: typing at once again; over after the first round, the hands leave the
+        // keys at once.
+        s.set_mode(Mode::HaBusy, t0 + ms(1600));
+        assert_eq!(s.show(t0 + ms(1600), true), fade("ha_type_in", 0));
+        assert_eq!(s.show(t0 + ms(1860), true), frame("ha_type", 0));
+        assert_eq!(s.show(t0 + ms(2150), true), frame("ha_type", 0)); // the second round
+        s.set_mode(Mode::Ha, t0 + ms(2160));
+        assert_eq!(s.show(t0 + ms(2160), true), fade("ha_type_out", 0));
+        // Leaving the page while the hands come back: they come back, the laptop goes.
+        s.set_mode(Mode::Home, t0 + ms(2300));
+        assert_eq!(s.show(t0 + ms(2500), true), frame("ha_out", 1));
+        assert_eq!(s.show(t0 + ms(2950), true), frame("ha_out", 7));
         assert!(s.uses(&HA_CLIPS));
-        assert_eq!(s.show(t0 + ms(3750), true), frame("idle", 0));
+        assert_eq!(s.show(t0 + ms(3910), true), frame("idle", 0));
         assert!(!s.uses(&HA_CLIPS));
     }
 
     #[test]
-    fn ha_busy_at_once_takes_the_laptop_out_first() {
+    fn ha_job_ends_while_the_fingers_go_to_the_keys() {
         let t0 = Instant::now();
         let mut s = ha_seq(t0);
         // The page opens with its check running: laptop out, then the keys.
         s.set_mode(Mode::HaBusy, t0);
         assert_eq!(s.show(t0, true), frame("ha_in", 0));
         assert_eq!(s.show(t0 + ms(500), true), frame("ha_type_in", 0));
-        // The check ends while the fingers go to the keys: they come back from that picture.
+        // The check ends halfway: the keys reached all the same, one round typed, then back.
         s.set_mode(Mode::Ha, t0 + ms(630));
-        assert_eq!(s.show(t0 + ms(630), true), frame("ha_type_out", 1));
-        assert_eq!(s.show(t0 + ms(800), true), frame("ha_hold", 0));
+        assert_eq!(s.show(t0 + ms(630), true), frame("ha_type_in", 2));
+        assert_eq!(s.show(t0 + ms(760), true), frame("ha_type", 0));
+        assert_eq!(s.show(t0 + ms(1010), true), frame("ha_type_out", 0));
+        assert_eq!(s.show(t0 + ms(1260), true), frame("ha_hold", 0));
     }
 
     #[test]
@@ -1552,20 +1751,28 @@ mod tests {
         let mut s = ha_seq(t0);
         s.set_mode(Mode::HaBusy, t0);
         assert_eq!(s.show(t0 + ms(800), true), frame("ha_type", 0));
-        // Home while typing: the round, the hands off the keys, the laptop away, the home.
+        // Home while typing (even the first round): the hands off the keys at once, the laptop
+        // away, the home.
         s.set_mode(Mode::Home, t0 + ms(850));
-        assert_eq!(s.show(t0 + ms(950), true), frame("ha_type", 3));
-        assert_eq!(s.show(t0 + ms(1000), true), frame("ha_type_out", 0));
-        assert_eq!(s.show(t0 + ms(1250), true), frame("ha_out", 0));
-        assert_eq!(s.show(t0 + ms(1700), true), frame("ha_out", 7));
-        assert_eq!(s.show(t0 + ms(2750), true), frame("idle", 0));
-        // Home while the fingers go to the keys: they come back at once, then the laptop away.
+        assert_eq!(s.show(t0 + ms(850), true), fade("ha_type_out", 0));
+        assert_eq!(s.show(t0 + ms(1110), true), frame("ha_out", 0));
+        assert_eq!(s.show(t0 + ms(1550), true), frame("ha_out", 7));
+        assert_eq!(s.show(t0 + ms(2600), true), frame("idle", 0));
+        // Home while the fingers go to the keys: they come back from that picture.
         let mut s = ha_seq(t0);
         s.set_mode(Mode::HaBusy, t0);
         assert_eq!(s.show(t0 + ms(560), true), frame("ha_type_in", 0));
         s.set_mode(Mode::Home, t0 + ms(560));
         assert_eq!(s.show(t0 + ms(560), true), frame("ha_type_out", 3));
         assert_eq!(s.show(t0 + ms(600), true), frame("ha_out", 0));
+        // Home halfway through a breath: the laptop goes at once, fading in.
+        let mut s = ha_seq(t0);
+        s.set_mode(Mode::Ha, t0);
+        assert_eq!(s.show(t0 + ms(600), true), frame("ha_hold", 1));
+        s.set_mode(Mode::Home, t0 + ms(600));
+        assert_eq!(s.show(t0 + ms(600), true), fade("ha_out", 0));
+        assert_eq!(s.show(t0 + ms(800), true), fade("ha_out", 3));
+        assert_eq!(s.show(t0 + ms(850), true), frame("ha_out", 4));
         // The screen asleep: still once the laptop is out (no hold round); the page left: it goes
         // away at once.
         let mut s = ha_seq(t0);
@@ -1599,13 +1806,104 @@ mod tests {
         assert_eq!(s.show(t0 + ms(800), true), frame("ha_type", 0));
         s.set_mode(Mode::Settings, t0 + ms(800));
         assert!(s.uses(&HA_CLIPS) && s.uses(&SETTINGS_CLIPS));
-        assert_eq!(s.show(t0 + ms(1000), true), frame("ha_type_out", 0));
-        assert_eq!(s.show(t0 + ms(1250), true), frame("ha_out", 0));
-        assert_eq!(s.show(t0 + ms(1750), true), frame("settings_in", 0));
+        assert_eq!(s.show(t0 + ms(800), true), fade("ha_type_out", 0));
+        assert_eq!(s.show(t0 + ms(1060), true), frame("ha_out", 0));
+        assert_eq!(s.show(t0 + ms(1560), true), frame("settings_in", 0));
         assert!(!s.uses(&HA_CLIPS));
         // And back: the tools away, then the laptop.
-        s.set_mode(Mode::Ha, t0 + ms(2100));
-        assert_eq!(s.show(t0 + ms(2100), true), frame("settings_out", 1));
-        assert_eq!(s.show(t0 + ms(2260), true), frame("ha_in", 0));
+        assert_eq!(s.show(t0 + ms(1900), true), frame("settings_in", 3));
+        s.set_mode(Mode::Ha, t0 + ms(1950));
+        assert_eq!(s.show(t0 + ms(1950), true), frame("settings_out", 0));
+        assert_eq!(s.show(t0 + ms(2210), true), frame("ha_in", 0));
+    }
+
+    /// `seq` with the moments: link and satisfied (in, hold loop, out: 4 frames each), nod 8.
+    fn moments_seq(t0: Instant) -> Sequencer {
+        let mut s = seq(t0);
+        for (name, frames) in [
+            ("link_in", 4),
+            ("link_hold", 4),
+            ("link_out", 4),
+            ("satisfied_in", 4),
+            ("satisfied_hold", 4),
+            ("satisfied_out", 4),
+            ("nod", 8),
+        ] {
+            s.add(
+                name,
+                Timing {
+                    frames,
+                    fps: 16.0,
+                    pause: 0.0,
+                },
+            );
+        }
+        s
+    }
+
+    #[test]
+    fn link_comes_out_is_held_and_goes_without_a_cut() {
+        let t0 = Instant::now();
+        let mut s = moments_seq(t0);
+        assert_eq!(s.show(t0, true), frame("wake", 0));
+        // The link page while wake plays: wake ends, the plug comes out, held in a loop.
+        s.set_mode(Mode::Link, t0 + ms(100));
+        assert_eq!(s.show(t0 + ms(510), true), frame("link_in", 0));
+        assert_eq!(s.show(t0 + ms(760), true), frame("link_hold", 0));
+        assert_eq!(s.show(t0 + ms(1010), true), frame("link_hold", 0));
+        // Linked, home: the plug goes at once, fading in over the loop's picture.
+        assert_eq!(s.show(t0 + ms(1080), true), frame("link_hold", 1));
+        s.set_mode(Mode::Home, t0 + ms(1080));
+        assert_eq!(s.show(t0 + ms(1080), true), fade("link_out", 0));
+        assert_eq!(s.show(t0 + ms(1340), true), frame("link_out", 3));
+        assert_eq!(s.show(t0 + ms(2330), true), frame("idle", 0));
+    }
+
+    #[test]
+    fn satisfied_comes_after_the_bow_and_turns_back() {
+        let t0 = Instant::now();
+        let mut s = moments_seq(t0);
+        s.add(
+            "done",
+            Timing {
+                frames: 8,
+                fps: 16.0,
+                pause: 0.0,
+            },
+        );
+        // The bow, then satisfied: the bow ends first.
+        s.done(t0);
+        assert_eq!(s.show(t0, true), frame("done", 0));
+        s.set_mode(Mode::Satisfied, t0 + ms(100));
+        assert_eq!(s.show(t0 + ms(510), true), frame("satisfied_in", 0));
+        assert_eq!(s.show(t0 + ms(760), true), frame("satisfied_hold", 0));
+        // Over halfway through a round: out at once (the loop hardly moves).
+        s.set_mode(Mode::Home, t0 + ms(830));
+        assert_eq!(s.show(t0 + ms(830), true), frame("satisfied_out", 0));
+        // Again while it goes: back from the same picture (out is in backwards).
+        s.set_mode(Mode::Satisfied, t0 + ms(900));
+        assert_eq!(s.show(t0 + ms(900), true), frame("satisfied_in", 2));
+    }
+
+    #[test]
+    fn nod_plays_once_on_the_home_now_or_when_it_comes_back() {
+        let t0 = Instant::now();
+        let mut s = moments_seq(t0);
+        s.once("nod", t0);
+        assert_eq!(s.show(t0, true), frame("nod", 0));
+        assert_eq!(s.show(t0 + ms(480), true), frame("nod", 7));
+        // Then the home as after wake: the idle pause on its last frame, idle.
+        assert_eq!(s.show(t0 + ms(1400), true), frame("nod", 7));
+        assert_eq!(s.show(t0 + ms(1500), true), frame("idle", 0));
+        // Asked while idle plays: at its end (nothing cut).
+        assert_eq!(s.show(t0 + ms(1600), true), frame("idle", 1));
+        s.once("nod", t0 + ms(1600));
+        assert_eq!(s.show(t0 + ms(1700), true), frame("idle", 3));
+        assert_eq!(s.show(t0 + ms(1750), true), frame("nod", 0));
+        // Asked during a conversation: when the home comes back.
+        s.set_mode(Mode::Loop("listening"), t0 + ms(2000));
+        s.once("nod", t0 + ms(2000));
+        s.set_mode(Mode::Home, t0 + ms(3000));
+        assert_eq!(s.show(t0 + ms(3000), true), frame("nod", 0));
     }
 }

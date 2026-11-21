@@ -1240,10 +1240,12 @@ struct Motion {
     clips: HashMap<&'static str, Arc<Clip>>,
     incoming: Option<Receiver<Clip>>,
     /// The sheets of [`LAZY_CLIPS`], in the same order.
-    lazy: [Lazy; 3],
+    lazy: [Lazy; 5],
     /// The sheet of the pose of Home Assistant's cards, being decoded.
     pose_incoming: Option<Receiver<Clip>>,
     playhead: Option<Playhead>,
+    /// The picture a clip fades in over (`Show::Fade`): what was on screen when it started.
+    fade_from: Option<Vec<u8>>,
     shown: Show,
     awake: Awake,
     backlight: Backlight,
@@ -1304,8 +1306,19 @@ const HA_CLIPS: [&str; 6] = [
 /// The earmuffs going on and off: the same, while the microphone is off (the `muted` loop is
 /// decoded at start like the other loops).
 const EARMUFF_CLIPS: [&str; 2] = ["muted_in", "muted_out"];
-/// The sheets decoded only while they are needed ([`Sequencer::uses`]).
-const LAZY_CLIPS: [&[&str]; 3] = [&SETTINGS_CLIPS, &HA_CLIPS, &EARMUFF_CLIPS];
+/// The plug of the link pages: the same, with those pages.
+const LINK_CLIPS: [&str; 3] = ["link_in", "link_hold", "link_out"];
+/// A job gone well: the same, while it lasts (it comes after a bow: the time to decode it).
+const SATISFIED_CLIPS: [&str; 3] = ["satisfied_in", "satisfied_hold", "satisfied_out"];
+/// The sheets decoded only while they are needed ([`Sequencer::uses`]). The nod's (4 MB) is
+/// kept: it comes at once after a reflex, often.
+const LAZY_CLIPS: [&[&str]; 5] = [
+    &SETTINGS_CLIPS,
+    &HA_CLIPS,
+    &EARMUFF_CLIPS,
+    &LINK_CLIPS,
+    &SATISFIED_CLIPS,
+];
 /// The settings pages: Settings and the pages under it.
 const SETTINGS_PAGES: [&str; 7] = [
     "settings", "language", "screen", "widgets", "panel", "update", "poses",
@@ -2210,6 +2223,7 @@ impl<S: Screen> Ui<S> {
             lazy: Default::default(),
             pose_incoming: None,
             playhead: None,
+            fade_from: None,
             shown: Show::Pose,
             awake: Awake::new(opts.screen.awake_seconds),
             backlight: Backlight::open(if demo { "" } else { &opts.screen.backlight }),
@@ -3116,24 +3130,37 @@ impl<S: Screen> Ui<S> {
             None
         };
         match look {
-            // With the earmuffs' clips the muted pose is drawn by them (`muted_in` starts from
-            // idle, the loop holds it): under them, and before them, the idle pose.
-            Some(Look::Own(State::Muted)) if self.earmuffs() => {
-                app.set_pose(self.pose(State::Idle))
-            }
+            // A pose with its own clips in and out (the earmuffs, the plug, satisfied) is drawn
+            // by them (they start from idle, their loop holds it): under them, and before
+            // them, the idle pose.
+            Some(Look::Own(s)) if self.moves(s).is_some() => app.set_pose(self.pose(State::Idle)),
             Some(l) => app.set_pose(self.look_image(&l)),
             None => app.set_pose(self.pose(state)),
         }
     }
 
-    /// The muted pose comes and goes with the earmuffs' clips (`Mode::Muted`): animations on
-    /// and the character has `muted_in`, `muted_out` and the `muted` loop.
-    fn earmuffs(&self) -> bool {
-        self.opts.screen.animations
-            && self.opts.demo.is_none()
-            && ["muted_in", "muted", "muted_out"]
-                .iter()
-                .all(|n| self.character.animation(n).is_some())
+    /// The mode of a pose that comes and goes with its own clips: muted (the earmuffs, then the
+    /// `muted` loop), link (the plug) and satisfied, when animations are on and the character
+    /// has all three clips of it. None: the still pose (with its loop, if any) as before.
+    fn moves(&self, s: State) -> Option<Mode> {
+        let (mode, clips) = match s {
+            State::Muted => (Mode::Muted, ["muted_in", "muted", "muted_out"]),
+            State::Link => (Mode::Link, LINK_CLIPS),
+            State::Satisfied => (Mode::Satisfied, SATISFIED_CLIPS),
+            _ => return None,
+        };
+        (self.animated() && clips.iter().all(|n| self.character.animation(n).is_some()))
+            .then_some(mode)
+    }
+
+    /// The character moves (not `--state`, animations on).
+    fn animated(&self) -> bool {
+        self.opts.screen.animations && self.opts.demo.is_none()
+    }
+
+    /// The nod is a clip played once on the home (else the still pose for [`NOD_FOR`]).
+    fn nod_clip(&self) -> bool {
+        self.animated() && self.character.animation("nod").is_some()
     }
 
     /// The pose a card of Home Assistant asks for, if the character has it.
@@ -3205,8 +3232,8 @@ impl<S: Screen> Ui<S> {
         if s == State::Idle {
             return Mode::Home;
         }
-        if s == State::Muted && self.earmuffs() {
-            return Mode::Muted;
+        if let Some(mode) = self.moves(s) {
+            return mode;
         }
         self.character
             .state_animation(s)
@@ -3243,6 +3270,13 @@ impl<S: Screen> Ui<S> {
 
     /// A reflex was done: the nod, now on the home or when the home comes back.
     fn nod(&self) {
+        if self.nod_clip() {
+            // The sequencer plays it on the home (now, after the clip under way, or when the
+            // home comes back).
+            self.motion.borrow_mut().seq.once("nod", Instant::now());
+            self.step();
+            return;
+        }
         if self.view.get() == Phase::Home {
             self.nod_until.set(Some(Instant::now() + NOD_FOR));
             self.refresh_home_pose();
@@ -3803,25 +3837,62 @@ impl<S: Screen> Ui<S> {
         if show == m.shown {
             return;
         }
-        let Show::Frame { clip, index } = show else {
-            m.shown = Show::Pose;
-            self.screen.set_frame(Image::default());
-            return;
+        let (clip, index, step) = match show {
+            Show::Frame { clip, index } => (clip, index, None),
+            Show::Fade { clip, index, step } => (clip, index, Some(step)),
+            Show::Pose => {
+                m.shown = Show::Pose;
+                m.fade_from = None;
+                self.screen.set_frame(Image::default());
+                return;
+            }
         };
         let Some(c) = m.clips.get(clip).cloned() else {
             return;
         };
-        let new_clip = !matches!(m.shown, Show::Frame { clip: was, .. } if was == clip)
-            || m.playhead.is_none();
+        let was = match m.shown {
+            Show::Frame { clip, .. } | Show::Fade { clip, .. } => Some(clip),
+            Show::Pose => None,
+        };
+        let new_clip = was != Some(clip) || m.playhead.is_none();
         if new_clip {
+            // A fade starts from the picture on screen: a frame of the same sheet, same box.
+            let old = m.playhead.take();
+            m.fade_from = match (step, old) {
+                (Some(_), Some(o))
+                    if o.clip.anim.file == c.anim.file
+                        && o.clip.anim.size == c.anim.size
+                        && o.clip.anim.rect == c.anim.rect =>
+                {
+                    Some(o.pixels)
+                }
+                _ => None,
+            };
             m.playhead = Some(Playhead::new(c.clone()));
             let (x, y, w, h) = self.frame_rect(&c.anim);
             self.screen.set_frame_rect(x, y, w, h);
         }
+        if step.is_none() {
+            m.fade_from = None;
+        }
         m.shown = show;
         let p = m.playhead.as_mut().expect("set above");
-        let changed = p.seek(index) || new_clip;
+        let changed = p.seek(index) || new_clip || step.is_some();
         if !changed {
+            return;
+        }
+        if let (Some(step), Some(from)) = (step, m.fade_from.as_ref()) {
+            let w = step.min(anim::FADE_FRAMES) * 256 / (anim::FADE_FRAMES + 1);
+            let blended: Vec<u8> = from
+                .iter()
+                .zip(&p.pixels)
+                .map(|(&a, &b)| ((a as u32 * (256 - w) + b as u32 * w) >> 8) as u8)
+                .collect();
+            let buf =
+                SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&blended, c.width(), c.height());
+            self.screen.set_frame(Image::from_rgba8(buf));
+            m.presented += 1;
+            m.present_time += t.elapsed();
             return;
         }
         // A new image per frame: the software renderer redraws only the frame's box; femtovg
@@ -3866,7 +3937,8 @@ impl<S: Screen> Ui<S> {
             | "settings_in" | "settings_hold" | "settings_out" => State::Idle,
             // The earmuffs and the laptop start from idle (same crop as the muted pose).
             "muted_in" | "muted_out" | "ha_in" | "ha_hold" | "ha_type_in" | "ha_type"
-            | "ha_type_out" | "ha_out" => State::Idle,
+            | "ha_type_out" | "ha_out" | "link_in" | "link_hold" | "link_out" | "satisfied_in"
+            | "satisfied_hold" | "satisfied_out" | "nod" => State::Idle,
             // A downloaded pose is drawn as the idle pose is (render_card_pose).
             anim::CARD_POSE => State::Idle,
             "muted" => State::Muted,

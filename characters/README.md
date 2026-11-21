@@ -94,7 +94,10 @@ All optional; without one the still pose is shown.
 | `muted_in` | once when the microphone is switched off (on the home), after the clip under way; then `muted` in a loop. Needs `muted` and `muted_out` too, else the still `muted` pose with its loop as before | `idle` (ends on `muted`'s first frame) |
 | `muted_out` | once when it is switched on again, after the `muted` round under way; then the home as by day. `muted_in` played backwards: switched on while `muted_in` plays, it turns back from the same picture (and the other way round) | `muted`'s last frame |
 | `ha_in`, `ha_hold`, `ha_out` | as the settings' ones, for the Home Assistant page; `ha_hold` with no `pause` is a loop | `idle` |
-| `ha_type_in`, `ha_type`, `ha_type_out` | while a job of the Home Assistant page runs (its check, "Check and repair"): into the keys, `ha_type` in a loop, back to `ha_hold` when it ends (`ha_type_out` is `ha_type_in` backwards, turned back the same way) | `ha_hold`'s last frame |
+| `ha_type_in`, `ha_type`, `ha_type_out` | while a job of the Home Assistant page runs (its check, "Check and repair"): into the keys at once (fading in over the `ha_hold` frame on screen), `ha_type` in a loop, at least one whole round even for a short job, back to `ha_hold` when it ends (`ha_type_out` is `ha_type_in` backwards) | `ha_hold`'s last frame |
+| `link_in`, `link_hold`, `link_out` | the `link` pose of the Home Assistant link pages: in, a loop while they are open, out (needs all three, else the still pose) | `idle` |
+| `satisfied_in`, `satisfied_hold`, `satisfied_out` | the `satisfied` pose after a job went well, the same way (`satisfied_out` is `satisfied_in` backwards) | `idle` |
+| `nod` | once on the home when a reflex was done, idle to idle, after the home clip under way (else the still `nod` pose for 3 s) | `idle` |
 
 `fall_asleep`, `wake_from_sleep`, `settings_in` and `settings_out` are **transitions**: they start on one pose and
 end on another (their last frame left out, so the next picture follows without a repeat). They are decoration: a
@@ -104,7 +107,10 @@ until `settings_out` has played), like the night's only around the night. Withou
 show the normal pose; without `settings_out` leaving them goes back to it at once. Between the pages and states with
 their own things (settings, More, the Home Assistant page, the microphone off) the clip under way ends, what is held
 and no longer wanted is put away (`_out`), then what is wanted comes out (`_in`): never a cut. The settings',
-the Home Assistant page's and the earmuffs' (`muted_in`/`muted_out`) sheets are decoded only while needed.
+the Home Assistant page's, the earmuffs' (`muted_in`/`muted_out`), the link pages' and satisfied's sheets
+are decoded only while needed. A loop that hardly moves (`muted`, `satisfied_hold`) is left at once from any frame;
+a breathing one (`ha_hold`, `ha_type`, `link_hold`) too, the next clip fading in over its frame on screen for 4
+frames; the settings' and More's rounds (a gesture) play to their end.
 
 An animation is a **sheet**: one PNG, 8-bit RGBA, the frames stacked from top to bottom, all the same size.
 **Frame 0 is opaque** (the whole picture); in every following frame a pixel is **opaque where it changes** from

@@ -171,7 +171,7 @@ pub struct Character {
 }
 
 /// The animations a character may have (characters/README.md, "Animations").
-pub const ANIMATIONS: [&str; 27] = [
+pub const ANIMATIONS: [&str; 34] = [
     "loading",
     "wake",
     "idle",
@@ -206,6 +206,15 @@ pub const ANIMATIONS: [&str; 27] = [
     "ha_type",
     "ha_type_out",
     "ha_out",
+    // The moment's poses without a cut: the plug of the link pages and a job gone well (in, a
+    // loop while it lasts, out), a reflex's nod (once, idle to idle).
+    "link_in",
+    "link_hold",
+    "link_out",
+    "satisfied_in",
+    "satisfied_hold",
+    "satisfied_out",
+    "nod",
 ];
 
 /// One animation: frames `first..end` of a sheet, shown in `rect` (pose pixels) at `fps`.
@@ -975,6 +984,13 @@ mod tests {
             "ha_type",
             "ha_type_out",
             "ha_out",
+            "link_in",
+            "link_hold",
+            "link_out",
+            "satisfied_in",
+            "satisfied_hold",
+            "satisfied_out",
+            "nod",
         ] {
             assert!(ANIMATIONS.contains(&name), "{name}");
         }
@@ -1080,6 +1096,16 @@ mod tests {
                 (185, 220)
             ]
         );
+        // The moments: link and satisfied in, a loop, out; the nod once.
+        let link = ["link_in", "link_hold", "link_out"].map(|n| c.animation(n).unwrap());
+        assert_eq!(
+            link.map(|a| (a.first, a.end)),
+            [(0, 39), (39, 103), (103, 144)]
+        );
+        let sat =
+            ["satisfied_in", "satisfied_hold", "satisfied_out"].map(|n| c.animation(n).unwrap());
+        assert_eq!(sat.map(|a| (a.first, a.end)), [(0, 20), (20, 52), (52, 71)]);
+        assert_eq!(c.animation("nod").unwrap().frames(), 25);
         assert_eq!(
             c.state_animation(State::TimerFinished).unwrap().name,
             "speaking"
