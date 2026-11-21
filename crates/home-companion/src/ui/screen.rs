@@ -120,9 +120,9 @@ fn card_look_of(name: &str, downloaded: bool, has_pose: impl Fn(State) -> bool) 
     state_named(name).filter(|s| has_pose(*s)).map(Look::Own)
 }
 
-/// The home's pose: a card's pose in place of the moment's (`moment`), except on the settings
-/// and More pages (`paged`), which keep their own animation over idle and where only the
-/// moment's link and working poses show (`Ui::home_state`).
+/// The home's pose: a card's pose in place of the moment's (`moment`), except on the pages with
+/// their own animation ([`paged`]), where only the moment's link and working poses show
+/// (`Ui::home_state`).
 fn home_look_of(card: Option<Look>, paged: bool, moment: State) -> Look {
     match card {
         Some(l) if !paged => l,
@@ -616,7 +616,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 107] = [
+pub const DEMO_STATES: [&str; 110] = [
     "home",
     "cards",
     "cards-setup",
@@ -718,6 +718,9 @@ pub const DEMO_STATES: [&str; 107] = [
     "settings-anim-in",
     "settings-anim-hold",
     "settings-anim-out",
+    "ha-anim-hold",
+    "ha-anim-type",
+    "muted-anim-in",
     "settings-panel",
     "panel-ask",
     "panel-blocked",
@@ -1018,6 +1021,19 @@ impl Demo {
                 frame: Some(("settings_out", 24)),
                 ..home.clone()
             },
+            // The laptop on the Home Assistant page (held, typing) and the earmuffs going on.
+            "ha-anim-hold" => Demo {
+                frame: Some(("ha_hold", 20)),
+                ..page("ha")
+            },
+            "ha-anim-type" => Demo {
+                frame: Some(("ha_type", 20)),
+                ..page("ha")
+            },
+            "muted-anim-in" => Demo {
+                frame: Some(("muted_in", 50)),
+                ..home.clone()
+            },
             "trends" => Demo {
                 widget: Some(WidgetKind::Quotes),
                 ..page("trends")
@@ -1210,15 +1226,21 @@ pub struct UiOptions {
     pub panel: Option<crate::panel::PanelCfg>,
 }
 
+/// A sheet decoded only while it is needed: being decoded, and whether it is wanted (its clips
+/// are dropped when they come after it was no longer needed).
+#[derive(Default)]
+struct Lazy {
+    incoming: Option<Receiver<Clip>>,
+    on: bool,
+}
+
 /// The animation side of the UI.
 struct Motion {
     seq: Sequencer,
     clips: HashMap<&'static str, Arc<Clip>>,
     incoming: Option<Receiver<Clip>>,
-    /// The settings sheet: being decoded, and whether it is wanted (its clips are dropped when
-    /// they come after the settings pages were left).
-    settings_incoming: Option<Receiver<Clip>>,
-    settings_sheet: bool,
+    /// The sheets of [`LAZY_CLIPS`], in the same order.
+    lazy: [Lazy; 3],
     /// The sheet of the pose of Home Assistant's cards, being decoded.
     pose_incoming: Option<Receiver<Clip>>,
     playhead: Option<Playhead>,
@@ -1270,10 +1292,36 @@ const NIGHT_CLIPS: [&str; 3] = ["fall_asleep", "sleeping", "wake_from_sleep"];
 /// The settings pages' animations: decoded while a settings page is open (and until
 /// `settings_out` has played), freed after.
 const SETTINGS_CLIPS: [&str; 3] = ["settings_in", "settings_hold", "settings_out"];
+/// The Home Assistant page's animations (the laptop): the same, with that page.
+const HA_CLIPS: [&str; 6] = [
+    "ha_in",
+    "ha_hold",
+    "ha_type_in",
+    "ha_type",
+    "ha_type_out",
+    "ha_out",
+];
+/// The earmuffs going on and off: the same, while the microphone is off (the `muted` loop is
+/// decoded at start like the other loops).
+const EARMUFF_CLIPS: [&str; 2] = ["muted_in", "muted_out"];
+/// The sheets decoded only while they are needed ([`Sequencer::uses`]).
+const LAZY_CLIPS: [&[&str]; 3] = [&SETTINGS_CLIPS, &HA_CLIPS, &EARMUFF_CLIPS];
 /// The settings pages: Settings and the pages under it.
 const SETTINGS_PAGES: [&str; 7] = [
     "settings", "language", "screen", "widgets", "panel", "update", "poses",
 ];
+/// One of [`LAZY_CLIPS`].
+fn lazy_clip(name: &str) -> bool {
+    LAZY_CLIPS.iter().any(|g| g.contains(&name))
+}
+
+/// A page where the character has its own animation over idle (the settings pages, More, the
+/// Home Assistant page): no card's pose there, and of the moment's only the link and a job
+/// (`Ui::home_state`).
+fn paged(page: &str) -> bool {
+    SETTINGS_PAGES.contains(&page) || matches!(page, "altro" | "ha")
+}
+
 /// How long before and after the night hours its animations are kept.
 const NIGHT_MARGIN_S: i64 = 10 * 60;
 
@@ -2143,10 +2191,10 @@ impl<S: Screen> Ui<S> {
         let mut wanted: Vec<Animation> = Vec::new();
         if animated {
             // The night's sheet (~19 MB decoded) only around the night: Ui::night_sheets; the
-            // settings' only with the settings pages: Ui::settings_sheets.
+            // settings', the laptop's and the earmuffs' only while needed: Ui::lazy_sheets.
             for name in character::ANIMATIONS
                 .iter()
-                .filter(|n| !NIGHT_CLIPS.contains(n) && !SETTINGS_CLIPS.contains(n))
+                .filter(|n| !NIGHT_CLIPS.contains(n) && !lazy_clip(n))
             {
                 if let Some(a) = character.animation(name) {
                     wanted.push(a.clone());
@@ -2159,8 +2207,7 @@ impl<S: Screen> Ui<S> {
             clips: HashMap::new(),
             incoming: (!wanted.is_empty())
                 .then(|| anim::load_in_background(wanted, character.background)),
-            settings_incoming: None,
-            settings_sheet: false,
+            lazy: Default::default(),
             pose_incoming: None,
             playhead: None,
             shown: Show::Pose,
@@ -3069,9 +3116,24 @@ impl<S: Screen> Ui<S> {
             None
         };
         match look {
+            // With the earmuffs' clips the muted pose is drawn by them (`muted_in` starts from
+            // idle, the loop holds it): under them, and before them, the idle pose.
+            Some(Look::Own(State::Muted)) if self.earmuffs() => {
+                app.set_pose(self.pose(State::Idle))
+            }
             Some(l) => app.set_pose(self.look_image(&l)),
             None => app.set_pose(self.pose(state)),
         }
+    }
+
+    /// The muted pose comes and goes with the earmuffs' clips (`Mode::Muted`): animations on
+    /// and the character has `muted_in`, `muted_out` and the `muted` loop.
+    fn earmuffs(&self) -> bool {
+        self.opts.screen.animations
+            && self.opts.demo.is_none()
+            && ["muted_in", "muted", "muted_out"]
+                .iter()
+                .all(|n| self.character.animation(n).is_some())
     }
 
     /// The pose a card of Home Assistant asks for, if the character has it.
@@ -3079,11 +3141,11 @@ impl<S: Screen> Ui<S> {
         self.card_pose.borrow().0.clone()
     }
 
-    /// The home's pose now: a card's (not on the settings and More pages), else the moment's.
+    /// The home's pose now: a card's (not on the pages with their own animation), else the
+    /// moment's.
     fn home_look(&self) -> Look {
         let page = self.screen.get_page();
-        let paged = SETTINGS_PAGES.contains(&page.as_str()) || page.as_str() == "altro";
-        home_look_of(self.card_look(), paged, self.home_state())
+        home_look_of(self.card_look(), paged(&page), self.home_state())
     }
 
     /// The picture of a pose: the character's own, or a downloaded one (drawn as idle is).
@@ -3121,10 +3183,14 @@ impl<S: Screen> Ui<S> {
                 .is_some_and(|(from, until)| from <= now && now < until),
             nod: self.nod_until.get().is_some_and(|t| now < t),
         });
-        // The settings and More pages have their own animation over idle: only a job or the
-        // link shows over them.
-        let paged = SETTINGS_PAGES.contains(&page.as_str()) || page.as_str() == "altro";
-        if self.character.has_pose(s) && !(paged && !matches!(s, State::Link | State::Working)) {
+        // The pages with their own animation over idle: only a job or the link shows over them;
+        // on the Home Assistant page its job is the laptop's typing (`motion_mode`).
+        let over = match s {
+            State::Link => true,
+            State::Working => page.as_str() != "ha",
+            _ => false,
+        };
+        if self.character.has_pose(s) && (!paged(&page) || over) {
             s
         } else {
             State::Idle
@@ -3139,10 +3205,13 @@ impl<S: Screen> Ui<S> {
         if s == State::Idle {
             return Mode::Home;
         }
+        if s == State::Muted && self.earmuffs() {
+            return Mode::Muted;
+        }
         self.character
             .state_animation(s)
             .and_then(|a| anim::static_name(&a.name))
-            .filter(|n| !NIGHT_CLIPS.contains(n) && !SETTINGS_CLIPS.contains(n))
+            .filter(|n| !NIGHT_CLIPS.contains(n) && !lazy_clip(n))
             .map_or(Mode::Still, Mode::Loop)
     }
 
@@ -3323,6 +3392,13 @@ impl<S: Screen> Ui<S> {
                         Mode::Settings
                     }
                     Look::Own(State::Idle) if page.as_str() == "altro" => Mode::More,
+                    Look::Own(State::Idle) if page.as_str() == "ha" => {
+                        if self.ha_page.borrow().busy {
+                            Mode::HaBusy
+                        } else {
+                            Mode::Ha
+                        }
+                    }
                     l => self.look_mode(&l),
                 }
             }
@@ -3350,39 +3426,43 @@ impl<S: Screen> Ui<S> {
         let loading = self.motion.borrow().loading_until.is_some();
         let mode = self.motion_mode(p, view(p).1, loading);
         self.motion.borrow_mut().seq.set_mode(mode, Instant::now());
-        self.settings_sheets();
         self.step();
     }
 
-    /// Decodes the settings pages' animations when one opens, frees them once they are left
-    /// and `settings_out` has played.
-    fn settings_sheets(&self) {
+    /// Decodes the sheets of [`LAZY_CLIPS`] when the sequencer needs them (a settings page,
+    /// the Home Assistant page, the microphone off), frees them once their last clip has played.
+    fn lazy_sheets(&self) {
         if self.opts.demo.is_some() || !self.opts.screen.animations {
             return;
         }
+        let mut freed = false;
         let mut m = self.motion.borrow_mut();
-        let want = m.seq.uses_settings();
-        if want && !m.settings_sheet {
-            let anims: Vec<Animation> = SETTINGS_CLIPS
-                .iter()
-                .filter_map(|n| self.character.animation(n).cloned())
-                .collect();
-            if !anims.is_empty() {
-                log::info!(event = "settings_sheets", on = true; "settings animations: decoding");
-                m.settings_sheet = true;
-                m.settings_incoming =
-                    Some(anim::load_in_background(anims, self.character.background));
+        for (i, clips) in LAZY_CLIPS.into_iter().enumerate() {
+            let want = m.seq.uses(clips);
+            if want && !m.lazy[i].on {
+                let anims: Vec<Animation> = clips
+                    .iter()
+                    .filter_map(|n| self.character.animation(n).cloned())
+                    .collect();
+                if !anims.is_empty() {
+                    log::info!(event = "lazy_sheets", clip = clips[0], on = true; "animations {}…: decoding", clips[0]);
+                    m.lazy[i].on = true;
+                    m.lazy[i].incoming =
+                        Some(anim::load_in_background(anims, self.character.background));
+                }
+            } else if !want && m.lazy[i].on {
+                m.lazy[i] = Lazy::default();
+                for n in clips {
+                    m.clips.remove(n);
+                    m.seq.remove(n);
+                }
+                freed = true;
+                log::info!(event = "lazy_sheets", clip = clips[0], on = false; "animations {}…: freed", clips[0]);
             }
-        } else if !want && m.settings_sheet {
-            m.settings_sheet = false;
-            m.settings_incoming = None;
-            for n in SETTINGS_CLIPS {
-                m.clips.remove(n);
-                m.seq.remove(n);
-            }
-            drop(m);
+        }
+        drop(m);
+        if freed {
             give_back_memory();
-            log::info!(event = "settings_sheets", on = false; "settings animations freed");
         }
     }
 
@@ -3488,21 +3568,24 @@ impl<S: Screen> Ui<S> {
         let mut added = false;
         {
             let mut m = self.motion.borrow_mut();
-            if let Some(rx) = &m.settings_incoming {
+            for i in 0..m.lazy.len() {
+                let Some(rx) = &m.lazy[i].incoming else {
+                    continue;
+                };
                 let mut got = Vec::new();
                 loop {
                     match rx.try_recv() {
                         Ok(c) => got.push(c),
                         Err(std::sync::mpsc::TryRecvError::Empty) => break,
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                            m.settings_incoming = None;
+                            m.lazy[i].incoming = None;
                             break;
                         }
                     }
                 }
                 for c in got {
                     if let Some(name) = anim::static_name(&c.anim.name)
-                        && m.settings_sheet
+                        && m.lazy[i].on
                     {
                         m.seq.add(name, Timing::of(&c.anim));
                         m.clips.insert(name, Arc::new(c));
@@ -3629,14 +3712,8 @@ impl<S: Screen> Ui<S> {
         } else if !moving && self.frame_timer.running() {
             self.frame_timer.stop();
         }
-        // The settings sheet goes once `settings_out` has played.
-        let (sheet, uses) = {
-            let m = self.motion.borrow();
-            (m.settings_sheet, m.seq.uses_settings())
-        };
-        if sheet && !uses {
-            self.settings_sheets();
-        }
+        // A sheet decoded when it is needed, freed once its last clip has played.
+        self.lazy_sheets();
     }
 
     /// The backlight towards `level`: a fade (backlight.rs, [`FADE`]), at once to and from 0.
@@ -3787,6 +3864,9 @@ impl<S: Screen> Ui<S> {
             // The night clips are aligned on idle too (they start or end there).
             "loading" | "wake" | "idle" | "fall_asleep" | "sleeping" | "wake_from_sleep"
             | "settings_in" | "settings_hold" | "settings_out" => State::Idle,
+            // The earmuffs and the laptop start from idle (same crop as the muted pose).
+            "muted_in" | "muted_out" | "ha_in" | "ha_hold" | "ha_type_in" | "ha_type"
+            | "ha_type_out" | "ha_out" => State::Idle,
             // A downloaded pose is drawn as the idle pose is (render_card_pose).
             anim::CARD_POSE => State::Idle,
             "muted" => State::Muted,
@@ -7696,11 +7776,15 @@ impl<S: Screen> Ui<S> {
                             // says it.
                             p.done = true;
                             drop(p);
-                            let now = Instant::now();
-                            self.motion.borrow_mut().seq.done(now);
-                            // After the bow (anim's `done`, 3 s).
-                            self.satisfied
-                                .set(Some((now + BOW, now + BOW + SATISFIED_FOR)));
+                            // On the page the hands leave the keys (the laptop's clips); left
+                            // already: the bow, then the satisfied pose on the home.
+                            if self.screen.get_page() != "ha" {
+                                let now = Instant::now();
+                                self.motion.borrow_mut().seq.done(now);
+                                // After the bow (anim's `done`, 3 s).
+                                self.satisfied
+                                    .set(Some((now + BOW, now + BOW + SATISFIED_FOR)));
+                            }
                             let said =
                                 word(&self.locale.borrow(), "ha_ready_say", &self.character.name);
                             self.send(UiEvent::Say(said));
@@ -7750,6 +7834,10 @@ impl<S: Screen> Ui<S> {
             }
         }
         self.render_ha();
+        // A job started or ended on the page: the laptop's keys.
+        if self.screen.get_page() == "ha" {
+            self.page_motion();
+        }
         if settings {
             self.refresh_settings();
             self.refresh_tiles();
