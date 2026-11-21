@@ -10,6 +10,10 @@
 //! cargo run -p home-companion --example panel_body -- /tmp/panel-demo &
 //! cargo run -p panel -- --socket /tmp/panel-demo/panel.sock --listen 127.0.0.1:8125
 //! ```
+//!
+//! The remote screen is on, its picture a sample home (the golden `widget.png`) with a gold ring
+//! where each touch went; `touch <dir>/screen-off` switches it off as on the device, `touch
+//! <dir>/screen-private` makes the screen show a private page.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -22,6 +26,7 @@ use home_companion::panel::protocol::{self, PanelHost};
 use home_companion::panel::sessions::{self, Request, Sessions};
 use home_companion::settings::Settings;
 use home_companion::settings_model::{self as model, Change, Host};
+use home_companion::ui::capture::{self, Frame};
 use home_companion::ui::lists::{self, ShopList};
 use home_companion::ui::screen::samples;
 use home_companion::ui::widgets::{
@@ -42,6 +47,70 @@ struct Demo {
     lists: RefCell<Vec<ShopList>>,
     asked: RefCell<Option<(String, Instant)>>,
     volume: RefCell<u8>,
+    dir: PathBuf,
+    born: Instant,
+    /// The sample screen, RGB at half size (640 x 400).
+    picture: Vec<u8>,
+    taps: RefCell<Vec<(f32, f32, Instant)>>,
+    frame: RefCell<Option<Frame>>,
+}
+
+const PIC_W: u32 = 640;
+const PIC_H: u32 = 400;
+
+/// The sample screen at half size: the golden picture of the home with the widget.
+fn picture() -> Vec<u8> {
+    let png = include_bytes!("../out/golden/widget.png");
+    let img = image::load_from_memory(png).expect("golden png").to_rgb8();
+    image::imageops::resize(&img, PIC_W, PIC_H, image::imageops::FilterType::Triangle).into_raw()
+}
+
+impl Demo {
+    /// A new picture four times a second: the sample, the touches of the last second as gold
+    /// rings, and a line at the bottom that moves (so that every frame differs).
+    fn draw(&self) -> Frame {
+        let seq = self.born.elapsed().as_millis() as u64 / 250 + 1;
+        if let Some(f) = self.frame.borrow().as_ref().filter(|f| f.seq == seq) {
+            return f.clone();
+        }
+        let mut rgb = self.picture.clone();
+        let mut put = |x: i64, y: i64, c: [u8; 3]| {
+            if (0..PIC_W as i64).contains(&x) && (0..PIC_H as i64).contains(&y) {
+                let i = ((y * PIC_W as i64 + x) * 3) as usize;
+                rgb[i..i + 3].copy_from_slice(&c);
+            }
+        };
+        self.taps
+            .borrow_mut()
+            .retain(|t| t.2.elapsed() < Duration::from_millis(1200));
+        for (x, y, _) in self.taps.borrow().iter() {
+            let (cx, cy) = ((*x * PIC_W as f32) as i64, (*y * PIC_H as f32) as i64);
+            for dy in -24..=24i64 {
+                for dx in -24..=24i64 {
+                    let d = ((dx * dx + dy * dy) as f64).sqrt();
+                    if (18.0..=22.0).contains(&d) {
+                        put(cx + dx, cy + dy, [212, 171, 99]);
+                    }
+                }
+            }
+        }
+        let at = (seq % 64) as i64 * PIC_W as i64 / 64;
+        for x in at..at + 24 {
+            for y in PIC_H as i64 - 3..PIC_H as i64 {
+                put(x, y, [212, 171, 99]);
+            }
+        }
+        let jpeg = capture::encode_jpeg(&rgb, PIC_W, PIC_H).expect("jpeg");
+        let f = Frame {
+            seq,
+            width: PIC_W,
+            height: PIC_H,
+            b64: std::sync::Arc::new(capture::base64(&jpeg)),
+            jpeg: std::sync::Arc::new(jpeg),
+        };
+        *self.frame.borrow_mut() = Some(f.clone());
+        f
+    }
 }
 
 impl Host for Demo {
@@ -132,6 +201,46 @@ impl PanelHost for Demo {
             .into_iter()
             .map(|k| (k, on.contains(&k)))
             .collect()
+    }
+    /// The turn as the screen would run it: every `widgets_every` seconds the next page on.
+    fn widget_showing(&self) -> Option<home_companion::ui::widgets::Kind> {
+        let on = self.settings.widgets().0;
+        let order: Vec<_> = self
+            .settings
+            .widget_order()
+            .into_iter()
+            .filter(|k| on.contains(k))
+            .collect();
+        let every = self.settings.widgets().1.max(5) as u64;
+        let n = order.len() as u64;
+        (n > 0).then(|| order[((self.born.elapsed().as_secs() / every) % n) as usize])
+    }
+    fn remote_enabled(&self) -> bool {
+        !self.dir.join("screen-off").exists()
+    }
+    fn remote_hidden(&self) -> Option<&'static str> {
+        self.dir.join("screen-private").exists().then_some("camera")
+    }
+    fn remote_frame(&self) -> Result<Option<Frame>, &'static str> {
+        Ok(Some(self.draw()))
+    }
+    fn remote_touch(&self, t: home_companion::panel::remote::Touch) {
+        if t.kind == home_companion::panel::remote::TouchKind::Down {
+            eprintln!("screen: touch at {:.3} {:.3}", t.x, t.y);
+        }
+        self.taps.borrow_mut().push((t.x, t.y, Instant::now()));
+    }
+    fn remote_home(&self) {
+        eprintln!("screen: back to the home");
+    }
+    fn remote_changed(&self, c: Option<&home_companion::panel::remote::Controller>) {
+        match c {
+            Some(c) => eprintln!(
+                "screen: controlled by {} on {}",
+                c.agent.browser, c.agent.os
+            ),
+            None => eprintln!("screen: nobody in control"),
+        }
     }
     fn widget_quotes(&self) -> Vec<QuoteChoice> {
         self.settings.quotes()
@@ -479,6 +588,11 @@ fn main() {
         ]),
         asked: RefCell::new(None),
         volume: RefCell::new(40),
+        dir: dir.clone(),
+        born: Instant::now(),
+        picture: picture(),
+        taps: RefCell::new(Vec::new()),
+        frame: RefCell::new(None),
     };
     // A first start: some markets, cities and sensors chosen (public names), as after a
     // few minutes with the panel.

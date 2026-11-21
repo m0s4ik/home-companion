@@ -550,6 +550,9 @@ impl<S: Screen> PanelHost for Ui<S> {
             .map(|k| (*k, on.contains(k)))
             .collect()
     }
+    fn widget_showing(&self) -> Option<crate::ui::widgets::Kind> {
+        self.widget.borrow().kind()
+    }
     fn widget_quotes(&self) -> Vec<crate::feeds::QuoteChoice> {
         self.widget_quotes.borrow().clone()
     }

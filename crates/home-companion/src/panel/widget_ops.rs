@@ -374,7 +374,8 @@ pub fn state(host: &dyn PanelHost, lang: &str) -> Value {
         .filter(|e| e.domain() == "person")
         .map(|e| json!({"ref": e.id, "name": e.name}))
         .collect();
-    json!({"ok": true, "order": order, "pages": pages(host, lang), "quotes": quotes, "cities": cities, "currency": currency,
+    let showing = host.widget_showing().map(|k| k.key());
+    json!({"ok": true, "order": order, "showing": showing, "pages": pages(host, lang), "quotes": quotes, "cities": cities, "currency": currency,
            "sensors": sensors, "player": player,
            "people": {"all": all_people, "chosen": ha.people.unwrap_or_default()},
            "ha": !catalog.is_empty(),

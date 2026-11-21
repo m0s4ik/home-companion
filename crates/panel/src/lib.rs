@@ -70,12 +70,17 @@ pub const FONT_MEDIUM: &[u8] =
 pub const FONT_LIGHT: &[u8] =
     include_bytes!("../../spike-ui/fixtures/fonts/Inter-Light-subset.ttf");
 
+/// The same Light with tabular figures: the clock of the device's screen drawn in the panel.
+pub const FONT_LIGHT_TNUM: &[u8] =
+    include_bytes!("../../spike-ui/fixtures/fonts/Inter-Light-tnum-subset.ttf");
+
 /// The files that never change within a version: the fonts and Alfred's pictures (CC0, made by
 /// tools/make-art.py from characters/alfred/poses). Served as they are, kept a day.
 pub const STATIC: &[(&str, &str, &[u8])] = &[
     ("/inter-300.ttf", "font/ttf", FONT_LIGHT),
     ("/inter-400.ttf", "font/ttf", FONT_REGULAR),
     ("/inter-500.ttf", "font/ttf", FONT_MEDIUM),
+    ("/inter-300-tnum.ttf", "font/ttf", FONT_LIGHT_TNUM),
     (
         "/art/face.webp",
         "image/webp",

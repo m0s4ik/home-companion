@@ -59,6 +59,10 @@ pub trait PanelHost: model::Host {
     fn sessions_changed(&self);
     /// The widget's pages in the turn's order, each on or off.
     fn widget_pages(&self) -> Vec<(crate::ui::widgets::Kind, bool)>;
+    /// The page of the widget on the screen now (None: none, or not known).
+    fn widget_showing(&self) -> Option<crate::ui::widgets::Kind> {
+        None
+    }
     /// The markets and the other cities chosen.
     fn widget_quotes(&self) -> Vec<crate::feeds::QuoteChoice>;
     fn widget_cities(&self) -> Vec<crate::feeds::CityChoice>;
@@ -197,10 +201,8 @@ pub const STRING_KEYS: &[&str] = &[
     "panel_off",
     "panel_error",
     "panel_saved",
-    "panel_section_devices",
     "panel_shopping_empty",
     "panel_shopping_none",
-    "panel_remove",
     "panel_devices_this",
     "panel_logout",
     "panel_device_line",
@@ -231,12 +233,8 @@ pub const STRING_KEYS: &[&str] = &[
     "panel_people_hint",
     "panel_no_ha",
     "panel_tabs",
-    "panel_tab_widgets",
     "panel_tab_shopping",
     "panel_tab_settings",
-    "panel_tab_access",
-    "panel_drag_hint",
-    "panel_add_widget",
     "panel_move",
     "panel_moved",
     "panel_order_saved",
@@ -250,8 +248,6 @@ pub const STRING_KEYS: &[&str] = &[
     "panel_empty_check",
     "panel_empty_playing",
     "panel_empty_home",
-    "panel_close",
-    "panel_preview",
     "panel_preview_sample",
     "panel_rows_prev",
     "panel_rows_next",
@@ -290,16 +286,12 @@ pub const STRING_KEYS: &[&str] = &[
     "panel_revoke_sure",
     "panel_access_new_hint",
     "panel_last_used",
-    "panel_on_home_title",
     "panel_no_widgets",
-    "panel_change_order",
     "panel_finish",
     "panel_all_on",
     "panel_add_home",
-    "panel_remove_home",
     "panel_now_on",
     "panel_removed_home",
-    "panel_preview_example",
     "panel_help_weather",
     "panel_help_check",
     "panel_help_playing",
@@ -312,7 +304,6 @@ pub const STRING_KEYS: &[&str] = &[
     "panel_note_new",
     "panel_note_add",
     "panel_nothing_yet",
-    "panel_menu",
     "panel_ask_line",
     "panel_code_title",
     "panel_code_text",
@@ -325,7 +316,6 @@ pub const STRING_KEYS: &[&str] = &[
     "panel_screen_lead",
     "panel_screen_start",
     "panel_screen_stop",
-    "panel_screen_live",
     "panel_screen_off",
     "panel_screen_busy",
     "panel_screen_stopped",
@@ -333,6 +323,76 @@ pub const STRING_KEYS: &[&str] = &[
     "panel_screen_hidden",
     "panel_screen_unavailable",
     "panel_screen_home",
+    "panel_tab_home",
+    "panel_home_sub",
+    "panel_status_on",
+    "panel_device_preview",
+    "panel_preview_now",
+    "panel_not_on_home",
+    "panel_would_look",
+    "panel_rotation",
+    "panel_every",
+    "panel_can_add",
+    "panel_pos_of",
+    "panel_pos_in",
+    "panel_move_hint",
+    "panel_showing_now",
+    "panel_on_home",
+    "panel_off_home_line",
+    "panel_position",
+    "panel_before",
+    "panel_after",
+    "panel_reorder",
+    "panel_all",
+    "panel_only_these",
+    "panel_keep_one",
+    "panel_lists_edit_in",
+    "panel_rotation_in",
+    "panel_night_hours",
+    "panel_from",
+    "panel_to",
+    "panel_shopping_sub",
+    "panel_to_buy",
+    "panel_screen_ro",
+    "panel_revoke",
+    "panel_revoked",
+    "panel_retry",
+    "panel_screen_sub",
+    "panel_screen_ready_title",
+    "panel_screen_ready_text",
+    "panel_screen_sign",
+    "panel_screen_off_title",
+    "panel_screen_private_title",
+    "panel_screen_busy_title",
+    "panel_screen_busy_by",
+    "panel_screen_stopped_title",
+    "panel_screen_lost_title",
+    "panel_screen_lost",
+    "panel_screen_state_ready",
+    "panel_screen_state_live",
+    "panel_screen_state_mine",
+    "panel_screen_state_paused",
+    "panel_screen_state_private",
+    "panel_screen_state_off",
+    "panel_screen_state_busy",
+    "panel_screen_state_stopped",
+    "panel_screen_state_lost",
+    "panel_screen_fps",
+    "panel_screen_home_done",
+    "panel_screen_stopped_here",
+    "panel_fact_tap",
+    "panel_fact_tap_text",
+    "panel_fact_seen",
+    "panel_fact_seen_text",
+    "panel_fact_private",
+    "panel_fact_private_text",
+    "panel_access",
+    "panel_access_on",
+    "panel_access_off",
+    "panel_screen",
+    "ha_short",
+    "talk",
+    "more",
 ];
 
 fn shopping_json(lists: &[ShopList]) -> Value {
@@ -586,10 +646,16 @@ fn screen_op(
     match op {
         "screen.status" => {
             let c = sessions.remote.controller.as_ref();
+            // Who is in control, when it is another device: what the screen's sign says
+            // («Controlled by Safari on iPhone»), never its address.
+            let by = c
+                .filter(|c| c.hash != me)
+                .map(|c| json!({"browser": c.agent.browser, "os": c.agent.os}));
             ok(json!({
                 "enabled": host.remote_enabled(),
                 "active": c.is_some(),
                 "mine": c.is_some_and(|c| c.hash == me),
+                "by": by,
             }))
         }
         "screen.start" => {
@@ -760,6 +826,9 @@ mod tests {
             let order = model::widget_order(self);
             let on = self.model.settings.widgets().0;
             order.iter().map(|k| (*k, on.contains(k))).collect()
+        }
+        fn widget_showing(&self) -> Option<crate::ui::widgets::Kind> {
+            Some(crate::ui::widgets::Kind::Quotes)
         }
         fn widget_quotes(&self) -> Vec<crate::feeds::QuoteChoice> {
             self.model.settings.quotes()
@@ -1502,6 +1571,8 @@ mod tests {
         let w = call(&h, &mut s, json!({"op": "widgets.get", "token": t}));
         assert_eq!(w["ha"], true);
         assert_eq!(w["people"]["all"].as_array().unwrap().len(), 2);
+        // The page on the screen now (the panel's green dot).
+        assert_eq!(w["showing"], "quotes");
         let a = w.to_string();
         for bad in [
             "lock.",
@@ -1794,10 +1865,18 @@ mod tests {
             ask(&mut s, &b, "screen.frame", json!({}))["error"],
             "screen_ended"
         );
+        // The other device is told who is in control (as the sign says it), never where from.
         let st = ask(&mut s, &b, "screen.status", json!({}));
         assert_eq!(
             st,
-            json!({"ok": true, "enabled": true, "active": true, "mine": false})
+            json!({"ok": true, "enabled": true, "active": true, "mine": false,
+                   "by": {"browser": "Chrome", "os": "macOS"}})
+        );
+        assert!(!st.to_string().contains("192.0.2"));
+        let st = ask(&mut s, &a, "screen.status", json!({}));
+        assert_eq!(
+            (st["mine"].clone(), st["by"].clone()),
+            (json!(true), Value::Null)
         );
         // The frame, then nothing new for the same seq.
         let f = ask(&mut s, &a, "screen.frame", json!({"after": 0}));

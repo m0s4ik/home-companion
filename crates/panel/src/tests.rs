@@ -453,10 +453,11 @@ fn over_sockets_and_idle() {
 /// The pages are small (they are in the binary) and draw text only as text.
 #[test]
 fn pages_are_light() {
-    // About 70 KB with the widget's cards drawn here (panel v5: no device, gallery or sheets
-    // any more); the fonts and pictures apart.
+    // About 105 KB with the widget's cards and the device's home screen drawn here (panel v6:
+    // the device's frame, the turn's strip, the remote screen's states); the fonts and
+    // pictures apart.
     let total = INDEX.len() + CSS.len() + JS.len();
-    assert!(total < 80 * 1024, "{total} bytes");
+    assert!(total < 112 * 1024, "{total} bytes");
     // No style or script in the page itself, none set from the script as an attribute.
     assert!(!JS.contains("setAttribute('style'") && !JS.contains(".style."));
     assert!(
