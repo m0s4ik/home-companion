@@ -69,6 +69,8 @@ export global Grid {
     out property <length> page-y: 112px;
     out property <length> page-height: 496px;
     out property <length> band-y: self.compact ? 656px : 640px;
+    // The bottom of the home's date line (its 44 px box): the widget sits midway from here to the band.
+    out property <length> date-bottom: self.compact ? 216px : 284px;
     // The action band's three slots (160 x 136 each), centred at col-cx - 200, col-cx, col-cx + 200.
     out property <length> slot-dx: 200px;
     out property <length> slot-width: 160px;

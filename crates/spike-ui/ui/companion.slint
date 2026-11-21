@@ -1721,7 +1721,12 @@ export component CompanionWindow inherits Window {
         // The widget, in the slots the cards leave free.
         if root.widget-shown && !root.notifications-hidden && root.widget-slots > 0: WidgetPanel {
             x: Grid.col-x;
-            y: Grid.cards-y + root.cards.length * (Grid.card-height + Grid.card-gap);
+            // Midway between what is above it (the date line, or the last card) and the action
+            // band, never over a card.
+            property <length> above: root.cards.length == 0 ? Grid.date-bottom
+                : Grid.cards-y + root.cards.length * (Grid.card-height + Grid.card-gap) - Grid.card-gap;
+            y: max(Grid.cards-y + root.cards.length * (Grid.card-height + Grid.card-gap),
+                self.above + (Grid.band-y - self.above - self.height) / 2);
             // The free slots, but never taller than what it shows: a header and its rows (52 px
             // each), or the weather's columns (112 px); the weather's big block takes them all.
             // The dots under it when it turns.
