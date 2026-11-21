@@ -122,6 +122,7 @@ impl<S: Screen> Ui<S> {
         self.panel.borrow_mut().on = on;
         log::info!(event = "panel", on = on; "access from the browser {}", if on { "on" } else { "off" });
         if !on {
+            self.remote_end(crate::panel::remote::End::Off);
             self.close_panel_ask();
             if let Ok(mut s) = self.panel_sessions.try_borrow_mut() {
                 s.drop_ticket();
@@ -221,6 +222,11 @@ impl<S: Screen> Ui<S> {
         if self.screen.get_dialog() == "panel-ask" {
             self.screen.set_dialog("");
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn panel_answered_for_test(&self, yes: bool) {
+        self.panel_answered(yes);
     }
 
     /// Refuse or Allow in the dialog.
@@ -405,6 +411,33 @@ impl<S: Screen> Ui<S> {
 impl<S: Screen> PanelHost for Ui<S> {
     fn panel_on(&self) -> bool {
         self.panel.borrow().on
+    }
+
+    fn remote_enabled(&self) -> bool {
+        self.remote.borrow().on && self.panel.borrow().on
+    }
+
+    fn remote_hidden(&self) -> Option<&'static str> {
+        self.remote_hidden_now()
+    }
+
+    fn remote_frame(&self) -> Result<Option<crate::ui::capture::Frame>, &'static str> {
+        self.remote_frame_now()
+    }
+
+    fn remote_touch(&self, t: crate::panel::remote::Touch) {
+        self.remote_touch_now(t);
+    }
+
+    fn remote_home(&self) {
+        // The access dialog stays: it is for whoever is in front of the screen.
+        if self.screen.get_dialog() != "panel-ask" {
+            self.screen.set_page("home");
+        }
+    }
+
+    fn remote_changed(&self, c: Option<&crate::panel::remote::Controller>) {
+        self.remote_changed_now(c);
     }
 
     fn can_ask(&self) -> bool {

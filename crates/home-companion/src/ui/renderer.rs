@@ -316,11 +316,22 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
     let Prepared {
         screen,
         kind,
+        rotation,
         fb,
         _vt,
-        ..
     } = p;
     let ui = Ui::new(screen, ctx.character.clone(), ctx.opts, ctx.core.clone())?;
+    // The remote screen (crate::panel::remote): its frames read from the display's buffer (GPU
+    // only: crate::ui::capture says why), its touches back into this loop as the panel's own.
+    let (remote_tx, remote_rx) = std::sync::mpsc::channel::<super::touch::TouchEvent>();
+    let capture = if kind == Kind::Gpu {
+        super::capture::Capture::new(rotation, || {
+            super::capture::drm::Drm::open().map(|d| Box::new(d) as Box<dyn super::capture::Source>)
+        })
+    } else {
+        super::capture::Capture::unavailable("renderer")
+    };
+    ui.set_remote_io(capture, remote_tx);
     // The Home Assistant button opens "Casa" instead of telling the core.
     let casa = ctx.web.map(|mut w| {
         w.gpu = kind == Kind::Gpu;
@@ -362,8 +373,10 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
                 ui.apply(cmd);
             }
             ui.poll_mirror();
-            if let Some(t) = &touch {
-                while let Ok(ev) = t.try_recv() {
+            let real = touch.as_ref().map(|t| t.try_iter().collect::<Vec<_>>());
+            let remote: Vec<_> = remote_rx.try_iter().collect();
+            {
+                for ev in real.into_iter().flatten().chain(remote) {
                     if ev.kind == TouchKind::Down {
                         ui.wake(WakeSource::Touch);
                     }

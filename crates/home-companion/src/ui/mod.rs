@@ -276,6 +276,11 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn on_panel_revoke(&self, f: impl Fn(String) + 'static);
     fn on_panel_revoke_all(&self, f: impl Fn() + 'static);
     fn on_panel_answered(&self, f: impl Fn(bool) + 'static);
+    /// Settings → Access from the browser → Remote screen: the switch, and the sign while a
+    /// device is in control ("" none).
+    fn set_remote(&self, on: bool, sign: &str);
+    fn on_remote_toggled(&self, f: impl Fn(bool) + 'static);
+    fn on_remote_stop(&self, f: impl Fn() + 'static);
     fn set_offline(&self, offline: bool);
     fn set_starting(&self, starting: bool);
     /// Nothing moves by itself (demo screenshots): the start-up line, the ringing ring.
@@ -696,6 +701,9 @@ macro_rules! impl_screen {
                     panel_ask_text,
                     panel_allow,
                     panel_refuse,
+                    panel_screen,
+                    panel_screen_hint,
+                    remote_stop,
                     widget_next,
                     widget_weather,
                     widget_shopping,
@@ -958,6 +966,16 @@ macro_rules! impl_screen {
             }
             fn on_panel_toggled(&self, f: impl Fn(bool) + 'static) {
                 $m::CompanionWindow::on_panel_toggled(self, f)
+            }
+            fn set_remote(&self, on: bool, sign: &str) {
+                $m::CompanionWindow::set_remote_on(self, on);
+                $m::CompanionWindow::set_remote_sign(self, sign.into());
+            }
+            fn on_remote_toggled(&self, f: impl Fn(bool) + 'static) {
+                $m::CompanionWindow::on_remote_toggled(self, f)
+            }
+            fn on_remote_stop(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_remote_stop(self, f)
             }
             fn on_panel_revoke(&self, f: impl Fn(String) + 'static) {
                 $m::CompanionWindow::on_panel_revoke(self, move |id| f(id.into()))

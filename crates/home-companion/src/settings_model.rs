@@ -150,6 +150,8 @@ pub const ITEMS: &[Item] = &[
     ),
     // The panel itself is switched on and off on the screen only.
     item("panel", "panel_access", "access", Kind::Bool),
+    // So is the remote screen (crate::panel::remote): never from the panel itself.
+    item("panel_screen", "panel_screen", "access", Kind::Bool),
 ];
 
 /// The keys the browser panel may read and set: the list the security review looked at. A test
@@ -195,6 +197,7 @@ pub enum Change {
     Calendars(Vec<String>),
     UpdatePrerelease(bool),
     Panel(bool),
+    PanelScreen(bool),
 }
 
 /// Why a value was not set.
@@ -335,6 +338,7 @@ pub fn get(host: &dyn Host, key: &str) -> Option<Value> {
         "calendars" => json!(s.calendars()),
         "update_prerelease" => json!(s.update_prerelease().unwrap_or(false)),
         "panel" => json!(s.panel_on()),
+        "panel_screen" => json!(s.panel_screen()),
         _ => return None,
     })
 }
@@ -482,6 +486,7 @@ pub fn change_for(host: &dyn Host, key: &str, value: &Value) -> Result<Change, S
         }
         "update_prerelease" => Change::UpdatePrerelease(v.as_bool().unwrap_or(false)),
         "panel" => Change::Panel(v.as_bool().unwrap_or(false)),
+        "panel_screen" => Change::PanelScreen(v.as_bool().unwrap_or(false)),
         _ => return Err(SetError::Unknown),
     })
 }
@@ -505,6 +510,7 @@ pub fn save(s: &Settings, change: &Change) {
         Change::Calendars(c) => s.save_calendars(c),
         Change::UpdatePrerelease(on) => s.save_update_prerelease(*on),
         Change::Panel(on) => s.save_panel_on(*on),
+        Change::PanelScreen(on) => s.save_panel_screen(*on),
     }
 }
 
@@ -732,6 +738,7 @@ pub(crate) mod tests {
                 Change::UpdatePrerelease(true),
             ),
             ("panel", json!(true), Change::Panel(true)),
+            ("panel_screen", json!(true), Change::PanelScreen(true)),
         ];
         assert_eq!(cases.len(), ITEMS.len(), "a case for every item");
         for (key, value, change) in cases {
@@ -762,6 +769,10 @@ pub(crate) mod tests {
         assert!(s.calendars().is_empty());
         assert_eq!(s.update_prerelease(), Some(true));
         assert!(s.panel_on());
+        // The two keys of [panel] are kept apart.
+        assert!(s.panel_screen());
+        s.save_panel_on(false);
+        assert!(s.panel_screen());
     }
 
     #[test]

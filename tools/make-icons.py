@@ -49,7 +49,7 @@ USED = {
     "bell": [32], "bell-off": [32, 28], "help-circle": [48], "cloud-off": [32], "cloud": [20], "sync": [28, 12], "camera": [44, 32], "image-multiple": [48], "microphone-off": [32], "alert-circle": [64, 32],
     "wifi-strength-1": [32, 28], "wifi-strength-2": [32, 28], "wifi-strength-3": [32, 28], "wifi-strength-4": [32, 28], "wifi-strength-off-outline": [32, 28], "check-circle": [48, 32], "undo": [36], "cart": [48, 32, 28], "calendar-clock": [48, 32, 28], "alarm": [40, 32, 28, 24], "cellphone": [28], "timer-sand-full": [48],
     # access from the browser (the panel): the dialog, the blocked card
-    "monitor-cellphone": [48, 32],
+    "monitor-cellphone": [48, 32, 28],
     # weather (the date line, the widget's columns; 28: the widget's header)
     "weather-sunny": [32], "weather-night-partly-cloudy": [32], "weather-partly-cloudy": [32, 28],
     "weather-cloudy": [32], "weather-rainy": [32], "weather-pouring": [32],

@@ -41,6 +41,7 @@ use crate::settings::{Settings, WakeSensitivity};
 use crate::settings_model::{self as model, Change};
 
 mod panel_ui;
+mod remote_ui;
 pub mod samples;
 use crate::timers::{TimerView, now_unix};
 use serde_json::json;
@@ -499,12 +500,13 @@ pub struct Demo {
     /// `--state settings-anim-*`: one frame of an animation (its sheet decoded at once).
     pub frame: Option<(&'static str, u32)>,
     /// `--state settings-panel` (1), `panel-ask` (2), `panel-blocked` (3): the browser panel's
-    /// page, its access dialog, the home's card after too many requests.
+    /// page, its access dialog, the home's card after too many requests; `settings-panel-remote`
+    /// (4), `remote-sign` (5): the remote screen's switch on, its sign.
     pub panel: u8,
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 104] = [
+pub const DEMO_STATES: [&str; 106] = [
     "home",
     "cards",
     "cards-setup",
@@ -609,6 +611,8 @@ pub const DEMO_STATES: [&str; 104] = [
     "settings-panel",
     "panel-ask",
     "panel-blocked",
+    "settings-panel-remote",
+    "remote-sign",
 ];
 
 impl Demo {
@@ -928,6 +932,14 @@ impl Demo {
             },
             "panel-blocked" => Demo {
                 panel: 3,
+                ..home.clone()
+            },
+            "settings-panel-remote" => Demo {
+                panel: 4,
+                ..page("panel")
+            },
+            "remote-sign" => Demo {
+                panel: 5,
                 ..home.clone()
             },
             "update-confirm" => Demo {
@@ -1372,6 +1384,8 @@ pub struct Ui<S: Screen> {
     /// the sessions are borrowed while a request is answered, the rest is drawn meanwhile.
     panel_sessions: RefCell<crate::panel::sessions::Sessions>,
     panel: RefCell<panel_ui::PanelUi>,
+    /// The remote screen (remote_ui.rs): the switch, the sign, the capture.
+    remote: RefCell<remote_ui::RemoteUi>,
     /// Settings applied but not written yet, and the timer that writes them (settings_model).
     settings_pending: RefCell<Vec<Change>>,
     settings_timer: Timer,
@@ -2043,6 +2057,7 @@ impl<S: Screen> Ui<S> {
         let opts_state_dir = opts.state_dir.clone();
         let opts_panel = opts.panel.clone();
         let panel_on = settings.as_ref().is_some_and(Settings::panel_on);
+        let remote_on = settings.as_ref().is_some_and(Settings::panel_screen);
         let opts_first = opts.first_start;
         let has_camera = !demo && super::camera::present();
         // The switch on the Updates page wins over the configuration's `prerelease`.
@@ -2153,6 +2168,10 @@ impl<S: Screen> Ui<S> {
             dnd: Cell::new(Dnd::default()),
             panel_sessions: panel_ui::load_sessions(opts_state_dir.as_deref()),
             panel: RefCell::new(panel_ui::PanelUi::new(opts_panel, panel_on)),
+            remote: RefCell::new(remote_ui::RemoteUi {
+                on: remote_on,
+                ..Default::default()
+            }),
             settings_pending: RefCell::new(Vec::new()),
             settings_timer: Timer::default(),
             this: RefCell::new(Weak::new()),
@@ -2193,6 +2212,8 @@ impl<S: Screen> Ui<S> {
         ui.set_welcome();
         ui.wire();
         ui.wire_panel();
+        ui.wire_remote();
+        ui.refresh_remote();
         ui.start_wifi();
         ui.screen.set_error_pose(ui.pose(State::Error));
         ui.screen.set_dnd_prop(load_prop(
@@ -3733,6 +3754,9 @@ impl<S: Screen> Ui<S> {
                 self.panel.borrow_mut().blocked = true;
                 self.refresh_home();
             }
+            if d.panel >= 4 {
+                self.demo_remote(d.panel == 5);
+            }
         }
         if let Some((w, h)) = d.mirror {
             let info = MirrorInfo {
@@ -4598,6 +4622,7 @@ impl<S: Screen> Ui<S> {
             return;
         }
         self.tick_panel();
+        self.tick_remote();
         self.feed_light();
         let now = Instant::now();
         if self.desk.borrow_mut().ha_cards.expire(now) {
@@ -6239,6 +6264,7 @@ impl<S: Screen> Ui<S> {
                 self.render_choices();
             }
             Change::Panel(on) => self.panel_switched(on),
+            Change::PanelScreen(on) => self.remote_switched(on),
             Change::UpdatePrerelease(on) => {
                 if let Some(u) = &self.updater {
                     log::info!(event = "update", prerelease = on; "update: release candidates {}", if on { "offered" } else { "not offered" });
@@ -8460,6 +8486,91 @@ mod tests {
             ui.panel_call(&json!({"op": "state", "token": token}))["error"],
             "off"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The remote screen: its switch on the panel's page, the sign while a device is in
+    /// control, Stop on the screen, touches back into the loop, private pages never sent.
+    #[test]
+    fn remote_screen_from_the_screen() {
+        use slint::LogicalPosition;
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let (ui, dir) = headless_ui("remote");
+        let w = &ui.screen;
+        let tap = |x: f32, y: f32| {
+            let position = LogicalPosition::new(x, y);
+            let button = PointerEventButton::Left;
+            w.window()
+                .dispatch_event(WindowEvent::PointerPressed { position, button });
+            w.window()
+                .dispatch_event(WindowEvent::PointerReleased { position, button });
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        ui.set_remote_io(crate::ui::capture::Capture::unavailable("renderer"), tx);
+        crate::settings_model::commit(&*ui, Change::Panel(true));
+        ui.panel_sessions.borrow_mut().skip_pause();
+        let r = ui.panel_call(&json!({"op": "pair.request", "peer": "192.0.2.24",
+            "agent": {"browser": "Chrome", "os": "macOS"}}));
+        ui.panel_answered_for_test(true);
+        w.set_dialog("".into());
+        let token = ui.panel_call(&json!({"op": "pair.status", "id": r["id"]}))["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let call = |op: &str, extra: serde_json::Value| {
+            let mut r = json!({"op": op, "token": token, "peer": "192.0.2.24"});
+            for (k, v) in extra.as_object().unwrap() {
+                r[k] = v.clone();
+            }
+            ui.panel_call(&r)
+        };
+        // Off by default.
+        assert_eq!(call("screen.start", json!({}))["error"], "screen_off");
+        // The switch under the panel's.
+        w.set_page("panel".into());
+        ui.refresh_settings();
+        assert!(!w.get_remote_on());
+        tap(1172.0, 234.0);
+        assert!(w.get_remote_on());
+        ui.flush_settings();
+        assert!(Settings::in_dir(&dir).panel_screen());
+        // The panel's page is never sent (its QR code lets in).
+        assert_eq!(call("screen.start", json!({}))["ok"], true);
+        assert_eq!(w.get_remote_sign(), "Controlled by Chrome on macOS");
+        assert_eq!(call("screen.frame", json!({}))["hidden"], "code");
+        assert_eq!(
+            call(
+                "screen.input",
+                json!({"events": [{"k": "d", "x": 0.5, "y": 0.5}]})
+            )["error"],
+            "screen_hidden"
+        );
+        assert_eq!(call("screen.home", json!({}))["ok"], true);
+        assert_eq!(w.get_page(), "home");
+        // Home: frames (none on this renderer), touches into the loop in logical pixels.
+        assert_eq!(
+            call("screen.frame", json!({}))["error"],
+            "screen_unavailable"
+        );
+        assert_eq!(
+            call(
+                "screen.input",
+                json!({"events": [{"k": "d", "x": 0.5, "y": 0.25}]})
+            )["ok"],
+            true
+        );
+        let t = rx.try_recv().unwrap();
+        assert_eq!((t.x, t.y), (640.0, 200.0));
+        // Stop on the sign: gone at once, and nobody may start for a while.
+        w.invoke_remote_stop();
+        assert_eq!(w.get_remote_sign(), "");
+        assert_eq!(call("screen.start", json!({}))["error"], "screen_stopped");
+        // The switch off ends a session too.
+        ui.panel_sessions.borrow_mut().remote = Default::default();
+        assert_eq!(call("screen.start", json!({}))["ok"], true);
+        crate::settings_model::commit(&*ui, Change::PanelScreen(false));
+        assert_eq!(w.get_remote_sign(), "");
+        assert!(!ui.panel_sessions.borrow().remote.active());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
