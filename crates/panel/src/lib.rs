@@ -17,8 +17,9 @@
 //! - the session's token lives only in a cookie `HttpOnly; SameSite=Strict`: the pages' script
 //!   never sees it, and the body's answers carrying it are stripped before they leave;
 //! - the remote screen (`/api/screen/*`): its own budget per address ([`SCREEN_PER_SECOND`]), a
-//!   frame request waits here for a new frame (at most [`FRAME_WAIT`], asking the body every
-//!   [`FRAME_POLL`]) and gets the JPEG itself (the body sends it as base64 in its JSON line);
+//!   frame request (at most [`FRAMES_PER_SECOND`], only from this page: `Sec-Fetch-Site`) waits
+//!   in the body for a new frame (at most [`FRAME_WAIT`]) and gets the JPEG itself (the body
+//!   sends it as base64 in its JSON line);
 //! - every answer has a strict Content-Security-Policy (no inline script), `nosniff`,
 //!   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store` (the two
 //!   font files and Alfred's pictures: kept a day).
@@ -49,8 +50,8 @@ pub const COOKIE: &str = "hc_panel";
 pub const SCREEN_PER_SECOND: u32 = 30;
 /// A frame request waits this long at most for a frame newer than the browser's…
 pub const FRAME_WAIT: Duration = Duration::from_millis(1500);
-/// …asking the body this often.
-pub const FRAME_POLL: Duration = Duration::from_millis(100);
+/// Frame requests from one address in a second.
+pub const FRAMES_PER_SECOND: u32 = 8;
 /// A frame bigger than this is not passed on.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The cookie lasts as long as a session can (the body ends it sooner when unused).
@@ -177,8 +178,9 @@ pub struct Panel<B: Body> {
     /// This device's host name (`<name>.local` and `<name>` are good `Host`s).
     pub hostname: String,
     pub rate: RateLimit,
-    /// The remote screen's own budget.
+    /// The remote screen's own budget, and the frames' within it.
     pub screen_rate: RateLimit,
+    pub frame_rate: RateLimit,
 }
 
 /// The host part of a `Host` header ("192.0.2.5:8125" → "192.0.2.5", "[fd00::1]:8125" →
@@ -418,6 +420,8 @@ impl<B: Body> Panel<B> {
         let screen = req.path().starts_with("/api/screen");
         let allowed = if screen {
             self.screen_rate.allow_up_to(peer, now, SCREEN_PER_SECOND)
+                && (req.path() != "/api/screen/frame"
+                    || self.frame_rate.allow_up_to(peer, now, FRAMES_PER_SECOND))
         } else {
             self.rate.allow(peer, now)
         };
@@ -599,22 +603,20 @@ impl<B: Body> Panel<B> {
             (true, "/api/logout") => clear_cookie(relay(ask("session.end", json!({})))),
             (false, "/api/screen") => relay(ask("screen.status", json!({}))),
             (false, "/api/screen/frame") => {
+                // Only this page's own requests (an <img> of another site sends cross-site).
+                if req
+                    .header("sec-fetch-site")
+                    .is_some_and(|s| s != "same-origin" && s != "none")
+                {
+                    return error(403, "origin");
+                }
                 let after = query_u64(req.query(), "after").unwrap_or(0);
-                let started = Instant::now();
-                loop {
-                    let a = ask("screen.frame", json!({"after": after}));
-                    match &a {
-                        Some(v) if v["ok"] == true && v["same"] == true => {
-                            if started.elapsed() + FRAME_POLL > FRAME_WAIT {
-                                return Response::new(204);
-                            }
-                            std::thread::sleep(FRAME_POLL);
-                        }
-                        Some(v) if v["ok"] == true && v["jpeg"].is_string() => {
-                            return frame(v);
-                        }
-                        _ => return relay(a),
-                    }
+                let wait = FRAME_WAIT.as_millis() as u64;
+                let a = ask("screen.frame", json!({"after": after, "wait_ms": wait}));
+                match &a {
+                    Some(v) if v["ok"] == true && v["same"] == true => Response::new(204),
+                    Some(v) if v["ok"] == true && v["jpeg"].is_string() => frame(v),
+                    _ => relay(a),
                 }
             }
             (true, "/api/screen/start") => relay(ask("screen.start", json!({}))),

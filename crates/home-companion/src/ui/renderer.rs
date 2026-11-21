@@ -323,7 +323,7 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
     let ui = Ui::new(screen, ctx.character.clone(), ctx.opts, ctx.core.clone())?;
     // The remote screen (crate::panel::remote): its frames read from the display's buffer (GPU
     // only: crate::ui::capture says why), its touches back into this loop as the panel's own.
-    let (remote_tx, remote_rx) = std::sync::mpsc::channel::<super::touch::TouchEvent>();
+    let (remote_tx, remote_rx) = std::sync::mpsc::channel::<(u64, super::touch::TouchEvent)>();
     let capture = if kind == Kind::Gpu {
         super::capture::Capture::new(rotation, || {
             super::capture::drm::Drm::open().map(|d| Box::new(d) as Box<dyn super::capture::Source>)
@@ -368,39 +368,64 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
         let (exit_after, screenshot, stop) =
             (ctx.exit_after, ctx.screenshot.clone(), ctx.stop_requested);
         let pressed = Cell::new(false);
+        // The real finger and the remote's touches (remote_input.rs: the finger wins, Stop on the
+        // sign goes nowhere else, each source its own press).
+        let arbiter = std::cell::RefCell::new(super::remote_input::Arbiter::default());
         drain.start(TimerMode::Repeated, Duration::from_millis(20), move || {
             while let Ok(cmd) = commands.try_recv() {
                 ui.apply(cmd);
             }
             ui.poll_mirror();
-            let real = touch.as_ref().map(|t| t.try_iter().collect::<Vec<_>>());
-            let remote: Vec<_> = remote_rx.try_iter().collect();
+            let now = Instant::now();
+            let mut outs = Vec::new();
             {
-                for ev in real.into_iter().flatten().chain(remote) {
-                    if ev.kind == TouchKind::Down {
-                        ui.wake(WakeSource::Touch);
+                let mut arb = arbiter.borrow_mut();
+                if let Some(t) = &touch {
+                    for ev in t.try_iter() {
+                        let on_sign = ev.kind == TouchKind::Down && ui.remote_sign_hit(ev.x, ev.y);
+                        outs.extend(arb.real(ev, on_sign, now));
                     }
-                    if casa.as_ref().is_some_and(|c| c.touch(&ev)) {
+                }
+                for (epoch, ev) in remote_rx.try_iter() {
+                    // Checked now, not when it was sent: the session may have ended meanwhile
+                    // or the screen gone private.
+                    outs.extend(arb.remote(ev, ui.remote_accepts(epoch), now));
+                }
+                if !ui.remote_on_now() {
+                    outs.extend(arb.idle());
+                }
+            }
+            for out in outs {
+                let ev = match out {
+                    super::remote_input::Out::EndSession => {
+                        ui.remote_end(crate::panel::remote::End::Screen);
                         continue;
                     }
-                    let position = LogicalPosition::new(ev.x, ev.y);
-                    let button = slint::platform::PointerEventButton::Left;
-                    let e = match ev.kind {
-                        TouchKind::Down => {
-                            pressed.set(true);
-                            ui.screen.window().dispatch_event(
-                                slint::platform::WindowEvent::PointerMoved { position },
-                            );
-                            slint::platform::WindowEvent::PointerPressed { position, button }
-                        }
-                        TouchKind::Move => slint::platform::WindowEvent::PointerMoved { position },
-                        TouchKind::Up if pressed.replace(false) => {
-                            slint::platform::WindowEvent::PointerReleased { position, button }
-                        }
-                        TouchKind::Up => continue,
-                    };
-                    ui.screen.window().dispatch_event(e);
+                    super::remote_input::Out::Touch(ev) => ev,
+                };
+                if ev.kind == TouchKind::Down {
+                    ui.wake(WakeSource::Touch);
                 }
+                if casa.as_ref().is_some_and(|c| c.touch(&ev)) {
+                    continue;
+                }
+                let position = LogicalPosition::new(ev.x, ev.y);
+                let button = slint::platform::PointerEventButton::Left;
+                let e = match ev.kind {
+                    TouchKind::Down => {
+                        pressed.set(true);
+                        ui.screen.window().dispatch_event(
+                            slint::platform::WindowEvent::PointerMoved { position },
+                        );
+                        slint::platform::WindowEvent::PointerPressed { position, button }
+                    }
+                    TouchKind::Move => slint::platform::WindowEvent::PointerMoved { position },
+                    TouchKind::Up if pressed.replace(false) => {
+                        slint::platform::WindowEvent::PointerReleased { position, button }
+                    }
+                    TouchKind::Up => continue,
+                };
+                ui.screen.window().dispatch_event(e);
             }
             if let Some(w) = &wake {
                 while let Ok(why) = w.try_recv() {
@@ -431,6 +456,9 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
                 ui.request_screenshot();
             }
             ui.poll();
+            // Whatever changed the page or a dialog in this round (touches, commands, the
+            // panel's requests): the capture knows before the next frame is drawn.
+            ui.sync_remote();
             let expired = exit_after.is_some_and(|s| start.elapsed().as_secs_f64() >= s);
             if (expired || stop()) && !quit.get() {
                 if let Some(path) = &screenshot {

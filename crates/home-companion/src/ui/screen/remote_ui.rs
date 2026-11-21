@@ -8,8 +8,15 @@
 //!
 //! What is never sent nor touched ([`Ui::remote_hidden_now`]): the camera and the photos, the
 //! pages with a code that lets in (Settings → Access from the browser and its one-time QR code,
-//! Home Assistant's linking QR code), AirPlay mirroring (someone else's phone), and the access
-//! dialog (a remote must not let a new device in).
+//! Home Assistant's linking QR code), AirPlay mirroring (someone else's phone), the access
+//! dialog (a remote must not let a new device in), the update's and Home Assistant unlink's
+//! confirmations. The capture is told at every change ([`Ui::sync_remote`], from the renderer's
+//! loop after its touches and from every page change), so a frame of such a page is never kept
+//! nor sent.
+//!
+//! While a session lasts the screen stays awake (the sign must be seen). The remote's touches
+//! carry the session's number: the renderer checks it, and whether the screen may be touched,
+//! when it dispatches them (crate::ui::remote_input).
 
 use std::sync::mpsc::Sender;
 
@@ -30,8 +37,14 @@ pub(in crate::ui::screen) struct RemoteUi {
     pub sign: String,
     /// The frames; None: this renderer cannot be read (the demos, the tests).
     pub capture: Option<Capture>,
-    /// Where the remote's touches go: the renderer's loop.
-    pub touches: Option<Sender<TouchEvent>>,
+    /// Where the remote's touches go: the renderer's loop, with the session's number.
+    pub touches: Option<Sender<(u64, TouchEvent)>>,
+    /// The session's number: a new one at every start and end (touches of another are dropped).
+    pub epoch: u64,
+    /// Ended while the sessions were busy answering: the next tick ends it for good.
+    pub pending_end: Option<End>,
+    /// The system is suspending: nothing is read.
+    pub suspended: bool,
 }
 
 impl<S: Screen> Ui<S> {
@@ -51,7 +64,7 @@ impl<S: Screen> Ui<S> {
     }
 
     /// The renderer's capture and the way back for the remote's touches (renderer::run).
-    pub fn set_remote_io(&self, capture: Capture, touches: Sender<TouchEvent>) {
+    pub fn set_remote_io(&self, capture: Capture, touches: Sender<(u64, TouchEvent)>) {
         let mut r = self.remote.borrow_mut();
         r.capture = Some(capture);
         r.touches = Some(touches);
@@ -68,25 +81,73 @@ impl<S: Screen> Ui<S> {
     }
 
     /// Ends the session (if any): Stop on the sign, the switch or the panel off.
-    pub(super) fn remote_end(&self, why: End) {
+    pub fn remote_end(&self, why: End) {
         match self.panel_sessions.try_borrow_mut() {
             Ok(mut s) => protocol::remote_stop(self, &mut s, why, Now::system()),
-            // Answering a request right now: the sign goes at once, the session at the next
-            // tick (the request answers from a stopped capture meanwhile).
-            Err(_) => self.remote_changed_now(None),
+            // Answering a request right now: the sign and the capture go at once, the session
+            // at the next tick (no frame is served without the sign: remote_hidden_now).
+            Err(_) => {
+                self.remote.borrow_mut().pending_end = Some(why);
+                self.remote_changed_now(None);
+            }
         }
     }
 
-    /// Every second: a session left without frame requests, or whose device went, ends.
-    pub(super) fn tick_remote(&self) {
+    /// Every second: an end left pending, a session left without frame requests or whose
+    /// device went; the screen kept awake while one lasts.
+    pub(crate) fn tick_remote(&self) {
+        let pending = self.remote.borrow_mut().pending_end.take();
         if let Ok(mut s) = self.panel_sessions.try_borrow_mut() {
+            if let Some(why) = pending {
+                protocol::remote_stop(self, &mut s, why, Now::system());
+            }
             if s.remote.active() || !self.remote.borrow().sign.is_empty() {
                 protocol::remote_sweep(self, &mut s, Now::system());
                 if !s.remote.active() && !self.remote.borrow().sign.is_empty() {
                     self.remote_changed_now(None);
                 }
             }
+        } else if let Some(why) = pending {
+            self.remote.borrow_mut().pending_end = Some(why);
         }
+        if !self.remote.borrow().sign.is_empty() {
+            self.wake(WakeSource::Signal);
+        }
+    }
+
+    /// Tells the capture whether what is on screen now may be sent (cheap: two properties).
+    pub(crate) fn sync_remote(&self) {
+        let blocked = self.remote_hidden_now().is_some();
+        if let Some(cap) = &self.remote.borrow().capture {
+            cap.set_hidden(blocked);
+        }
+    }
+
+    /// The system suspends (true) or is back (false): nothing is read meanwhile.
+    pub(super) fn remote_suspended(&self, on: bool) {
+        self.remote.borrow_mut().suspended = on;
+        self.sync_remote();
+    }
+
+    /// The session's number and whether its touches may be dispatched now.
+    pub fn remote_accepts(&self, epoch: u64) -> bool {
+        let r = self.remote.borrow();
+        r.epoch == epoch && !r.sign.is_empty() && r.pending_end.is_none() && {
+            drop(r);
+            self.remote_hidden_now().is_none()
+        }
+    }
+
+    /// A session is on (its sign shown).
+    pub fn remote_on_now(&self) -> bool {
+        !self.remote.borrow().sign.is_empty()
+    }
+
+    /// The real finger's Down at (x, y) falls on the sign.
+    pub fn remote_sign_hit(&self, x: f32, y: f32) -> bool {
+        self.screen
+            .remote_sign_rect()
+            .is_some_and(|(sx, sy, w, h)| x >= sx && x < sx + w && y >= sy && y < sy + h)
     }
 
     /// The sign and the capture as the session is.
@@ -105,6 +166,10 @@ impl<S: Screen> Ui<S> {
         let started = c.is_some() && self.remote.borrow().sign.is_empty();
         {
             let mut r = self.remote.borrow_mut();
+            if started || c.is_none() {
+                // Touches still queued from before belong to no session now.
+                r.epoch += 1;
+            }
             r.sign = sign;
             if let Some(cap) = &r.capture {
                 if c.is_some() {
@@ -119,6 +184,7 @@ impl<S: Screen> Ui<S> {
             self.wake(WakeSource::Signal);
         }
         self.refresh_remote();
+        self.sync_remote();
     }
 
     pub(super) fn refresh_remote(&self) {
@@ -127,9 +193,22 @@ impl<S: Screen> Ui<S> {
     }
 
     /// Why the screen must not be sent or touched now.
-    pub(super) fn remote_hidden_now(&self) -> Option<&'static str> {
-        if self.screen.get_dialog() == "panel-ask" {
-            return Some("access");
+    pub(crate) fn remote_hidden_now(&self) -> Option<&'static str> {
+        {
+            let r = self.remote.borrow();
+            // No sign, no frames (a session ending, or none).
+            if r.sign.is_empty() || r.pending_end.is_some() {
+                return Some("ended");
+            }
+            if r.suspended {
+                return Some("suspended");
+            }
+        }
+        match self.screen.get_dialog().as_str() {
+            "panel-ask" => return Some("access"),
+            // Installing an update, unlinking Home Assistant: for whoever is in front of it.
+            "update" | "unlink" => return Some("confirm"),
+            _ => {}
         }
         if self.mirror_shown() {
             return Some("mirror");
@@ -170,11 +249,14 @@ impl<S: Screen> Ui<S> {
             TouchKind::Move => ScreenTouch::Move,
             TouchKind::Up => ScreenTouch::Up,
         };
-        let _ = tx.send(TouchEvent {
-            kind,
-            x: (t.x * size.width).clamp(0.0, size.width - 1.0),
-            y: (t.y * size.height).clamp(0.0, size.height - 1.0),
-        });
+        let _ = tx.send((
+            r.epoch,
+            TouchEvent {
+                kind,
+                x: (t.x * size.width).clamp(0.0, size.width - 1.0),
+                y: (t.y * size.height).clamp(0.0, size.height - 1.0),
+            },
+        ));
         if let Some(cap) = &r.capture {
             cap.poke();
         }

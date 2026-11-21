@@ -45,6 +45,7 @@ fn panel() -> Panel<Fake> {
         hostname: "thinksmart".into(),
         rate: RateLimit::default(),
         screen_rate: RateLimit::default(),
+        frame_rate: RateLimit::default(),
     }
 }
 
@@ -403,6 +404,7 @@ fn over_sockets_and_idle() {
         hostname: String::new(),
         rate: RateLimit::default(),
         screen_rate: RateLimit::default(),
+        frame_rate: RateLimit::default(),
     });
     let server = std::thread::spawn(move || run(p, listener, Duration::from_millis(1500)));
     let raw = |r: String| {
@@ -609,17 +611,25 @@ fn the_remote_screens_frames_come_as_pictures() {
     );
     assert_eq!(r.status, 200);
     assert!(String::from_utf8_lossy(&r.body).contains("camera"));
-    // Nothing new: the request waits, then answers empty.
-    let t = Instant::now();
+    // Nothing new: the body waited (wait_ms asked), the answer is empty.
     let r = p.route(
         &get_with_cookie("/api/screen/frame?after=9"),
         lan(),
         Instant::now(),
     );
     assert_eq!(r.status, 204);
-    assert!(
-        t.elapsed() >= FRAME_WAIT - FRAME_POLL && t.elapsed() < FRAME_WAIT + Duration::from_secs(1)
-    );
+    let last = p.body.asked.lock().unwrap().last().unwrap().clone();
+    assert_eq!(last["wait_ms"], FRAME_WAIT.as_millis() as u64);
+    // Another site's request (an <img> elsewhere): refused before the body is asked.
+    let mut other = get_with_cookie("/api/screen/frame?after=0");
+    other
+        .headers
+        .push(("Sec-Fetch-Site".into(), "cross-site".into()));
+    assert_eq!(status(&p, &other), 403);
+    let mut own = get_with_cookie("/api/screen/frame?after=0");
+    own.headers
+        .push(("Sec-Fetch-Site".into(), "same-origin".into()));
+    assert_eq!(status(&p, &own), 200);
     // Without a session: the body says no.
     let r = p.route(
         &req("GET", "/api/screen/frame", &[], ""),
@@ -644,6 +654,24 @@ fn the_remote_screens_frames_come_as_pictures() {
     let mut bad = post("/api/screen/start", "{}", &[]);
     bad.headers.retain(|(n, _)| n != "Origin");
     assert_eq!(status(&p, &bad), 403);
+}
+
+#[test]
+fn frames_have_a_budget_of_their_own() {
+    let p = panel();
+    let now = Instant::now();
+    for _ in 0..FRAMES_PER_SECOND {
+        let r = p.route(&get_with_cookie("/api/screen/frame?after=0"), lan(), now);
+        assert_eq!(r.status, 200);
+    }
+    let r = p.route(&get_with_cookie("/api/screen/frame?after=0"), lan(), now);
+    assert_eq!(r.status, 429);
+    // Touches still go.
+    assert_eq!(
+        p.route(&post("/api/screen/stop", "{}", &[]), lan(), now)
+            .status,
+        200
+    );
 }
 
 #[test]

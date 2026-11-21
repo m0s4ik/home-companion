@@ -864,6 +864,12 @@ export component CompanionWindow inherits Window {
     in property <string> remote-sign: "";
     callback remote-toggled(bool);
     callback remote-stop();
+    // Where the sign is (the renderer's loop: a real touch there never reaches the screen under
+    // it, Home Assistant's view included).
+    out property <length> remote-sign-x: remote-sign-box.x;
+    out property <length> remote-sign-y: remote-sign-box.y;
+    out property <length> remote-sign-w: remote-sign-box.width;
+    out property <length> remote-sign-h: remote-sign-box.height;
     // Home Assistant is not connected (the HA action is dimmed; a status card says so).
     in property <bool> offline: false;
     // Start-up: the character's loading animation, its name, "Starting…"; no clock.
@@ -5742,7 +5748,8 @@ export component CompanionWindow inherits Window {
 
     // ---- The remote screen: who is in control from a browser, and Stop, at the top over
     // everything (Home Assistant's view, the dialogs): never hidden while it lasts.
-    if root.remote-sign != "": Rectangle {
+    remote-sign-box := Rectangle {
+        visible: root.remote-sign != "";
         x: (root.width - self.width) / 2;
         y: 8px;
         width: min(sign-row.preferred-width, root.width - 48px);

@@ -4428,11 +4428,13 @@ impl<S: Screen> Ui<S> {
                 }
             }
             UiCommand::Suspending => {
+                self.remote_suspended(true);
                 self.screen.set_settings_open(false);
                 self.motion.borrow_mut().awake.sleep(Instant::now());
                 self.step();
             }
             UiCommand::Resumed => {
+                self.remote_suspended(false);
                 self.wake(WakeSource::Resume);
                 self.screen.window().request_redraw();
             }
@@ -5756,6 +5758,8 @@ impl<S: Screen> Ui<S> {
     }
 
     fn on_page(self: &Rc<Self>, page: &str) {
+        // Before anything is drawn: the remote screen's capture learns what may be sent.
+        self.sync_remote();
         if self
             .back_pending
             .take()
@@ -8538,6 +8542,12 @@ mod tests {
         // The panel's page is never sent (its QR code lets in).
         assert_eq!(call("screen.start", json!({}))["ok"], true);
         assert_eq!(w.get_remote_sign(), "Controlled by Chrome on macOS");
+        // Where the sign is, for the real finger's Stop over Home Assistant's view.
+        let (sx, sy, sw, sh) = w.remote_sign_rect().unwrap();
+        assert!(sw > 200.0 && sh >= 56.0, "{sw}x{sh}");
+        assert!(ui.remote_sign_hit(sx + sw - 20.0, sy + sh / 2.0));
+        assert!(!ui.remote_sign_hit(sx - 5.0, sy + sh / 2.0));
+        assert!(!ui.remote_sign_hit(sx + 10.0, sy + sh + 5.0));
         assert_eq!(call("screen.frame", json!({}))["hidden"], "code");
         assert_eq!(
             call(
@@ -8560,8 +8570,35 @@ mod tests {
             )["ok"],
             true
         );
-        let t = rx.try_recv().unwrap();
+        let (epoch, t) = rx.try_recv().unwrap();
         assert_eq!((t.x, t.y), (640.0, 200.0));
+        assert!(ui.remote_accepts(epoch));
+        // The confirmations of an update and of Home Assistant's unlink: not sent, not touched,
+        // and a touch queued before the dialog opened is not dispatched.
+        for d in ["update", "unlink"] {
+            w.set_dialog(d.into());
+            assert_eq!(call("screen.frame", json!({}))["hidden"], "confirm", "{d}");
+            assert!(!ui.remote_accepts(epoch), "{d}");
+        }
+        w.set_dialog("".into());
+        assert!(ui.remote_accepts(epoch));
+        // Ended while the sessions were busy answering: no sign, no frame, then the tick ends it.
+        {
+            let _busy = ui.panel_sessions.borrow_mut();
+            ui.remote_end(crate::panel::remote::End::Screen);
+        }
+        assert_eq!(w.get_remote_sign(), "");
+        assert!(
+            !ui.remote_accepts(epoch),
+            "touches of the old session dropped"
+        );
+        assert_eq!(ui.remote_hidden_now(), Some("ended"));
+        assert!(ui.panel_sessions.borrow().remote.active());
+        ui.tick_remote();
+        assert!(!ui.panel_sessions.borrow().remote.active());
+        assert_eq!(call("screen.start", json!({}))["error"], "screen_stopped");
+        ui.panel_sessions.borrow_mut().remote = Default::default();
+        assert_eq!(call("screen.start", json!({}))["ok"], true);
         // Stop on the sign: gone at once, and nobody may start for a while.
         w.invoke_remote_stop();
         assert_eq!(w.get_remote_sign(), "");

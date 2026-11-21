@@ -30,6 +30,8 @@ pub const MAX_LINE: usize = 80 << 10;
 const MAX_CONNECTIONS: usize = 8;
 /// How long the screen's thread may take to answer.
 const ANSWER_WITHIN: Duration = Duration::from_secs(5);
+/// A frame request waits at most this long for something new (the panel's own limit is less).
+const MAX_FRAME_WAIT_MS: u64 = 2000;
 
 /// A request for the screen's thread and where its answer goes.
 pub struct Call {
@@ -155,12 +157,25 @@ fn serve(stream: UnixStream, tx: &Sender<Call>) {
         }
         let answer = match serde_json::from_str::<Value>(&line) {
             Ok(v) if v.is_object() => {
-                let (reply, back) = mpsc::channel();
-                if tx.send(Call { request: v, reply }).is_err() {
+                // A frame request with `wait_ms`: when nothing is new, this connection's thread
+                // waits for the capture's news (a frame, a privacy change) and asks once more;
+                // the screen's thread is never kept.
+                let wait = (v["op"] == "screen.frame")
+                    .then(|| v["wait_ms"].as_u64())
+                    .flatten()
+                    .map(|ms| Duration::from_millis(ms.min(MAX_FRAME_WAIT_MS)));
+                let seen = crate::ui::capture::news();
+                let Some(mut a) = ask(tx, v.clone()) else {
                     return;
+                };
+                if let Some(w) = wait.filter(|_| a["same"] == true) {
+                    crate::ui::capture::wait_news(seen, w);
+                    match ask(tx, v) {
+                        Some(again) => a = again,
+                        None => return,
+                    }
                 }
-                back.recv_timeout(ANSWER_WITHIN)
-                    .unwrap_or_else(|_| json!({"ok": false, "error": "busy"}))
+                a
             }
             _ => json!({"ok": false, "error": "bad_request"}),
         };
@@ -168,6 +183,16 @@ fn serve(stream: UnixStream, tx: &Sender<Call>) {
             return;
         }
     }
+}
+
+/// One request to the screen's thread; None: the screen is gone.
+fn ask(tx: &Sender<Call>, request: Value) -> Option<Value> {
+    let (reply, back) = mpsc::channel();
+    tx.send(Call { request, reply }).ok()?;
+    Some(
+        back.recv_timeout(ANSWER_WITHIN)
+            .unwrap_or_else(|_| json!({"ok": false, "error": "busy"})),
+    )
 }
 
 #[cfg(test)]

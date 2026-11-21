@@ -47,6 +47,7 @@ fn main() -> ExitCode {
         hostname: panel::hostname(),
         rate: RateLimit::default(),
         screen_rate: RateLimit::default(),
+        frame_rate: RateLimit::default(),
     });
     match panel::run(p, listener, idle) {
         Ok(()) => ExitCode::SUCCESS,

@@ -394,7 +394,10 @@ pub fn handle(
     let refusal = |r: Refusal| err(r.key());
     match op {
         "pair.request" => {
-            return match sessions.request(peer, agent, host.can_ask(), now, rng) {
+            // While someone controls the screen from a browser no access dialog opens: the remote
+            // could answer it.
+            let can = host.can_ask() && !sessions.remote.active();
+            return match sessions.request(peer, agent, can, now, rng) {
                 Ok(r) => {
                     host.ask(&r);
                     log::info!(event = "panel", peer = peer; "browser access asked from {peer}");
@@ -624,7 +627,7 @@ fn screen_op(
                     "seq": f.seq,
                     "width": f.width,
                     "height": f.height,
-                    "jpeg": crate::ui::capture::base64(&f.jpeg),
+                    "jpeg": f.b64.as_str(),
                 })),
                 Ok(_) => ok(json!({"same": true})),
                 Err(why) => json!({"ok": false, "error": "screen_unavailable", "why": why}),
@@ -742,6 +745,7 @@ mod tests {
                 width: 2,
                 height: 1,
                 jpeg: std::sync::Arc::new(b"jpeg".to_vec()),
+                b64: std::sync::Arc::new("anBlZw==".into()),
             }))
         }
         fn remote_touch(&self, t: crate::panel::remote::Touch) {
@@ -1855,5 +1859,33 @@ mod tests {
             ask(&mut s, &b, "screen.start", json!({}))["error"],
             "screen_stopped"
         );
+    }
+
+    /// No access dialog while a browser controls the screen (it could answer it).
+    #[test]
+    fn no_access_dialog_during_a_remote_session() {
+        let h = host("remote-ask");
+        let mut s = Sessions::default();
+        let a = pair(&h, &mut s);
+        h.remote_on.set(true);
+        let start = json!({"op": "screen.start", "token": a, "peer": "192.0.2.24"});
+        assert_eq!(call(&h, &mut s, start)["ok"], true);
+        s.skip_pause();
+        let asked = h.asked.borrow().len();
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "pair.request", "peer": "192.0.2.30"}),
+        );
+        assert_eq!(r["error"], "cannot_ask");
+        assert_eq!(h.asked.borrow().len(), asked, "no dialog");
+        call(&h, &mut s, json!({"op": "screen.stop", "token": a}));
+        s.skip_pause();
+        let r = call(
+            &h,
+            &mut s,
+            json!({"op": "pair.request", "peer": "192.0.2.30"}),
+        );
+        assert_eq!(r["ok"], true);
     }
 }
