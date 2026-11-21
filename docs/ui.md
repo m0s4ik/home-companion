@@ -157,8 +157,11 @@ its ring and the gold fill) and No stays a target that wins.
   here); saved as `[widgets]` in settings.toml (`order`, `on`, `seen`, `quotes`, `cities`, `currency`, `sensors`,
   `player`, `people`, `check_openings`, `check_batteries`; a second page's list under its key, `[[widgets.quotes-2]]`,
   `sensors-2 = [...]`, its name in `names`).
-- **The browser panel** (`crates/panel/web/`, not this screen, same tokens): four sections (Widgets, Shopping,
-  Settings, Access; a bar at the bottom on a phone, a column on the left from 900 px). The widget's pages are drawn
+- **The browser panel** (`crates/panel/web/`, not this screen, same tokens): four sections (Home, Screen,
+  Shopping, Settings, with Access as the last group of Settings; a tab bar at the bottom on a phone, a rail on the
+  left on a desk). Home draws the device's screen whole with the chosen widget in its slot, the rotation as a
+  numbered strip under it and the chosen widget's editor beside it; Screen is the remote screen (off unless switched
+  on on the device, one controller at a time, the device's sign with Stop, private pages never sent). The widget's pages are drawn
   by the panel from the body's own page model (`widgets::panel_pages` → `panel/widget_ops.rs` `model`: the same
   words, numbers and cuts as here, with three free slots), in the screen's Inter subsets and with `WidgetPanel`'s
   sizes in `em` of 16 px at 808 px (`.wc` in panel.css): what changes there shows in its preview at once. A chosen

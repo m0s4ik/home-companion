@@ -34,6 +34,10 @@ At night Alfred sleeps: the clock stays, dimmed, with the next alarm, and a touc
 seconds. By day the brightness follows the room's light. When Home Assistant does not answer, the home says so and
 retries by itself; timers and alarms go on working.
 
+Alfred takes a pose for the moment (linking, working, satisfied, a nod). On the settings pages he takes out his
+toolbox, on More he looks at the tiles, with the microphone off he wears earmuffs, and on the Home Assistant page he
+types on a laptop while it checks: each comes and goes without a cut.
+
 <p align="center">
 <img src="docs/images/night.png" width="400" alt="The night screen: Alfred asleep in his nightcap, the dimmed clock at 23:48 and the next alarm at 07:00"> <!-- state: night -->
 <img src="docs/images/offline.png" width="400" alt="Home Assistant is not answering: Alfred on a deckchair under a beach umbrella, the card says he retries by himself and that timers and alarms work"> <!-- state: offline -->
@@ -41,11 +45,14 @@ retries by itself; timers and alarms go on working.
 
 ### 🧩 The widget: markets, other cities, notes, Home Assistant's numbers
 
-Under the cards, one panel turns through what is around the house, in the order you choose: what comes next, the
-weather, the shopping, and what you pick from a phone or a computer (Settings → Access from the browser): stocks,
-indices, currencies and coins with the day's curve, the weather of other cities in their own time, a board of notes
-("write on the board that…"), Home Assistant's sensors with their last 24 hours, the doors and windows left open and
-the batteries running low, what a media player plays, who is home. A tap opens the page behind it.
+Under the cards, one widget at a time turns through what is around the house, in the order you choose from the
+browser panel (below): what comes next, the weather, the shopping, stocks, indices, currencies and coins with the
+day's curve, the weather of other cities in their own time, a board of notes ("write on the board that…"), Home
+Assistant's sensors with their last 24 hours, the doors and windows left open and the batteries running low, what a
+media player plays, who is home. Markets, other cities and sensors can be there up to four times each, every one
+with its own list and name ("Crypto"). The widget takes the full height, or one line when the cards leave little
+room; the weather says what comes next in a sentence ("Cloudy, rainy from 17:00") with the day's range and the next
+four hours. Swipe it to turn it, tap it to open the page behind it.
 
 <p align="center">
 <img src="docs/images/widget-quotes.png" width="400" alt="The home with the Markets widget: four rows with a name, a small curve of the day, the price and the change in green or red"> <!-- state: widget-quotes -->
@@ -73,6 +80,21 @@ Where the data comes from, and what leaves your home network:
 - **Home Assistant's pages** use the token of the QR link and nothing else: one `get_states` for the list of
   sensors, players and people, one subscription for the chosen ones, the sensors' statistics for the curves.
   Anyone who looks at the screen sees them: "At home" is off until you turn it on.
+
+### 🖥️ The browser panel and the remote screen
+
+Settings → Access from the browser turns on a page for a phone or a computer on the home network: its address and a
+QR code are on that screen, and every new device must be allowed there first, after comparing a code (up to five;
+each can be revoked). **Home** draws the device's screen with the widget in place, the rotation as a strip to drag
+into order, and each widget's editor: its markets, cities or sensors, its name, on the home or not. **Shopping**
+ticks and deletes items of Home Assistant's lists; **Settings** has the device's settings. In English, Italian,
+German and Dutch.
+
+**Screen** shows the device's screen live and turns taps and drags in the browser into real touches. It is off until
+switched on **on the device** (Settings → Access from the browser → Remote screen); one device controls it at a
+time, a sign above Alfred says which, and **Stop** on it ends the session at once (a real finger always wins). The
+camera, the photos, the codes that let devices in and AirPlay mirroring are never sent. Frames are made only while
+someone watches.
 
 ### 🗣️ Talk to it
 
@@ -431,7 +453,7 @@ language → Home Assistant (found on the network) → QR code. Options (`--lang
 **Updating**, from 0.3.0 on: Settings → Info says when a newer release is out, and **Install** installs it (the
 device restarts by itself, its settings stay; if the new version does not start, the one before comes back). It
 looks once a day at the releases of `[update] repo` in `/etc/home-companion/home-companion.toml`, this repository by
-default: point it at your fork to get your own builds. Release candidates are offered too with the switch on the same page. The
+default: point it at your fork to get your own builds. Release candidates are offered too with **Release candidates too** on the same page. The
 repository is read from that root-owned file only, never from the screen. By hand it is the same three lines with
 the new version.
 
@@ -441,7 +463,9 @@ To change the Wi-Fi later: `nmcli device wifi connect "<ssid>" password "<passwo
 
 Italian, English, Dutch and German, complete: the screen (`locales/`), the reflexes' grammar
 (`characters/alfred/grammar/`) and the speech model the installer downloads. With any other language set in Home
-Assistant, the device still works (Home Assistant answers in its language) without the local reflexes.
+Assistant, the device still works (Home Assistant answers in its language) without the local reflexes. The German
+and Dutch texts of 0.4's new parts (the widgets, the browser panel, the poses) are machine translations for now:
+corrections welcome.
 
 Adding a language: a `locales/<lang>.toml`, a `characters/alfred/grammar/<lang>.toml`, the number words in
 `crates/reflex/src/slots.rs`, and the [Vosk model](https://alphacephei.com/vosk/models) in the installer's
