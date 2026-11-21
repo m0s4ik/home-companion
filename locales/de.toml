@@ -425,6 +425,18 @@ ring_timer_named = "Der Timer \"{name}\" ist abgelaufen."
 ring_timer = "Der Timer über {duration} ist abgelaufen."
 ring_alarm = "Wecker, {time}."
 
+# Einstellungen → Posen (src/poses.rs): weitere Posen der Figur zum Herunterladen, für die Karten von Home Assistant.
+poses_title = "Posen"
+poses_intro = "Weitere Posen der Figur, gezeigt, solange eine Karte von Home Assistant eine verlangt (pose). Schalte eine ein, um sie herunterzuladen."
+poses_check = "Erneut suchen"
+poses_loading = "Posen werden gesucht…"
+poses_none = "Noch keine Posen zum Herunterladen für diese Figur."
+poses_failed = "Die Posen konnten nicht gelesen werden (kein Netz, oder GitHub hat nicht geantwortet)."
+poses_busy = "{title} wird heruntergeladen…"
+poses_failed_one = "{title} hat nicht geklappt: {why}"
+poses_installed = "{n} installiert"
+poses_unlisted = "Nicht mehr gelistet · {size}"
+
 [sample]
 find_second = "Ferienhaus"
 temperature = "13,7°C"

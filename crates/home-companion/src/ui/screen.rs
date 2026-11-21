@@ -88,6 +88,81 @@ pub fn load_pose(path: &Path, crop: Crop, bg: Rgb) -> Result<Image, String> {
     Ok(Image::from_rgba8(buf))
 }
 
+/// A pose of the character on the home: one of its own (by state), or one downloaded from
+/// Settings → Poses (by name, src/poses.rs) that a card of Home Assistant asks for.
+#[derive(Clone, Debug, PartialEq)]
+enum Look {
+    Own(State),
+    Downloaded(String),
+}
+
+impl Look {
+    fn name(&self) -> &str {
+        match self {
+            Look::Own(s) => s.name(),
+            Look::Downloaded(n) => n,
+        }
+    }
+}
+
+/// The state of that name (`working`, `muted`), as in character.toml.
+fn state_named(name: &str) -> Option<State> {
+    State::ALL.into_iter().find(|s| s.name() == name)
+}
+
+/// What a card's `pose: <name>` shows: the downloaded pose of that name first, else the
+/// character's own pose of the state of that name (`has_pose`); None: neither, the card shows
+/// alone.
+fn card_look_of(name: &str, downloaded: bool, has_pose: impl Fn(State) -> bool) -> Option<Look> {
+    if downloaded {
+        return Some(Look::Downloaded(name.to_string()));
+    }
+    state_named(name).filter(|s| has_pose(*s)).map(Look::Own)
+}
+
+/// The home's pose: a card's pose in place of the moment's (`moment`), except on the settings
+/// and More pages (`paged`), which keep their own animation over idle and where only the
+/// moment's link and working poses show (`Ui::home_state`).
+fn home_look_of(card: Option<Look>, paged: bool, moment: State) -> Look {
+    match card {
+        Some(l) if !paged => l,
+        _ => Look::Own(moment),
+    }
+}
+
+/// A downloaded pose's animation table (`<name>.toml`): `file` (in `dir`), `size`, `frames`, `fps`,
+/// `pause` (optional) and `rect`, as an animation of character.toml.
+fn pose_animation(text: &str, dir: &Path) -> Result<Animation, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Raw {
+        file: String,
+        size: [u32; 2],
+        frames: [u32; 2],
+        fps: f32,
+        #[serde(default)]
+        pause: f32,
+        rect: [f32; 4],
+    }
+    let r: Raw = toml::from_str(text).map_err(|e| e.to_string())?;
+    if r.file.contains('/') || r.file.contains("..") {
+        return Err(format!("file = {:?}: a file next to the pose", r.file));
+    }
+    if r.frames[1] <= r.frames[0] || !(r.fps > 0.0 && r.fps <= 60.0) {
+        return Err("frames = [first, end] with end > first, fps 1 to 60".into());
+    }
+    Ok(Animation {
+        name: anim::CARD_POSE.into(),
+        file: dir.join(r.file),
+        size: (r.size[0], r.size[1]),
+        first: r.frames[0],
+        end: r.frames[1],
+        fps: r.fps,
+        pause: r.pause,
+        rect: r.rect,
+    })
+}
+
 /// A whole picture of the character that is not a pose (the do not disturb prop), with the
 /// background snapped as the poses'; none (an empty image) when the character has no such file.
 fn load_prop(path: &Path, bg: Rgb) -> Image {
@@ -406,6 +481,41 @@ pub fn save_png<S: Screen>(app: &S, path: &Path) -> Result<(), String> {
 }
 
 /// Screen state and pose of a phase.
+/// How long a reflex's nod stays on the home.
+const NOD_FOR: Duration = Duration::from_secs(3);
+/// How long the satisfied pose stays after a job went well.
+const SATISFIED_FOR: Duration = Duration::from_secs(10);
+/// The bow after the Home Assistant setup (the `done` clip): the satisfied pose comes after it.
+const BOW: Duration = Duration::from_secs(3);
+
+/// What decides the home's pose besides idle.
+#[derive(Debug, Clone, Copy, Default)]
+struct HomeMoment {
+    mic_off: bool,
+    linking: bool,
+    working: bool,
+    satisfied: bool,
+    nod: bool,
+}
+
+/// The home's pose for the moment, the most lasting first: the microphone off, the link pages,
+/// a job under way, one gone well, a reflex's nod; else idle.
+fn home_state_of(m: HomeMoment) -> State {
+    if m.mic_off {
+        State::Muted
+    } else if m.linking {
+        State::Link
+    } else if m.working {
+        State::Working
+    } else if m.satisfied {
+        State::Satisfied
+    } else if m.nod {
+        State::Nod
+    } else {
+        State::Idle
+    }
+}
+
 fn view(p: Phase) -> (&'static str, State) {
     match p {
         Phase::Home => ("home", State::Idle),
@@ -506,7 +616,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 106] = [
+pub const DEMO_STATES: [&str; 107] = [
     "home",
     "cards",
     "cards-setup",
@@ -613,6 +723,7 @@ pub const DEMO_STATES: [&str; 106] = [
     "panel-blocked",
     "settings-panel-remote",
     "remote-sign",
+    "poses",
 ];
 
 impl Demo {
@@ -891,6 +1002,7 @@ impl Demo {
                 page(DEMO_STATES.into_iter().find(|x| *x == s)?)
             }
             "update" => page("update"),
+            "poses" => page("poses"),
             "settings-widgets" => page("widgets"),
             // The settings animation, a frame of each part: the toolbox out, the spanner held,
             // both on their way back (on the home).
@@ -1107,6 +1219,8 @@ struct Motion {
     /// they come after the settings pages were left).
     settings_incoming: Option<Receiver<Clip>>,
     settings_sheet: bool,
+    /// The sheet of the pose of Home Assistant's cards, being decoded.
+    pose_incoming: Option<Receiver<Clip>>,
     playhead: Option<Playhead>,
     shown: Show,
     awake: Awake,
@@ -1116,6 +1230,20 @@ struct Motion {
     /// Frames presented and their CPU time, for the stats line.
     presented: u64,
     present_time: Duration,
+}
+
+/// The downloaded poses' pictures read so far, by name (None: not downloaded).
+type PosePictures = HashMap<String, Option<Image>>;
+
+/// Settings → Poses as the downloads' thread told it last.
+#[derive(Debug, Default)]
+struct PoseView {
+    /// The catalogue's poses of the character (None: not read yet), or why it could not be read.
+    catalogue: Option<Result<Vec<crate::poses::Pose>, String>>,
+    /// The pose being downloaded.
+    busy: Option<String>,
+    /// The last failure: (pose, why).
+    failed: Option<(String, String)>,
 }
 
 /// Something removed by touch, kept for [`UNDO`] before it is really gone.
@@ -1143,8 +1271,8 @@ const NIGHT_CLIPS: [&str; 3] = ["fall_asleep", "sleeping", "wake_from_sleep"];
 /// `settings_out` has played), freed after.
 const SETTINGS_CLIPS: [&str; 3] = ["settings_in", "settings_hold", "settings_out"];
 /// The settings pages: Settings and the pages under it.
-const SETTINGS_PAGES: [&str; 6] = [
-    "settings", "language", "screen", "widgets", "panel", "update",
+const SETTINGS_PAGES: [&str; 7] = [
+    "settings", "language", "screen", "widgets", "panel", "update", "poses",
 ];
 /// How long before and after the night hours its animations are kept.
 const NIGHT_MARGIN_S: i64 = 10 * 60;
@@ -1389,6 +1517,26 @@ pub struct Ui<S: Screen> {
     /// Settings applied but not written yet, and the timer that writes them (settings_model).
     settings_pending: RefCell<Vec<Change>>,
     settings_timer: Timer,
+    /// The home's pose (a card's, or the moment's besides idle: `link`, `working`, `satisfied`,
+    /// `nod`, `muted`): the one drawn last, a reflex's nod waiting for the home, and until when
+    /// the nod and the satisfied pose last (the satisfied one from when).
+    home_pose: RefCell<Look>,
+    /// The microphone is off, as the core said last (UiCommand::Control): not before it says so.
+    mic_off: Cell<bool>,
+    nod_pending: Cell<bool>,
+    nod_until: Cell<Option<Instant>>,
+    satisfied: Cell<Option<(Instant, Instant)>>,
+    /// The pose a card of Home Assistant asks for (`card_look_of`; None: none, or not one the
+    /// character has), and the downloaded poses' pictures read so far.
+    card_pose: RefCell<(Option<Look>, PosePictures)>,
+    /// An announcement plays (UiCommand::Announcing): a pose stays on while it is said.
+    announcing: Cell<bool>,
+    /// Settings → Poses: the downloads' thread (src/poses.rs), and what it said last.
+    pose_downloads: Option<(
+        Sender<crate::poses::Cmd>,
+        RefCell<Receiver<crate::poses::Msg>>,
+    )>,
+    pose_view: RefCell<PoseView>,
     this: RefCell<Weak<Self>>,
 }
 
@@ -2003,6 +2151,7 @@ impl<S: Screen> Ui<S> {
                 .then(|| anim::load_in_background(wanted, character.background)),
             settings_incoming: None,
             settings_sheet: false,
+            pose_incoming: None,
             playhead: None,
             shown: Show::Pose,
             awake: Awake::new(opts.screen.awake_seconds),
@@ -2067,6 +2216,19 @@ impl<S: Screen> Ui<S> {
             }
             c
         });
+        // Settings → Poses: from the releases of the updates' repository, into the state.
+        let pose_downloads = opts_update
+            .as_ref()
+            .filter(|c| !demo && crate::update::valid_repo(&c.repo))
+            .zip(opts.state_dir.as_ref())
+            .map(|(c, state)| {
+                let (tx, rx) = crate::poses::spawn(
+                    c.repo.clone(),
+                    character.id.clone(),
+                    crate::poses::dir(state, &character.id),
+                );
+                (tx, RefCell::new(rx))
+            });
         let ui = Rc::new(Ui {
             screen,
             mirror: RefCell::new(None),
@@ -2174,6 +2336,15 @@ impl<S: Screen> Ui<S> {
             }),
             settings_pending: RefCell::new(Vec::new()),
             settings_timer: Timer::default(),
+            home_pose: RefCell::new(Look::Own(State::Idle)),
+            mic_off: Cell::new(false),
+            nod_pending: Cell::new(false),
+            nod_until: Cell::new(None),
+            satisfied: Cell::new(None),
+            card_pose: RefCell::new((None, HashMap::new())),
+            announcing: Cell::new(false),
+            pose_downloads,
+            pose_view: RefCell::new(PoseView::default()),
             this: RefCell::new(Weak::new()),
         });
         *ui.this.borrow_mut() = Rc::downgrade(&ui);
@@ -2433,6 +2604,18 @@ impl<S: Screen> Ui<S> {
         self.screen.on_photo_delete(move || {
             if let Some(ui) = ui.upgrade() {
                 ui.photo_delete();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_pose_toggled(move |name, on| {
+            if let Some(ui) = ui.upgrade() {
+                ui.pose_toggled(&name, on);
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_poses_check(move || {
+            if let Some(ui) = ui.upgrade() {
+                ui.poses_refresh();
             }
         });
         let ui = Rc::downgrade(self);
@@ -2855,7 +3038,127 @@ impl<S: Screen> Ui<S> {
             app.set_pose(night);
             return;
         }
-        app.set_pose(self.pose(state));
+        // The home's pose (a card's, or the moment's), and a card's while an announcement is
+        // said over it (the probe's temperature over Alfred at the barbecue).
+        let look = if state == State::Idle {
+            Some(self.home_look())
+        } else if state == State::Speaking && self.announcing.get() {
+            self.card_look()
+        } else {
+            None
+        };
+        match look {
+            Some(l) => app.set_pose(self.look_image(&l)),
+            None => app.set_pose(self.pose(state)),
+        }
+    }
+
+    /// The pose a card of Home Assistant asks for, if the character has it.
+    fn card_look(&self) -> Option<Look> {
+        self.card_pose.borrow().0.clone()
+    }
+
+    /// The home's pose now: a card's (not on the settings and More pages), else the moment's.
+    fn home_look(&self) -> Look {
+        let page = self.screen.get_page();
+        let paged = SETTINGS_PAGES.contains(&page.as_str()) || page.as_str() == "altro";
+        home_look_of(self.card_look(), paged, self.home_state())
+    }
+
+    /// The picture of a pose: the character's own, or a downloaded one (drawn as idle is).
+    fn look_image(&self, l: &Look) -> Image {
+        match l {
+            Look::Own(s) => self.pose(*s),
+            Look::Downloaded(n) => {
+                let picture = self.card_pose.borrow().1.get(n).cloned().flatten();
+                picture.unwrap_or_else(|| self.pose(State::Idle))
+            }
+        }
+    }
+
+    /// How a pose moves on the home: a downloaded one with its own animation if it has one
+    /// (`anim::CARD_POSE`), the character's own as `home_mode`.
+    fn look_mode(&self, l: &Look) -> Mode {
+        match l {
+            Look::Own(s) => self.home_mode(*s),
+            Look::Downloaded(_) => Mode::Loop(anim::CARD_POSE),
+        }
+    }
+
+    /// The home's pose now: idle, or what the moment asks if the character has its pose (else
+    /// idle, as without it).
+    fn home_state(&self) -> State {
+        let now = Instant::now();
+        let page = self.screen.get_page();
+        let s = home_state_of(HomeMoment {
+            mic_off: self.mic_off.get(),
+            linking: matches!(page.as_str(), "setup" | "find-ha"),
+            working: self.update_going() || self.ha_page.borrow().busy,
+            satisfied: self
+                .satisfied
+                .get()
+                .is_some_and(|(from, until)| from <= now && now < until),
+            nod: self.nod_until.get().is_some_and(|t| now < t),
+        });
+        // The settings and More pages have their own animation over idle: only a job or the
+        // link shows over them.
+        let paged = SETTINGS_PAGES.contains(&page.as_str()) || page.as_str() == "altro";
+        if self.character.has_pose(s) && !(paged && !matches!(s, State::Link | State::Working)) {
+            s
+        } else {
+            State::Idle
+        }
+    }
+
+    /// How the home moves with its pose: `wake` and `idle` over idle, a pose with its own loop
+    /// as in a conversation (the muted pose, the deck chair of `offline`), the others still (an
+    /// idle clip would draw idle over them). The night's and the settings' clips are not
+    /// decoded by day: their poses stay still here.
+    fn home_mode(&self, s: State) -> Mode {
+        if s == State::Idle {
+            return Mode::Home;
+        }
+        self.character
+            .state_animation(s)
+            .and_then(|a| anim::static_name(&a.name))
+            .filter(|n| !NIGHT_CLIPS.contains(n) && !SETTINGS_CLIPS.contains(n))
+            .map_or(Mode::Still, Mode::Loop)
+    }
+
+    /// The home's pose again when the moment or a card changed it (once a second, and when
+    /// something that decides it changes).
+    fn refresh_home_pose(&self) {
+        if self.home_look() != *self.home_pose.borrow() {
+            self.show_home_pose();
+        }
+    }
+
+    /// The home's pose drawn again, with its motion (when it changed, or its picture did).
+    fn show_home_pose(&self) {
+        let l = self.home_look();
+        *self.home_pose.borrow_mut() = l.clone();
+        if self.view.get() != Phase::Home
+            || self.motion.borrow().loading_until.is_some()
+            || self.desk.borrow().night_shown
+            || self.opts.demo.is_some()
+        {
+            return;
+        }
+        log::info!(event = "home_pose", pose = l.name(); "home pose: {}", l.name());
+        self.set_pose(&self.screen, State::Idle);
+        let mode = self.motion_mode(Phase::Home, State::Idle, false);
+        self.motion.borrow_mut().seq.set_mode(mode, Instant::now());
+        self.step();
+    }
+
+    /// A reflex was done: the nod, now on the home or when the home comes back.
+    fn nod(&self) {
+        if self.view.get() == Phase::Home {
+            self.nod_until.set(Some(Instant::now() + NOD_FOR));
+            self.refresh_home_pose();
+        } else {
+            self.nod_pending.set(true);
+        }
     }
 
     fn pose(&self, state: State) -> Image {
@@ -2916,6 +3219,9 @@ impl<S: Screen> Ui<S> {
         }
         if !p.in_conversation() {
             self.end_exchange();
+        }
+        if p == Phase::Home && self.nod_pending.take() {
+            self.nod_until.set(Some(now + NOD_FOR));
         }
         {
             let mut d = self.desk.borrow_mut();
@@ -2985,12 +3291,30 @@ impl<S: Screen> Ui<S> {
         }
         match p {
             Phase::Home if night => Mode::Night,
-            Phase::Home if SETTINGS_PAGES.contains(&self.screen.get_page().as_str()) => {
-                Mode::Settings
+            Phase::Home => {
+                // The home's pose (a card's, or the moment's: idle on the settings and More
+                // pages unless a job or the link asks), else the page's own animation.
+                let l = self.home_look();
+                *self.home_pose.borrow_mut() = l.clone();
+                let page = self.screen.get_page();
+                match l {
+                    Look::Own(State::Idle) if SETTINGS_PAGES.contains(&page.as_str()) => {
+                        Mode::Settings
+                    }
+                    Look::Own(State::Idle) if page.as_str() == "altro" => Mode::More,
+                    l => self.look_mode(&l),
+                }
             }
-            Phase::Home if self.screen.get_page().as_str() == "altro" => Mode::More,
-            Phase::Home => Mode::Home,
-            Phase::Offline => Mode::Still,
+            // A card's pose stays while an announcement is said over it.
+            Phase::Speaking if self.announcing.get() && self.card_look().is_some() => {
+                self.card_look().map_or(Mode::Still, |l| self.look_mode(&l))
+            }
+            // Its own loop if the character has one (Alfred in the deck chair).
+            Phase::Offline => self
+                .character
+                .animation("offline")
+                .and_then(|a| anim::static_name(&a.name))
+                .map_or(Mode::Still, Mode::Loop),
             _ => self
                 .character
                 .state_animation(pose)
@@ -3139,6 +3463,7 @@ impl<S: Screen> Ui<S> {
         self.poll_brain();
         self.poll_ha();
         self.poll_house();
+        self.poll_poses();
         let mut added = false;
         {
             let mut m = self.motion.borrow_mut();
@@ -3162,6 +3487,18 @@ impl<S: Screen> Ui<S> {
                         m.clips.insert(name, Arc::new(c));
                         added = true;
                     }
+                }
+            }
+            if let Some(rx) = &m.pose_incoming {
+                match rx.try_recv() {
+                    Ok(c) => {
+                        m.seq.add(anim::CARD_POSE, Timing::of(&c.anim));
+                        m.clips.insert(anim::CARD_POSE, Arc::new(c));
+                        m.pose_incoming = None;
+                        added = true;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => m.pose_incoming = None,
                 }
             }
             if let Some(rx) = &m.incoming {
@@ -3429,6 +3766,12 @@ impl<S: Screen> Ui<S> {
             // The night clips are aligned on idle too (they start or end there).
             "loading" | "wake" | "idle" | "fall_asleep" | "sleeping" | "wake_from_sleep"
             | "settings_in" | "settings_hold" | "settings_out" => State::Idle,
+            // A downloaded pose is drawn as the idle pose is (render_card_pose).
+            anim::CARD_POSE => State::Idle,
+            "muted" => State::Muted,
+            "offline" => State::Offline,
+            // A card's pose on the home with its state's clip (`thinking`): that state's crop.
+            name if self.view.get() == Phase::Home => state_named(name).unwrap_or(State::Idle),
             _ => view(self.view.get()).1,
         };
         let (_, crop) = self.character.pose(state);
@@ -3463,6 +3806,8 @@ impl<S: Screen> Ui<S> {
                             text: l.sample("ha_card_text").into(),
                             icon: Some("mdi:washing-machine".into()),
                             seconds: None,
+                            // Shown only if a pose "laundry" was downloaded (none in the screenshots).
+                            pose: Some("laundry".into()),
                         }),
                         Instant::now(),
                     );
@@ -3595,6 +3940,7 @@ impl<S: Screen> Ui<S> {
                     text: l.sample("ha_card_text").into(),
                     icon: Some("mdi:washing-machine".into()),
                     seconds: None,
+                    pose: None,
                 }),
                 Instant::now(),
             );
@@ -3980,6 +4326,9 @@ impl<S: Screen> Ui<S> {
                 &l.text("tile_shopping")
                     .replace("{n}", &items.len().to_string()),
             );
+        }
+        if matches!(d.page, "poses" | "settings") {
+            self.render_poses_demo();
         }
         if (d.page == "ha" && d.ha <= 2) || d.page == "ha-pick" {
             use crate::ha::setup::{Level, Row};
@@ -4414,7 +4763,10 @@ impl<S: Screen> Ui<S> {
                 }
             }
             UiCommand::DoNotDisturb(until) => self.set_dnd(until),
-            UiCommand::Announcing(on) => self.screen.set_announcing(on),
+            UiCommand::Announcing(on) => {
+                self.announcing.set(on);
+                self.screen.set_announcing(on);
+            }
             UiCommand::Conversation {
                 state,
                 trigger,
@@ -4514,8 +4866,11 @@ impl<S: Screen> Ui<S> {
                 let line = self.locale.borrow().text("mic_off_line").to_string();
                 self.screen.set_mic_off(!mic_on, &line);
                 self.refresh_control();
+                self.mic_off.set(!mic_on);
+                self.refresh_home_pose();
             }
             UiCommand::MicSwitch(on) => self.show_mic_switch(on),
+            UiCommand::ReflexDone => self.nod(),
             UiCommand::Usage(v) => self.show_usage(&v),
             UiCommand::Screenshot(path) => {
                 if let Err(e) = save_png(&self.screen, &path) {
@@ -4626,6 +4981,7 @@ impl<S: Screen> Ui<S> {
         }
         self.tick_panel();
         self.tick_remote();
+        self.refresh_home_pose();
         self.feed_light();
         let now = Instant::now();
         if self.desk.borrow_mut().ha_cards.expire(now) {
@@ -5080,6 +5436,10 @@ impl<S: Screen> Ui<S> {
         }
         let l = self.locale.borrow();
         let current = env!("CARGO_PKG_VERSION");
+        if s.phase == "done" {
+            let now = Instant::now();
+            self.satisfied.set(Some((now, now + SATISFIED_FOR)));
+        }
         let (title, text, ok) = match s.phase.as_str() {
             "done" => (
                 l.text("update_result_done_title").to_string(),
@@ -5760,6 +6120,8 @@ impl<S: Screen> Ui<S> {
     fn on_page(self: &Rc<Self>, page: &str) {
         // Before anything is drawn: the remote screen's capture learns what may be sent.
         self.sync_remote();
+        // The link pages have their pose ("plug it in").
+        self.refresh_home_pose();
         if self
             .back_pending
             .take()
@@ -5786,6 +6148,12 @@ impl<S: Screen> Ui<S> {
         } else if self.link.borrow().is_some() {
             // Leaving the page closes the port.
             self.link.borrow_mut().take();
+        }
+        if page == "poses" {
+            self.poses_refresh();
+        } else if page == "settings" {
+            // The row's count of installed poses.
+            self.render_poses();
         }
         if page == "update" {
             self.refresh_update();
@@ -5873,7 +6241,283 @@ impl<S: Screen> Ui<S> {
             .collect()
     }
 
+    /// The pose of Home Assistant's cards (`pose` of `home_companion_card`, the last card that
+    /// has one): a downloaded pose of that name first, else the character's own of the state of
+    /// that name, instead of the moment's pose while such a card shows (by day; not on the
+    /// settings and More pages). A name it has neither of is as no pose.
+    fn render_card_pose(&self) {
+        let want = self.desk.borrow().ha_cards.pose().map(String::from);
+        let look = want.and_then(|name| {
+            let downloaded = {
+                let mut cp = self.card_pose.borrow_mut();
+                cp.1.entry(name.clone())
+                    .or_insert_with(|| self.load_downloaded(&name))
+                    .is_some()
+            };
+            let look = card_look_of(&name, downloaded, |s| self.character.has_pose(s));
+            if look.is_none() {
+                log::debug!("card pose {name:?}: no such pose");
+            }
+            look
+        });
+        if self.card_pose.borrow().0 == look {
+            return;
+        }
+        if let Some(name) = look.as_ref().map(Look::name) {
+            log::info!(event = "card_pose", pose = name; "card pose: {name}");
+        }
+        self.load_pose_animation(match &look {
+            Some(Look::Downloaded(n)) => Some(n.as_str()),
+            _ => None,
+        });
+        self.card_pose.borrow_mut().0 = look;
+        if self.view.get() == Phase::Home && self.motion.borrow().loading_until.is_none() {
+            if self.opts.demo.is_some() {
+                self.set_pose(&self.screen, State::Idle);
+            } else {
+                self.show_home_pose();
+            }
+        }
+    }
+
+    /// The picture of the downloaded pose `name`, if there is one (drawn with idle's crop: it
+    /// stands where the character does).
+    fn load_downloaded(&self, name: &str) -> Option<Image> {
+        let path = self.downloaded_dir()?.join(format!("{name}.png"));
+        if !path.is_file() {
+            return None;
+        }
+        let (_, crop) = self.character.pose(State::Idle);
+        load_pose(&path, crop, self.character.background)
+            .map_err(|e| log::warn!("card pose {name:?}: {e}"))
+            .ok()
+    }
+
+    /// The animation of a downloaded pose (`<name>.toml` next to its picture, an animation table
+    /// as in character.toml without its name, its `file` in the same directory): the old pose's
+    /// sheet goes, the new one is decoded in the background and loops over the pose once it is
+    /// there.
+    fn load_pose_animation(&self, name: Option<&str>) {
+        let mut m = self.motion.borrow_mut();
+        m.pose_incoming = None;
+        if m.clips.remove(anim::CARD_POSE).is_some() {
+            m.seq.remove(anim::CARD_POSE);
+            if matches!(m.shown, Show::Frame { clip, .. } if clip == anim::CARD_POSE) {
+                m.shown = Show::Pose;
+                m.playhead = None;
+                self.screen.set_frame(Image::default());
+            }
+        }
+        let Some(name) = name else { return };
+        if self.opts.demo.is_some() || !self.opts.screen.animations {
+            return;
+        }
+        let Some(dir) = self.downloaded_dir() else {
+            return;
+        };
+        let path = dir.join(format!("{name}.toml"));
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return; // a still pose
+        };
+        match pose_animation(&text, &dir) {
+            Ok(a) => {
+                log::info!("pose {name:?}: animation {}", a.file.display());
+                m.pose_incoming =
+                    Some(anim::load_in_background(vec![a], self.character.background));
+            }
+            Err(e) => log::warn!("{}: {e} (the pose stays still)", path.display()),
+        }
+    }
+
+    /// Settings → Poses opened, or "Look again": the catalogue is read again.
+    fn poses_refresh(&self) {
+        let Some((tx, _)) = &self.pose_downloads else {
+            self.render_poses();
+            return;
+        };
+        {
+            let mut v = self.pose_view.borrow_mut();
+            v.catalogue = None;
+            v.failed = None;
+        }
+        let _ = tx.send(crate::poses::Cmd::Refresh);
+        self.render_poses();
+    }
+
+    /// A pose's switch: download it (on) or take it away (off).
+    fn pose_toggled(&self, name: &str, on: bool) {
+        let Some((tx, _)) = &self.pose_downloads else {
+            return;
+        };
+        if self.pose_view.borrow().busy.is_some() {
+            return;
+        }
+        {
+            let mut v = self.pose_view.borrow_mut();
+            v.failed = None;
+            // The turning sign at once, before the thread says so.
+            if on {
+                v.busy = Some(name.to_string());
+            }
+        }
+        let _ = tx.send(if on {
+            crate::poses::Cmd::Install(name.to_string())
+        } else {
+            crate::poses::Cmd::Remove(name.to_string())
+        });
+        self.render_poses();
+    }
+
+    /// What the downloads' thread says.
+    fn poll_poses(&self) {
+        let Some((_, rx)) = &self.pose_downloads else {
+            return;
+        };
+        let mut changed = Vec::new();
+        let mut any = false;
+        while let Ok(m) = rx.borrow().try_recv() {
+            any = true;
+            let mut v = self.pose_view.borrow_mut();
+            match m {
+                crate::poses::Msg::Catalogue(c) => v.catalogue = Some(c),
+                crate::poses::Msg::Busy(b) => v.busy = b,
+                crate::poses::Msg::Changed(n) => changed.push(n),
+                crate::poses::Msg::Failed(n, why) => v.failed = Some((n, why)),
+            }
+        }
+        for n in changed {
+            self.pose_files_changed(&n);
+        }
+        if any {
+            self.render_poses();
+        }
+    }
+
+    /// A downloaded pose came or went: read again, and shown again if a card asks for it.
+    fn pose_files_changed(&self, name: &str) {
+        {
+            let mut cp = self.card_pose.borrow_mut();
+            cp.1.remove(name);
+            if cp.0.as_ref().is_some_and(|l| l.name() == name) {
+                // Taken again by render_card_pose (the new picture, or the character's own).
+                cp.0 = None;
+            }
+        }
+        self.render_card_pose();
+    }
+
+    /// Settings → Poses and its row: the catalogue with a switch per pose, what is going on,
+    /// how many are installed.
+    fn render_poses(&self) {
+        if self.opts.demo.is_some() {
+            return self.render_poses_demo();
+        }
+        let l = self.locale.borrow();
+        let lang = l.code.clone();
+        let dir = self.downloaded_dir();
+        let installed = |n: &str| {
+            dir.as_deref()
+                .is_some_and(|d| crate::poses::installed(d, n))
+        };
+        let count = dir
+            .as_deref()
+            .and_then(|d| std::fs::read_dir(d).ok())
+            .map(|it| {
+                it.filter_map(Result::ok)
+                    .filter(|e| {
+                        let n = e.file_name().to_string_lossy().to_string();
+                        n.ends_with(".png") && !n.ends_with("-anim.png")
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        self.screen.set_poses_value(&if count > 0 {
+            l.text("poses_installed").replace("{n}", &count.to_string())
+        } else {
+            String::new()
+        });
+        let v = self.pose_view.borrow();
+        let poses = match &v.catalogue {
+            Some(Ok(s)) => s.as_slice(),
+            _ => &[],
+        };
+        let title = |n: &str| {
+            poses
+                .iter()
+                .find(|s| s.name == n)
+                .map(|s| s.title(&lang))
+                .unwrap_or_else(|| n.to_string())
+        };
+        let mb = |bytes: u64| format!("{:.1} MB", bytes as f64 / 1_048_576.0);
+        let mut rows: Vec<super::PoseRowData> = poses
+            .iter()
+            .map(|s| {
+                (
+                    s.name.clone(),
+                    s.title(&lang),
+                    mb(s.size()),
+                    installed(&s.name),
+                    v.busy.as_deref() == Some(s.name.as_str()),
+                )
+            })
+            .collect();
+        // Installed poses the catalogue no longer lists (renamed, withdrawn): still there to take
+        // away. Only against a catalogue that was read: while looking, every pose is unknown.
+        if let (Some(Ok(_)), Some(d)) = (&v.catalogue, dir.as_deref()) {
+            let known: Vec<&str> = poses.iter().map(|s| s.name.as_str()).collect();
+            for (name, size) in crate::poses::unlisted(d, &known) {
+                let value = l.text("poses_unlisted").replace("{size}", &mb(size));
+                rows.push((name.clone(), name, value, true, false));
+            }
+        }
+        self.screen.set_pose_rows(&rows);
+        self.screen.set_poses_busy(v.busy.is_some());
+        let state = if let Some(b) = &v.busy {
+            l.text("poses_busy").replace("{title}", &title(b))
+        } else if let Some((n, why)) = &v.failed {
+            l.text("poses_failed_one")
+                .replace("{title}", &title(n))
+                .replace("{why}", why)
+        } else {
+            match &v.catalogue {
+                None if self.pose_downloads.is_some() => l.text("poses_loading").to_string(),
+                Some(Err(_)) => l.text("poses_failed").to_string(),
+                Some(Ok(s)) if s.is_empty() => l.text("poses_none").to_string(),
+                None => l.text("poses_none").to_string(),
+                Some(Ok(_)) => String::new(),
+            }
+        };
+        self.screen.set_poses_state(&state);
+    }
+
+    /// `--state poses`: the page on sample data (two of four installed, one downloading).
+    fn render_poses_demo(&self) {
+        let l = self.locale.borrow();
+        let rows: Vec<super::PoseRowData> = [
+            ("laundry", "Laundry", "7.2 MB", true, false),
+            ("barbecue", "Barbecue", "4.1 MB", false, true),
+            ("waste", "Rubbish out", "5.3 MB", true, false),
+            ("vacuum", "Robot vacuum", "4.4 MB", false, false),
+        ]
+        .iter()
+        .map(|(n, t, v, on, busy)| (n.to_string(), t.to_string(), v.to_string(), *on, *busy))
+        .collect();
+        self.screen.set_pose_rows(&rows);
+        self.screen.set_poses_busy(true);
+        self.screen
+            .set_poses_state(&l.text("poses_busy").replace("{title}", "Barbecue"));
+        self.screen
+            .set_poses_value(&l.text("poses_installed").replace("{n}", "2"));
+    }
+
+    /// Where the downloaded poses are (Settings → Poses): `<state_dir>/poses/<character>/`.
+    fn downloaded_dir(&self) -> Option<PathBuf> {
+        let state = self.opts.state_dir.as_ref()?;
+        Some(crate::poses::dir(state, &self.character.id))
+    }
+
     fn refresh_home(&self) {
+        self.render_card_pose();
         if self.opts.demo.as_ref().is_some_and(|d| d.cards) {
             return;
         }
@@ -6872,7 +7516,11 @@ impl<S: Screen> Ui<S> {
                             // says it.
                             p.done = true;
                             drop(p);
-                            self.motion.borrow_mut().seq.done(Instant::now());
+                            let now = Instant::now();
+                            self.motion.borrow_mut().seq.done(now);
+                            // After the bow (anim's `done`, 3 s).
+                            self.satisfied
+                                .set(Some((now + BOW, now + BOW + SATISFIED_FOR)));
                             let said =
                                 word(&self.locale.borrow(), "ha_ready_say", &self.character.name);
                             self.send(UiEvent::Say(said));
@@ -8070,6 +8718,120 @@ mod tests {
     }
 
     #[test]
+    fn the_home_pose_of_the_moment() {
+        let m = HomeMoment::default();
+        assert_eq!(home_state_of(m), State::Idle);
+        assert_eq!(home_state_of(HomeMoment { nod: true, ..m }), State::Nod);
+        assert_eq!(
+            home_state_of(HomeMoment {
+                satisfied: true,
+                nod: true,
+                ..m
+            }),
+            State::Satisfied
+        );
+        assert_eq!(
+            home_state_of(HomeMoment {
+                working: true,
+                satisfied: true,
+                ..m
+            }),
+            State::Working
+        );
+        assert_eq!(
+            home_state_of(HomeMoment {
+                linking: true,
+                working: true,
+                ..m
+            }),
+            State::Link
+        );
+        assert_eq!(
+            home_state_of(HomeMoment {
+                mic_off: true,
+                linking: true,
+                ..m
+            }),
+            State::Muted
+        );
+    }
+
+    #[test]
+    fn a_card_asks_for_a_downloaded_pose_then_one_of_the_character() {
+        let alfred = |s: State| s != State::TimerFinished;
+        // Downloaded first, even with a state's name.
+        assert_eq!(
+            card_look_of("laundry", true, alfred),
+            Some(Look::Downloaded("laundry".into()))
+        );
+        assert_eq!(
+            card_look_of("working", true, alfred),
+            Some(Look::Downloaded("working".into()))
+        );
+        // Else the character's own pose by its state's name.
+        assert_eq!(
+            card_look_of("working", false, alfred),
+            Some(Look::Own(State::Working))
+        );
+        assert_eq!(
+            card_look_of("offline", false, alfred),
+            Some(Look::Own(State::Offline))
+        );
+        // A state without a pose of its own, or no such name: the card shows alone.
+        assert_eq!(card_look_of("timer_finished", false, alfred), None);
+        assert_eq!(card_look_of("laundry", false, alfred), None);
+    }
+
+    #[test]
+    fn a_card_s_pose_in_place_of_the_moment_s() {
+        let card = Some(Look::Own(State::Thinking));
+        // On the home a card's pose over any moment's pose.
+        for moment in [State::Idle, State::Muted, State::Working, State::Nod] {
+            assert_eq!(
+                home_look_of(card.clone(), false, moment),
+                card.clone().unwrap()
+            );
+        }
+        assert_eq!(
+            home_look_of(None, false, State::Muted),
+            Look::Own(State::Muted)
+        );
+        // The settings and More pages keep theirs: the moment's (idle, link, working).
+        assert_eq!(
+            home_look_of(card.clone(), true, State::Idle),
+            Look::Own(State::Idle)
+        );
+        assert_eq!(
+            home_look_of(Some(Look::Downloaded("bbq".into())), true, State::Working),
+            Look::Own(State::Working)
+        );
+    }
+
+    #[test]
+    fn a_pose_animation_table() {
+        let dir = Path::new("/x/poses");
+        let a = pose_animation(
+            "file = \"laundry-anim.png\"\nsize = [454, 880]\nframes = [0, 80]\nfps = 16\nrect = [271.0, 44.8, 755.1, 983.5]\n",
+            dir,
+        )
+        .unwrap();
+        assert_eq!(a.name, anim::CARD_POSE);
+        assert_eq!(a.file, dir.join("laundry-anim.png"));
+        assert_eq!(
+            (a.size, a.first, a.end, a.fps, a.pause),
+            ((454, 880), 0, 80, 16.0, 0.0)
+        );
+        for bad in [
+            "file = \"../poses/idle.png\"\nsize = [1, 1]\nframes = [0, 2]\nfps = 16\nrect = [0.0, 0.0, 1.0, 1.0]\n",
+            "file = \"a.png\"\nsize = [1, 1]\nframes = [2, 2]\nfps = 16\nrect = [0.0, 0.0, 1.0, 1.0]\n",
+            "file = \"a.png\"\nsize = [1, 1]\nframes = [0, 2]\nfps = 0\nrect = [0.0, 0.0, 1.0, 1.0]\n",
+            "file = \"a.png\"\nsize = [1, 1]\nframes = [0, 2]\nfps = 16\nrect = [0.0, 0.0, 1.0, 1.0]\nname = \"idle\"\n",
+        ] {
+            assert!(pose_animation(bad, dir).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn memories_tile_says_what_waits() {
         let l = locale::load(&locale::repo_locales(), "it").unwrap();
         assert_eq!(memories_tile(&l, "6 ricordi", 0), "6 ricordi");
@@ -8913,6 +9675,7 @@ mod tests {
                 text: "Text".into(),
                 icon: None,
                 seconds: None,
+                pose: None,
             }))
         };
         // The OK of the first card of Home Assistant on the home, whatever else is shown.

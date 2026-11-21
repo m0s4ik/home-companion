@@ -28,13 +28,35 @@ and a character without them still works.
 | `speaking` | `poses/speaking.png` | yes | the answer is spoken |
 | `error` | `poses/error.png` | yes | not understood, or the brain failed |
 | `offline` | `poses/offline.png` | no (falls back to `idle`) | no brain is reachable |
-| `muted` | `poses/muted.png` | no (falls back to `idle`) | the microphone switch is off |
+| `muted` | `poses/muted.png` | no (falls back to `idle`) | the microphone switch is off (on the home) |
 | `timer_finished` | `poses/timer_finished.png` | no (falls back to `speaking`) | a timer or alarm is ringing |
 | `sleeping` | `poses/sleeping.png` | no (falls back to `idle`, drawn dimmed) | night mode: the body's night hours, the home at rest. Drawn as it is: make it as dark as it should be at night |
+| `link` | `poses/link.png` | no (falls back to `idle`) | the pages that link Home Assistant (finding it, the QR code): "plug it in" |
+| `working` | `poses/working.png` | no (falls back to `idle`) | something longer under way: an update installs, the Home Assistant setup checks and repairs |
+| `satisfied` | `poses/satisfied.png` | no (falls back to `idle`) | 10 s after such a job went well (after the bow when the setup is done) |
+| `nod` | `poses/nod.png` | no (falls back to `idle`) | 3 s on the home after a reflex was done (a timer set, the volume, …) |
 
 Optional prop: `poses/dnd.png`, drawn on the floor at the figure's right foot while do not disturb is on (the home,
 day and night; at night at 55 %). Any size (shown 150 px wide), RGBA with a transparent background, or RGB on the
 character's background. Without it do not disturb shows only its line over the clock.
+
+Any pose can be asked for by a card of Home Assistant (`pose: <name>` on `home_companion_card`, README, "From your
+automations"): it is shown instead of the home's pose while the card shows, by day only. The name is a pose downloaded
+from Settings → Poses, else one of the character's own poses by its state name (`working`, `muted`, ...), with that
+state's animation if it loops.
+
+Extra poses to download need not be in this repository: a release tagged `poses-…` with
+[tools/make-pose-catalogue.py](../tools/make-pose-catalogue.py)'s files (`poses.json` and the files of each pose)
+offers them in Settings → Poses; they go to `<state_dir>/poses/<character id>/` (on the device
+`/var/lib/home-companion/poses/alfred/`, kept by updates). Such a pose is `<name>.png`, a pose picture like the others:
+the same size, the flat background, drawn with the character's `crop`, the figure's feet on the same line as in `idle`
+and the picture as tall as the figure where the crop's width allows. Names of lowercase letters, digits, `-` and `_`.
+
+It may move: `<name>.toml` is its animation, a table as in character.toml (`file`, `size`, `frames`, `fps`, optional
+`pause`, `rect`) without the `[animations.…]` header, its `file` a sheet in the same directory (`<name>-anim.png`) made
+with [tools/make-animation.py](../tools/make-animation.py) from `<name>.png`. It loops over the pose while the card
+shows (also while an announcement is said over it) and its sheet is decoded when the pose comes and freed when it goes.
+A clip whose last frame is its first loops without a jump.
 
 Rules for the pictures:
 
@@ -60,6 +82,7 @@ All optional; without one the still pose is shown.
 | `wake` | once when the home screen wakes up (touch, volume key, movement, end of a conversation) | `idle` |
 | `idle` | after `wake`, again and again while the screen is awake, still on its last frame for `pause` seconds in between | `idle` |
 | `listening`, `thinking`, `speaking`, `error` | in a loop while the state lasts (`speaking` also while a timer rings, unless the character has `timer_finished`) | that state's pose |
+| `offline`, `muted` | in a loop while the state lasts | that state's pose |
 | `done` | once on the home after a house command went through (if it came during the conversation, when the home comes back, within 15 s); its last frame is the `idle` pose | `idle` |
 | `fall_asleep` | once when the night layout comes (night hours, the home at rest), after the home clip under way | `idle` |
 | `sleeping` | once every `pause` seconds while asleep, the still `sleeping` pose in between (nothing redraws) | `sleeping` |

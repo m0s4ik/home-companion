@@ -15,6 +15,7 @@
 //!   icon: mdi:washing-machine   # optional
 //!   seconds: 600         # optional: the card goes away by itself
 //!   device: Alfred       # optional: only the device with this name (default: every device)
+//!   pose: working        # optional: a pose of the character (downloaded, or its own by state) while the card shows
 //! ```
 //!
 //! `home_companion_card_dismiss` with `id` takes a card away.
@@ -46,6 +47,10 @@ pub struct HaCard {
     pub icon: Option<String>,
     /// The card goes away by itself after this many seconds (None: until touched).
     pub seconds: Option<u64>,
+    /// A pose of the character shown instead of its home pose while the card shows: a
+    /// downloaded one (Settings → Poses) or one of its own by state name (`working`); only
+    /// lowercase letters, digits, `-` and `_`.
+    pub pose: Option<String>,
 }
 
 /// What an event asks.
@@ -58,6 +63,16 @@ pub enum CardEvent {
 /// The card longest and widest the screen takes: longer texts are cut.
 const MAX_TEXT: usize = 280;
 const MAX_TITLE: usize = 60;
+/// A pose's name: maybe a file name, so short and plain.
+const MAX_POSE: usize = 40;
+
+/// A pose's name, safe as a file name: lowercase letters, digits, `-` and `_` only.
+fn pose_name(s: &str) -> Option<String> {
+    (s.len() <= MAX_POSE
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'))
+    .then(|| s.to_string())
+}
 
 fn clipped(s: &str, max: usize) -> String {
     let s = s.trim();
@@ -96,6 +111,7 @@ pub fn parse(msg: &Value, device: &str) -> Option<CardEvent> {
                 .get("seconds")
                 .and_then(Value::as_u64)
                 .filter(|n| *n > 0),
+            pose: s("pose").and_then(pose_name),
         })),
         DISMISS_EVENT => Some(CardEvent::Dismiss(s("id")?.to_string())),
         _ => None,
@@ -176,6 +192,7 @@ mod tests {
                 text: "Done".into(),
                 icon: Some("mdi:washing-machine".into()),
                 seconds: Some(600),
+                pose: None,
             }))
         );
         let m = event(DISMISS_EVENT, json!({"id": "washing"}));
@@ -267,6 +284,30 @@ mod tests {
         assert_eq!(handled_by("stopped", 0.0, "Ok"), "home_assistant");
         assert_eq!(handled_by("no speech", 0.0, ""), "none");
         assert_eq!(handled_by("stopped", 0.0, ""), "none");
+    }
+
+    #[test]
+    fn a_pose_is_a_plain_file_name() {
+        let pose = |p: &str| {
+            let m = event(CARD_EVENT, json!({"text": "hi", "pose": p}));
+            let Some(CardEvent::Show(c)) = parse(&m, "Alfred") else {
+                panic!()
+            };
+            c.pose
+        };
+        assert_eq!(pose(" laundry "), Some("laundry".into()));
+        assert_eq!(pose("kamado_2"), Some("kamado_2".into()));
+        assert_eq!(pose("bbq-grill"), Some("bbq-grill".into()));
+        for bad in [
+            "",
+            "../poses/idle",
+            "Laundry",
+            "laundry.png",
+            "a b",
+            &"x".repeat(41),
+        ] {
+            assert_eq!(pose(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

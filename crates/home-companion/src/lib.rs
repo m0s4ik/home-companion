@@ -18,6 +18,7 @@ pub mod ha;
 pub mod history;
 pub mod logger;
 pub mod panel;
+pub mod poses;
 pub mod reflex;
 pub mod repeat;
 pub mod settings;

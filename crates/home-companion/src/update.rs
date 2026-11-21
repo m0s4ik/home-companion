@@ -414,7 +414,7 @@ fn run(
 }
 
 /// The repository's releases, newest first (GitHub's API through curl: no TLS in the body).
-fn fetch(repo: &str) -> Result<Value, String> {
+pub(crate) fn fetch(repo: &str) -> Result<Value, String> {
     let url = format!("https://api.github.com/repos/{repo}/releases?per_page=20");
     let out = Command::new("curl")
         .args([
@@ -666,6 +666,31 @@ mod tests {
         assert_eq!(pick(&list, "0.3.1", false, "arm64"), None);
         // Another architecture: nothing.
         assert_eq!(pick(&list, "0.3.0", true, "amd64"), None);
+        // The poses' releases (Settings → Poses, src/poses.rs) share the repository: never a
+        // version, even the newest, the "Latest" one, or one carrying a bundle's name.
+        let mut with_poses = vec![
+            rel("poses-v2", false, &["poses.json", "SHA256SUMS"]),
+            rel(
+                "poses-9.0.0",
+                false,
+                &["home-companion-9.0.0-arm64.tar.gz", "SHA256SUMS"],
+            ),
+            rel(
+                "scenes-v1.0.0",
+                true,
+                &["home-companion-1.0.0-arm64.tar.gz", "SHA256SUMS"],
+            ),
+        ];
+        with_poses.extend(list.as_array().unwrap().iter().cloned());
+        let with_poses = Value::Array(with_poses);
+        let r = pick(&with_poses, "0.3.0", false, "arm64").unwrap();
+        assert_eq!(r.tag, "v0.3.1");
+        let r = pick(&with_poses, "0.3.0", true, "arm64").unwrap();
+        assert_eq!(r.tag, "v0.4.0-rc1");
+        assert_eq!(pick(&with_poses, "0.4.0-rc1", true, "arm64"), None);
+        for tag in ["poses-v2", "poses-9.0.0", "scenes-v1.0.0", "poses-"] {
+            assert_eq!(Version::parse(tag), None, "{tag}");
+        }
         // A draft is never offered.
         let d = json!([{"tag_name": "v9.0.0", "prerelease": false, "draft": true,
                         "assets": [{"name": "home-companion-9.0.0-arm64.tar.gz"}, {"name": "SHA256SUMS"}]}]);

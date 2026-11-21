@@ -695,8 +695,15 @@ pub fn load_in_background(anims: Vec<Animation>, bg: character::Rgb) -> Receiver
     rx
 }
 
+/// The animation of a downloaded pose a card of Home Assistant shows (`<name>.toml` next to its
+/// picture, Settings → Poses): one at a time, under this name.
+pub const CARD_POSE: &str = "card_pose";
+
 /// The name as a `&'static str` (the sequencer's keys), if it is a known animation.
 pub fn static_name(name: &str) -> Option<&'static str> {
+    if name == CARD_POSE {
+        return Some(CARD_POSE);
+    }
     character::ANIMATIONS.into_iter().find(|n| *n == name)
 }
 

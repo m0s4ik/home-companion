@@ -453,6 +453,18 @@ ring_timer_named = "De timer \"{name}\" is afgelopen."
 ring_timer = "De timer van {duration} is afgelopen."
 ring_alarm = "Wekker, {time}."
 
+# Instellingen → Poses (src/poses.rs): extra poses van het personage om te downloaden, voor de kaarten van Home Assistant.
+poses_title = "Poses"
+poses_intro = "Extra poses van het personage, getoond zolang een kaart van Home Assistant erom vraagt (pose). Zet er een aan om hem te downloaden."
+poses_check = "Opnieuw kijken"
+poses_loading = "Poses zoeken…"
+poses_none = "Nog geen poses om te downloaden voor dit personage."
+poses_failed = "De poses konden niet gelezen worden (geen netwerk, of GitHub gaf geen antwoord)."
+poses_busy = "{title} downloaden…"
+poses_failed_one = "{title} is niet gelukt: {why}"
+poses_installed = "{n} geïnstalleerd"
+poses_unlisted = "Niet meer in de lijst · {size}"
+
 [sample]
 # The first start's Home Assistant page (--state first-ha-found): a second instance's name.
 find_second = "Vakantiehuis"
