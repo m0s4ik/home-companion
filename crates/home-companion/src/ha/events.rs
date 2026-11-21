@@ -15,7 +15,7 @@
 //!   icon: mdi:washing-machine   # optional
 //!   seconds: 600         # optional: the card goes away by itself
 //!   device: Alfred       # optional: only the device with this name (default: every device)
-//!   pose: laundry        # optional: the character's `scenes/laundry.png` instead of its pose while the card shows
+//!   pose: working        # optional: a pose of the character (downloaded, or its own by state) while the card shows
 //! ```
 //!
 //! `home_companion_card_dismiss` with `id` takes a card away.
@@ -47,8 +47,9 @@ pub struct HaCard {
     pub icon: Option<String>,
     /// The card goes away by itself after this many seconds (None: until touched).
     pub seconds: Option<u64>,
-    /// A scene of the character's `scenes/` (its file name without `.png`) shown instead of
-    /// its home pose while the card shows; only lowercase letters, digits, `-` and `_`.
+    /// A pose of the character shown instead of its home pose while the card shows: a
+    /// downloaded one (Settings → Poses) or one of its own by state name (`working`); only
+    /// lowercase letters, digits, `-` and `_`.
     pub pose: Option<String>,
 }
 
@@ -62,10 +63,10 @@ pub enum CardEvent {
 /// The card longest and widest the screen takes: longer texts are cut.
 const MAX_TEXT: usize = 280;
 const MAX_TITLE: usize = 60;
-/// A scene's name: a file name, so short and plain.
+/// A pose's name: maybe a file name, so short and plain.
 const MAX_POSE: usize = 40;
 
-/// A scene's name as a file name of `scenes/`: lowercase letters, digits, `-` and `_` only.
+/// A pose's name, safe as a file name: lowercase letters, digits, `-` and `_` only.
 fn pose_name(s: &str) -> Option<String> {
     (s.len() <= MAX_POSE
         && s.chars()

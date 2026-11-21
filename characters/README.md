@@ -40,21 +40,23 @@ Optional prop: `poses/dnd.png`, drawn on the floor at the figure's right foot wh
 day and night; at night at 55 %). Any size (shown 150 px wide), RGBA with a transparent background, or RGB on the
 character's background. Without it do not disturb shows only its line over the clock.
 
-Optional scenes of Home Assistant's cards: `scenes/<name>.png`, shown instead of the home's pose (`idle`) while a
-card with `pose: <name>` shows (README, "From your automations"), still (the home's animations wait), by day only.
-A pose picture like the others: the same size, the flat background, drawn with the character's `crop`, the figure's
-feet on the same line as in `idle` and the scene as tall as the figure where the crop's width allows. Names of
-lowercase letters, digits, `-` and `_`. A character ships none, or the ones that suit it: they are the house's
-(taking out the washing, at the barbecue), so a user adds their own in `<state_dir>/scenes/<character id>/` (on the
-device `/var/lib/home-companion/scenes/alfred/`, kept by updates), which comes before the character's `scenes/`.
-Scenes can also be offered for download (Settings → Scenes): a release of the repository tagged `scenes-…` with
-[tools/make-scene-catalogue.py](../tools/make-scene-catalogue.py)'s files, so a scene need not be in this repository.
+Any pose can be asked for by a card of Home Assistant (`pose: <name>` on `home_companion_card`, README, "From your
+automations"): it is shown instead of the home's pose while the card shows, by day only. The name is a pose downloaded
+from Settings → Poses, else one of the character's own poses by its state name (`working`, `muted`, ...), with that
+state's animation if it loops.
 
-A scene may move: `scenes/<name>.toml` is its animation, a table as in character.toml (`file`, `size`, `frames`,
-`fps`, optional `pause`, `rect`) without the `[animations.…]` header, its `file` a sheet in the same directory made with
-[tools/make-animation.py](../tools/make-animation.py) from `<name>.png`, next to it. It loops over the scene while the card
-shows (also while an announcement is said over it) and its sheet is decoded when the scene comes and freed when it
-goes. A clip whose last frame is its first loops without a jump.
+Extra poses to download need not be in this repository: a release tagged `poses-…` with
+[tools/make-pose-catalogue.py](../tools/make-pose-catalogue.py)'s files (`poses.json` and the files of each pose)
+offers them in Settings → Poses; they go to `<state_dir>/poses/<character id>/` (on the device
+`/var/lib/home-companion/poses/alfred/`, kept by updates). Such a pose is `<name>.png`, a pose picture like the others:
+the same size, the flat background, drawn with the character's `crop`, the figure's feet on the same line as in `idle`
+and the picture as tall as the figure where the crop's width allows. Names of lowercase letters, digits, `-` and `_`.
+
+It may move: `<name>.toml` is its animation, a table as in character.toml (`file`, `size`, `frames`, `fps`, optional
+`pause`, `rect`) without the `[animations.…]` header, its `file` a sheet in the same directory (`<name>-anim.png`) made
+with [tools/make-animation.py](../tools/make-animation.py) from `<name>.png`. It loops over the pose while the card
+shows (also while an announcement is said over it) and its sheet is decoded when the pose comes and freed when it goes.
+A clip whose last frame is its first loops without a jump.
 
 Rules for the pictures:
 

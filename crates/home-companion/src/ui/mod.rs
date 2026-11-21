@@ -337,15 +337,15 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// Settings → Info: the page of updates.
     fn set_update(&self, u: &UpdateView);
     fn on_update_check(&self, f: impl Fn() + 'static);
-    /// Settings → Scenes: a row per scene of the catalogue.
-    fn set_scene_rows(&self, rows: &[SceneRowData]);
+    /// Settings → Poses: a row per pose of the catalogue.
+    fn set_pose_rows(&self, rows: &[PoseRowData]);
     /// What is going on (looking, downloading, a failure); "" = nothing to say.
-    fn set_scenes_state(&self, s: &str);
-    fn set_scenes_busy(&self, busy: bool);
+    fn set_poses_state(&self, s: &str);
+    fn set_poses_busy(&self, busy: bool);
     /// The settings row's value: how many are installed.
-    fn set_scenes_value(&self, s: &str);
-    fn on_scene_toggled(&self, f: impl Fn(String, bool) + 'static);
-    fn on_scenes_check(&self, f: impl Fn() + 'static);
+    fn set_poses_value(&self, s: &str);
+    fn on_pose_toggled(&self, f: impl Fn(String, bool) + 'static);
+    fn on_poses_check(&self, f: impl Fn() + 'static);
     fn on_update_install(&self, f: impl Fn() + 'static);
     fn on_update_prerelease(&self, f: impl Fn(bool) + 'static);
     /// How an update ended: shown as a dialog until OK.
@@ -537,8 +537,8 @@ pub struct MemoriesView {
     pub events: Vec<(String, String)>,
 }
 
-/// A row of Settings → Scenes: name, label, value (its size), installed, being downloaded.
-pub type SceneRowData = (String, String, String, bool, bool);
+/// A row of Settings → Poses: name, label, value (its size), installed, being downloaded.
+pub type PoseRowData = (String, String, String, bool, bool);
 
 /// Words of `Words` (companion.slint) and their keys in locales/*.toml (`[text]`).
 macro_rules! words {
@@ -787,9 +787,9 @@ macro_rules! impl_screen {
                     update_title,
                     update_check,
                     update_prerelease,
-                    scenes_title,
-                    scenes_intro,
-                    scenes_check,
+                    poses_title,
+                    poses_intro,
+                    poses_check,
                     camera,
                     camera_shoot,
                     camera_covered,
@@ -1328,10 +1328,10 @@ macro_rules! impl_screen {
             fn on_update_check(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_update_check(self, f)
             }
-            fn set_scene_rows(&self, rows: &[SceneRowData]) {
-                let v: Vec<$m::SceneRow> = rows
+            fn set_pose_rows(&self, rows: &[PoseRowData]) {
+                let v: Vec<$m::PoseRow> = rows
                     .iter()
-                    .map(|(n, l, v, on, busy)| $m::SceneRow {
+                    .map(|(n, l, v, on, busy)| $m::PoseRow {
                         name: n.into(),
                         label: l.into(),
                         value: v.into(),
@@ -1339,22 +1339,22 @@ macro_rules! impl_screen {
                         busy: *busy,
                     })
                     .collect();
-                $m::CompanionWindow::set_scene_rows(self, model!(v))
+                $m::CompanionWindow::set_pose_rows(self, model!(v))
             }
-            fn set_scenes_state(&self, s: &str) {
-                $m::CompanionWindow::set_scenes_state(self, s.into())
+            fn set_poses_state(&self, s: &str) {
+                $m::CompanionWindow::set_poses_state(self, s.into())
             }
-            fn set_scenes_busy(&self, busy: bool) {
-                $m::CompanionWindow::set_scenes_busy(self, busy)
+            fn set_poses_busy(&self, busy: bool) {
+                $m::CompanionWindow::set_poses_busy(self, busy)
             }
-            fn set_scenes_value(&self, s: &str) {
-                $m::CompanionWindow::set_scenes_value(self, s.into())
+            fn set_poses_value(&self, s: &str) {
+                $m::CompanionWindow::set_poses_value(self, s.into())
             }
-            fn on_scene_toggled(&self, f: impl Fn(String, bool) + 'static) {
-                $m::CompanionWindow::on_scene_toggled(self, move |n, on| f(n.into(), on))
+            fn on_pose_toggled(&self, f: impl Fn(String, bool) + 'static) {
+                $m::CompanionWindow::on_pose_toggled(self, move |n, on| f(n.into(), on))
             }
-            fn on_scenes_check(&self, f: impl Fn() + 'static) {
-                $m::CompanionWindow::on_scenes_check(self, f)
+            fn on_poses_check(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_poses_check(self, f)
             }
             fn on_update_install(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_update_install_clicked(self, f)

@@ -247,24 +247,27 @@ event_data:
   icon: mdi:washing-machine   # optional
   seconds: 600         # optional: the card goes away by itself
   device: Alfred       # optional: only the device with this name (default: every device)
-  pose: laundry        # optional: a scene of the character instead of its pose while the card shows
+  pose: working        # optional: a pose of the character instead of its home pose while the card shows
 ```
 
 The card plays the soft reminder sound by day and goes away with its OK. `home_companion_card_dismiss` with an `id`
 takes a card away.
 
-With `pose`, a scene of the character takes the place of its pose on the home for as long as the card shows (the
-character taking the washing out of the machine, at the barbecue), with its own animation if it has one and still
-otherwise, also while an announcement is said over it; not at night, and the conversation's poses stay as they are.
-The scene `<pose>.png` is looked for in `/var/lib/home-companion/scenes/<character>/` (yours: updates keep it), then in
-the character's own `scenes/`. Lowercase letters, digits, `-` and `_`; without such a picture the card shows alone. See
-[characters/README.md](characters/README.md) for the picture.
+With `pose`, the character takes that pose on the home for as long as the card shows, with its animation if it has a
+looping one (the deck chair of `offline`), also while an announcement is said over it; not at night, and the
+conversation's poses stay as they are. The settings and More pages keep their own animation. The name is either a pose
+you downloaded (below), looked for first, or one of the character's own by its state name (`working`, `satisfied`,
+`link`, `nod`, `muted`, `offline`, `thinking`, ...: the poses in its `character.toml`). Lowercase letters, digits, `-`
+and `_`; any other name, and the card shows alone.
 
-**Settings → Scenes** downloads scenes: the newest release of `[update] repo` (the updates' repository, from the
-root-owned configuration only) whose tag starts with `scenes-` lists them in its `scenes.json`; a switch per scene of
-the character downloads it (every file checked against its size and SHA-256) into
-`/var/lib/home-companion/scenes/<character>/`, or takes it away. A card uses it by its name. Making such a release:
-[tools/make-scene-catalogue.py](tools/make-scene-catalogue.py).
+**Settings → Poses** downloads extra poses of the character (taking the washing out, at the barbecue): the newest
+release of `[update] repo` (the updates' repository, from the root-owned configuration only) whose tag starts with
+`poses-` lists them in its `poses.json` (drafts and pre-releases are skipped); a switch per pose of the character
+downloads it (every file checked against its size and SHA-256) into `/var/lib/home-companion/poses/<character>/`, or
+takes it away. A card then asks for it by its name. Making such a release:
+[tools/make-pose-catalogue.py](tools/make-pose-catalogue.py). The updates never take a `poses-` release for a version,
+but publish it with `--latest=false` so the repository's "Latest" stays the newest home-companion, and keep it among
+the 20 newest releases (the device reads only those).
 
 The screen can be put to sleep and woken the same way, for example from a presence sensor:
 

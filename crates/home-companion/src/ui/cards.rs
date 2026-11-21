@@ -290,7 +290,7 @@ impl HaCards {
         self.items.is_empty()
     }
 
-    /// The scene to show instead of the character's home pose: the one of the last card that
+    /// The pose to show instead of the character's home pose: the one of the last card that
     /// has one (the cards' own order: a card replaced by its id keeps its place).
     pub fn pose(&self) -> Option<&str> {
         self.items.iter().rev().find_map(|e| e.card.pose.as_deref())

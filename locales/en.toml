@@ -777,17 +777,17 @@ panel_screen_hidden = "{name} is showing something private (the camera, photos, 
 panel_screen_unavailable = "{name}'s screen cannot be read on this device."
 panel_screen_home = "Back to the home"
 
-# Settings → Scenes (src/scenes.rs): scenes of the character to download, for Home Assistant's cards.
-scenes_title = "Scenes"
-scenes_intro = "Pictures of the character at work, shown while a card of Home Assistant asks for one (pose). Switch one on to download it."
-scenes_check = "Look again"
-scenes_loading = "Looking for scenes…"
-scenes_none = "No scenes for this character yet."
-scenes_failed = "The scenes could not be read (no network, or GitHub did not answer)."
-scenes_busy = "Downloading {title}…"
-scenes_failed_one = "{title} did not work: {why}"
-scenes_installed = "{n} installed"
-scenes_unlisted = "No longer listed · {size}"
+# Settings → Poses (src/poses.rs): extra poses of the character to download, for Home Assistant's cards.
+poses_title = "Poses"
+poses_intro = "Extra poses of the character, shown while a card of Home Assistant asks for one (pose). Switch one on to download it."
+poses_check = "Look again"
+poses_loading = "Looking for poses…"
+poses_none = "No poses to download for this character yet."
+poses_failed = "The poses could not be read (no network, or GitHub did not answer)."
+poses_busy = "Downloading {title}…"
+poses_failed_one = "{title} did not work: {why}"
+poses_installed = "{n} installed"
+poses_unlisted = "No longer listed · {size}"
 
 [sample]
 # The first start's Home Assistant page (--state first-ha-found): a second instance's name.
