@@ -28,6 +28,10 @@ use super::backlight::WakeSource;
 use super::platform_fb::{self, Framebuffer, Output, VtGuard};
 use super::screen::{Ui, UiOptions, save_png};
 use super::touch::{TouchEvent, TouchKind};
+
+/// After a remote tap, how long before the next remote event is judged (what the tap opened is
+/// on screen and known by then).
+const REMOTE_TAP_GAP: Duration = Duration::from_millis(150);
 use crate::core::{CoreEvent, UiCommand};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,6 +375,7 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
         // The real finger and the remote's touches (remote_input.rs: the finger wins, Stop on the
         // sign goes nowhere else, each source its own press).
         let arbiter = std::cell::RefCell::new(super::remote_input::Arbiter::default());
+        let remote_gap: Cell<Option<Instant>> = Cell::new(None);
         drain.start(TimerMode::Repeated, Duration::from_millis(20), move || {
             while let Ok(cmd) = commands.try_recv() {
                 ui.apply(cmd);
@@ -386,10 +391,21 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
                         outs.extend(arb.real(ev, on_sign, now));
                     }
                 }
-                for (epoch, ev) in remote_rx.try_iter() {
-                    // Checked now, not when it was sent: the session may have ended meanwhile
-                    // or the screen gone private.
-                    outs.extend(arb.remote(ev, ui.remote_accepts(epoch), now));
+                // One remote tap per round at most, and none for REMOTE_TAP_GAP after it: what
+                // the tap opens (a page, a dialog) is on screen and known to `remote_accepts`
+                // before the next remote event is judged, so a batch cannot tap through a
+                // private page that its own first tap opened. The rest waits in the channel.
+                if remote_gap.get().is_none_or(|t| now >= t) {
+                    while let Ok((epoch, ev)) = remote_rx.try_recv() {
+                        // Checked now, not when it was sent: the session may have ended
+                        // meanwhile or the screen gone private.
+                        let up = ev.kind == TouchKind::Up;
+                        outs.extend(arb.remote(ev, ui.remote_accepts(epoch), now));
+                        if up {
+                            remote_gap.set(Some(now + REMOTE_TAP_GAP));
+                            break;
+                        }
+                    }
                 }
                 if !ui.remote_on_now() {
                     outs.extend(arb.idle());

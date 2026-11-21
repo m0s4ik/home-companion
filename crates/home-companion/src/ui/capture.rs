@@ -42,10 +42,12 @@ pub const FAST_FOR: Duration = Duration::from_secs(3);
 /// A read of the buffer at least this often even when the CRTC shows the same id.
 pub const RECHECK: Duration = Duration::from_secs(2);
 pub const QUALITY: u8 = 70;
-/// After the screen may be sent again: frames read this soon are not published…
-pub const REVEAL_AFTER: Duration = Duration::from_millis(300);
+/// After the screen may be sent again: frames read this soon are not published (longer than
+/// the longest page transition, 800 ms in companion.slint, so no frame shows a private page
+/// sliding or fading out)…
+pub const REVEAL_AFTER: Duration = Duration::from_millis(900);
 /// …nor before a new framebuffer, unless this long passed.
-pub const REVEAL_AT_MOST: Duration = Duration::from_millis(1500);
+pub const REVEAL_AT_MOST: Duration = Duration::from_millis(2000);
 /// Reasons that do not go away by trying again.
 const PERMANENT: &[&str] = &["renderer", "no_drm", "not_master", "tiled", "format"];
 
@@ -1047,7 +1049,7 @@ mod tests {
             !g.allows(1, 6, Some(5), t + REVEAL_AFTER),
             "older generation"
         );
-        // Shown again: a new framebuffer and 300 ms, or 1.5 s whatever.
+        // Shown again: a new framebuffer and REVEAL_AFTER, or REVEAL_AT_MOST whatever.
         assert!(!g.allows(2, 6, Some(5), t), "too soon");
         assert!(
             !g.allows(2, 5, Some(5), t + REVEAL_AFTER),
