@@ -718,13 +718,13 @@ pub mod drm {
         fn layout(&self) -> Result<Layout, &'static str> {
             let fb = self.scanout().map_err(|_| "no_scanout")?;
             if let Some(l) = self.layouts.borrow().get(&fb) {
-                return l.clone();
+                return *l;
             }
             if self.layouts.borrow().len() >= MAX_FBS {
                 return Err("too_many_fbs");
             }
             let l = self.layout_of(fb);
-            self.layouts.borrow_mut().insert(fb, l.clone());
+            self.layouts.borrow_mut().insert(fb, l);
             l
         }
 
