@@ -525,6 +525,7 @@ impl<B: Body> Panel<B> {
             (false, "/api/widgets") => relay(ask("widgets.get", json!({}))),
             (false, "/api/notes") => relay(ask("notes.list", json!({}))),
             (false, "/api/widgets/samples") => relay(ask("widgets.samples", json!({}))),
+            (false, "/api/widgets/showing") => relay(ask("widgets.showing", json!({}))),
             (false, p) if p.starts_with("/api/search/") => {
                 let id = &p["/api/search/".len()..];
                 if !is_hex(id, 32) {

@@ -130,9 +130,9 @@ input, textarea { caret-color: var(--accent); }
 .notebox { margin-top: 10px; display: grid; gap: 10px; justify-items: start; }
 
 /* ---------- The device: its real screen, 1280 x 800, drawn in em of 16 device pixels. */
-.device { position: relative; aspect-ratio: 16 / 10; border-radius: 18px; background: #0a0b0f; padding: 10px; border: 1px solid #1f2026;
+.device { position: relative; border-radius: 18px; background: #0a0b0f; padding: 10px; border: 1px solid #1f2026;
   box-shadow: 0 24px 48px -16px #000c, 0 2px 0 #ffffff08 inset; }
-.glass { position: relative; width: 100%; height: 100%; border-radius: 10px; overflow: hidden; background: var(--bg); container-type: inline-size; }
+.glass { position: relative; width: 100%; aspect-ratio: 16 / 10; border-radius: 10px; overflow: hidden; background: var(--bg); container-type: inline-size; }
 .scr { position: absolute; inset: 0; font-size: calc(100cqw / 80); color: var(--text); font-family: InterW, system-ui, sans-serif; pointer-events: none; user-select: none; }
 .scr .alfred { position: absolute; left: 4.5em; top: 4em; height: 42.5em; }
 .scr .clock { position: absolute; font: 300 10em/1 InterT, InterW, sans-serif; left: 2.65em; width: 5.05em; top: .25em; text-align: center; letter-spacing: -.01em; }
@@ -140,9 +140,16 @@ input, textarea { caret-color: var(--accent); }
 .scr .date span { font-size: 2.125em; }
 .scr .date i { width: .44em; height: .44em; border-radius: 50%; background: var(--accent); }
 .scr .date svg { width: 2.4em; height: 2.4em; stroke: var(--text); fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.scr .slot { position: absolute; left: 26.5em; top: 19.875em; width: 50.5em; }
-.scr .slot .wc { height: 17em; overflow: hidden; margin: 0; }
-.scr .dots { position: absolute; left: 26.5em; width: 50.5em; top: 37.125em; display: flex; justify-content: center; gap: .75em; }
+.scr .slot { position: absolute; left: 26.5em; top: 17.75em; height: 22.25em; width: 50.5em; display: flex; flex-direction: column; justify-content: center; }
+/* As companion.slint places the WidgetPanel: midway between the date line (284) and the action
+   band (640), as tall as what it shows: a header and its rows (60 + 52 each + 16), the weather's
+   columns (204), the weather's big block (288); 16 px more for the dots when it turns, never
+   more than the three slots (288). Sizes in the card's own em (16 px of the device). */
+.scr .slot .wc { overflow: hidden; margin: 0; height: 17em; }
+.scr .slot .wc.n1 { height: 8em; } .scr .slot .wc.n2 { height: 11.25em; } .scr .slot .wc.n3 { height: 14.5em; }
+.scr .slot .wc.n4 { height: 17.75em; } .scr .slot.turns .wc.n4 { height: 17em; }
+.scr .slot .wc.hours { height: 12.75em; } .scr .slot .wc.wx { height: 18em; } .scr .slot.turns .wc.wx { height: 17em; }
+.scr .dots { height: 1em; display: flex; justify-content: center; align-items: center; gap: .75em; }
 .scr .dots i { width: .375em; height: .375em; border-radius: 50%; background: #3a3b40; }
 .scr .dots i.on { background: var(--accent); }
 .scr .band { position: absolute; top: 40em; left: 34.25em; width: 35em; height: 8.5em; display: grid; grid-template-columns: repeat(3, 10em); justify-content: space-between; }
@@ -219,6 +226,7 @@ input, textarea { caret-color: var(--accent); }
 .tile svg.i { color: var(--accent); }
 .tile b { font-weight: 500; font-size: var(--fs-lab); line-height: 1.25; overflow-wrap: anywhere; }
 .tile .live { position: absolute; top: 15px; right: 30px; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+.tile.held { touch-action: none; }
 .tile.dragging { opacity: .55; border-style: dashed; border-color: var(--accent); cursor: grabbing; }
 .tile.off { border-style: dashed; background: transparent; min-height: 40px; display: inline-flex; align-items: center; padding: 0 12px; gap: 8px; white-space: nowrap; }
 .tile.off[aria-pressed=true] { border-style: solid; }

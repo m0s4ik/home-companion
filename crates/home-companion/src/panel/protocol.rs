@@ -1090,6 +1090,7 @@ mod tests {
         "notes.edit",
         "notes.remove",
         "widgets.samples",
+        "widgets.showing",
         "undo",
         "screen.status",
         "screen.start",
@@ -1571,8 +1572,10 @@ mod tests {
         let w = call(&h, &mut s, json!({"op": "widgets.get", "token": t}));
         assert_eq!(w["ha"], true);
         assert_eq!(w["people"]["all"].as_array().unwrap().len(), 2);
-        // The page on the screen now (the panel's green dot).
+        // The page on the screen now (the panel's green dot), also alone.
         assert_eq!(w["showing"], "quotes");
+        let only = call(&h, &mut s, json!({"op": "widgets.showing", "token": t}));
+        assert_eq!(only, json!({"ok": true, "showing": "quotes"}));
         let a = w.to_string();
         for bad in [
             "lock.",

@@ -556,6 +556,8 @@ fn the_widgets_routes() {
     assert_eq!(last(&p)["op"], "notes.list");
     assert_eq!(status(&p, &get("/api/widgets/samples")), 200);
     assert_eq!(last(&p)["op"], "widgets.samples");
+    assert_eq!(status(&p, &get("/api/widgets/showing")), 200);
+    assert_eq!(last(&p)["op"], "widgets.showing");
     assert_eq!(
         status(&p, &post("/api/undo", r#"{"ref":"x","op":"set"}"#, &[])),
         200

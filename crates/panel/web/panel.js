@@ -196,11 +196,16 @@ function short(s) { return s.length > 40 ? s.slice(0, 39) + '…' : s; }
 function chrome(within) {
   inside = within;
   document.body.className = within ? 'in' : 'out';
-  if (!within) { side.replaceChildren(); tabs.replaceChildren(); head.replaceChildren(); }
+  // Drawn again on the way in (the name, the words).
+  side.replaceChildren(); tabs.replaceChildren(); head.replaceChildren();
 }
 
 function pairPage(pose, title, text, extra) {
   clearInterval(polling);
+  // Nothing of the sections keeps running behind it (the Screen's poll would draw a login page
+  // over the code page every few seconds).
+  clearInterval(R.poll);
+  R.poll = 0;
   screenStop(false);
   chrome(false);
   const d = el('div', 'pair');
@@ -510,10 +515,25 @@ function deviceScreen(kind, model, win) {
     if (hero.temp) date.append(el('span', null, hero.temp));
   }
   const slot = el('div', 'slot');
-  if (kind) slot.append(drawCard(kind, model, win, t('panel_empty_' + kind)));
-  const dots = el('div', 'dots');
   const on = onPages();
-  if (on.length > 1 && on.some(p => p.kind === kind)) for (const p of on) dots.append(el('i', p.kind === kind ? 'on' : null));
+  const turns = on.length > 1 && on.some(p => p.kind === kind);
+  if (kind) {
+    const card = drawCard(kind, model, win, t('panel_empty_' + kind));
+    // Its height as the screen gives it (the CSS of .slot): the weather's block, its columns,
+    // or its rows (none: as two, for the empty line).
+    const w = model && model.windows && model.windows.length ? model.windows[(win || 0) % model.windows.length] : null;
+    const n = w ? w.rows.length : 0;
+    const form = model && model.layout === 'weather' && model.hero ? 'wx' : model && model.layout === 'hours' && n ? 'hours'
+      : 'n' + Math.min(4, Math.max(1, n || 2));
+    card.firstChild.classList.add(form);
+    slot.append(card);
+  }
+  slot.classList.toggle('turns', turns);
+  if (turns) {
+    const dots = el('div', 'dots');
+    for (const p of on) dots.append(el('i', p.kind === kind ? 'on' : null));
+    slot.append(dots);
+  }
   const band = el('div', 'band');
   const dock = (key, word, cls) => {
     const d = el('div', cls);
@@ -522,7 +542,7 @@ function deviceScreen(kind, model, win) {
     return d;
   };
   band.append(dock('dash', 'ha_short'), dock('mic', 'talk', 'talk'), dock('more', 'more'));
-  s.append(art('idle', 'alfred'), el('div', 'clock', hm()), date, slot, dots, band);
+  s.append(art('idle', 'alfred'), el('div', 'clock', hm()), date, slot, band);
   return s;
 }
 
@@ -592,6 +612,16 @@ function render(keep) {
 // while this device controls it.
 function drawNav(r) {
   const sec = (r || route()).p;
+  // Drawn once; then only the current section and the red dot change (the focus stays).
+  if (side.querySelector('.nav')) {
+    for (const a of document.querySelectorAll('#side a[data-sec], #tabs a[data-sec]')) {
+      if (a.dataset.sec === sec) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+      const dot = a.querySelector('.badge-live');
+      if (a.dataset.sec === 'schermo' && R.live && !dot) a.append(liveBadge());
+      else if (dot && !R.live) dot.remove();
+    }
+    return;
+  }
   const who = el('div', 'who');
   const face = art('face');
   face.width = 40; face.height = 40;
@@ -604,13 +634,10 @@ function drawNav(r) {
     const box = el('div', 'nav');
     for (const [k, word, icon] of SECTIONS) {
       const a = link(null, k);
+      a.dataset.sec = k;
       a.append(ico(icon), el('span', null, t(word)));
       if (k === sec) a.setAttribute('aria-current', 'page');
-      if (k === 'schermo' && R.live) {
-        const b = el('i', 'badge-live');
-        b.title = t('panel_screen_state_live');
-        a.append(b);
-      }
+      if (k === 'schermo' && R.live) a.append(liveBadge());
       box.append(a);
     }
     return box;
@@ -624,6 +651,12 @@ function drawNav(r) {
   const s2 = el('span', 'st');
   s2.append(el('i', 'dot'), document.createTextNode(t('panel_status_on')));
   head.replaceChildren(f, el('b', null, name), s2);
+}
+
+function liveBadge() {
+  const b = el('i', 'badge-live');
+  b.title = t('panel_screen_state_live');
+  return b;
 }
 
 // ---- Home: the device, the turn under it, the chosen widget beside it.
@@ -768,6 +801,22 @@ function homePage(r) {
   return frag(pagehead(t('panel_tab_home'), t('panel_home_sub')), home);
 }
 
+// The green dot: the page on the screen now, asked every 5 s while Home is in front.
+setInterval(async () => {
+  if (!inside || document.hidden || route().p !== 'home' || !D.widgets || document.querySelector('.dragging')) return;
+  const r = await api('/api/widgets/showing');
+  if (!r.ok || r.showing === D.widgets.showing) return;
+  D.widgets.showing = r.showing;
+  for (const b of document.querySelectorAll('.strip .tile')) {
+    const dot = b.querySelector('.live');
+    if (b.dataset.id === r.showing && !dot) {
+      const d = el('i', 'live');
+      d.title = t('panel_showing_now');
+      b.querySelector('.n').after(d);
+    } else if (b.dataset.id !== r.showing && dot) dot.remove();
+  }
+}, 5000);
+
 // The turn's new order (the widgets off keep their place at the end).
 async function saveOrder(ids, quiet) {
   const all = ids.concat(pages().filter(p => !ids.includes(p.kind)).map(p => p.kind));
@@ -843,7 +892,8 @@ function stripSort(box, done) {
       delete it.dataset.dragged;
       const start = () => {
         dragging = true;
-        it.classList.add('dragging');
+        // (iOS: no scrolling may take the finger from here on)
+        it.classList.add('dragging', 'held');
         box.classList.add('dragging');
         it.dataset.dragged = '1';
         try { it.setPointerCapture(id); } catch (e) { /* gone */ }
@@ -885,10 +935,10 @@ function stripSort(box, done) {
         clearTimeout(hold);
         removeEventListener('pointermove', move);
         removeEventListener('pointerup', up);
-        removeEventListener('pointercancel', up);
+        removeEventListener('pointercancel', cancel);
         removeEventListener('touchmove', stopTouch);
         cancelAnimationFrame(scrolling);
-        it.classList.remove('dragging');
+        it.classList.remove('dragging', 'held');
         box.classList.remove('dragging');
       };
       const up = e => {
@@ -900,9 +950,16 @@ function stripSort(box, done) {
         const ids = items().map(o => o.dataset.id);
         if (ids.join() !== before) done(ids);
       };
+      // Taken away by the browser (a scroll, a call): nothing saved, the order as it was.
+      const cancel = e => {
+        if (e.pointerId !== id) return;
+        end();
+        setTimeout(() => { delete it.dataset.dragged; }, 0);
+        if (dragging && items().map(o => o.dataset.id).join() !== before) render(true);
+      };
       addEventListener('pointermove', move, { passive: false });
       addEventListener('pointerup', up);
-      addEventListener('pointercancel', up);
+      addEventListener('pointercancel', cancel);
       addEventListener('touchmove', stopTouch, { passive: false });
     });
   }
@@ -1552,7 +1609,7 @@ addEventListener('scroll', () => {
 
 const R = { state: 'checking', why: '', by: '', live: false, seq: 0, run: 0, queue: [], flush: 0, down: false,
   since: 0, shots: [], box: null, glass: null, canvas: null, taps: null, cover: null, chip: null, bar: null,
-  drawn: false, poll: 0, tick: 0 };
+  drawn: false, poll: 0, tick: 0, shown: '', hold: false };
 
 function screenBuild() {
   if (R.box) return;
@@ -1622,17 +1679,18 @@ function mins(ms) { const s = Math.max(0, Math.floor(ms / 1000)); return Math.fl
 function screenView() {
   if (!R.box) return;
   const s = R.state;
+  R.shown = s + '|' + R.why + '|' + R.by;
   R.box.classList.toggle('live', s === 'live');
   R.box.classList.toggle('paused', s === 'paused');
   R.canvas.hidden = !(R.drawn && (s === 'live' || s === 'paused'));
   // The layer: what happens, and the one thing to do.
   const c = R.cover;
   const inner = el('div');
-  const retry = () => button('btn', t('panel_retry'), () => { R.state = 'checking'; screenView(); screenCheck(true); });
+  const retry = () => button('btn', t('panel_retry'), () => { R.hold = false; setState('checking'); screenCheck(true); });
   const me = ((D.devices && D.devices.sessions) || []).find(x => x.current);
   if (s === 'ready') {
     inner.append(el('h2', null, t('panel_screen_ready_title')), el('p', 'why', t('panel_screen_ready_text')),
-      button('btn primary big', t('panel_screen_start'), screenStart, 'screen'),
+      button('btn primary big', t('panel_screen_start'), () => { R.hold = false; screenStart(); }, 'screen'),
       el('p', 'fine', me ? t('panel_screen_sign', { w: deviceName(me) }) : t('panel_screen_lead')));
   } else if (s === 'off') {
     inner.append(ico('lock'), el('h2', null, t('panel_screen_off_title')), el('p', null, t('panel_screen_off')));
@@ -1679,9 +1737,14 @@ function screenChip() {
   R.chip.replaceChildren(el('i'), document.createTextNode(t('panel_screen_state_live') + ' · ' + t('panel_screen_fps', { n: fps })));
 }
 
+// Drawn again only when the state (or who has it) changed: a poll that finds the same thing
+// leaves the layer, the line and the focus alone.
 function setState(s, why) {
   R.state = s;
   R.why = why || '';
+  const key = s + '|' + R.why + '|' + R.by;
+  if (key === R.shown) return;
+  R.shown = key;
   screenView();
 }
 
@@ -1704,13 +1767,24 @@ async function screenFlush() {
   if (R.queue.length) screenFlush();
 }
 
+// What a session leaves behind: a finger down, touches not sent, its last picture.
+function screenReset() {
+  clearTimeout(R.flush);
+  R.flush = 0;
+  R.down = false;
+  R.queue = [];
+  R.drawn = false;
+  R.shots = [];
+  if (R.canvas) R.canvas.getContext('2d').clearRect(0, 0, R.canvas.width, R.canvas.height);
+}
+
 async function screenStart() {
+  screenReset();
   const r = await api('/api/screen/start', {});
   if (!r.ok) { if (r.error === 'screen_busy') await screenCheck(false); setState(ended(r.error), r.error); return; }
   R.live = true;
   R.seq = 0;
   R.since = Date.now();
-  R.shots = [];
   setState('live');
   clearInterval(R.tick);
   R.tick = setInterval(() => {
@@ -1725,8 +1799,11 @@ function screenEnded(code) {
   R.live = false;
   R.run++;
   clearInterval(R.tick);
+  screenReset();
   const s = ended(code);
-  if (code === 'screen_ended') toast(t('panel_screen_ended'));
+  // Ended or taken over (another window of this browser, say): it starts again only when
+  // asked to here, so two windows never take it from each other in turn.
+  if (code === 'screen_ended') { R.hold = true; toast(t('panel_screen_ended')); }
   setState(s, code);
 }
 
@@ -1735,6 +1812,7 @@ async function screenStop(tell) {
   if (!R.live) return;
   R.live = false;
   R.run++;
+  screenReset();
   if (R.box) setState('ready');
   if (tell) await api('/api/screen/stop', {});
 }
@@ -1769,7 +1847,9 @@ async function screenLoop(run) {
         ctx.drawImage(bmp, 0, 0);
         bmp.close();
         R.shots.push(Date.now());
-        if (!R.drawn || R.state !== 'live') { R.drawn = true; setState('live'); }
+        // The first picture shows the canvas (drawn again even if the state is the same).
+        if (!R.drawn) { R.drawn = true; R.shown = ''; }
+        setState('live');
       } catch (e) { /* a broken frame: the next one */ }
       continue;
     }
@@ -1789,8 +1869,9 @@ async function screenLoop(run) {
   }
 }
 
-// Whether it may, whether another device is in control, whether this one is already (another
-// tab, a reload: it goes on). `resume`: start again if it may.
+// Whether it may, whether another device is in control, whether this one is already (a
+// reload: it goes on). `resume` (the page opened, Retry): start again if this device had it;
+// the poll never starts anything.
 async function screenCheck(resume) {
   const s = await api('/api/screen');
   if (!s.ok || R.live) return;
@@ -1798,7 +1879,7 @@ async function screenCheck(resume) {
   R.by = s.by ? deviceName(s.by) : '';
   if (!s.enabled) setState('off');
   else if (s.active && !s.mine) setState('busy');
-  else if (s.mine) screenStart();
+  else if (s.mine && resume && !R.hold) screenStart();
   else if (resume || ['checking', 'off', 'busy'].includes(R.state)) setState('ready');
 }
 

@@ -77,6 +77,7 @@ pub const OPS: &[&str] = &[
     "notes.edit",
     "notes.remove",
     "widgets.samples",
+    "widgets.showing",
     "undo",
 ];
 
@@ -676,6 +677,10 @@ pub fn handle(
                 }
             }
             json!({"ok": true})
+        }
+        // Only the page on the screen now: cheap enough to ask every few seconds.
+        "widgets.showing" => {
+            json!({"ok": true, "showing": host.widget_showing().map(|k| k.key())})
         }
         "widgets.samples" => {
             let samples: Vec<Value> = host
