@@ -6704,11 +6704,14 @@ impl<S: Screen> Ui<S> {
     /// cards leave free (the page on screen keeps its data until it comes back: widgets::Band).
     fn refresh_widget(&self) {
         let on = self.widget_on.borrow().clone();
+        // Full or one line, never between (widgets::size).
         let slots = if on.is_empty() {
             0
         } else {
-            self.max_cards()
-                .saturating_sub(self.card_kinds.borrow().len())
+            widgets::size(
+                self.max_cards()
+                    .saturating_sub(self.card_kinds.borrow().len()),
+            )
         };
         let l = self.locale.borrow();
         let d = self.desk.borrow();
@@ -9230,7 +9233,8 @@ mod tests {
         assert_eq!(*ui.card_kinds.borrow(), ["status"]);
         assert!(w.get_widget_shown());
         assert_eq!(w.get_widget_kind(), "next");
-        assert_eq!((w.get_widget_slots(), w.get_widget_count()), (2, 2));
+        // Two slots free: the one-line size (never a shorter full widget, widgets::size).
+        assert_eq!((w.get_widget_slots(), w.get_widget_count()), (1, 2));
         let seq = w.get_widget_seq();
         let t0 = Instant::now();
         let at = |s: u64| t0 + Duration::from_secs(s);

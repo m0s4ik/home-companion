@@ -524,8 +524,8 @@ function deviceScreen(p, model, win) {
   const turns = on.length > 1 && !!p && on.some(q => q.id === p.id);
   if (kind) {
     const card = drawCard(kind, model, win, t('panel_empty_' + kind), p.label);
-    // Its height as the screen gives it (the CSS of .slot): the weather's block, its columns,
-    // or its rows (none: as two, for the empty line).
+    // The same height for every page (the CSS of .slot, widgets::size); the form only places
+    // its content: the weather's block, its columns, or its rows.
     const w = model && model.windows && model.windows.length ? model.windows[(win || 0) % model.windows.length] : null;
     const n = w ? w.rows.length : 0;
     const form = model && model.layout === 'weather' && model.hero ? 'wx' : model && model.layout === 'hours' && n ? 'hours'

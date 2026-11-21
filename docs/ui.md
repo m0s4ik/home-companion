@@ -125,11 +125,13 @@ its ring and the gold fill) and No stays a target that wins.
   player, only while it plays; never Alfred's own AirPlay, which has its card) and **At home** (who is home, away or
   in a zone; off by default: anyone in the room reads it). Markets, Other cities and Sensors can be in the turn
   **more than once** (up to 4 each: "Markets", "Markets 2", or a name given in the browser), each page with its own
-  list and its own place; the feeds fetch every page's items once. It takes **the slots the cards leave free**, one
-  rule for every case: 3 free (4 on the compact home) = a header (icon 28, the name in 20 Medium `text-3`, at the
-  right a count, the rows shown or the time of old data) and 4 rows of 52 px (6), 2 = a header and 2 rows, 1 = one
-  row as tall as a card without header (a page's own summary: the first quote without its curve, "1 open · 2
-  batteries", the first note and "+2"), 0 = no widget. It is never taller than what it shows. Rows that do not fit are cut, never
+  list and its own place; the feeds fetch every page's items once. It comes in **two sizes only**, the same for every
+  page (`widgets::size`): **full** when the cards leave 3 slots free or more (4 on the compact home with no card:
+  still 3) = the three slots' height (288 px) whatever the page shows, its content from the top: a header (icon 28,
+  the name in 20 Medium `text-3`, at the right a count, the rows shown or the time of old data) and up to 4 rows of
+  52 px, the dots inside; **one line** with 1 or 2 free = one row as tall as a card without header (a page's own
+  summary: the first quote without its curve, "1 open · 2 batteries", the first note and "+2"); 0 = no widget. Never a
+  height in between, so the pages of the turn never change size. Rows that do not fit are cut, never
   shrunk; text never under 20 px, rows in 28. **More rows than fit** (Markets, Sensors, Notes, To check, Cities, At
   home): the page shows a window that moves on each time the page comes back ("5-8 of 8" in the header), or every
   interval when it is the only page. **A row with a number**: the curve (a `Path` whose commands Rust computes, 160 x

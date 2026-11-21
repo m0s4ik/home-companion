@@ -1274,6 +1274,21 @@ fn home_page(people: &[Person], w: &Words) -> Option<WidgetView> {
     })
 }
 
+/// The slots of the widget's full size: a header and four rows, or the weather's big block.
+pub const FULL_SLOTS: usize = 3;
+
+/// The slots the widget takes of the `free` ones the cards leave: two sizes only, the same for
+/// every page, so that the pages of the turn never change height: the full size when there
+/// is room for it, else one line as a card (none without a free slot). The compact home's four
+/// free slots take the full size too.
+pub fn size(free: usize) -> usize {
+    match free {
+        0 => 0,
+        f if f >= FULL_SLOTS => FULL_SLOTS,
+        _ => 1,
+    }
+}
+
 /// Rows a page shows with `slots` free slots (`compact`: the band has four).
 pub fn rows_for(slots: usize) -> usize {
     match slots {
@@ -1854,6 +1869,18 @@ mod tests {
         assert_eq!((p2.title.as_str(), p2.n), ("Markets 2", 2));
         assert!(p2.rows[0].wait);
         assert!(v[2].1.is_none(), "the first page has nothing chosen");
+    }
+
+    #[test]
+    fn two_sizes_only() {
+        assert_eq!(size(0), 0);
+        assert_eq!(size(1), 1);
+        // Two free slots: one line, never a shorter full widget.
+        assert_eq!(size(2), 1);
+        assert_eq!(size(3), FULL_SLOTS);
+        // The compact home with no card: the same full size.
+        assert_eq!(size(4), FULL_SLOTS);
+        assert_eq!(rows_for(size(4)), 4);
     }
 
     #[test]
