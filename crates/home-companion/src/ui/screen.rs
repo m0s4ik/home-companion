@@ -496,13 +496,15 @@ pub struct Demo {
     /// `--state widget-weather-tomorrow*`: the same day at 19:10, after sunset (the weather
     /// widget shows tomorrow).
     pub evening: bool,
+    /// `--state settings-anim-*`: one frame of an animation (its sheet decoded at once).
+    pub frame: Option<(&'static str, u32)>,
     /// `--state settings-panel` (1), `panel-ask` (2), `panel-blocked` (3): the browser panel's
     /// page, its access dialog, the home's card after too many requests.
     pub panel: u8,
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 101] = [
+pub const DEMO_STATES: [&str; 104] = [
     "home",
     "cards",
     "cards-setup",
@@ -601,6 +603,9 @@ pub const DEMO_STATES: [&str; 101] = [
     "widget-home",
     "trends-sensors",
     "settings-widgets",
+    "settings-anim-in",
+    "settings-anim-hold",
+    "settings-anim-out",
     "settings-panel",
     "panel-ask",
     "panel-blocked",
@@ -883,6 +888,20 @@ impl Demo {
             }
             "update" => page("update"),
             "settings-widgets" => page("widgets"),
+            // The settings animation, a frame of each part: the toolbox out, the spanner held,
+            // both on their way back (on the home).
+            "settings-anim-in" => Demo {
+                frame: Some(("settings_in", 30)),
+                ..page("settings")
+            },
+            "settings-anim-hold" => Demo {
+                frame: Some(("settings_hold", 32)),
+                ..page("settings")
+            },
+            "settings-anim-out" => Demo {
+                frame: Some(("settings_out", 24)),
+                ..home.clone()
+            },
             "trends" => Demo {
                 widget: Some(WidgetKind::Quotes),
                 ..page("trends")
@@ -1072,6 +1091,10 @@ struct Motion {
     seq: Sequencer,
     clips: HashMap<&'static str, Arc<Clip>>,
     incoming: Option<Receiver<Clip>>,
+    /// The settings sheet: being decoded, and whether it is wanted (its clips are dropped when
+    /// they come after the settings pages were left).
+    settings_incoming: Option<Receiver<Clip>>,
+    settings_sheet: bool,
     playhead: Option<Playhead>,
     shown: Show,
     awake: Awake,
@@ -1104,6 +1127,13 @@ fn give_back_memory() {
 /// The night's animations: decoded from a little before the night to a little after it, freed
 /// by day (their sheet is the largest).
 const NIGHT_CLIPS: [&str; 3] = ["fall_asleep", "sleeping", "wake_from_sleep"];
+/// The settings pages' animations: decoded while a settings page is open (and until
+/// `settings_out` has played), freed after.
+const SETTINGS_CLIPS: [&str; 3] = ["settings_in", "settings_hold", "settings_out"];
+/// The settings pages: Settings and the pages under it.
+const SETTINGS_PAGES: [&str; 6] = [
+    "settings", "language", "screen", "widgets", "panel", "update",
+];
 /// How long before and after the night hours its animations are kept.
 const NIGHT_MARGIN_S: i64 = 10 * 60;
 
@@ -1940,10 +1970,11 @@ impl<S: Screen> Ui<S> {
         // The loading animation first, then what the home needs, then the states.
         let mut wanted: Vec<Animation> = Vec::new();
         if animated {
-            // The night's sheet (~19 MB decoded) only around the night: Ui::night_sheets.
+            // The night's sheet (~19 MB decoded) only around the night: Ui::night_sheets; the
+            // settings' only with the settings pages: Ui::settings_sheets.
             for name in character::ANIMATIONS
                 .iter()
-                .filter(|n| !NIGHT_CLIPS.contains(n))
+                .filter(|n| !NIGHT_CLIPS.contains(n) && !SETTINGS_CLIPS.contains(n))
             {
                 if let Some(a) = character.animation(name) {
                     wanted.push(a.clone());
@@ -1956,6 +1987,8 @@ impl<S: Screen> Ui<S> {
             clips: HashMap::new(),
             incoming: (!wanted.is_empty())
                 .then(|| anim::load_in_background(wanted, character.background)),
+            settings_incoming: None,
+            settings_sheet: false,
             playhead: None,
             shown: Show::Pose,
             awake: Awake::new(opts.screen.awake_seconds),
@@ -2888,25 +2921,102 @@ impl<S: Screen> Ui<S> {
         self.set_pose(&self.screen, pose);
         self.refresh_ringing();
         self.refresh_home();
-        let night = self.desk.borrow().night_shown;
-        let mode = if self.opts.demo.is_some() {
-            Mode::Still
-        } else if loading {
-            Mode::Loading
-        } else {
-            match p {
-                Phase::Home if night => Mode::Night,
-                Phase::Home => Mode::Home,
-                Phase::Offline => Mode::Still,
-                _ => self
-                    .character
-                    .state_animation(pose)
-                    .and_then(|a| anim::static_name(&a.name))
-                    .map_or(Mode::Still, Mode::Loop),
-            }
-        };
+        let mode = self.motion_mode(p, pose, loading);
         self.motion.borrow_mut().seq.set_mode(mode, now);
         self.step();
+    }
+
+    /// An animation decoded here and now (the demos' fixed frames).
+    fn demo_clip(&self, name: &'static str) {
+        let Some(a) = self.character.animation(name).cloned() else {
+            return;
+        };
+        let t = Instant::now();
+        match character::Sheet::load(&a.file, a.size) {
+            Ok(mut sheet) => {
+                sheet.flatten(self.character.background, PLATE_TOLERANCE);
+                log::info!(
+                    "animation sheet {}: {} frames, {:.1} MB of changes, decoded in {} ms",
+                    a.file.display(),
+                    sheet.frames.len(),
+                    sheet.bytes() as f64 / 1048576.0,
+                    t.elapsed().as_millis()
+                );
+                let mut m = self.motion.borrow_mut();
+                m.seq.add(name, Timing::of(&a));
+                m.clips
+                    .insert(name, Arc::new(Clip::new(a, Arc::new(sheet))));
+            }
+            Err(e) => log::warn!("animation {name}: {e}"),
+        }
+    }
+
+    /// What the character plays in phase `p` (its pose `pose`) with the page on screen.
+    fn motion_mode(&self, p: Phase, pose: State, loading: bool) -> Mode {
+        let night = self.desk.borrow().night_shown;
+        if let Some(d) = &self.opts.demo {
+            return d
+                .frame
+                .map_or(Mode::Still, |(clip, index)| Mode::Frame(clip, index));
+        }
+        if loading {
+            return Mode::Loading;
+        }
+        match p {
+            Phase::Home if night => Mode::Night,
+            Phase::Home if SETTINGS_PAGES.contains(&self.screen.get_page().as_str()) => {
+                Mode::Settings
+            }
+            Phase::Home => Mode::Home,
+            Phase::Offline => Mode::Still,
+            _ => self
+                .character
+                .state_animation(pose)
+                .and_then(|a| anim::static_name(&a.name))
+                .map_or(Mode::Still, Mode::Loop),
+        }
+    }
+
+    /// A page opened: the settings pages have their own animation (and sheet).
+    fn page_motion(&self) {
+        let p = self.view.get();
+        let loading = self.motion.borrow().loading_until.is_some();
+        let mode = self.motion_mode(p, view(p).1, loading);
+        self.motion.borrow_mut().seq.set_mode(mode, Instant::now());
+        self.settings_sheets();
+        self.step();
+    }
+
+    /// Decodes the settings pages' animations when one opens, frees them once they are left
+    /// and `settings_out` has played.
+    fn settings_sheets(&self) {
+        if self.opts.demo.is_some() || !self.opts.screen.animations {
+            return;
+        }
+        let mut m = self.motion.borrow_mut();
+        let want = m.seq.uses_settings();
+        if want && !m.settings_sheet {
+            let anims: Vec<Animation> = SETTINGS_CLIPS
+                .iter()
+                .filter_map(|n| self.character.animation(n).cloned())
+                .collect();
+            if !anims.is_empty() {
+                log::info!(event = "settings_sheets", on = true; "settings animations: decoding");
+                m.settings_sheet = true;
+                m.settings_incoming =
+                    Some(anim::load_in_background(anims, self.character.background));
+            }
+        } else if !want && m.settings_sheet {
+            m.settings_sheet = false;
+            m.settings_incoming = None;
+            for n in SETTINGS_CLIPS {
+                m.clips.remove(n);
+                m.seq.remove(n);
+            }
+            drop(m);
+            give_back_memory();
+            log::info!(event = "settings_sheets", on = false; "settings animations freed");
+        }
     }
 
     /// Seconds since the epoch; fixed in demo mode (the golden screenshots).
@@ -3010,6 +3120,28 @@ impl<S: Screen> Ui<S> {
         let mut added = false;
         {
             let mut m = self.motion.borrow_mut();
+            if let Some(rx) = &m.settings_incoming {
+                let mut got = Vec::new();
+                loop {
+                    match rx.try_recv() {
+                        Ok(c) => got.push(c),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            m.settings_incoming = None;
+                            break;
+                        }
+                    }
+                }
+                for c in got {
+                    if let Some(name) = anim::static_name(&c.anim.name)
+                        && m.settings_sheet
+                    {
+                        m.seq.add(name, Timing::of(&c.anim));
+                        m.clips.insert(name, Arc::new(c));
+                        added = true;
+                    }
+                }
+            }
             if let Some(rx) = &m.incoming {
                 let mut got = Vec::new();
                 loop {
@@ -3116,6 +3248,14 @@ impl<S: Screen> Ui<S> {
             );
         } else if !moving && self.frame_timer.running() {
             self.frame_timer.stop();
+        }
+        // The settings sheet goes once `settings_out` has played.
+        let (sheet, uses) = {
+            let m = self.motion.borrow();
+            (m.settings_sheet, m.seq.uses_settings())
+        };
+        if sheet && !uses {
+            self.settings_sheets();
         }
     }
 
@@ -3265,9 +3405,8 @@ impl<S: Screen> Ui<S> {
     fn frame_rect(&self, a: &Animation) -> (f32, f32, f32, f32) {
         let state = match a.name.as_str() {
             // The night clips are aligned on idle too (they start or end there).
-            "loading" | "wake" | "idle" | "fall_asleep" | "sleeping" | "wake_from_sleep" => {
-                State::Idle
-            }
+            "loading" | "wake" | "idle" | "fall_asleep" | "sleeping" | "wake_from_sleep"
+            | "settings_in" | "settings_hold" | "settings_out" => State::Idle,
             _ => view(self.view.get()).1,
         };
         let (_, crop) = self.character.pose(state);
@@ -3741,6 +3880,9 @@ impl<S: Screen> Ui<S> {
             self.screen.set_night(true, "07:00", true);
         }
         self.screen.set_still(true);
+        if let Some((clip, _)) = d.frame {
+            self.demo_clip(clip);
+        }
         if d.starting {
             // The start-up screen: as `show` draws it while the loading animation plays.
             self.motion.borrow_mut().loading_until =
@@ -5599,6 +5741,7 @@ impl<S: Screen> Ui<S> {
                 UiEvent::Tap
             });
         }
+        self.page_motion();
         if page == "setup" && self.opts.first_start.home_assistant && self.opts.demo.is_none() {
             // No address to link to yet: find Home Assistant first (Settings → Home Assistant,
             // the HA button, the control center all land here).

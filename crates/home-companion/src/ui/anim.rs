@@ -17,6 +17,12 @@
 //!   plays once, then the still pose again (no frame drawn in between). When the screen wakes up
 //!   or the night ends: `wake_from_sleep` once, then the home as by day, skipping `wake`. A
 //!   conversation cuts any of these at once (they are decoration).
+//! - **the settings pages**: the home clip under way is finished, then `settings_in` once, then
+//!   still on its last frame; every `pause` seconds (the `settings_hold` animation's, while the
+//!   screen is awake) `settings_hold` plays once. Leaving them for the home: the settings clip
+//!   under way is finished, then `settings_out`, then the home as by day (its pause, `idle`).
+//!   Opening them again while `settings_out` plays finishes it first. A conversation cuts these
+//!   at once (decoration).
 //! - **a house command went through**: `done` once (a bow) on the home, then as after `wake`;
 //!   when it comes during the conversation, it plays when the home comes back (within
 //!   [`DONE_WAIT`]).
@@ -82,6 +88,26 @@ pub enum Mode {
     Loop(&'static str),
     /// Night mode, the home at rest: `fall_asleep`, then asleep (`sleeping` now and then).
     Night,
+    /// A settings page: `settings_in`, then `settings_hold` now and then.
+    Settings,
+    /// One fixed frame (the demos' screenshots of an animation).
+    Frame(&'static str, u32),
+}
+
+/// The settings clips that end on the tools held (leaving plays `settings_out` after them).
+const TOOLS_HELD: [&str; 2] = ["settings_in", "settings_hold"];
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Tools {
+    /// The clip under way when the settings page opened (a home clip, or `settings_out`):
+    /// played to its end first.
+    Finish { clip: &'static str, start: Instant },
+    /// No settings clip yet (the sheet is being decoded): the pose.
+    Wait,
+    /// `settings_in` or one round of `settings_hold`.
+    Clip { clip: &'static str, start: Instant },
+    /// Still on the clip's last frame until `settings_hold` plays again.
+    Still { clip: &'static str, until: Instant },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -108,6 +134,7 @@ pub struct Sequencer {
     since: Instant,
     home: Home,
     night: Night,
+    tools: Tools,
     /// `done` waiting for the home, until then.
     done_until: Option<Instant>,
 }
@@ -120,6 +147,7 @@ impl Sequencer {
             since: now,
             home: Home::Still,
             night: Night::Still { until: None },
+            tools: Tools::Wait,
             done_until: None,
         }
     }
@@ -163,11 +191,32 @@ impl Sequencer {
         if mode == self.mode {
             return;
         }
-        let (prev, home, night) = (self.mode, self.home, self.night);
+        let (prev, home, night, tools) = (self.mode, self.home, self.night, self.tools);
         self.mode = mode;
         self.since = now;
         self.home = Home::Still;
         match (prev, mode) {
+            (_, Mode::Settings) => {
+                self.tools = match home {
+                    Home::Clip { clip, start } if prev == Mode::Home => {
+                        Tools::Finish { clip, start }
+                    }
+                    _ => self.tools_in(now),
+                };
+            }
+            // Leaving the settings pages: the settings clip under way, then the tools put away.
+            (Mode::Settings, Mode::Home) => {
+                self.done_until = None;
+                self.home = match tools {
+                    Tools::Finish { clip, start } => Home::Clip { clip, start },
+                    Tools::Clip { clip, start } => Home::Clip { clip, start },
+                    Tools::Still { .. } if self.clips.contains_key("settings_out") => Home::Clip {
+                        clip: "settings_out",
+                        start: now,
+                    },
+                    _ => Home::Still,
+                };
+            }
             (_, Mode::Night) => {
                 self.night = match home {
                     Home::Clip { clip, start } if prev == Mode::Home => {
@@ -195,6 +244,28 @@ impl Sequencer {
                 };
             }
             _ => {}
+        }
+    }
+
+    /// `settings_in` from `start`; without it `settings_hold`; without either the pose.
+    fn tools_in(&self, start: Instant) -> Tools {
+        ["settings_in", "settings_hold"]
+            .into_iter()
+            .find(|n| self.clips.contains_key(n))
+            .map_or(Tools::Wait, |clip| Tools::Clip { clip, start })
+    }
+
+    /// A settings clip is on screen or still to play (its sheet must stay).
+    pub fn uses_settings(&self) -> bool {
+        let settings = |c: &str| c.starts_with("settings_");
+        match self.mode {
+            Mode::Settings => true,
+            Mode::Home => match self.home {
+                Home::Clip { clip, .. } | Home::Pause { clip, .. } => settings(clip),
+                Home::Still => false,
+            },
+            Mode::Night => matches!(self.night, Night::Finish { clip, .. } if settings(clip)),
+            _ => false,
         }
     }
 
@@ -228,6 +299,14 @@ impl Sequencer {
             Mode::Loop(name) => self.looped(name, now),
             Mode::Home => self.home(now, awake),
             Mode::Night => self.night(now),
+            Mode::Settings => self.tools(now, awake),
+            Mode::Frame(clip, index) => match self.clips.get(clip) {
+                Some(t) => Show::Frame {
+                    clip,
+                    index: index.min(t.frames - 1),
+                },
+                None => Show::Pose,
+            },
         }
     }
 
@@ -242,6 +321,8 @@ impl Sequencer {
                     || self.home != Home::Still
             }
             Mode::Night => !matches!(self.night, Night::Still { .. }),
+            Mode::Settings => matches!(self.tools, Tools::Finish { .. } | Tools::Clip { .. }),
+            Mode::Frame(..) => false,
         }
     }
 
@@ -257,8 +338,8 @@ impl Sequencer {
 
     /// The pause after a home clip: the idle animation's (or the clip's own without idle).
     fn pause(&self, clip: &'static str) -> Duration {
-        let t = self.clips.get("idle").unwrap_or(&self.clips[clip]);
-        Duration::from_secs_f32(t.pause.max(0.0))
+        let t = self.clips.get("idle").or_else(|| self.clips.get(clip));
+        Duration::from_secs_f32(t.map_or(0.0, |t| t.pause.max(0.0)))
     }
 
     fn night(&mut self, now: Instant) -> Show {
@@ -292,6 +373,60 @@ impl Sequencer {
         }
     }
 
+    fn tools(&mut self, now: Instant, awake: bool) -> Show {
+        loop {
+            match self.tools {
+                Tools::Wait => {
+                    self.tools = self.tools_in(now);
+                    if self.tools == Tools::Wait {
+                        return Show::Pose;
+                    }
+                }
+                Tools::Finish { clip, start } | Tools::Clip { clip, start } => {
+                    let Some(t) = self.clips.get(clip).copied() else {
+                        self.tools = Tools::Wait;
+                        return Show::Pose;
+                    };
+                    let end = start + t.length();
+                    if now < end {
+                        let index = t.at(now - start).min(t.frames - 1);
+                        return Show::Frame { clip, index };
+                    }
+                    self.tools = if matches!(self.tools, Tools::Finish { .. }) {
+                        self.tools_in(end)
+                    } else {
+                        let pause = self
+                            .clips
+                            .get("settings_hold")
+                            .map_or(f32::INFINITY, |h| h.pause.max(0.0));
+                        Tools::Still {
+                            clip,
+                            until: end + Duration::from_secs_f32(pause.min(86400.0)),
+                        }
+                    };
+                }
+                Tools::Still { clip, until } => {
+                    // From now, not from `until` (the clock ticks once a second while still);
+                    // only while the screen is awake.
+                    if awake && now >= until && self.clips.contains_key("settings_hold") {
+                        self.tools = Tools::Clip {
+                            clip: "settings_hold",
+                            start: now,
+                        };
+                        continue;
+                    }
+                    return match self.clips.get(clip) {
+                        Some(t) => Show::Frame {
+                            clip,
+                            index: t.frames - 1,
+                        },
+                        None => Show::Pose,
+                    };
+                }
+            }
+        }
+    }
+
     fn home(&mut self, now: Instant, awake: bool) -> Show {
         let first = ["wake", "idle"]
             .into_iter()
@@ -308,11 +443,27 @@ impl Sequencer {
                     };
                 }
                 Home::Clip { clip, start } => {
-                    let t = self.clips[clip];
+                    let Some(t) = self.clips.get(clip).copied() else {
+                        // Its sheet went (freed): the pose.
+                        self.home = Home::Still;
+                        return Show::Pose;
+                    };
                     let end = start + t.length();
                     if now < end {
                         let index = t.at(now - start).min(t.frames - 1);
                         return Show::Frame { clip, index };
+                    }
+                    // The settings clip finished after the page was left: the tools go away.
+                    if TOOLS_HELD.contains(&clip) {
+                        self.home = if self.clips.contains_key("settings_out") {
+                            Home::Clip {
+                                clip: "settings_out",
+                                start: end,
+                            }
+                        } else {
+                            Home::Still
+                        };
+                        continue;
                     }
                     self.home = if awake {
                         Home::Pause {
@@ -329,9 +480,12 @@ impl Sequencer {
                         return Show::Pose;
                     }
                     if now < until {
-                        return Show::Frame {
-                            clip,
-                            index: self.clips[clip].frames - 1,
+                        return match self.clips.get(clip) {
+                            Some(t) => Show::Frame {
+                                clip,
+                                index: t.frames - 1,
+                            },
+                            None => Show::Pose,
                         };
                     }
                     self.home = Home::Clip {
@@ -765,5 +919,132 @@ mod tests {
         // Already home: at once.
         s.done(t0 + ms(40_000));
         assert_eq!(s.show(t0 + ms(40_000), true), frame("done", 0));
+    }
+
+    /// `seq` with the settings clips: in, hold (pause 1 s) and out, 4 frames (0.25 s) each.
+    fn tools_seq(t0: Instant) -> Sequencer {
+        let mut s = seq(t0);
+        for (name, pause) in [
+            ("settings_in", 0.0),
+            ("settings_hold", 1.0),
+            ("settings_out", 0.0),
+        ] {
+            s.add(
+                name,
+                Timing {
+                    frames: 4,
+                    fps: 16.0,
+                    pause,
+                },
+            );
+        }
+        s
+    }
+
+    #[test]
+    fn settings_in_then_hold_now_and_then() {
+        let t0 = Instant::now();
+        let mut s = tools_seq(t0);
+        s.set_mode(Mode::Settings, t0);
+        assert!(s.uses_settings());
+        assert_eq!(s.show(t0, true), frame("settings_in", 0));
+        assert!(s.moving(true));
+        assert_eq!(s.show(t0 + ms(200), true), frame("settings_in", 3));
+        // Over: still on its last frame (no frame timer) until the hold's pause is over.
+        assert_eq!(s.show(t0 + ms(300), true), frame("settings_in", 3));
+        assert!(!s.moving(true));
+        assert_eq!(s.show(t0 + ms(1250), true), frame("settings_hold", 0));
+        assert_eq!(s.show(t0 + ms(1400), true), frame("settings_hold", 2));
+        assert_eq!(s.show(t0 + ms(1600), true), frame("settings_hold", 3));
+        assert!(!s.moving(true));
+        // Due again, but the screen is asleep: it waits, still.
+        assert_eq!(s.show(t0 + ms(2600), false), frame("settings_hold", 3));
+        assert_eq!(s.show(t0 + ms(2700), true), frame("settings_hold", 0));
+    }
+
+    #[test]
+    fn leaving_settings_puts_the_tools_away_then_home_as_by_day() {
+        let t0 = Instant::now();
+        let mut s = tools_seq(t0);
+        s.set_mode(Mode::Settings, t0);
+        assert_eq!(s.show(t0 + ms(300), true), frame("settings_in", 3));
+        s.set_mode(Mode::Home, t0 + ms(400));
+        assert_eq!(s.show(t0 + ms(400), true), frame("settings_out", 0));
+        assert_eq!(s.show(t0 + ms(640), true), frame("settings_out", 3));
+        // Then the idle pause on its last frame (the idle pose), and idle.
+        assert_eq!(s.show(t0 + ms(700), true), frame("settings_out", 3));
+        assert!(s.uses_settings());
+        assert_eq!(s.show(t0 + ms(1650), true), frame("idle", 0));
+        assert!(!s.uses_settings());
+    }
+
+    #[test]
+    fn quick_open_and_close_finish_the_clip_under_way() {
+        let t0 = Instant::now();
+        let mut s = tools_seq(t0);
+        s.set_mode(Mode::Settings, t0);
+        assert_eq!(s.show(t0 + ms(100), true), frame("settings_in", 1));
+        // Left while the tools come out: they finish coming out, then go away.
+        s.set_mode(Mode::Home, t0 + ms(100));
+        assert_eq!(s.show(t0 + ms(200), true), frame("settings_in", 3));
+        assert_eq!(s.show(t0 + ms(300), true), frame("settings_out", 0));
+        // Opened again while they go away: put away first, then out again.
+        s.set_mode(Mode::Settings, t0 + ms(350));
+        assert_eq!(s.show(t0 + ms(400), true), frame("settings_out", 2));
+        assert_eq!(s.show(t0 + ms(500), true), frame("settings_in", 0));
+        // A conversation cuts at once; back on the page, the tools come out again.
+        s.set_mode(Mode::Loop("listening"), t0 + ms(550));
+        assert!(!s.uses_settings());
+        assert_eq!(s.show(t0 + ms(550), true), frame("listening", 0));
+        s.set_mode(Mode::Settings, t0 + ms(900));
+        assert_eq!(s.show(t0 + ms(900), true), frame("settings_in", 0));
+    }
+
+    #[test]
+    fn settings_wait_for_the_home_clip_and_for_the_sheet() {
+        let t0 = Instant::now();
+        let mut s = tools_seq(t0);
+        assert_eq!(s.show(t0, true), frame("wake", 0));
+        // Opened while wake plays: wake ends (0.5 s), then the tools.
+        s.set_mode(Mode::Settings, t0 + ms(100));
+        assert_eq!(s.show(t0 + ms(300), true), frame("wake", 4));
+        assert_eq!(s.show(t0 + ms(500), true), frame("settings_in", 0));
+        // Without the settings clips (the sheet not decoded yet): the pose, nothing moves; they
+        // start when the sheet comes.
+        let mut s = seq(t0);
+        s.set_mode(Mode::Settings, t0);
+        assert_eq!(s.show(t0, true), Show::Pose);
+        assert!(!s.moving(true));
+        s.add(
+            "settings_in",
+            Timing {
+                frames: 4,
+                fps: 16.0,
+                pause: 0.0,
+            },
+        );
+        assert_eq!(s.show(t0 + ms(800), true), frame("settings_in", 0));
+        assert_eq!(s.show(t0 + ms(1200), true), frame("settings_in", 3));
+        // No hold and no out: still on the last frame; leaving shows the pose at once.
+        s.set_mode(Mode::Home, t0 + ms(1300));
+        assert_eq!(s.show(t0 + ms(1300), false), Show::Pose);
+        // The sheet freed under a clip: the pose, no panic.
+        let mut s = tools_seq(t0);
+        s.set_mode(Mode::Settings, t0);
+        s.set_mode(Mode::Home, t0 + ms(50));
+        s.remove("settings_in");
+        s.remove("settings_out");
+        assert_eq!(s.show(t0 + ms(100), true), Show::Pose);
+    }
+
+    #[test]
+    fn a_fixed_frame_for_the_demos() {
+        let t0 = Instant::now();
+        let mut s = tools_seq(t0);
+        s.set_mode(Mode::Frame("settings_hold", 99), t0);
+        assert_eq!(s.show(t0, true), frame("settings_hold", 3));
+        assert!(!s.moving(true));
+        s.set_mode(Mode::Frame("missing", 0), t0);
+        assert_eq!(s.show(t0, true), Show::Pose);
     }
 }

@@ -149,7 +149,7 @@ pub struct Character {
 }
 
 /// The animations a character may have (characters/README.md, "Animations").
-pub const ANIMATIONS: [&str; 11] = [
+pub const ANIMATIONS: [&str; 14] = [
     "loading",
     "wake",
     "idle",
@@ -162,6 +162,10 @@ pub const ANIMATIONS: [&str; 11] = [
     "fall_asleep",
     "sleeping",
     "wake_from_sleep",
+    // The settings pages: tools out, held now and then, put away.
+    "settings_in",
+    "settings_hold",
+    "settings_out",
 ];
 
 /// One animation: frames `first..end` of a sheet, shown in `rect` (pose pixels) at `fps`.
@@ -980,6 +984,15 @@ mod tests {
         assert!(night.iter().all(|a| a.file == night[0].file));
         assert_eq!(night[1].pause, 60.0);
         assert_eq!(night.map(|a| a.frames()), [80, 64, 80]);
+        // The settings pages: one sheet, tools out, held every few seconds, put away.
+        let tools =
+            ["settings_in", "settings_hold", "settings_out"].map(|n| c.animation(n).unwrap());
+        assert!(tools.iter().all(|a| a.file == tools[0].file));
+        assert_eq!(
+            tools.map(|a| (a.first, a.end)),
+            [(0, 56), (56, 120), (120, 176)]
+        );
+        assert_eq!(tools[1].pause, 6.0);
         assert_eq!(
             c.state_animation(State::TimerFinished).unwrap().name,
             "speaking"

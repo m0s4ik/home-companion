@@ -146,3 +146,28 @@ size = [403, 631]
 frames = [144, 224]
 fps = 16
 rect = [229.9, 1.0, 860.0, 988.2]
+
+# The settings pages (../README.md, "Animations"): one sheet, the toolbox then the spanner come out
+# from behind his back (0-55), the spanner held (56-119, every 6 s), both put away back to the idle
+# pose (120-175). Made with tools/make-animation.py from poses/idle.png, brightness matched to it.
+[animations.settings_in]
+file = "animations/settings.png"
+size = [436, 605]
+frames = [0, 56]
+fps = 16
+rect = [178.3, 38.6, 860.0, 985.1]
+
+[animations.settings_hold]
+file = "animations/settings.png"
+size = [436, 605]
+frames = [56, 120]
+fps = 16
+pause = 6
+rect = [178.3, 38.6, 860.0, 985.1]
+
+[animations.settings_out]
+file = "animations/settings.png"
+size = [436, 605]
+frames = [120, 176]
+fps = 16
+rect = [178.3, 38.6, 860.0, 985.1]

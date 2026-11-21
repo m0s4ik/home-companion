@@ -64,9 +64,16 @@ All optional; without one the still pose is shown.
 | `fall_asleep` | once when the night layout comes (night hours, the home at rest), after the home clip under way | `idle` |
 | `sleeping` | once every `pause` seconds while asleep, the still `sleeping` pose in between (nothing redraws) | `sleeping` |
 | `wake_from_sleep` | once when the screen wakes up at night, or the night ends; then the home as by day, without `wake` | `sleeping` |
+| `settings_in` | once when a settings page opens (Settings and the pages under it), after the home clip under way | `idle` |
+| `settings_hold` | once every `pause` seconds while a settings page is open and the screen is awake, still on its last frame in between (nothing redraws) | `settings_in`'s last frame |
+| `settings_out` | once when the settings pages are left for the home, after the settings clip under way; then the home as by day | `settings_hold`'s last frame |
 
-`fall_asleep` and `wake_from_sleep` are **transitions**: they start on one pose and end on another (their last frame
-left out, so the next picture follows without a repeat). They are decoration: a conversation cuts them at once.
+`fall_asleep`, `wake_from_sleep`, `settings_in` and `settings_out` are **transitions**: they start on one pose and
+end on another (their last frame left out, so the next picture follows without a repeat). They are decoration: a
+conversation cuts them at once. Opening and leaving the settings pages quickly never cuts a clip in the middle: the
+one under way plays to its end, then the next. The settings sheet is decoded only while a settings page is open (and
+until `settings_out` has played), like the night's only around the night. Without `settings_in` the settings pages
+show the normal pose; without `settings_out` leaving them goes back to it at once.
 
 An animation is a **sheet**: one PNG, 8-bit RGBA, the frames stacked from top to bottom, all the same size.
 **Frame 0 is opaque** (the whole picture); in every following frame a pixel is **opaque where it changes** from

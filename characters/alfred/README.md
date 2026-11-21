@@ -30,6 +30,12 @@ of home-companion.
   the `sleeping` loop (80-143, 4 s, once a minute) and `wake_from_sleep` (144-223, he takes the cap off and
   brightens), in that order so each runs into the next; aligned on `idle.png`. `sleeping.png` matches the loop's
   first frame (mean difference 0.8/255).
+- **Settings**: `animations/settings.png` (176 frames, 436x605, 16 fps) holds `settings_in` (0-55: a toolbox, then a
+  spanner come out from behind his back), the `settings_hold` loop with the spanner (56-119, 4 s, every 6 s while a
+  settings page is open, still on its last frame in between) and `settings_out` (120-175: both put away, back to
+  `idle.png`), aligned on `idle.png` and matched to its brightness. The pose with the tools (drawn with
+  gpt-image-2.5-flare from `idle.png`) was the clips' key frame; there is no still pose for it: between two rounds
+  the body keeps the loop's last frame.
 - **How the animations were made**: Wan 2.2 I2V A14B (fp8, with the lightx2v 4-step LoRA; weights under
   Apache-2.0) in ComfyUI, from the poses, one clip per state.
 
