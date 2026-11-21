@@ -6727,7 +6727,20 @@ impl<S: Screen> Ui<S> {
             playing: data.playing.as_ref(),
             people: &data.people,
         };
-        let pages = widgets::pages(&sources, &on, &words, now, &local_hm);
+        let mut pages = widgets::pages(&sources, &on, &words, now, &local_hm);
+        // The markets in the order chosen, every one of them: one whose price has not come yet
+        // (after a start, the sources answer one at a time) waits with "…" instead of missing.
+        let names: Vec<String> = self
+            .widget_quotes
+            .borrow()
+            .iter()
+            .map(|q| q.name.clone())
+            .collect();
+        if !names.is_empty() {
+            for p in pages.iter_mut().filter(|p| p.kind == WidgetKind::Quotes) {
+                *p = widgets::waiting(WidgetKind::Quotes, Some(p.clone()), &names, &words);
+            }
+        }
         drop(data);
         drop(d);
         drop(l);

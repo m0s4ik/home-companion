@@ -401,7 +401,7 @@ pub fn panel_pages(
 }
 
 /// The page with its rows in the order of `names`, a waiting row for each name without data.
-fn waiting(kind: Kind, page: Option<WidgetView>, names: &[String], w: &Words) -> WidgetView {
+pub fn waiting(kind: Kind, page: Option<WidgetView>, names: &[String], w: &Words) -> WidgetView {
     let mut v = page.unwrap_or_else(|| WidgetView {
         kind,
         title: match kind {

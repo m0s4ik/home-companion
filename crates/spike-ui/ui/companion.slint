@@ -5847,15 +5847,16 @@ export component CompanionWindow inherits Window {
         level: root.volume;
     }
 
-    // ---- The remote screen: who is in control from a browser, and Stop, at the top over
-    // everything (Home Assistant's view, the dialogs): never hidden while it lasts.
+    // ---- The remote screen: who is in control from a browser, and Stop, over everything
+    // (Home Assistant's view, the dialogs): never hidden while it lasts. Small, above the
+    // character's head in its third of the screen, so the pages' headers (back) stay free.
     remote-sign-box := Rectangle {
         visible: root.remote-sign != "";
-        x: (root.width - self.width) / 2;
+        width: Grid.stage-width - 24px;
+        x: 12px;
         y: 8px;
-        width: min(sign-row.preferred-width, root.width - 48px);
-        height: 60px;
-        border-radius: 30px;
+        height: 72px;
+        border-radius: 20px;
         background: Theme.surface;
         border-width: 2px;
         border-color: Theme.danger;
@@ -5863,33 +5864,34 @@ export component CompanionWindow inherits Window {
         drop-shadow-color: #000000a0;
         // Touches on the sign stop here, not on what is under it.
         TouchArea { }
-        sign-row := HorizontalLayout {
-            padding-left: 24px;
-            padding-right: 4px;
-            padding-top: 4px;
-            padding-bottom: 4px;
-            spacing: 16px;
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 8px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            spacing: 12px;
             Rectangle {
-                width: 32px;
+                width: 28px;
                 Icon {
                     y: (parent.height - self.height) / 2;
-                    width: 32px;
-                    height: 32px;
+                    width: 28px;
+                    height: 28px;
                     source: Icons.monitor-cellphone-32;
                     color: Theme.danger;
                 }
             }
             Text {
                 text: root.remote-sign;
-                font-size: 26px;
+                font-size: 20px;
                 font-weight: 500;
                 color: Theme.text;
                 vertical-alignment: center;
+                wrap: word-wrap;
                 overflow: elide;
             }
             PillButton {
-                width: 160px;
-                height: 52px;
+                width: 136px;
+                height: 56px;
                 label: root.t.remote-stop;
                 primary: true;
                 clicked => {

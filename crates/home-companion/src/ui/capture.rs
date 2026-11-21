@@ -513,9 +513,6 @@ pub mod drm {
     const fn iowr(nr: u64, size: usize) -> libc::c_ulong {
         ((3u64 << 30) | ((size as u64) << 16) | ((b'd' as u64) << 8) | nr) as libc::c_ulong
     }
-    const fn iow(nr: u64, size: usize) -> libc::c_ulong {
-        ((1u64 << 30) | ((size as u64) << 16) | ((b'd' as u64) << 8) | nr) as libc::c_ulong
-    }
 
     #[repr(C)]
     #[derive(Default)]
@@ -569,18 +566,10 @@ pub mod drm {
         offset: u64,
     }
 
-    #[repr(C)]
-    #[derive(Default)]
-    struct GemClose {
-        handle: u32,
-        pad: u32,
-    }
-
     const GETRESOURCES: libc::c_ulong = iowr(0xA0, std::mem::size_of::<CardRes>());
     const GETCRTC: libc::c_ulong = iowr(0xA1, std::mem::size_of::<Crtc>());
     const GETFB2: libc::c_ulong = iowr(0xCE, std::mem::size_of::<FbCmd2>());
     const MAP_DUMB: libc::c_ulong = iowr(0xB3, std::mem::size_of::<MapDumb>());
-    const GEM_CLOSE: libc::c_ulong = iow(0x09, std::mem::size_of::<GemClose>());
     const FB_MODIFIERS: u32 = 2;
     const fn fourcc(s: &[u8; 4]) -> u32 {
         u32::from_le_bytes(*s)
@@ -608,7 +597,16 @@ pub mod drm {
     pub struct Drm {
         fd: OwnedFd,
         crtcs: Vec<u32>,
+        /// What each scanout framebuffer looked like the first time (by fb id), its handle kept.
+        /// The file is the body's own: closing a handle there (GEM_CLOSE) makes msm drop the
+        /// buffer's GPU mapping for the whole file, and the renderer then faults on its own
+        /// scanout buffer (GPU faults, the screen corrupted and flashing). So every handle got
+        /// with GETFB2 stays open for the process's life; the swapchain has two or three.
+        layouts: std::cell::RefCell<std::collections::HashMap<u32, Result<Layout, &'static str>>>,
     }
+
+    /// Framebuffers whose handles may be kept; past this the capture gives up (never closes).
+    const MAX_FBS: usize = 8;
 
     /// The DRM card files this process has open (`/dev/dri/card*`), duplicated.
     fn own_cards() -> Vec<OwnedFd> {
@@ -682,13 +680,14 @@ pub mod drm {
                     continue;
                 }
                 crtcs.truncate(res2.count_crtcs.min(crtcs.len() as u32) as usize);
-                let d = Drm { fd, crtcs };
-                // The handle comes only to the master: try it once.
+                let d = Drm {
+                    fd,
+                    crtcs,
+                    layouts: Default::default(),
+                };
+                // The handle comes only to the master: try it once (kept, see `layouts`).
                 match d.layout() {
-                    Ok(l) => {
-                        d.close(l.handle);
-                        return Ok(d);
-                    }
+                    Ok(_) => return Ok(d),
                     Err(why) => last = why,
                 }
             }
@@ -718,6 +717,19 @@ pub mod drm {
 
         fn layout(&self) -> Result<Layout, &'static str> {
             let fb = self.scanout().map_err(|_| "no_scanout")?;
+            if let Some(l) = self.layouts.borrow().get(&fb) {
+                return l.clone();
+            }
+            if self.layouts.borrow().len() >= MAX_FBS {
+                return Err("too_many_fbs");
+            }
+            let l = self.layout_of(fb);
+            self.layouts.borrow_mut().insert(fb, l.clone());
+            l
+        }
+
+        /// GETFB2 once for `fb`; the handle it makes is never closed (see `layouts`).
+        fn layout_of(&self, fb: u32) -> Result<Layout, &'static str> {
             let mut f = FbCmd2 {
                 fb_id: fb,
                 ..Default::default()
@@ -736,22 +748,16 @@ pub mod drm {
             };
             let linear = f.flags & FB_MODIFIERS == 0 || f.modifier[0] == 0;
             if !linear {
-                self.close(l.handle);
                 return Err("tiled");
             }
             if ![XR24, AR24, XB24, AB24].contains(&f.pixel_format) {
-                self.close(l.handle);
                 return Err("format");
             }
             Ok(l)
         }
-
-        fn close(&self, handle: u32) {
-            let mut c = GemClose { handle, pad: 0 };
-            let _ = ioctl(&self.fd, GEM_CLOSE, &mut c);
-        }
     }
 
+    #[derive(Clone, Copy)]
     struct Layout {
         handle: u32,
         width: u32,
@@ -768,9 +774,7 @@ pub mod drm {
 
         fn read(&mut self, f: &mut dyn FnMut(&Raw) -> Result<(), String>) -> Result<(), String> {
             let l = self.layout().map_err(|why| format!("framebuffer: {why}"))?;
-            let r = self.map_and(&l, f);
-            self.close(l.handle);
-            r
+            self.map_and(&l, f)
         }
     }
 
