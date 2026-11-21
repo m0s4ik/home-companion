@@ -1079,7 +1079,7 @@ macro_rules! impl_screen {
                 let rows: Vec<$m::WidgetPage> = pages
                     .iter()
                     .map(|p| $m::WidgetPage {
-                        key: p.kind.key().into(),
+                        key: p.page.key().into(),
                         label: p.label.as_str().into(),
                         on: p.on,
                         hint: p.hint.as_str().into(),

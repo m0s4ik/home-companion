@@ -58,14 +58,17 @@ pub trait PanelHost: model::Host {
     /// The device list changed (the screen's page redraws it).
     fn sessions_changed(&self);
     /// The widget's pages in the turn's order, each on or off.
-    fn widget_pages(&self) -> Vec<(crate::ui::widgets::Kind, bool)>;
+    fn widget_pages(&self) -> Vec<(crate::ui::widgets::Page, bool)>;
     /// The page of the widget on the screen now (None: none, or not known).
-    fn widget_showing(&self) -> Option<crate::ui::widgets::Kind> {
+    fn widget_showing(&self) -> Option<crate::ui::widgets::Page> {
         None
     }
-    /// The markets and the other cities chosen.
-    fn widget_quotes(&self) -> Vec<crate::feeds::QuoteChoice>;
-    fn widget_cities(&self) -> Vec<crate::feeds::CityChoice>;
+    /// The markets, the other cities and the sensors chosen, page by page.
+    fn widget_quotes(&self) -> crate::ui::widgets::Lists<crate::feeds::QuoteChoice>;
+    fn widget_cities(&self) -> crate::ui::widgets::Lists<crate::feeds::CityChoice>;
+    fn widget_sensors(&self) -> crate::ui::widgets::Lists<String>;
+    /// The names given to pages.
+    fn widget_names(&self) -> Vec<(crate::ui::widgets::Page, String)>;
     /// Starts a search on the feeds' thread (false: another one is still going).
     fn search_start(&self, id: &str, what: crate::feeds::What, q: &str, lang: &str) -> bool;
     fn search_state(&self, id: &str) -> crate::feeds::SearchState;
@@ -82,14 +85,14 @@ pub trait PanelHost: model::Host {
     fn note_add(&self, text: &str);
     fn note_edit(&self, id: i64, text: &str);
     fn note_remove(&self, id: i64);
-    /// Every page of the widget as the screen would draw it now, in `lang`'s words, in
-    /// [`crate::ui::widgets::Kind::ALL`]'s order (`widgets::panel_pages`): the page (None: nothing to
-    /// show) and whether it is an example.
+    /// Every page of the widget as the screen would draw it now, in `lang`'s words, in the
+    /// turn's order (`widgets::panel_pages`): the page (None: nothing to show) and whether it
+    /// is an example.
     fn widget_views(
         &self,
         lang: &str,
     ) -> Vec<(
-        crate::ui::widgets::Kind,
+        crate::ui::widgets::Page,
         Option<crate::ui::widgets::WidgetView>,
         bool,
     )>;
@@ -292,6 +295,11 @@ pub const STRING_KEYS: &[&str] = &[
     "panel_add_home",
     "panel_now_on",
     "panel_removed_home",
+    "panel_add_another",
+    "panel_page_name",
+    "panel_page_name_help",
+    "panel_remove_page",
+    "panel_page_removed",
     "panel_help_weather",
     "panel_help_check",
     "panel_help_playing",
@@ -822,19 +830,25 @@ mod tests {
                 .borrow_mut()
                 .push(c.map(|c| format!("{} {}", c.agent.browser, c.agent.os)));
         }
-        fn widget_pages(&self) -> Vec<(crate::ui::widgets::Kind, bool)> {
+        fn widget_pages(&self) -> Vec<(crate::ui::widgets::Page, bool)> {
             let order = model::widget_order(self);
             let on = self.model.settings.widgets().0;
             order.iter().map(|k| (*k, on.contains(k))).collect()
         }
-        fn widget_showing(&self) -> Option<crate::ui::widgets::Kind> {
-            Some(crate::ui::widgets::Kind::Quotes)
+        fn widget_showing(&self) -> Option<crate::ui::widgets::Page> {
+            Some(crate::ui::widgets::Kind::Quotes.into())
         }
-        fn widget_quotes(&self) -> Vec<crate::feeds::QuoteChoice> {
+        fn widget_quotes(&self) -> crate::ui::widgets::Lists<crate::feeds::QuoteChoice> {
             self.model.settings.quotes()
         }
-        fn widget_cities(&self) -> Vec<crate::feeds::CityChoice> {
+        fn widget_cities(&self) -> crate::ui::widgets::Lists<crate::feeds::CityChoice> {
             self.model.settings.cities()
+        }
+        fn widget_sensors(&self) -> crate::ui::widgets::Lists<String> {
+            self.model.settings.sensors()
+        }
+        fn widget_names(&self) -> Vec<(crate::ui::widgets::Page, String)> {
+            self.model.settings.widget_names()
         }
         fn search_start(&self, id: &str, what: crate::feeds::What, q: &str, _lang: &str) -> bool {
             use crate::feeds::*;
@@ -920,7 +934,7 @@ mod tests {
             &self,
             lang: &str,
         ) -> Vec<(
-            crate::ui::widgets::Kind,
+            crate::ui::widgets::Page,
             Option<crate::ui::widgets::WidgetView>,
             bool,
         )> {
@@ -936,13 +950,24 @@ mod tests {
                 .into_iter()
                 .map(|n| n.1)
                 .collect();
+            let order: Vec<_> = self.widget_pages().into_iter().map(|x| x.0).collect();
+            let picks = crate::ui::widgets::picks_of(
+                &order,
+                &crate::ui::widgets::AllLists {
+                    quotes: &self.widget_quotes(),
+                    cities: &self.widget_cities(),
+                    sensors: &self.widget_sensors(),
+                    names: &self.widget_names(),
+                },
+                &|id| id.to_string(),
+                &|k| l.text(k).to_string(),
+            );
             let real = crate::ui::widgets::Sources {
                 notes: &notes,
+                picks: &picks,
                 ..Default::default()
             };
-            let quotes: Vec<String> = self.widget_quotes().into_iter().map(|q| q.name).collect();
             let chosen = crate::ui::widgets::Chosen {
-                quotes: &quotes,
                 check: true,
                 ..Default::default()
             };
@@ -950,6 +975,7 @@ mod tests {
                 &real,
                 &s.sources(),
                 &chosen,
+                &order,
                 &w,
                 samples::NOW,
                 samples::NOW,
@@ -1347,11 +1373,11 @@ mod tests {
             json!({"op": "quotes.remove", "token": t, "ref": "yahoo:AAPL"}),
         );
         assert_eq!(
-            (r["undo"].clone(), r["quotes"].clone()),
+            (r["undo"].clone(), r["lists"]["quotes"].clone()),
             (json!(true), json!([]))
         );
         let r = call(&h, &mut s, json!({"op": "undo", "token": t}));
-        assert_eq!(r["quotes"][0]["ref"], "yahoo:AAPL");
+        assert_eq!(r["lists"]["quotes"][0]["ref"], "yahoo:AAPL");
         assert_eq!(
             call(&h, &mut s, json!({"op": "undo", "token": t}))["error"],
             "invalid"
@@ -1407,6 +1433,178 @@ mod tests {
         );
     }
 
+    /// Several pages of a kind: another markets' page added (on, empty, at the end of the turn),
+    /// its own list edited, moved in the turn, named, removed and put back with Undo; the
+    /// first page untouched all along; at most MAX_SAME of a kind, and only of the kinds that
+    /// repeat.
+    #[test]
+    fn several_pages_of_a_kind() {
+        let h = host("several");
+        let mut s = Sessions::default();
+        let t = pair(&h, &mut s);
+        let q = |h: &Host, s: &mut Sessions, v: Value| call(h, s, v);
+        // Apple on the first page.
+        let r = q(
+            &h,
+            &mut s,
+            json!({"op": "search.start", "token": t, "what": "quote", "q": "Apple"}),
+        );
+        let id = r["id"].as_str().unwrap().to_string();
+        let r = q(
+            &h,
+            &mut s,
+            json!({"op": "quotes.add", "token": t, "search": id, "ref": "yahoo:AAPL"}),
+        );
+        assert_eq!(r["lists"]["quotes"][0]["ref"], "yahoo:AAPL");
+        assert!(
+            r["more"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["kind"] == "quotes")
+        );
+        for bad in ["next", "weather", "stocks", ""] {
+            let r = q(
+                &h,
+                &mut s,
+                json!({"op": "widgets.add", "token": t, "kind": bad}),
+            );
+            assert_eq!(r["error"], "invalid", "{bad}");
+        }
+        let r = q(
+            &h,
+            &mut s,
+            json!({"op": "widgets.add", "token": t, "kind": "quotes"}),
+        );
+        assert_eq!(r["added"], "quotes-2");
+        assert_eq!(r["lists"]["quotes-2"], json!([]));
+        let p2 = r["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == "quotes-2")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            (p2["kind"].as_str(), p2["n"].as_u64(), p2["on"].as_bool()),
+            (Some("quotes"), Some(2), Some(true))
+        );
+        assert_eq!(p2["label"], "Markets 2");
+        assert_eq!(
+            h.model.settings.widgets().0.last().map(|p| p.key()),
+            Some("quotes-2".into())
+        );
+        // Its own list: Apple there too (the feeds fetch it once), the first page unchanged.
+        let r = q(
+            &h,
+            &mut s,
+            json!({"op": "quotes.add", "token": t, "search": id, "ref": "yahoo:AAPL", "page": "quotes-2"}),
+        );
+        assert_eq!(r["lists"]["quotes-2"][0]["ref"], "yahoo:AAPL");
+        assert_eq!(r["lists"]["quotes"].as_array().unwrap().len(), 1);
+        assert_eq!(h.model.settings.quotes().union(|q| q.key()).len(), 1);
+        // A page that is not one of the turn, or of another kind: invalid.
+        for page in ["quotes-3", "cities", "quotes-9", "x"] {
+            let r = q(
+                &h,
+                &mut s,
+                json!({"op": "quotes.remove", "token": t, "ref": "yahoo:AAPL", "page": page}),
+            );
+            assert_eq!(r["error"], "invalid", "{page}");
+        }
+        // Its own place in the turn.
+        let order: Vec<String> = r["order"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["id"].as_str().unwrap().to_string())
+            .collect();
+        let mut moved = order.clone();
+        let i = moved.iter().position(|x| x == "quotes-2").unwrap();
+        let x = moved.remove(i);
+        moved.insert(0, x);
+        let r = q(
+            &h,
+            &mut s,
+            json!({"op": "widgets.order", "token": t, "order": moved}),
+        );
+        assert_eq!(r["order"][0]["id"], "quotes-2");
+        // The old order (without it) is not every page any more.
+        let without: Vec<&String> = order.iter().filter(|x| *x != "quotes-2").collect();
+        let r = q(
+            &h,
+            &mut s,
+            json!({"op": "widgets.order", "token": t, "order": without}),
+        );
+        assert_eq!(r["error"], "invalid");
+        // A name, cleaned; too long is refused; "" gives the usual one back.
+        let r = q(
+            &h,
+            &mut s,
+            json!({"op": "widgets.name", "token": t, "page": "quotes-2", "name": " Crypto\n"}),
+        );
+        assert_eq!(r["order"][0]["label"], "Crypto");
+        let r = q(
+            &h,
+            &mut s,
+            json!({"op": "widgets.name", "token": t, "page": "quotes-2", "name": "x".repeat(40)}),
+        );
+        assert_eq!(r["error"], "invalid");
+        let r = q(
+            &h,
+            &mut s,
+            json!({"op": "widgets.name", "token": t, "page": "next", "name": "x"}),
+        );
+        assert_eq!(r["error"], "invalid");
+        // Removed with its list and its name; Undo puts it back where it was.
+        let r = q(
+            &h,
+            &mut s,
+            json!({"op": "widgets.remove", "token": t, "page": "quotes"}),
+        );
+        assert_eq!(r["error"], "invalid", "the first page is only turned off");
+        let r = q(
+            &h,
+            &mut s,
+            json!({"op": "widgets.remove", "token": t, "page": "quotes-2"}),
+        );
+        assert_eq!(r["undo"], true);
+        assert!(r["lists"].get("quotes-2").is_none());
+        assert!(!h.model.settings.widget_order().iter().any(|p| p.n == 2));
+        let file = std::fs::read_to_string(&h.model.settings.path).unwrap();
+        assert!(!file.contains("quotes-2"), "{file}");
+        let r = q(&h, &mut s, json!({"op": "undo", "token": t}));
+        assert_eq!(r["order"][0]["id"], "quotes-2");
+        assert_eq!(r["order"][0]["label"], "Crypto");
+        assert_eq!(r["order"][0]["on"], true);
+        assert_eq!(r["lists"]["quotes-2"][0]["ref"], "yahoo:AAPL");
+        // At most four markets' pages.
+        for n in 3..=4 {
+            let r = q(
+                &h,
+                &mut s,
+                json!({"op": "widgets.add", "token": t, "kind": "quotes"}),
+            );
+            assert_eq!(r["added"], format!("quotes-{n}"));
+        }
+        let r = q(
+            &h,
+            &mut s,
+            json!({"op": "widgets.add", "token": t, "kind": "quotes"}),
+        );
+        assert_eq!(r["error"], "list_full");
+        let r = q(&h, &mut s, json!({"op": "widgets.get", "token": t}));
+        assert!(
+            !r["more"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["kind"] == "quotes")
+        );
+        // The first page as it was.
+        assert_eq!(h.model.settings.quotes().get(1).len(), 1);
+    }
+
     /// The widget's ops: the order, a search, adding only one of its own hits, the limits.
     #[test]
     fn widgets_from_the_browser() {
@@ -1420,11 +1618,11 @@ mod tests {
         );
         assert_eq!(
             w["order"][0],
-            json!({"kind": "next", "on": true, "label": "Prossimi"})
+            json!({"id": "next", "kind": "next", "on": true, "label": "Prossimi"})
         );
         assert_eq!(w["pages"][0]["kind"], "next");
         assert_eq!(w["order"][9]["on"], false);
-        assert_eq!(w["quotes"], json!([]));
+        assert_eq!(w["lists"]["quotes"], json!([]));
         assert_eq!(w["limits"]["quotes"], 8);
         // The order: a permutation of every page, nothing else.
         let mut order: Vec<&str> = crate::ui::widgets::Kind::ALL
@@ -1505,7 +1703,7 @@ mod tests {
                                         "name": "<img src=x onerror=alert(1)>"}),
         );
         assert_eq!(
-            r["quotes"],
+            r["lists"]["quotes"],
             json!([{"ref": "yahoo:AAPL", "name": "Apple", "detail": "AAPL"}])
         );
         let r = call(
@@ -1515,7 +1713,7 @@ mod tests {
         );
         assert_eq!(r["error"], "exists");
         assert!(
-            matches!(h.model.applied.borrow().last(), Some(model::Change::Quotes(q)) if q.len() == 1)
+            matches!(h.model.applied.borrow().last(), Some(model::Change::Quotes(1, q)) if q.len() == 1)
         );
         // Too soon after the last one; another device's search is not this one's.
         let r = call(
@@ -1551,7 +1749,7 @@ mod tests {
             &mut s,
             json!({"op": "quotes.remove", "token": t, "ref": "yahoo:AAPL"}),
         );
-        assert_eq!(r["quotes"], json!([]));
+        assert_eq!(r["lists"]["quotes"], json!([]));
         let r = call(
             &h,
             &mut s,
@@ -1622,7 +1820,7 @@ mod tests {
                                         "ref": "sensor.outdoor_temperature"}),
         );
         assert_eq!(
-            r["sensors"],
+            r["lists"]["sensors"],
             json!([{"ref": "sensor.outdoor_temperature", "name": "Outdoor temperature", "detail": "°C"}])
         );
         let r = call(
@@ -1667,7 +1865,7 @@ mod tests {
             &mut s,
             json!({"op": "sensors.remove", "token": t, "ref": "sensor.outdoor_temperature"}),
         );
-        assert_eq!(r["sensors"], json!([]));
+        assert_eq!(r["lists"]["sensors"], json!([]));
         let r = call(
             &h,
             &mut s,

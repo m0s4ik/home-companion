@@ -30,7 +30,7 @@ use home_companion::ui::capture::{self, Frame};
 use home_companion::ui::lists::{self, ShopList};
 use home_companion::ui::screen::samples;
 use home_companion::ui::widgets::{
-    self, Chosen, CityRow, Kind, Person, Place, Sources, Trend, WidgetRow,
+    self, Chosen, CityRow, Kind, Lists, Page, Person, Place, Sources, Trend, WidgetRow,
 };
 use serde_json::{Value, json};
 
@@ -194,7 +194,7 @@ impl PanelHost for Demo {
         lists::remove(&mut self.lists.borrow_mut(), list, uid);
     }
     fn sessions_changed(&self) {}
-    fn widget_pages(&self) -> Vec<(home_companion::ui::widgets::Kind, bool)> {
+    fn widget_pages(&self) -> Vec<(Page, bool)> {
         let on = self.settings.widgets().0;
         self.settings
             .widget_order()
@@ -203,7 +203,7 @@ impl PanelHost for Demo {
             .collect()
     }
     /// The turn as the screen would run it: every `widgets_every` seconds the next page on.
-    fn widget_showing(&self) -> Option<home_companion::ui::widgets::Kind> {
+    fn widget_showing(&self) -> Option<Page> {
         let on = self.settings.widgets().0;
         let order: Vec<_> = self
             .settings
@@ -242,11 +242,17 @@ impl PanelHost for Demo {
             None => eprintln!("screen: nobody in control"),
         }
     }
-    fn widget_quotes(&self) -> Vec<QuoteChoice> {
+    fn widget_quotes(&self) -> Lists<QuoteChoice> {
         self.settings.quotes()
     }
-    fn widget_cities(&self) -> Vec<CityChoice> {
+    fn widget_cities(&self) -> Lists<CityChoice> {
         self.settings.cities()
+    }
+    fn widget_sensors(&self) -> Lists<String> {
+        self.settings.sensors()
+    }
+    fn widget_names(&self) -> Vec<(Page, String)> {
+        self.settings.widget_names()
     }
     /// Canned hits (the real body asks Yahoo, CoinGecko, Open-Meteo); one name is markup, to
     /// show it stays text.
@@ -387,12 +393,15 @@ impl PanelHost for Demo {
     fn widget_views(
         &self,
         lang: &str,
-    ) -> Vec<(Kind, Option<home_companion::ui::widgets::WidgetView>, bool)> {
+    ) -> Vec<(Page, Option<home_companion::ui::widgets::WidgetView>, bool)> {
         let l = locale::load_or_english(&locale::repo_locales(), lang).expect("locales");
         let s = samples::samples(&l);
         let w = samples::words(&l);
-        let quotes = self.settings.quotes();
-        let cities = self.settings.cities();
+        let quote_lists = self.settings.quotes();
+        let city_lists = self.settings.cities();
+        let sensor_lists = self.settings.sensors();
+        let quotes = quote_lists.union(|q| q.key());
+        let cities = city_lists.union(|c| c.id);
         let ha = self.widget_ha();
         let catalog = self.ha_catalog();
         let name_of = |id: &str| {
@@ -411,7 +420,7 @@ impl PanelHost for Demo {
             .enumerate()
             .filter_map(|(i, q)| {
                 let t = s.quotes.iter().find(|t| t.name == q.name).cloned();
-                match t {
+                let t = match t {
                     Some(t) => Some(t),
                     None if ready(&q.key()) => {
                         let mut t = s.quotes[i % s.quotes.len()].clone();
@@ -419,17 +428,19 @@ impl PanelHost for Demo {
                         Some(t)
                     }
                     None => None,
-                }
+                };
+                t.map(|t| Trend { key: q.key(), ..t })
             })
             .collect();
-        let sensor_names: Vec<String> = ha.sensors.iter().map(|id| name_of(id)).collect();
-        let s_trends: Vec<Trend> = sensor_names
+        let s_trends: Vec<Trend> = ha
+            .sensors
             .iter()
             .enumerate()
-            .filter(|(_, n)| ready(&format!("sensor:{n}")))
-            .map(|(i, n)| {
+            .filter(|(_, id)| ready(&format!("sensor:{}", name_of(id))))
+            .map(|(i, id)| {
                 let mut t = s.sensors[i % s.sensors.len()].clone();
-                t.name = n.clone();
+                t.name = name_of(id);
+                t.key = id.clone();
                 t
             })
             .collect();
@@ -440,6 +451,7 @@ impl PanelHost for Demo {
             .map(|(i, c)| {
                 let mut r = s.cities[i % s.cities.len()].clone();
                 r.name = c.name.clone();
+                r.key = c.key();
                 r
             })
             .collect();
@@ -456,6 +468,19 @@ impl PanelHost for Demo {
                 place: if i == 0 { Place::Home } else { Place::Away },
             })
             .collect();
+        let order: Vec<Page> = self.widget_pages().into_iter().map(|x| x.0).collect();
+        let names = self.settings.widget_names();
+        let picks = widgets::picks_of(
+            &order,
+            &widgets::AllLists {
+                quotes: &quote_lists,
+                cities: &city_lists,
+                sensors: &sensor_lists,
+                names: &names,
+            },
+            &|id| name_of(id),
+            &|k| l.text(k).to_string(),
+        );
         let real = Sources {
             next: &s.next,
             weather: s.weather.clone(),
@@ -468,18 +493,14 @@ impl PanelHost for Demo {
             check: &[],
             playing: None,
             people: &people,
+            picks: &picks,
         };
-        let qn: Vec<String> = quotes.iter().map(|q| q.name.clone()).collect();
-        let cn: Vec<String> = cities.iter().map(|c| c.name.clone()).collect();
         let player = if ha.player.is_empty() {
             String::new()
         } else {
             name_of(&ha.player)
         };
         let chosen = Chosen {
-            quotes: &qn,
-            cities: &cn,
-            sensors: &sensor_names,
             check: ha.openings || ha.batteries,
             player: &player,
         };
@@ -487,6 +508,7 @@ impl PanelHost for Demo {
             &real,
             &s.sources(),
             &chosen,
+            &order,
             &w,
             samples::NOW,
             samples::NOW,
@@ -604,13 +626,16 @@ fn main() {
         };
         model::commit(
             &demo,
-            Change::Quotes(vec![
-                q(Source::Yahoo, "AAPL", "Apple Inc."),
-                q(Source::Yahoo, "^GSPC", "S&P 500"),
-                q(Source::Coingecko, "bitcoin", "Bitcoin"),
-                q(Source::Yahoo, "EURUSD=X", "EUR/USD"),
-                q(Source::Yahoo, "GC=F", "Gold"),
-            ]),
+            Change::Quotes(
+                1,
+                vec![
+                    q(Source::Yahoo, "AAPL", "Apple Inc."),
+                    q(Source::Yahoo, "^GSPC", "S&P 500"),
+                    q(Source::Coingecko, "bitcoin", "Bitcoin"),
+                    q(Source::Yahoo, "EURUSD=X", "EUR/USD"),
+                    q(Source::Yahoo, "GC=F", "Gold"),
+                ],
+            ),
         );
         let c = |id, name: &str, region: &str, country: &str, lat, lon| CityChoice {
             id,
@@ -622,19 +647,28 @@ fn main() {
         };
         model::commit(
             &demo,
-            Change::Cities(vec![
-                c(2950159, "Berlin", "Berlin", "DE", 52.52, 13.41),
-                c(1850147, "Tokyo", "Tokyo", "JP", 35.69, 139.69),
-                c(4250542, "Springfield", "Illinois", "US", 39.8, -89.64),
-            ]),
+            Change::Cities(
+                1,
+                vec![
+                    c(2950159, "Berlin", "Berlin", "DE", 52.52, 13.41),
+                    c(1850147, "Tokyo", "Tokyo", "JP", 35.69, 139.69),
+                    c(4250542, "Springfield", "Illinois", "US", 39.8, -89.64),
+                ],
+            ),
+        );
+        model::commit(
+            &demo,
+            Change::Sensors(
+                1,
+                vec![
+                    "sensor.outdoor_temperature".into(),
+                    "sensor.living_room".into(),
+                    "sensor.humidity".into(),
+                    "sensor.power".into(),
+                ],
+            ),
         );
         let mut ha = demo.widget_ha();
-        ha.sensors = vec![
-            "sensor.outdoor_temperature".into(),
-            "sensor.living_room".into(),
-            "sensor.humidity".into(),
-            "sensor.power".into(),
-        ];
         ha.player = "media_player.speaker".into();
         ha.people = Some(vec!["person.ada".into(), "person.bob".into()]);
         model::commit(&demo, Change::WidgetHa(ha));
@@ -644,9 +678,16 @@ fn main() {
     for k in demo
         .settings
         .quotes()
+        .union(|q| q.key())
         .iter()
         .map(|q| q.key())
-        .chain(demo.settings.cities().iter().map(|c| c.key()))
+        .chain(
+            demo.settings
+                .cities()
+                .union(|c| c.id)
+                .iter()
+                .map(|c| c.key()),
+        )
     {
         demo.seen.borrow_mut().insert(k, long_ago);
     }

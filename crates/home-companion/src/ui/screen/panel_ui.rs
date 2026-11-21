@@ -542,7 +542,7 @@ impl<S: Screen> PanelHost for Ui<S> {
     fn sessions_changed(&self) {
         self.panel.borrow_mut().changed = true;
     }
-    fn widget_pages(&self) -> Vec<(crate::ui::widgets::Kind, bool)> {
+    fn widget_pages(&self) -> Vec<(crate::ui::widgets::Page, bool)> {
         let on = self.widget_on.borrow();
         self.widget_order
             .borrow()
@@ -550,14 +550,20 @@ impl<S: Screen> PanelHost for Ui<S> {
             .map(|k| (*k, on.contains(k)))
             .collect()
     }
-    fn widget_showing(&self) -> Option<crate::ui::widgets::Kind> {
-        self.widget.borrow().kind()
+    fn widget_showing(&self) -> Option<crate::ui::widgets::Page> {
+        self.widget.borrow().page()
     }
-    fn widget_quotes(&self) -> Vec<crate::feeds::QuoteChoice> {
+    fn widget_quotes(&self) -> crate::ui::widgets::Lists<crate::feeds::QuoteChoice> {
         self.widget_quotes.borrow().clone()
     }
-    fn widget_cities(&self) -> Vec<crate::feeds::CityChoice> {
+    fn widget_cities(&self) -> crate::ui::widgets::Lists<crate::feeds::CityChoice> {
         self.widget_cities.borrow().clone()
+    }
+    fn widget_sensors(&self) -> crate::ui::widgets::Lists<String> {
+        self.widget_sensors.borrow().clone()
+    }
+    fn widget_names(&self) -> Vec<(crate::ui::widgets::Page, String)> {
+        self.widget_names.borrow().clone()
     }
     fn search_start(&self, id: &str, what: crate::feeds::What, q: &str, lang: &str) -> bool {
         use crate::feeds::{SearchState, What};
@@ -621,7 +627,7 @@ impl<S: Screen> PanelHost for Ui<S> {
         &self,
         lang: &str,
     ) -> Vec<(
-        crate::ui::widgets::Kind,
+        crate::ui::widgets::Page,
         Option<crate::ui::widgets::WidgetView>,
         bool,
     )> {
@@ -648,6 +654,15 @@ impl<S: Screen> PanelHost for Ui<S> {
             })
             .unwrap_or_default();
         let cities = self.city_rows(now);
+        let ha = self.widget_ha.borrow().clone();
+        let catalog = self.ha_catalog.borrow().clone();
+        let name_of = |id: &str| {
+            catalog
+                .iter()
+                .find(|e| e.id == id)
+                .map_or_else(|| id.to_string(), |e| e.name.clone())
+        };
+        let picks = self.widget_picks(&l, &name_of);
         let d = self.desk.borrow();
         let next = crate::ui::next::merge(&d.upcoming, &d.events, now);
         let data = self.widget_data.borrow();
@@ -667,29 +682,9 @@ impl<S: Screen> PanelHost for Ui<S> {
             check: &data.check,
             playing: data.playing.as_ref(),
             people: &data.people,
+            picks: &picks,
         };
         let samples = super::samples::samples(&l);
-        let quotes: Vec<String> = self
-            .widget_quotes
-            .borrow()
-            .iter()
-            .map(|q| q.name.clone())
-            .collect();
-        let city_names: Vec<String> = self
-            .widget_cities
-            .borrow()
-            .iter()
-            .map(|c| c.name.clone())
-            .collect();
-        let ha = self.widget_ha.borrow().clone();
-        let catalog = self.ha_catalog.borrow();
-        let name_of = |id: &str| {
-            catalog
-                .iter()
-                .find(|e| e.id == id)
-                .map_or_else(|| id.to_string(), |e| e.name.clone())
-        };
-        let sensors: Vec<String> = ha.sensors.iter().map(|id| name_of(id)).collect();
         let player = if ha.player.is_empty() {
             String::new()
         } else {
@@ -699,16 +694,15 @@ impl<S: Screen> PanelHost for Ui<S> {
             .iter()
             .any(|k| crate::settings_model::get(self, k) == Some(serde_json::json!(true)));
         let chosen = widgets::Chosen {
-            quotes: &quotes,
-            cities: &city_names,
-            sensors: &sensors,
             check,
             player: &player,
         };
+        let order: Vec<widgets::Page> = self.widget_order.borrow().clone();
         widgets::panel_pages(
             &real,
             &samples.sources(),
             &chosen,
+            &order,
             &w,
             now,
             super::samples::NOW,

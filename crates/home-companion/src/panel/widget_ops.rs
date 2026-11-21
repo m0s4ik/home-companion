@@ -6,24 +6,30 @@
 //!
 //! | `op` | parameters | answer |
 //! |---|---|---|
-//! | `widgets.get` | — | `{order:[{kind,on,label}], pages:[…], quotes:[{ref,name,detail}], cities:[…], currency, limits}` |
+//! | `widgets.get` | — | `{order:[{id,kind,on,label}], pages:[…], lists:{<page id>:[{ref,name,detail}]}, more:[{kind,label}], currency, limits}` |
 //! | `widgets.samples` | — | `{samples:[{kind, model}]}`: an example page of every kind (the gallery) |
 //! | `undo` | — | puts back what this device removed last (`*.remove`, `player.set ""`) within 15 s; as `widgets.get`; `invalid` (nothing, too late) |
-//! | `widgets.order` | `order:[kind…]` (every page once) | as `widgets.get` |
+//! | `widgets.order` | `order:[id…]` (every page once) | as `widgets.get` |
+//! | `widgets.add` | `kind` (one that repeats: quotes, cities, sensors) | as `widgets.get` with `added: id`: another page of it, on, with an empty list; `list_full` (already [`widgets::MAX_SAME`]) |
+//! | `widgets.remove` | `page` (a second, third… page) | as `widgets.get`, `undo: true`: the page and its list gone |
+//! | `widgets.name` | `page`, `name` (1-24 characters, "" none) | as `widgets.get` |
 //! | `search.start` | `what: "quote"\|"city"`, `q` | `{id}`; `search_busy` (another search is going), `search_wait` (too many) |
 //! | `search.status` | `id` | `{status:"waiting"\|"done"\|"failed", hits:[{ref,name,detail}]}` |
-//! | `quotes.add` / `cities.add` | `search`, `ref` | as `widgets.get`; `list_full`, `exists`, `invalid` |
-//! | `quotes.remove` / `cities.remove` | `ref` | as `widgets.get` |
-//! | `quotes.move` / `cities.move` | `ref`, `to` | as `widgets.get` |
+//! | `quotes.add` / `cities.add` | `search`, `ref`, `page` | as `widgets.get`; `list_full`, `exists`, `invalid` |
+//! | `quotes.remove` / `cities.remove` | `ref`, `page` | as `widgets.get` |
+//! | `quotes.move` / `cities.move` | `ref`, `to`, `page` | as `widgets.get` |
 //! | `search.start` | `what: "sensor"\|"player"\|"person"`, `q` | answered at once from Home Assistant's catalogue (ha/widgets.rs) |
-//! | `sensors.add` / `sensors.remove` / `sensors.move` | `search`+`ref` / `ref` / `ref`+`to` | as `widgets.get` |
+//! | `sensors.add` / `sensors.remove` / `sensors.move` | `search`+`ref` / `ref` / `ref`+`to`, and `page` | as `widgets.get` |
 //! | `player.set` | `search`+`ref`, or `ref: ""` (none) | as `widgets.get` |
 //! | `people.set` | `refs:[person.*]` (empty: everyone) | as `widgets.get` |
 //! | `notes.list` | — | `{notes:[{id,text}]}`; `no_brain` without the brain |
 //! | `notes.add` / `notes.edit` / `notes.remove` | `text`, `id` | `{}` (the brain answers, the list follows); `invalid`, `list_full`, `no_brain` |
 //!
+//! The lists' ops take `page`, the id of the page whose list it is (none: the kind's first page).
+//!
 //! Every answer "as `widgets.get`" carries `pages`: each page in the turn's order as
-//! `{id, kind, label, on, status, model}`. `id` is opaque to the panel (a kind's key today);
+//! `{id, kind, n, label, name, on, status, model}`. `id` is opaque to the panel (the page's key in
+//! settings.toml: "quotes", "quotes-2"); `n` which page of its kind; `name` the one given;
 //! `status` is a line about what it shows; `model` is the page as the screen draws it
 //! ([`model`]: `{title, layout: "rows"|"hours", sample, windows:[{aside, rows}]}`, rows of text and
 //! numbers, the windows the screen turns through with three free slots), or null when the
@@ -47,7 +53,7 @@ use crate::feeds::{
     Choice, CityChoice, MAX_CITIES, MAX_QUOTES, QuoteChoice, SearchState, Source, What,
 };
 use crate::settings_model::{self as model, Change};
-use crate::ui::widgets::{self, Kind, WidgetRow, WidgetView};
+use crate::ui::widgets::{self, Kind, Page, WidgetRow, WidgetView};
 
 /// The longest words a search takes.
 pub const MAX_QUERY: usize = 40;
@@ -59,6 +65,9 @@ pub const SEARCHES_PER_HOUR: usize = 40;
 pub const OPS: &[&str] = &[
     "widgets.get",
     "widgets.order",
+    "widgets.add",
+    "widgets.remove",
+    "widgets.name",
     "search.start",
     "search.status",
     "quotes.add",
@@ -89,10 +98,20 @@ pub const PREVIEW_SLOTS: usize = 3;
 /// What a device removed last (one per device), for `undo`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Removed {
-    Quote(QuoteChoice),
-    City(CityChoice),
-    Sensor(String),
+    Quote(u8, QuoteChoice),
+    City(u8, CityChoice),
+    Sensor(u8, String),
     Player(String),
+    /// A page: where it was in the whole order, on or not, its name, its list.
+    Page(Page, bool, String, PageItems),
+}
+
+/// A removed page's list.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PageItems {
+    Quotes(Vec<QuoteChoice>),
+    Cities(Vec<CityChoice>),
+    Sensors(Vec<String>),
 }
 
 /// Notes on the board at most, and their length (the brain checks them again).
@@ -278,7 +297,8 @@ pub fn model(v: &WidgetView, sample: bool) -> Value {
 }
 
 /// The line under a page: what it shows and where from.
-fn status(host: &dyn PanelHost, kind: Kind, word: &dyn Fn(&str) -> String) -> String {
+fn status(host: &dyn PanelHost, page: Page, word: &dyn Fn(&str) -> String) -> String {
+    let kind = page.kind;
     let count = |n: usize, key: &str| {
         if n == 0 {
             word(&format!("panel_status_{key}_none"))
@@ -287,9 +307,9 @@ fn status(host: &dyn PanelHost, kind: Kind, word: &dyn Fn(&str) -> String) -> St
         }
     };
     match kind {
-        Kind::Quotes => count(host.widget_quotes().len(), "quotes"),
-        Kind::Cities => count(host.widget_cities().len(), "cities"),
-        Kind::Sensors => count(host.widget_ha().sensors.len(), "sensors"),
+        Kind::Quotes => count(host.widget_quotes().get(page.n).len(), "quotes"),
+        Kind::Cities => count(host.widget_cities().get(page.n).len(), "cities"),
+        Kind::Sensors => count(host.widget_sensors().get(page.n).len(), "sensors"),
         Kind::Notes => count(host.notes().map_or(0, |n| n.len()), "notes"),
         Kind::Home => count(host.widget_ha().people.map_or(0, |p| p.len()), "home"),
         Kind::Playing => {
@@ -319,21 +339,31 @@ fn status(host: &dyn PanelHost, kind: Kind, word: &dyn Fn(&str) -> String) -> St
     }
 }
 
+/// A page's label in the words of `word`.
+fn label(host: &dyn PanelHost, p: Page, word: &dyn Fn(&str) -> String) -> String {
+    model::page_label(p, &host.widget_names(), word)
+}
+
 /// Every page in the turn's order, with its preview (`pages` of the answers).
 pub fn pages(host: &dyn PanelHost, lang: &str) -> Value {
     let word = host.words(lang);
     let views = host.widget_views(lang);
+    let names = host.widget_names();
     let list: Vec<Value> = host
         .widget_pages()
         .iter()
-        .map(|(k, on)| {
+        .map(|(p, on)| {
             let m = views
                 .iter()
-                .find(|(x, _, _)| x == k)
+                .find(|(x, _, _)| x == p)
                 .and_then(|(_, v, sample)| v.as_ref().map(|v| model(v, *sample)));
-            json!({"id": k.key(), "kind": k.key(), "on": on,
-                   "label": word(&format!("widget_{}", k.key())),
-                   "status": status(host, *k, &*word), "model": m})
+            let name = names
+                .iter()
+                .find(|(x, _)| x == p)
+                .map_or("", |(_, n)| n.as_str());
+            json!({"id": p.key(), "kind": p.kind.key(), "n": p.n, "on": on,
+                   "label": label(host, *p, &*word), "name": name,
+                   "status": status(host, *p, &*word), "model": m})
         })
         .collect();
     Value::Array(list)
@@ -342,20 +372,10 @@ pub fn pages(host: &dyn PanelHost, lang: &str) -> Value {
 /// What `widgets.get` answers.
 pub fn state(host: &dyn PanelHost, lang: &str) -> Value {
     let word = host.words(lang);
-    let order: Vec<Value> = host
-        .widget_pages()
+    let order_now = host.widget_pages();
+    let order: Vec<Value> = order_now
         .iter()
-        .map(|(k, on)| json!({"kind": k.key(), "on": on, "label": word(&format!("widget_{}", k.key()))}))
-        .collect();
-    let quotes: Vec<Value> = host
-        .widget_quotes()
-        .iter()
-        .map(|q| json!({"ref": q.key(), "name": q.name, "detail": quote_detail(q)}))
-        .collect();
-    let cities: Vec<Value> = host
-        .widget_cities()
-        .iter()
-        .map(|c| json!({"ref": c.key(), "name": c.name, "detail": city_detail(c)}))
+        .map(|(p, on)| json!({"id": p.key(), "kind": p.kind.key(), "on": on, "label": label(host, *p, &*word)}))
         .collect();
     let currency = model::get(host, "widgets_currency").unwrap_or(json!("usd"));
     // Home Assistant's side: the entities chosen (with the catalogue's names), everyone who
@@ -367,8 +387,37 @@ pub fn state(host: &dyn PanelHost, lang: &str) -> Value {
         json!({"ref": id, "name": e.map_or(id, |e| e.name.as_str()),
                "detail": e.map_or(String::new(), |e| e.unit.clone())})
     };
+    // Each page's own list, by its id.
+    let (quotes, cities, sensors) = (
+        host.widget_quotes(),
+        host.widget_cities(),
+        host.widget_sensors(),
+    );
+    let mut lists = serde_json::Map::new();
+    for (p, _) in order_now.iter().filter(|(p, _)| p.kind.repeats()) {
+        let items: Vec<Value> = match p.kind {
+            Kind::Quotes => quotes
+                .get(p.n)
+                .iter()
+                .map(|q| json!({"ref": q.key(), "name": q.name, "detail": quote_detail(q)}))
+                .collect(),
+            Kind::Cities => cities
+                .get(p.n)
+                .iter()
+                .map(|c| json!({"ref": c.key(), "name": c.name, "detail": city_detail(c)}))
+                .collect(),
+            _ => sensors.get(p.n).iter().map(|id| named(id)).collect(),
+        };
+        lists.insert(p.key(), Value::Array(items));
+    }
+    // The kinds a page more of can be added (`{kind, label}`).
+    let all: Vec<Page> = order_now.iter().map(|x| x.0).collect();
+    let more: Vec<Value> = Kind::ALL
+        .into_iter()
+        .filter(|k| k.repeats() && Page::next_free(*k, &all).is_some())
+        .map(|k| json!({"kind": k.key(), "label": word(&format!("widget_{}", k.key()))}))
+        .collect();
     let ha = host.widget_ha();
-    let sensors: Vec<Value> = ha.sensors.iter().map(|id| named(id)).collect();
     let player = (!ha.player.is_empty()).then(|| named(&ha.player));
     let all_people: Vec<Value> = catalog
         .iter()
@@ -376,12 +425,33 @@ pub fn state(host: &dyn PanelHost, lang: &str) -> Value {
         .map(|e| json!({"ref": e.id, "name": e.name}))
         .collect();
     let showing = host.widget_showing().map(|k| k.key());
-    json!({"ok": true, "order": order, "showing": showing, "pages": pages(host, lang), "quotes": quotes, "cities": cities, "currency": currency,
-           "sensors": sensors, "player": player,
+    json!({"ok": true, "order": order, "showing": showing, "pages": pages(host, lang),
+           "lists": lists, "more": more, "currency": currency, "player": player,
            "people": {"all": all_people, "chosen": ha.people.unwrap_or_default()},
            "ha": !catalog.is_empty(),
            "limits": {"quotes": MAX_QUOTES, "cities": MAX_CITIES, "sensors": crate::ha::widgets::MAX_SENSORS,
-                      "query": MAX_QUERY}})
+                      "query": MAX_QUERY, "same": widgets::MAX_SAME, "name": widgets::MAX_PAGE_NAME}})
+}
+
+/// The page a list's op is about: `page` (one of `kind`'s in the turn), else the kind's first.
+fn list_page(host: &dyn PanelHost, req: &Value, kind: Kind) -> Option<Page> {
+    let key = str_of(req, "page");
+    if key.is_empty() {
+        return Some(kind.into());
+    }
+    let p = Page::from_key(key).filter(|p| p.kind == kind)?;
+    host.widget_pages()
+        .iter()
+        .any(|(x, _)| *x == p)
+        .then_some(p)
+}
+
+/// A page of the turn by its id.
+fn known_page(host: &dyn PanelHost, req: &Value) -> Option<(Page, usize, bool)> {
+    let p = Page::from_key(str_of(req, "page"))?;
+    let all = host.widget_pages();
+    let at = all.iter().position(|(x, _)| *x == p)?;
+    Some((p, at, all[at].1))
 }
 
 /// A search id: 16 random bytes in hex.
@@ -421,17 +491,64 @@ pub fn handle(
             let Some(list) = req.get("order").and_then(Value::as_array) else {
                 return err("invalid");
             };
-            let mut order: Vec<Kind> = Vec::new();
+            let now: Vec<Page> = host.widget_pages().into_iter().map(|x| x.0).collect();
+            let mut order: Vec<Page> = Vec::new();
             for v in list {
-                match v.as_str().and_then(Kind::from_key) {
-                    Some(k) if !order.contains(&k) => order.push(k),
+                match v.as_str().and_then(Page::from_key) {
+                    Some(k) if !order.contains(&k) && now.contains(&k) => order.push(k),
                     _ => return err("invalid"),
                 }
             }
-            if order.len() != Kind::ALL.len() {
+            if order.len() != now.len() {
                 return err("invalid");
             }
             model::commit(host, Change::WidgetOrder(order));
+            state(host, lang)
+        }
+        "widgets.add" => {
+            let Some(kind) = Kind::from_key(str_of(req, "kind")).filter(|k| k.repeats()) else {
+                return err("invalid");
+            };
+            let now: Vec<Page> = host.widget_pages().into_iter().map(|x| x.0).collect();
+            let Some(p) = Page::next_free(kind, &now) else {
+                return err("list_full");
+            };
+            model::commit(host, Change::WidgetAdded(p, None, true));
+            let mut a = state(host, lang);
+            a["added"] = json!(p.key());
+            a
+        }
+        "widgets.remove" => {
+            let Some((p, at, on)) = known_page(host, req).filter(|(p, _, _)| p.n > 1) else {
+                return err("invalid");
+            };
+            let items = match p.kind {
+                Kind::Quotes => PageItems::Quotes(host.widget_quotes().get(p.n).to_vec()),
+                Kind::Cities => PageItems::Cities(host.widget_cities().get(p.n).to_vec()),
+                _ => PageItems::Sensors(host.widget_sensors().get(p.n).to_vec()),
+            };
+            let name = host
+                .widget_names()
+                .into_iter()
+                .find(|(x, _)| *x == p)
+                .map(|(_, n)| n)
+                .unwrap_or_default();
+            book.remember(me, Removed::Page(p, on, name, items), at, t);
+            model::commit(host, Change::WidgetRemoved(p));
+            removed(state(host, lang), op)
+        }
+        "widgets.name" => {
+            let Some((p, _, _)) = known_page(host, req).filter(|(p, _, _)| p.kind.repeats()) else {
+                return err("invalid");
+            };
+            let raw = str_of(req, "name");
+            let name = crate::settings::clean_page_name(raw);
+            if raw.chars().count() > widgets::MAX_PAGE_NAME + 8
+                || name.chars().count() > widgets::MAX_PAGE_NAME
+            {
+                return err("invalid");
+            }
+            model::commit(host, Change::WidgetName(p, name));
             state(host, lang)
         }
         "search.start" => {
@@ -494,9 +611,13 @@ pub fn handle(
             if !book.owned(search, me, Some(what), t) {
                 return err("invalid");
             }
+            let Some(p) = list_page(host, req, if city { Kind::Cities } else { Kind::Quotes })
+            else {
+                return err("invalid");
+            };
             match host.search_choice(search, key) {
                 Some(Choice::Quote(q)) if !city => {
-                    let mut list = host.widget_quotes();
+                    let mut list = host.widget_quotes().get(p.n).to_vec();
                     if list.iter().any(|x| x.key() == q.key()) {
                         return err("exists");
                     }
@@ -507,10 +628,10 @@ pub fn handle(
                         return err("invalid");
                     }
                     list.push(q);
-                    model::commit(host, Change::Quotes(list));
+                    model::commit(host, Change::Quotes(p.n, list));
                 }
                 Some(Choice::City(c)) if city => {
-                    let mut list = host.widget_cities();
+                    let mut list = host.widget_cities().get(p.n).to_vec();
                     if list.iter().any(|x| x.id == c.id) {
                         return err("exists");
                     }
@@ -521,20 +642,23 @@ pub fn handle(
                         return err("invalid");
                     }
                     list.push(c);
-                    model::commit(host, Change::Cities(list));
+                    model::commit(host, Change::Cities(p.n, list));
                 }
                 _ => return err("invalid"),
             }
             state(host, lang)
         }
         "quotes.remove" | "quotes.move" => {
-            let list = host.widget_quotes();
+            let Some(p) = list_page(host, req, Kind::Quotes) else {
+                return err("invalid");
+            };
+            let list = host.widget_quotes().get(p.n).to_vec();
             let Some(i) = list.iter().position(|q| q.key() == str_of(req, "ref")) else {
                 return err("invalid");
             };
             let new = if op == "quotes.remove" {
                 let mut l = list;
-                book.remember(me, Removed::Quote(l.remove(i)), i, t);
+                book.remember(me, Removed::Quote(p.n, l.remove(i)), i, t);
                 l
             } else {
                 match req.get("to").and_then(Value::as_u64) {
@@ -542,17 +666,20 @@ pub fn handle(
                     _ => return err("invalid"),
                 }
             };
-            model::commit(host, Change::Quotes(new));
+            model::commit(host, Change::Quotes(p.n, new));
             removed(state(host, lang), op)
         }
         "cities.remove" | "cities.move" => {
-            let list = host.widget_cities();
+            let Some(p) = list_page(host, req, Kind::Cities) else {
+                return err("invalid");
+            };
+            let list = host.widget_cities().get(p.n).to_vec();
             let Some(i) = list.iter().position(|c| c.key() == str_of(req, "ref")) else {
                 return err("invalid");
             };
             let new = if op == "cities.remove" {
                 let mut l = list;
-                book.remember(me, Removed::City(l.remove(i)), i, t);
+                book.remember(me, Removed::City(p.n, l.remove(i)), i, t);
                 l
             } else {
                 match req.get("to").and_then(Value::as_u64) {
@@ -560,15 +687,33 @@ pub fn handle(
                     _ => return err("invalid"),
                 }
             };
-            model::commit(host, Change::Cities(new));
+            model::commit(host, Change::Cities(p.n, new));
             removed(state(host, lang), op)
         }
-        "sensors.add" | "player.set" => {
-            let what = if op == "sensors.add" {
-                What::Sensor
-            } else {
-                What::Player
+        "sensors.add" => {
+            let Some(p) = list_page(host, req, Kind::Sensors) else {
+                return err("invalid");
             };
+            let search = str_of(req, "search");
+            if !book.owned(search, me, Some(What::Sensor), t) {
+                return err("invalid");
+            }
+            let Some(Choice::Entity(id)) = host.search_choice(search, str_of(req, "ref")) else {
+                return err("invalid");
+            };
+            let mut list = host.widget_sensors().get(p.n).to_vec();
+            if list.contains(&id) {
+                return err("exists");
+            }
+            if list.len() >= crate::ha::widgets::MAX_SENSORS {
+                return err("list_full");
+            }
+            list.push(id);
+            model::commit(host, Change::Sensors(p.n, list));
+            state(host, lang)
+        }
+        "player.set" => {
+            let what = What::Player;
             let mut ha = host.widget_ha();
             let key = str_of(req, "ref");
             let cleared = op == "player.set" && key.is_empty();
@@ -586,15 +731,7 @@ pub fn handle(
                 let Some(Choice::Entity(id)) = host.search_choice(search, key) else {
                     return err("invalid");
                 };
-                if op == "player.set" {
-                    ha.player = id;
-                } else if ha.sensors.contains(&id) {
-                    return err("exists");
-                } else if ha.sensors.len() >= crate::ha::widgets::MAX_SENSORS {
-                    return err("list_full");
-                } else {
-                    ha.sensors.push(id);
-                }
+                ha.player = id;
             }
             model::commit(host, Change::WidgetHa(ha));
             let st = state(host, lang);
@@ -605,21 +742,22 @@ pub fn handle(
             }
         }
         "sensors.remove" | "sensors.move" => {
-            let mut ha = host.widget_ha();
-            let Some(i) = ha.sensors.iter().position(|x| x == str_of(req, "ref")) else {
+            let Some(p) = list_page(host, req, Kind::Sensors) else {
+                return err("invalid");
+            };
+            let mut list = host.widget_sensors().get(p.n).to_vec();
+            let Some(i) = list.iter().position(|x| x == str_of(req, "ref")) else {
                 return err("invalid");
             };
             if op == "sensors.remove" {
-                book.remember(me, Removed::Sensor(ha.sensors.remove(i)), i, t);
+                book.remember(me, Removed::Sensor(p.n, list.remove(i)), i, t);
             } else {
                 match req.get("to").and_then(Value::as_u64) {
-                    Some(to) if (to as usize) < ha.sensors.len() => {
-                        ha.sensors = moved(&ha.sensors, i, to as usize)
-                    }
+                    Some(to) if (to as usize) < list.len() => list = moved(&list, i, to as usize),
                     _ => return err("invalid"),
                 }
             }
-            model::commit(host, Change::WidgetHa(ha));
+            model::commit(host, Change::Sensors(p.n, list));
             removed(state(host, lang), op)
         }
         "people.set" => {
@@ -694,42 +832,70 @@ pub fn handle(
             let Some((what, at)) = book.take_removed(me, t) else {
                 return err("invalid");
             };
+            // A list's item goes back only to a page still there.
+            let there = |kind: Kind, n: u8| {
+                host.widget_pages()
+                    .iter()
+                    .any(|(p, _)| *p == Page::new(kind, n))
+            };
             match what {
-                Removed::Quote(q) => {
-                    let mut list = host.widget_quotes();
+                Removed::Quote(n, q) => {
+                    if !there(Kind::Quotes, n) {
+                        return err("invalid");
+                    }
+                    let mut list = host.widget_quotes().get(n).to_vec();
                     if !list.iter().any(|x| x.key() == q.key()) {
                         if list.len() >= MAX_QUOTES {
                             return err("list_full");
                         }
                         list.insert(at.min(list.len()), q);
-                        model::commit(host, Change::Quotes(list));
+                        model::commit(host, Change::Quotes(n, list));
                     }
                 }
-                Removed::City(c) => {
-                    let mut list = host.widget_cities();
+                Removed::City(n, c) => {
+                    if !there(Kind::Cities, n) {
+                        return err("invalid");
+                    }
+                    let mut list = host.widget_cities().get(n).to_vec();
                     if !list.iter().any(|x| x.id == c.id) {
                         if list.len() >= MAX_CITIES {
                             return err("list_full");
                         }
                         list.insert(at.min(list.len()), c);
-                        model::commit(host, Change::Cities(list));
+                        model::commit(host, Change::Cities(n, list));
                     }
                 }
-                Removed::Sensor(id) => {
-                    let mut ha = host.widget_ha();
-                    if !ha.sensors.contains(&id) {
-                        if ha.sensors.len() >= crate::ha::widgets::MAX_SENSORS {
+                Removed::Sensor(n, id) => {
+                    if !there(Kind::Sensors, n) {
+                        return err("invalid");
+                    }
+                    let mut list = host.widget_sensors().get(n).to_vec();
+                    if !list.contains(&id) {
+                        if list.len() >= crate::ha::widgets::MAX_SENSORS {
                             return err("list_full");
                         }
-                        let at = at.min(ha.sensors.len());
-                        ha.sensors.insert(at, id);
-                        model::commit(host, Change::WidgetHa(ha));
+                        list.insert(at.min(list.len()), id);
+                        model::commit(host, Change::Sensors(n, list));
                     }
                 }
                 Removed::Player(id) => {
                     let mut ha = host.widget_ha();
                     ha.player = id;
                     model::commit(host, Change::WidgetHa(ha));
+                }
+                Removed::Page(p, on, name, items) => {
+                    if there(p.kind, p.n) {
+                        return err("invalid");
+                    }
+                    model::commit(host, Change::WidgetAdded(p, Some(at), on));
+                    match items {
+                        PageItems::Quotes(l) => model::commit(host, Change::Quotes(p.n, l)),
+                        PageItems::Cities(l) => model::commit(host, Change::Cities(p.n, l)),
+                        PageItems::Sensors(l) => model::commit(host, Change::Sensors(p.n, l)),
+                    }
+                    if !name.is_empty() {
+                        model::commit(host, Change::WidgetName(p, name));
+                    }
                 }
             }
             state(host, lang)

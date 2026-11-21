@@ -47,6 +47,7 @@ impl Samples {
             check: &self.check,
             playing: Some(&self.playing),
             people: &self.people,
+            picks: &[],
         }
     }
 }
@@ -74,6 +75,7 @@ pub(super) fn city_rows_of(
             let c = choices.iter().find(|c| c.id == w.id)?;
             let there = (now + w.utc_offset as i64).rem_euclid(86400);
             Some(CityRow {
+                key: c.key(),
                 name: c.name.clone(),
                 time: format!("{:02}:{:02}", there / 3600, there % 3600 / 60),
                 temp: format!("{}°", w.temp.round() as i64),
@@ -170,6 +172,7 @@ pub fn samples(l: &Locale) -> Samples {
         .map(|s| {
             let c = curves.get(&s.id);
             Trend {
+                key: s.id.clone(),
                 name: s.name.clone(),
                 value: s.value,
                 decimals: s.decimals,

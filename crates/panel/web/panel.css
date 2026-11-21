@@ -128,6 +128,10 @@ input, textarea { caret-color: var(--accent); }
 .grip { cursor: grab; touch-action: none; }
 .group li.dragging { background: var(--surface-2); box-shadow: 0 8px 24px #000a; position: relative; z-index: 2; border-radius: var(--r-s); }
 .notebox { margin-top: 10px; display: grid; gap: 10px; justify-items: start; }
+/* A page of a kind that repeats: its name, and Remove for a second one. */
+.pageblock { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line-soft); }
+.pageblock input { width: 100%; max-width: 320px; }
+.pageblock .fine { margin-bottom: 14px; }
 
 /* ---------- The device: its real screen, 1280 x 800, drawn in em of 16 device pixels. */
 .device { position: relative; border-radius: 18px; background: #0a0b0f; padding: 10px; border: 1px solid #1f2026;

@@ -165,7 +165,9 @@ pub struct Want {
 
 /// Every entity the widget needs now, sorted (the subscription's `entity_ids`).
 pub fn wanted(w: &Want, catalog: &[Entity]) -> Vec<String> {
-    let mut out: Vec<String> = w.sensors.iter().take(MAX_SENSORS).cloned().collect();
+    // Every sensors' page's (each holds at most MAX_SENSORS).
+    let most = MAX_SENSORS * crate::ui::widgets::MAX_SAME as usize;
+    let mut out: Vec<String> = w.sensors.iter().take(most).cloned().collect();
     if !w.player.is_empty() {
         out.push(w.player.clone());
     }

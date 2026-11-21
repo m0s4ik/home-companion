@@ -519,6 +519,9 @@ fn the_widgets_routes() {
         ("/api/cities/remove", "cities.remove"),
         ("/api/cities/move", "cities.move"),
         ("/api/widgets/order", "widgets.order"),
+        ("/api/widgets/add", "widgets.add"),
+        ("/api/widgets/remove", "widgets.remove"),
+        ("/api/widgets/name", "widgets.name"),
         ("/api/sensors/add", "sensors.add"),
         ("/api/sensors/move", "sensors.move"),
         ("/api/player", "player.set"),
@@ -534,6 +537,30 @@ fn the_widgets_routes() {
         assert_eq!(a["op"], op);
         assert!(a.get("lat").is_none());
     }
+    // A list's op names the page whose list it is; adding, removing, naming a page.
+    let p = panel();
+    let r = post(
+        "/api/quotes/remove",
+        r#"{"ref":"yahoo:AAPL","page":"quotes-2"}"#,
+        &[],
+    );
+    assert_eq!(status(&p, &r), 200);
+    assert_eq!(last(&p)["page"], "quotes-2");
+    let r = post("/api/widgets/add", r#"{"kind":"quotes","page":"x"}"#, &[]);
+    assert_eq!(status(&p, &r), 200);
+    assert_eq!(last(&p)["kind"], "quotes");
+    assert!(last(&p).get("page").is_none());
+    let r = post(
+        "/api/widgets/name",
+        r#"{"page":"quotes-2","name":"Crypto","kind":"x"}"#,
+        &[],
+    );
+    assert_eq!(status(&p, &r), 200);
+    assert_eq!(
+        (last(&p)["page"].as_str(), last(&p)["name"].as_str()),
+        (Some("quotes-2"), Some("Crypto"))
+    );
+    assert!(last(&p).get("kind").is_none());
     assert_eq!(status(&p, &post("/api/quotes/delete", "{}", &[])), 404);
     let p = panel();
     for (path, op) in [

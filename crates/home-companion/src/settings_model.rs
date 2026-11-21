@@ -14,7 +14,7 @@
 use serde_json::{Value, json};
 
 use crate::settings::{Settings, WakeSensitivity};
-use crate::ui::widgets::{EVERY_CHOICES, Kind as WidgetKind};
+use crate::ui::widgets::{EVERY_CHOICES, Page as WidgetPage};
 
 /// What kind of value an item holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,15 +177,24 @@ pub const PANEL_KEYS: &[&str] = &[
 /// What is to be done once a value is written.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Change {
-    Widgets(Vec<WidgetKind>, u32),
+    Widgets(Vec<WidgetPage>, u32),
     /// Every page of the widget in the turn's order (the browser panel's arrows).
-    WidgetOrder(Vec<WidgetKind>),
+    WidgetOrder(Vec<WidgetPage>),
+    /// Another page of a kind that repeats (settings::Settings::add_widget_page): at that
+    /// place of the whole order (None: after the last page on), on or not.
+    WidgetAdded(WidgetPage, Option<usize>, bool),
+    /// A second (third...) page gone, with its list and its name.
+    WidgetRemoved(WidgetPage),
+    /// A page's name ("" none).
+    WidgetName(WidgetPage, String),
     /// The coins' currency.
     WidgetCurrency(String),
-    /// The markets and the other cities chosen from the browser panel.
-    Quotes(Vec<crate::feeds::QuoteChoice>),
-    Cities(Vec<crate::feeds::CityChoice>),
-    /// Home Assistant's entities for the widget and what to check.
+    /// The markets, the other cities and the sensors of a page (its number), chosen from the
+    /// browser panel.
+    Quotes(u8, Vec<crate::feeds::QuoteChoice>),
+    Cities(u8, Vec<crate::feeds::CityChoice>),
+    Sensors(u8, Vec<String>),
+    /// Home Assistant's entities for the widget (the player, the people) and what to check.
     WidgetHa(crate::ha::widgets::Want),
     Night(bool, u32, u32),
     HomeCompact(bool),
@@ -198,6 +207,22 @@ pub enum Change {
     UpdatePrerelease(bool),
     Panel(bool),
     PanelScreen(bool),
+}
+
+impl Change {
+    /// A later change replaces this one before it is written (the latest of each kind, of each
+    /// page for a page's list or name); a page added or removed is never replaced.
+    pub fn replaced_by(&self, later: &Change) -> bool {
+        use Change::*;
+        match (self, later) {
+            (WidgetAdded(..), _) | (WidgetRemoved(_), _) => false,
+            (Quotes(a, _), Quotes(b, _))
+            | (Cities(a, _), Cities(b, _))
+            | (Sensors(a, _), Sensors(b, _)) => a == b,
+            (WidgetName(a, _), WidgetName(b, _)) => a == b,
+            _ => std::mem::discriminant(self) == std::mem::discriminant(later),
+        }
+    }
 }
 
 /// Why a value was not set.
@@ -242,10 +267,16 @@ pub fn options(
     word: &dyn Fn(&str) -> String,
 ) -> Vec<(String, String)> {
     match item.key {
-        "widgets" => widget_order(host)
-            .iter()
-            .map(|k| (k.key().to_string(), word(&format!("widget_{}", k.key()))))
-            .collect(),
+        "widgets" => {
+            let names = host
+                .settings()
+                .map(|s| s.widget_names())
+                .unwrap_or_default();
+            widget_order(host)
+                .iter()
+                .map(|p| (p.key(), page_label(*p, &names, word)))
+                .collect()
+        }
         "widgets_every" => EVERY_CHOICES
             .iter()
             .map(|e| {
@@ -273,26 +304,41 @@ pub fn options(
     }
 }
 
+/// A page's label in the words of `word`: its name, else the kind's word with its number from
+/// the second on ("Markets 2").
+pub fn page_label(
+    p: WidgetPage,
+    names: &[(WidgetPage, String)],
+    word: &dyn Fn(&str) -> String,
+) -> String {
+    let name = names
+        .iter()
+        .find(|(x, _)| *x == p)
+        .map_or("", |(_, n)| n.as_str());
+    p.label(&word(&format!("widget_{}", p.kind.key())), name)
+}
+
 /// The order of the widget's pages now: what the host holds (`widget_order`), else the file,
 /// else the default.
-pub fn widget_order(host: &dyn Host) -> Vec<WidgetKind> {
+pub fn widget_order(host: &dyn Host) -> Vec<WidgetPage> {
     if let Some(v) = host.live("widget_order") {
         let keys = strings(&v);
-        let mut out: Vec<WidgetKind> = keys
-            .iter()
-            .filter_map(|k| WidgetKind::from_key(k))
-            .collect();
-        out.dedup();
-        for k in WidgetKind::ALL {
-            if !out.contains(&k) {
-                out.push(k);
+        let mut out: Vec<WidgetPage> = Vec::new();
+        for p in keys.iter().filter_map(|k| WidgetPage::from_key(k)) {
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+        for p in WidgetPage::all() {
+            if !out.contains(&p) {
+                out.push(p);
             }
         }
         return out;
     }
     host.settings()
         .map(|s| s.widget_order())
-        .unwrap_or_else(|| WidgetKind::ALL.to_vec())
+        .unwrap_or_else(WidgetPage::all)
 }
 
 /// What the widget asks of Home Assistant now: the file's, with the checks as the host holds
@@ -401,18 +447,18 @@ pub fn change_for(host: &dyn Host, key: &str, value: &Value) -> Result<Change, S
     let v = check(host, item, value).ok_or(SetError::Invalid)?;
     // The neighbours as they are now (what the host holds, else the file).
     let widgets = || {
-        let on: Vec<WidgetKind> = get(host, "widgets")
+        let on: Vec<WidgetPage> = get(host, "widgets")
             .map(|v| {
                 let keys = strings(&v);
                 widget_order(host)
                     .into_iter()
-                    .filter(|k| keys.iter().any(|x| x == k.key()))
+                    .filter(|k| keys.contains(&k.key()))
                     .collect()
             })
             .unwrap_or_else(|| {
                 widget_order(host)
                     .into_iter()
-                    .filter(|k| k.default_on())
+                    .filter(|k| k.n == 1 && k.kind.default_on())
                     .collect()
             });
         let every = get(host, "widgets_every")
@@ -430,9 +476,9 @@ pub fn change_for(host: &dyn Host, key: &str, value: &Value) -> Result<Change, S
     Ok(match key {
         "widgets" => {
             let keys = strings(&v);
-            let on: Vec<WidgetKind> = widget_order(host)
+            let on: Vec<WidgetPage> = widget_order(host)
                 .into_iter()
-                .filter(|k| keys.iter().any(|x| x == k.key()))
+                .filter(|k| keys.contains(&k.key()))
                 .collect();
             Change::Widgets(on, widgets().1)
         }
@@ -497,8 +543,12 @@ pub fn save(s: &Settings, change: &Change) {
         Change::Widgets(on, every) => s.save_widgets(on, *every),
         Change::WidgetOrder(order) => s.save_widget_order(order),
         Change::WidgetCurrency(c) => s.save_widget_currency(c),
-        Change::Quotes(q) => s.save_quotes(q),
-        Change::Cities(c) => s.save_cities(c),
+        Change::WidgetAdded(p, at, on) => s.add_widget_page(*p, *at, *on),
+        Change::WidgetRemoved(p) => s.remove_widget_page(*p),
+        Change::WidgetName(p, name) => s.save_widget_name(*p, name),
+        Change::Quotes(n, q) => s.save_quotes(*n, q),
+        Change::Cities(n, c) => s.save_cities(*n, c),
+        Change::Sensors(n, ids) => s.save_sensors(*n, ids),
         Change::WidgetHa(w) => s.save_widget_ha(w),
         Change::Night(on, start, end) => s.save_night(*on, *start, *end),
         Change::HomeCompact(on) => s.save_home_compact(*on),
@@ -600,6 +650,7 @@ pub fn panel_set(host: &dyn Host, key: &str, value: &Value) -> Result<(), SetErr
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::ui::widgets::Kind as WidgetKind;
     use std::cell::RefCell;
     use std::path::PathBuf;
 
@@ -667,18 +718,41 @@ pub(crate) mod tests {
     /// Every item: a value set reads back the same, is in the file (read again from disk) and
     /// was applied.
     #[test]
+    fn a_pages_list_replaces_only_its_own() {
+        use crate::ui::widgets::Page;
+        let q2 = Page::new(WidgetKind::Quotes, 2);
+        assert!(Change::Quotes(1, vec![]).replaced_by(&Change::Quotes(1, vec![])));
+        assert!(!Change::Quotes(1, vec![]).replaced_by(&Change::Quotes(2, vec![])));
+        assert!(!Change::Sensors(2, vec![]).replaced_by(&Change::Cities(2, vec![])));
+        assert!(
+            Change::WidgetName(q2, "a".into()).replaced_by(&Change::WidgetName(q2, "b".into()))
+        );
+        assert!(
+            !Change::WidgetAdded(q2, None, true).replaced_by(&Change::WidgetAdded(q2, None, true))
+        );
+        assert!(!Change::WidgetRemoved(q2).replaced_by(&Change::WidgetRemoved(q2)));
+        assert!(Change::WidgetOrder(vec![]).replaced_by(&Change::WidgetOrder(vec![q2])));
+    }
+
+    #[test]
     fn set_then_get_for_every_item() {
         let h = FakeHost::new("every");
         let cases: Vec<(&str, Value, Change)> = vec![
             (
                 "widgets",
                 json!(["shopping", "next"]),
-                Change::Widgets(vec![WidgetKind::Next, WidgetKind::Shopping], 20),
+                Change::Widgets(
+                    vec![WidgetKind::Next.into(), WidgetKind::Shopping.into()],
+                    20,
+                ),
             ),
             (
                 "widgets_every",
                 json!("60"),
-                Change::Widgets(vec![WidgetKind::Next, WidgetKind::Shopping], 60),
+                Change::Widgets(
+                    vec![WidgetKind::Next.into(), WidgetKind::Shopping.into()],
+                    60,
+                ),
             ),
             (
                 "widgets_currency",
@@ -756,7 +830,10 @@ pub(crate) mod tests {
         let s = Settings::in_dir(&h.dir);
         assert_eq!(
             s.widgets(),
-            (vec![WidgetKind::Next, WidgetKind::Shopping], 60)
+            (
+                vec![WidgetKind::Next.into(), WidgetKind::Shopping.into()],
+                60
+            )
         );
         assert_eq!(s.night(), (false, 22, 6));
         assert_eq!(s.widget_currency(), "eur");

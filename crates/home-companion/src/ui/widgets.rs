@@ -26,6 +26,11 @@ use super::next::NextItem;
 
 /// Pages in the turn at most.
 pub const MAX_PAGES: usize = 10;
+/// Pages of one kind at most (the kinds that [`Kind::repeats`]): a second markets' page holds
+/// more markets, each page with its own list.
+pub const MAX_SAME: u8 = 4;
+/// A page's name (given from the browser) at most, in characters: it is a title.
+pub const MAX_PAGE_NAME: usize = 24;
 /// After a swipe or a tap the turn waits this long (who chose a page wants to read it).
 pub const HOLD: Duration = Duration::from_secs(60);
 /// The turn's default interval.
@@ -109,6 +114,12 @@ impl Kind {
         !matches!(self, Kind::Check | Kind::Playing | Kind::Home)
     }
 
+    /// Its content is a list the user chooses: it can be on the home more than once, each page
+    /// with its own list ([`Page`]).
+    pub fn repeats(self) -> bool {
+        matches!(self, Kind::Quotes | Kind::Cities | Kind::Sensors)
+    }
+
     /// Its rows can be more than the slots: the page shows a window that moves on each time
     /// the page comes back.
     pub fn windowed(self) -> bool {
@@ -117,6 +128,206 @@ impl Kind {
             Kind::Quotes | Kind::Sensors | Kind::Notes | Kind::Check | Kind::Cities | Kind::Home
         )
     }
+}
+
+/// A page of the turn: its kind and, for the kinds that repeat, which one of them (1 the first,
+/// up to [`MAX_SAME`]). Its key is the key in settings.toml of its place in the turn (`order`,
+/// `on`) and of its list: "quotes" for the first, "quotes-2" for the second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Page {
+    pub kind: Kind,
+    pub n: u8,
+}
+
+/// A kind is its first page.
+impl PartialEq<Kind> for Page {
+    fn eq(&self, k: &Kind) -> bool {
+        self.kind == *k && self.n == 1
+    }
+}
+
+impl From<Kind> for Page {
+    fn from(kind: Kind) -> Page {
+        Page { kind, n: 1 }
+    }
+}
+
+impl Page {
+    pub fn new(kind: Kind, n: u8) -> Page {
+        Page { kind, n }
+    }
+
+    /// The first page of every kind, in the default order.
+    pub fn all() -> Vec<Page> {
+        Kind::ALL.into_iter().map(Page::from).collect()
+    }
+
+    pub fn key(self) -> String {
+        if self.n <= 1 {
+            self.kind.key().to_string()
+        } else {
+            format!("{}-{}", self.kind.key(), self.n)
+        }
+    }
+
+    /// "quotes", "quotes-2"... ("next-2", "quotes-9", "quotes-1": None).
+    pub fn from_key(key: &str) -> Option<Page> {
+        if let Some(kind) = Kind::from_key(key) {
+            return Some(kind.into());
+        }
+        let (k, n) = key.rsplit_once('-')?;
+        let kind = Kind::from_key(k).filter(|k| k.repeats())?;
+        let n: u8 = n.parse().ok().filter(|n| (2..=MAX_SAME).contains(n))?;
+        (n.to_string() == key[k.len() + 1..]).then_some(Page { kind, n })
+    }
+
+    /// Its name for people: the one given, else the kind's word, with its number from the
+    /// second on ("Markets", "Markets 2").
+    pub fn label(self, word: &str, name: &str) -> String {
+        if !name.trim().is_empty() {
+            name.trim().to_string()
+        } else if self.n <= 1 {
+            word.to_string()
+        } else {
+            format!("{word} {}", self.n)
+        }
+    }
+
+    /// The first number from 2 that no page of `kind` in `order` has (None: [`MAX_SAME`] there).
+    pub fn next_free(kind: Kind, order: &[Page]) -> Option<Page> {
+        (2..=MAX_SAME)
+            .map(|n| Page { kind, n })
+            .find(|p| !order.contains(p))
+    }
+}
+
+/// The lists of the pages of a kind: page number → its items, in order. The first page's is
+/// there even when empty.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lists<T>(pub Vec<(u8, Vec<T>)>);
+
+impl<T> Default for Lists<T> {
+    fn default() -> Self {
+        Lists(vec![(1, Vec::new())])
+    }
+}
+
+impl<T: Clone> Lists<T> {
+    /// One list: the first page's.
+    pub fn one(items: Vec<T>) -> Lists<T> {
+        Lists(vec![(1, items)])
+    }
+
+    pub fn get(&self, n: u8) -> &[T] {
+        self.0
+            .iter()
+            .find(|(m, _)| *m == n)
+            .map_or(&[], |(_, v)| v.as_slice())
+    }
+
+    pub fn set(&mut self, n: u8, items: Vec<T>) {
+        match self.0.iter_mut().find(|(m, _)| *m == n) {
+            Some((_, v)) => *v = items,
+            None => {
+                self.0.push((n, items));
+                self.0.sort_by_key(|(m, _)| *m);
+            }
+        }
+    }
+
+    /// A page gone (the first stays, emptied never: it is only turned off).
+    pub fn remove(&mut self, n: u8) {
+        if n > 1 {
+            self.0.retain(|(m, _)| *m != n);
+        }
+    }
+
+    /// Every page's items once, in the pages' order then the lists' (what the feeds fetch).
+    pub fn union<K: PartialEq>(&self, key: impl Fn(&T) -> K) -> Vec<T> {
+        let mut out: Vec<T> = Vec::new();
+        for x in self.0.iter().flat_map(|(_, v)| v) {
+            if !out.iter().any(|o| key(o) == key(x)) {
+                out.push(x.clone());
+            }
+        }
+        out
+    }
+
+    /// No page has an item.
+    pub fn is_empty(&self) -> bool {
+        self.0.iter().all(|(_, v)| v.is_empty())
+    }
+}
+
+/// The lists of every page of the kinds that repeat, as settings.toml holds them.
+pub struct AllLists<'a> {
+    pub quotes: &'a Lists<crate::feeds::QuoteChoice>,
+    pub cities: &'a Lists<crate::feeds::CityChoice>,
+    pub sensors: &'a Lists<String>,
+    /// The names given to pages.
+    pub names: &'a [(Page, String)],
+}
+
+/// What each page of `order` of the kinds that repeat shows: its items (`sensor_name` names an
+/// entity) and its title (`word` gives the kinds' words: `widget_quotes`...).
+pub fn picks_of(
+    order: &[Page],
+    lists: &AllLists,
+    sensor_name: &dyn Fn(&str) -> String,
+    word: &dyn Fn(&str) -> String,
+) -> Vec<Picks> {
+    order
+        .iter()
+        .filter(|p| p.kind.repeats())
+        .map(|&p| {
+            let pick = |key: String, name: String| Pick { key, name };
+            let items: Vec<Pick> = match p.kind {
+                Kind::Quotes => lists
+                    .quotes
+                    .get(p.n)
+                    .iter()
+                    .map(|q| pick(q.key(), q.name.clone()))
+                    .collect(),
+                Kind::Cities => lists
+                    .cities
+                    .get(p.n)
+                    .iter()
+                    .map(|c| pick(c.key(), c.name.clone()))
+                    .collect(),
+                _ => lists
+                    .sensors
+                    .get(p.n)
+                    .iter()
+                    .map(|id| pick(id.clone(), sensor_name(id)))
+                    .collect(),
+            };
+            let name = lists
+                .names
+                .iter()
+                .find(|(x, _)| *x == p)
+                .map_or("", |(_, n)| n.as_str());
+            Picks {
+                page: p,
+                title: p.label(&word(&format!("widget_{}", p.kind.key())), name),
+                items,
+            }
+        })
+        .collect()
+}
+
+/// What a page of a kind that repeats shows: its items' keys (and names, for the rows still
+/// waiting for their data), in order, and its title.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Pick {
+    pub key: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Picks {
+    pub page: Page,
+    pub title: String,
+    pub items: Vec<Pick>,
 }
 
 /// A row of a page. For the weather's columns (`WidgetView::columns`): `left` is the hour (or
@@ -144,6 +355,8 @@ pub struct WidgetRow {
 #[derive(Debug, Clone, PartialEq)]
 pub struct WidgetView {
     pub kind: Kind,
+    /// Which page of its kind (1 the first; see [`Page`]).
+    pub n: u8,
     pub title: String,
     /// The header's right side: a count, or the time of data that is old ("" none).
     pub aside: String,
@@ -156,6 +369,12 @@ pub struct WidgetView {
     pub window: String,
     /// The weather's big block (now or tomorrow) above its columns; None on other pages.
     pub hero: Option<super::weather::WeatherHero>,
+}
+
+impl WidgetView {
+    pub fn page(&self) -> Page {
+        Page::new(self.kind, self.n)
+    }
 }
 
 /// The words of the pages.
@@ -193,6 +412,8 @@ pub struct Words<'a> {
 /// A number with a curve: a stock, a coin, a sensor.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Trend {
+    /// What it is chosen by (a market's "yahoo:AAPL", a sensor's entity id).
+    pub key: String,
     pub name: String,
     pub value: f64,
     /// Digits after the separator.
@@ -218,6 +439,8 @@ pub struct Trend {
 /// Another city's weather, already in the screen's words.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CityRow {
+    /// What it is chosen by (the city's id).
+    pub key: String,
     pub name: String,
     /// The time there now ("15:02").
     pub time: String,
@@ -291,46 +514,92 @@ pub struct Sources<'a> {
     pub check: &'a [CheckRow],
     pub playing: Option<&'a Playing>,
     pub people: &'a [Person],
+    /// What each page of the kinds that repeat shows (`quotes`, `cities` and `sensors` hold
+    /// every page's items); a page without its picks shows every item of its kind.
+    pub picks: &'a [Picks],
+}
+
+impl Sources<'_> {
+    fn picks(&self, page: Page) -> Option<&Picks> {
+        self.picks.iter().find(|p| p.page == page)
+    }
+}
+
+/// The items of `all` a page shows, in its order.
+fn picked<T: Clone>(all: &[T], key: impl Fn(&T) -> &str, picks: Option<&Picks>) -> Vec<T> {
+    match picks {
+        None => all.to_vec(),
+        Some(p) => p
+            .items
+            .iter()
+            .filter_map(|i| all.iter().find(|x| key(x) == i.key).cloned())
+            .collect(),
+    }
 }
 
 /// The pages that have something to say, in the order of `enabled` (the user's).
 /// `now` and `local` (unix seconds → ("15:30", local day number)) date the rows of Next and
 /// the time of data that is old.
-pub fn pages(
+pub fn pages<P: Into<Page> + Copy>(
     s: &Sources,
-    enabled: &[Kind],
+    enabled: &[P],
     w: &Words,
     now: i64,
     local: &dyn Fn(i64) -> (String, i64),
 ) -> Vec<WidgetView> {
     let mut out = Vec::new();
-    let mut seen: Vec<Kind> = Vec::new();
-    for &kind in enabled {
-        if seen.contains(&kind) {
+    let mut seen: Vec<Page> = Vec::new();
+    for p in enabled.iter().map(|&p| p.into()) {
+        if seen.contains(&p) {
             continue;
         }
-        seen.push(kind);
-        out.extend(page(s, kind, w, now, local));
+        seen.push(p);
+        out.extend(page(s, p, w, now, local));
     }
     out.truncate(MAX_PAGES);
     out
 }
 
-/// One page, if it has something to say.
+/// One page, if it has something to say: of the kinds that repeat, the items of its picks,
+/// under its picks' title.
 pub fn page(
     s: &Sources,
-    kind: Kind,
+    p: impl Into<Page>,
     w: &Words,
     now: i64,
     local: &dyn Fn(i64) -> (String, i64),
 ) -> Option<WidgetView> {
+    let p: Page = p.into();
+    let picks = s.picks(p);
+    let mut v = kind_page(s, p.kind, picks, w, now, local)?;
+    v.n = p.n;
+    if let Some(t) = picks.map(|x| &x.title).filter(|t| !t.is_empty()) {
+        v.title = t.clone();
+    }
+    Some(v)
+}
+
+fn kind_page(
+    s: &Sources,
+    kind: Kind,
+    picks: Option<&Picks>,
+    w: &Words,
+    now: i64,
+    local: &dyn Fn(i64) -> (String, i64),
+) -> Option<WidgetView> {
+    let trends = |all: &[Trend]| picked(all, |t: &Trend| t.key.as_str(), picks);
     match kind {
         Kind::Next => next_page(s.next, w, now, local),
         Kind::Weather => weather_page(&s.weather, s.weather_hero.as_ref(), w),
         Kind::Shopping => s.shopping.and_then(|l| shopping_page(l, w)),
-        Kind::Quotes => trend_page(Kind::Quotes, w.quotes, s.quotes, w, now, local),
-        Kind::Sensors => trend_page(Kind::Sensors, w.sensors, s.sensors, w, now, local),
-        Kind::Cities => cities_page(s.cities, w, now, local),
+        Kind::Quotes => trend_page(Kind::Quotes, w.quotes, &trends(s.quotes), w, now, local),
+        Kind::Sensors => trend_page(Kind::Sensors, w.sensors, &trends(s.sensors), w, now, local),
+        Kind::Cities => cities_page(
+            &picked(s.cities, |c: &CityRow| c.key.as_str(), picks),
+            w,
+            now,
+            local,
+        ),
         Kind::Notes => notes_page(s.notes, w),
         Kind::Check => check_page(s.check, w),
         Kind::Playing => s.playing.and_then(|p| playing_page(p, w)),
@@ -338,44 +607,38 @@ pub fn page(
     }
 }
 
-/// What the browser panel shows of the widget's choices: which items are chosen (their names, in
-/// order), so a page shows a row for each even before its data comes.
+/// What the browser panel shows of the choices that are not lists (the lists are the sources'
+/// picks).
 #[derive(Debug, Default)]
 pub struct Chosen<'a> {
-    pub quotes: &'a [String],
-    pub cities: &'a [String],
-    pub sensors: &'a [String],
     /// What to check has at least one kind on.
     pub check: bool,
     /// The media player chosen ("" none).
     pub player: &'a str,
 }
 
-/// Every page for the browser panel, in [`Kind::ALL`]'s order: the page as the screen would
-/// draw it now (`real`), with a "…" row for each chosen item whose data has not come yet; the
-/// pages that show only at times (what to check, now playing) and the weather fall back to an
-/// example (`sample`, drawn at `sample_now`) and say so. None: nothing to show.
+/// Every page of `order` for the browser panel: the page as the screen would draw it now
+/// (`real`), with a "…" row for each chosen item whose data has not come yet (the picks of
+/// `real`); the pages that show only at times (what to check, now playing) and the weather fall
+/// back to an example (`sample`, drawn at `sample_now`) and say so. None: nothing to show.
+#[allow(clippy::too_many_arguments)]
 pub fn panel_pages(
     real: &Sources,
     sample: &Sources,
     chosen: &Chosen,
+    order: &[Page],
     w: &Words,
     now: i64,
     sample_now: i64,
     local: &dyn Fn(i64) -> (String, i64),
-) -> Vec<(Kind, Option<WidgetView>, bool)> {
-    Kind::ALL
-        .into_iter()
-        .map(|kind| {
-            let real_page = page(real, kind, w, now, local);
-            let names: &[String] = match kind {
-                Kind::Quotes => chosen.quotes,
-                Kind::Cities => chosen.cities,
-                Kind::Sensors => chosen.sensors,
-                _ => &[],
-            };
-            if !names.is_empty() {
-                return (kind, Some(waiting(kind, real_page, names, w)), false);
+) -> Vec<(Page, Option<WidgetView>, bool)> {
+    order
+        .iter()
+        .map(|&p| {
+            let kind = p.kind;
+            let real_page = page(real, p, w, now, local);
+            if let Some(picks) = real.picks(p).filter(|x| !x.items.is_empty()) {
+                return (p, Some(waiting(p, real_page, picks, w)), false);
             }
             let fallback = match kind {
                 Kind::Check => chosen.check,
@@ -384,32 +647,39 @@ pub fn panel_pages(
                 _ => false,
             };
             match real_page {
-                Some(p) => (kind, Some(p), false),
+                Some(v) => (p, Some(v), false),
                 None if fallback => {
-                    let mut p = page(sample, kind, w, sample_now, local);
+                    let mut v = page(sample, p, w, sample_now, local);
                     if kind == Kind::Playing
-                        && let Some(p) = p.as_mut()
+                        && let Some(v) = v.as_mut()
                     {
-                        p.aside = chosen.player.to_string();
+                        v.aside = chosen.player.to_string();
                     }
-                    (kind, p.clone(), p.is_some())
+                    let sample = v.is_some();
+                    (p, v, sample)
                 }
-                None => (kind, None, false),
+                None => (p, None, false),
             }
         })
         .collect()
 }
 
-/// The page with its rows in the order of `names`, a waiting row for each name without data.
-pub fn waiting(kind: Kind, page: Option<WidgetView>, names: &[String], w: &Words) -> WidgetView {
+/// The page with its rows in the order of its picks, a waiting row for each item without data.
+pub fn waiting(p: Page, page: Option<WidgetView>, picks: &Picks, w: &Words) -> WidgetView {
+    let names: Vec<&String> = picks.items.iter().map(|i| &i.name).collect();
     let mut v = page.unwrap_or_else(|| WidgetView {
-        kind,
-        title: match kind {
-            Kind::Quotes => w.quotes,
-            Kind::Cities => w.cities,
-            _ => w.sensors,
-        }
-        .to_string(),
+        kind: p.kind,
+        n: p.n,
+        title: if picks.title.is_empty() {
+            match p.kind {
+                Kind::Quotes => w.quotes,
+                Kind::Cities => w.cities,
+                _ => w.sensors,
+            }
+            .to_string()
+        } else {
+            picks.title.clone()
+        },
         aside: String::new(),
         rows: Vec::new(),
         columns: false,
@@ -419,7 +689,7 @@ pub fn waiting(kind: Kind, page: Option<WidgetView>, names: &[String], w: &Words
     });
     let mut have = std::mem::take(&mut v.rows);
     for n in names {
-        match have.iter().position(|r| r.text == *n) {
+        match have.iter().position(|r| r.text == **n) {
             Some(i) => v.rows.push(have.remove(i)),
             None => v.rows.push(WidgetRow {
                 text: n.clone(),
@@ -476,6 +746,7 @@ fn next_page(
     });
     Some(WidgetView {
         kind: Kind::Next,
+        n: 1,
         title: w.next.to_string(),
         aside: String::new(),
         rows,
@@ -497,6 +768,7 @@ fn weather_page(
     }
     Some(WidgetView {
         kind: Kind::Weather,
+        n: 1,
         title: w.weather.to_string(),
         aside: String::new(),
         rows: columns.iter().take(5).cloned().collect(),
@@ -524,6 +796,7 @@ fn shopping_page(lists: &[ShopList], w: &Words) -> Option<WidgetView> {
     let more = if n > 3 { " …" } else { "" };
     Some(WidgetView {
         kind: Kind::Shopping,
+        n: 1,
         title: w.shopping.to_string(),
         aside: count.clone(),
         rows,
@@ -758,7 +1031,7 @@ pub fn trend_cards(
 /// A page in Settings → Screen → Widgets.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PageSetting {
-    pub kind: Kind,
+    pub page: Page,
     pub label: String,
     pub on: bool,
     /// What it shows, chosen from the browser ("3 quotes · chosen from the browser"); "" none.
@@ -797,6 +1070,7 @@ fn trend_page(
     let rows: Vec<WidgetRow> = shown.iter().map(|t| trend_row(t, w)).collect();
     Some(WidgetView {
         kind,
+        n: 1,
         title: title.to_string(),
         aside: data_from(shown.iter().map(|t| (t.at, t.fresh)), w, now, local),
         line: Some(WidgetRow {
@@ -831,6 +1105,7 @@ fn cities_page(
         .collect();
     Some(WidgetView {
         kind: Kind::Cities,
+        n: 1,
         title: w.cities.to_string(),
         aside: data_from(shown.iter().map(|c| (c.at, c.fresh)), w, now, local),
         line: None,
@@ -853,6 +1128,7 @@ fn notes_page(notes: &[String], w: &Words) -> Option<WidgetView> {
         .collect();
     Some(WidgetView {
         kind: Kind::Notes,
+        n: 1,
         title: w.notes.to_string(),
         aside: String::new(),
         rows,
@@ -893,6 +1169,7 @@ fn check_page(items: &[CheckRow], w: &Words) -> Option<WidgetView> {
     let batteries = items.len() - open;
     Some(WidgetView {
         kind: Kind::Check,
+        n: 1,
         title: w.check.to_string(),
         aside: String::new(),
         line: Some(WidgetRow {
@@ -934,6 +1211,7 @@ fn playing_page(p: &Playing, w: &Words) -> Option<WidgetView> {
     };
     Some(WidgetView {
         kind: Kind::Playing,
+        n: 1,
         title: w.playing.to_string(),
         aside: p.player.clone(),
         rows,
@@ -969,6 +1247,7 @@ fn home_page(people: &[Person], w: &Words) -> Option<WidgetView> {
         .collect();
     Some(WidgetView {
         kind: Kind::Home,
+        n: 1,
         title: w.home.to_string(),
         aside: String::new(),
         line: Some(WidgetRow {
@@ -1101,7 +1380,7 @@ pub struct Band {
     /// The last tick was paused or held: the next one starts a new interval.
     held: bool,
     /// How many times each page came on screen: its window of rows (`fit`).
-    turns: HashMap<Kind, u32>,
+    turns: HashMap<Page, u32>,
     /// What the screen was last told (to say nothing twice).
     told: Option<Shown>,
 }
@@ -1126,18 +1405,23 @@ impl Band {
         self.current.as_ref().map(|v| v.kind)
     }
 
+    /// The page on screen.
+    pub fn page(&self) -> Option<Page> {
+        self.current.as_ref().map(|v| v.page())
+    }
+
     fn position(&self) -> Option<usize> {
-        let k = self.kind()?;
-        self.latest.iter().position(|v| v.kind == k)
+        let k = self.page()?;
+        self.latest.iter().position(|v| v.page() == k)
     }
 
     fn take(&mut self, index: usize, now: Instant) {
-        let changed = self.kind() != self.latest.get(index).map(|v| v.kind);
+        let changed = self.page() != self.latest.get(index).map(|v| v.page());
         self.current = self.latest.get(index).cloned();
         if changed {
             self.seq = self.seq.wrapping_add(1);
             self.since = now;
-            if let Some(k) = self.kind() {
+            if let Some(k) = self.page() {
                 *self.turns.entry(k).or_insert(0) += 1;
             }
         }
@@ -1148,7 +1432,7 @@ impl Band {
             view: self.current.as_ref().and_then(|v| {
                 let turn = self
                     .turns
-                    .get(&v.kind)
+                    .get(&v.page())
                     .copied()
                     .unwrap_or(1)
                     .saturating_sub(1);
@@ -1178,7 +1462,7 @@ impl Band {
         let before = self.position();
         self.latest = pages;
         self.slots = slots;
-        match (self.kind(), self.position()) {
+        match (self.page(), self.position()) {
             // Still there: the photograph stays, its place may have moved.
             (Some(_), Some(_)) => {}
             (Some(_), None) => {
@@ -1229,7 +1513,7 @@ impl Band {
             && windows(&v, self.slots) > 1
         {
             self.current = Some(v.clone());
-            *self.turns.entry(v.kind).or_insert(0) += 1;
+            *self.turns.entry(v.page()).or_insert(0) += 1;
             self.seq = self.seq.wrapping_add(1);
             self.since = now;
             return self.tell().map(|s| self.log(s, Why::Tick));
@@ -1253,16 +1537,17 @@ impl Band {
         self.tell().map(|s| self.log(s, Why::Swipe))
     }
 
-    /// A tap on the widget (it opens the page's own page): the kind, and the hold.
-    pub fn tap(&mut self, now: Instant) -> Option<Kind> {
+    /// A tap on the widget (it opens the page's own page): the page, and the hold.
+    pub fn tap(&mut self, now: Instant) -> Option<Page> {
         self.hold_until = Some(now + HOLD);
-        self.kind()
+        self.page()
     }
 
     fn log(&self, s: Shown, why: Why) -> Shown {
         if let Some(v) = &s.view {
-            log::info!(event = "widget", page = v.kind.key(), why = why.key(), slots = s.slots;
-                "widget: {} ({}/{}, {} slots, {})", v.kind.key(), s.index + 1, s.count, s.slots, why.key());
+            let page = v.page().key();
+            log::info!(event = "widget", page = page.as_str(), why = why.key(), slots = s.slots;
+                "widget: {page} ({}/{}, {} slots, {})", s.index + 1, s.count, s.slots, why.key());
         }
         s
     }
@@ -1322,6 +1607,7 @@ mod tests {
     fn view(kind: Kind, rows: usize) -> WidgetView {
         WidgetView {
             kind,
+            n: 1,
             title: kind.key().into(),
             aside: String::new(),
             rows: (0..rows)
@@ -1413,7 +1699,161 @@ mod tests {
         assert_eq!(one.rows[0].right, "4 to buy");
         let p = pages(&s, &[Kind::Shopping], &words(), NOW, &local);
         assert_eq!(p.len(), 1);
-        assert!(pages(&s, &[], &words(), NOW, &local).is_empty());
+        assert!(pages::<Page>(&s, &[], &words(), NOW, &local).is_empty());
+    }
+
+    #[test]
+    fn pages_of_a_kind_have_their_keys() {
+        let q2 = Page::new(Kind::Quotes, 2);
+        assert_eq!(Page::from(Kind::Quotes).key(), "quotes");
+        assert_eq!(q2.key(), "quotes-2");
+        for (key, page) in [
+            ("quotes", Some(Kind::Quotes.into())),
+            ("quotes-2", Some(q2)),
+            ("sensors-4", Some(Page::new(Kind::Sensors, 4))),
+            ("cities-3", Some(Page::new(Kind::Cities, 3))),
+        ] {
+            assert_eq!(Page::from_key(key), page, "{key}");
+        }
+        for bad in [
+            "quotes-1",
+            "quotes-5",
+            "quotes-02",
+            "next-2",
+            "weather-2",
+            "quotes-",
+            "-2",
+            "stocks",
+        ] {
+            assert_eq!(Page::from_key(bad), None, "{bad}");
+        }
+        assert_eq!(q2.label("Markets", ""), "Markets 2");
+        assert_eq!(Page::from(Kind::Quotes).label("Markets", ""), "Markets");
+        assert_eq!(q2.label("Markets", " Crypto "), "Crypto");
+        let order = vec![Kind::Quotes.into(), Page::new(Kind::Quotes, 3)];
+        assert_eq!(Page::next_free(Kind::Quotes, &order), Some(q2));
+        let full: Vec<Page> = (1..=MAX_SAME).map(|n| Page::new(Kind::Quotes, n)).collect();
+        assert_eq!(Page::next_free(Kind::Quotes, &full), None);
+        assert!(Kind::Quotes.repeats() && Kind::Cities.repeats() && Kind::Sensors.repeats());
+        assert!(!Kind::Next.repeats() && !Kind::Weather.repeats() && !Kind::Home.repeats());
+    }
+
+    #[test]
+    fn the_feeds_fetch_every_pages_items_once() {
+        let mut l: Lists<&str> = Lists::default();
+        assert!(l.is_empty() && l.get(1).is_empty());
+        l.set(1, vec!["AAPL", "BTC"]);
+        l.set(3, vec!["GOLD", "AAPL"]);
+        l.set(2, vec!["EUR"]);
+        assert_eq!(l.union(|x| *x), ["AAPL", "BTC", "EUR", "GOLD"]);
+        assert_eq!(l.get(3), ["GOLD", "AAPL"]);
+        l.remove(2);
+        l.remove(1);
+        assert_eq!(
+            l.union(|x| *x),
+            ["AAPL", "BTC", "GOLD"],
+            "the first page is never removed"
+        );
+    }
+
+    #[test]
+    fn each_page_shows_its_own_items() {
+        let quotes = vec![
+            trend("AAPL", 189.2, 187.0, NOW - 60),
+            trend("BTC", 60000.0, 61000.0, NOW - 60),
+            trend("GOLD", 2400.0, 2390.0, NOW - 60),
+        ];
+        let q2 = Page::new(Kind::Quotes, 2);
+        let picks = |page: Page, title: &str, keys: &[&str]| Picks {
+            page,
+            title: title.into(),
+            items: keys
+                .iter()
+                .map(|k| Pick {
+                    key: format!("yahoo:{k}"),
+                    name: k.to_string(),
+                })
+                .collect(),
+        };
+        let all = vec![
+            picks(Kind::Quotes.into(), "Markets", &["GOLD", "AAPL"]),
+            picks(q2, "Crypto", &["BTC", "MISSING"]),
+        ];
+        let s = Sources {
+            quotes: &quotes,
+            picks: &all,
+            ..Default::default()
+        };
+        let p = pages(&s, &[Kind::Quotes.into(), q2, q2], &words(), NOW, &local);
+        assert_eq!(p.len(), 2, "a page once");
+        assert_eq!(
+            (p[0].page(), p[0].title.as_str()),
+            (Kind::Quotes.into(), "Markets")
+        );
+        let texts = |v: &WidgetView| v.rows.iter().map(|r| r.text.clone()).collect::<Vec<_>>();
+        assert_eq!(texts(&p[0]), ["GOLD", "AAPL"]);
+        assert_eq!((p[1].page(), p[1].title.as_str()), (q2, "Crypto"));
+        assert_eq!(texts(&p[1]), ["BTC"]);
+        // Waiting: the item without data shows "…" in its place.
+        let w = waiting(q2, Some(p[1].clone()), &all[1], &words());
+        assert_eq!(texts(&w), ["BTC", "MISSING"]);
+        assert!(w.rows[1].wait);
+        // A page with an empty list shows nothing; without picks, every item (the demos).
+        let empty = vec![picks(q2, "", &[])];
+        let s2 = Sources {
+            quotes: &quotes,
+            picks: &empty,
+            ..Default::default()
+        };
+        assert!(page(&s2, q2, &words(), NOW, &local).is_none());
+        let s3 = Sources {
+            quotes: &quotes,
+            ..Default::default()
+        };
+        assert_eq!(page(&s3, q2, &words(), NOW, &local).unwrap().rows.len(), 3);
+        // The turn tells the two pages apart: each its own place, its own window.
+        let t0 = Instant::now();
+        let mut b = Band::new(t0);
+        b.offer(p.clone(), 3, t0);
+        assert_eq!(b.page(), Some(Kind::Quotes.into()));
+        let s = b.swipe(1, t0).unwrap();
+        assert_eq!((s.index, s.count), (1, 2));
+        assert_eq!(b.tap(t0), Some(q2));
+    }
+
+    #[test]
+    fn the_panel_shows_every_page_in_the_turns_order() {
+        let q2 = Page::new(Kind::Quotes, 2);
+        let all = vec![Picks {
+            page: q2,
+            title: "Markets 2".into(),
+            items: vec![Pick {
+                key: "yahoo:X".into(),
+                name: "X".into(),
+            }],
+        }];
+        let real = Sources {
+            picks: &all,
+            ..Default::default()
+        };
+        let sample = Sources::default();
+        let order = [q2, Kind::Next.into(), Kind::Quotes.into()];
+        let v = panel_pages(
+            &real,
+            &sample,
+            &Chosen::default(),
+            &order,
+            &words(),
+            NOW,
+            NOW,
+            &local,
+        );
+        let ids: Vec<Page> = v.iter().map(|x| x.0).collect();
+        assert_eq!(ids, order);
+        let p2 = v[0].1.as_ref().unwrap();
+        assert_eq!((p2.title.as_str(), p2.n), ("Markets 2", 2));
+        assert!(p2.rows[0].wait);
+        assert!(v[2].1.is_none(), "the first page has nothing chosen");
     }
 
     #[test]
@@ -1530,7 +1970,7 @@ mod tests {
             Kind::Next
         );
         // A tap holds too.
-        assert_eq!(b.tap(s(90)), Some(Kind::Next));
+        assert_eq!(b.tap(s(90)), Some(Kind::Next.into()));
         assert!(b.tick(s(149), false, EVERY, false).is_none());
     }
 
@@ -1578,6 +2018,7 @@ mod tests {
 
     fn trend(name: &str, value: f64, prev: f64, at: i64) -> Trend {
         Trend {
+            key: format!("yahoo:{name}"),
             name: name.into(),
             value,
             decimals: 2,
@@ -1794,6 +2235,7 @@ mod tests {
             },
         ];
         let cities = vec![CityRow {
+            key: "city:1".into(),
             name: "Berlin".into(),
             time: "11:00".into(),
             temp: "14°".into(),

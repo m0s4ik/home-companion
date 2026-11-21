@@ -85,6 +85,17 @@ pub fn valid_entity(id: &str, domains: &[&str]) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
+/// A widget page's name as given from the browser: one line, cleaned, at most
+/// [`crate::ui::widgets::MAX_PAGE_NAME`] characters ("" none).
+pub fn clean_page_name(name: &str) -> String {
+    crate::feeds::clean_name(name)
+        .chars()
+        .take(crate::ui::widgets::MAX_PAGE_NAME)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub path: PathBuf,
@@ -219,22 +230,23 @@ impl Settings {
     }
 
     /// Settings → Screen → Widgets: the order of every page in the turn (`[widgets] order`):
-    /// the pages listed, unknown and repeated keys left out, then the others in their default
-    /// order. Without it: the pages that are on in their order, then the rest.
-    pub fn widget_order(&self) -> Vec<crate::ui::widgets::Kind> {
-        use crate::ui::widgets::Kind;
+    /// the pages listed, unknown and repeated keys left out, then the first page of every
+    /// other kind in the default order. Without it: the pages that are on in their order, then
+    /// the rest. The second page of a kind ("quotes-2") is there only when listed.
+    pub fn widget_order(&self) -> Vec<crate::ui::widgets::Page> {
+        use crate::ui::widgets::Page;
         let t = self.widgets_table();
-        let listed = |key: &str| -> Vec<Kind> {
-            let mut out: Vec<Kind> = Vec::new();
-            for k in t
+        let listed = |key: &str| -> Vec<Page> {
+            let mut out: Vec<Page> = Vec::new();
+            for p in t
                 .get(key)
                 .and_then(|v| v.as_array())
                 .into_iter()
                 .flatten()
-                .filter_map(|v| v.as_str().and_then(Kind::from_key))
+                .filter_map(|v| v.as_str().and_then(Page::from_key))
             {
-                if !out.contains(&k) {
-                    out.push(k);
+                if !out.contains(&p) {
+                    out.push(p);
                 }
             }
             out
@@ -243,15 +255,15 @@ impl Settings {
         if order.is_empty() {
             order = listed("on");
         }
-        for k in Kind::ALL {
-            if !order.contains(&k) {
-                order.push(k);
+        for p in Page::all() {
+            if !order.contains(&p) {
+                order.push(p);
             }
         }
         order
     }
 
-    pub fn save_widget_order(&self, order: &[crate::ui::widgets::Kind]) {
+    pub fn save_widget_order(&self, order: &[crate::ui::widgets::Page]) {
         let keys: Vec<toml::Value> = order.iter().map(|k| k.key().into()).collect();
         self.save_widgets_keys(|t| {
             t.insert("order".into(), keys.into());
@@ -263,33 +275,42 @@ impl Settings {
     /// `every = 20`; without the section every page is on but who is home, every 20 s. A page
     /// this file has not seen yet (`seen`; without it: the first version's three) takes its
     /// default once. An interval that is not one of the choices is the default.
-    pub fn widgets(&self) -> (Vec<crate::ui::widgets::Kind>, u32) {
-        use crate::ui::widgets::{DEFAULT_EVERY, EVERY_CHOICES, Kind};
+    pub fn widgets(&self) -> (Vec<crate::ui::widgets::Page>, u32) {
+        use crate::ui::widgets::{DEFAULT_EVERY, EVERY_CHOICES, Kind, Page};
         let default_every = DEFAULT_EVERY.as_secs() as u32;
         let t = self.widgets_table();
         let order = self.widget_order();
-        let keys = |key: &str| -> Option<Vec<Kind>> {
+        let keys = |key: &str| -> Option<Vec<Page>> {
             Some(
                 t.get(key)?
                     .as_array()?
                     .iter()
-                    .filter_map(|v| v.as_str().and_then(Kind::from_key))
+                    .filter_map(|v| v.as_str().and_then(Page::from_key))
                     .collect(),
             )
         };
         // Without `seen`: the first version's file. One with every page off stays so (the user
         // turned the widget off: a new page must not turn it back on).
-        let seen = keys("seen").unwrap_or_else(|| match keys("on") {
-            Some(on) if on.is_empty() => Kind::ALL.to_vec(),
-            _ => Kind::FIRST.to_vec(),
-        });
-        let on: Vec<Kind> = match keys("on") {
+        let seen: Vec<Kind> = keys("seen")
+            .map(|s| s.iter().map(|p| p.kind).collect())
+            .unwrap_or_else(|| match keys("on") {
+                Some(on) if on.is_empty() => Kind::ALL.to_vec(),
+                _ => Kind::FIRST.to_vec(),
+            });
+        let on: Vec<Page> = match keys("on") {
             Some(listed) => order
                 .iter()
                 .copied()
-                .filter(|k| listed.contains(k) || (!seen.contains(k) && k.default_on()))
+                .filter(|p| {
+                    listed.contains(p)
+                        || (p.n == 1 && !seen.contains(&p.kind) && p.kind.default_on())
+                })
                 .collect(),
-            None => order.iter().copied().filter(|k| k.default_on()).collect(),
+            None => order
+                .iter()
+                .copied()
+                .filter(|p| p.kind.default_on())
+                .collect(),
         };
         let every = t
             .get("every")
@@ -300,80 +321,201 @@ impl Settings {
         (on, every)
     }
 
-    /// The markets chosen from the browser (`[[widgets.quotes]]`): malformed entries, invalid
-    /// ids and repeats left out, names cleaned, at most [`crate::feeds::MAX_QUOTES`].
-    pub fn quotes(&self) -> Vec<crate::feeds::QuoteChoice> {
-        use crate::feeds::{MAX_QUOTES, QuoteChoice, clean_name};
-        let mut out: Vec<QuoteChoice> = Vec::new();
+    /// The pages of `kind` in the turn (the first always).
+    fn pages_of(&self, kind: crate::ui::widgets::Kind) -> Vec<crate::ui::widgets::Page> {
+        self.widget_order()
+            .into_iter()
+            .filter(|p| p.kind == kind)
+            .collect()
+    }
+
+    /// The names given to the pages (`[widgets] names = {"quotes-2" = "Crypto"}`), cleaned.
+    pub fn widget_names(&self) -> Vec<(crate::ui::widgets::Page, String)> {
+        use crate::ui::widgets::Page;
         let t = self.widgets_table();
-        for v in t
-            .get("quotes")
-            .and_then(|v| v.as_array())
+        let order = self.widget_order();
+        let mut out: Vec<(Page, String)> = Vec::new();
+        for (k, v) in t
+            .get("names")
+            .and_then(|v| v.as_table())
             .into_iter()
             .flatten()
         {
-            let Ok(mut q) = v.clone().try_into::<QuoteChoice>() else {
-                continue;
-            };
-            q.name = clean_name(&q.name);
-            if q.valid() && !out.iter().any(|o| o.key() == q.key()) {
-                out.push(q);
+            if let (Some(p), Some(name)) = (Page::from_key(k), v.as_str())
+                && order.contains(&p)
+            {
+                let name = clean_page_name(name);
+                if !name.is_empty() {
+                    out.push((p, name));
+                }
             }
         }
-        out.truncate(MAX_QUOTES);
         out
     }
 
-    pub fn save_quotes(&self, quotes: &[crate::feeds::QuoteChoice]) {
-        let list: Vec<toml::Value> = quotes
+    /// A page's name ("" none: the kind's word).
+    pub fn save_widget_name(&self, page: crate::ui::widgets::Page, name: &str) {
+        let (key, name) = (page.key(), clean_page_name(name));
+        self.save_widgets_keys(|t| {
+            let names = t
+                .entry("names")
+                .or_insert_with(|| toml::Table::new().into());
+            if let Some(n) = names.as_table_mut() {
+                if name.is_empty() {
+                    n.remove(&key);
+                } else {
+                    n.insert(key, name.into());
+                }
+            }
+        });
+    }
+
+    /// Another page of a kind that repeats: on, in the turn after the last page that is on (at
+    /// `at` in the whole order when given), with an empty list.
+    pub fn add_widget_page(&self, page: crate::ui::widgets::Page, at: Option<usize>, on: bool) {
+        let mut order = self.widget_order();
+        let (mut list, every) = self.widgets();
+        if order.contains(&page) {
+            return;
+        }
+        let at = at.unwrap_or_else(|| {
+            list.last()
+                .and_then(|l| order.iter().position(|p| p == l))
+                .map_or(0, |i| i + 1)
+        });
+        order.insert(at.min(order.len()), page);
+        if on {
+            list.push(page);
+        }
+        let list: Vec<_> = order.iter().copied().filter(|p| list.contains(p)).collect();
+        self.save_widget_order(&order);
+        self.save_widgets(&list, every);
+        let key = page.key();
+        self.save_widgets_keys(|t| {
+            t.remove(&key);
+        });
+    }
+
+    /// A second (third...) page gone, with its list and its name.
+    pub fn remove_widget_page(&self, page: crate::ui::widgets::Page) {
+        if page.n <= 1 {
+            return;
+        }
+        let order: Vec<_> = self
+            .widget_order()
+            .into_iter()
+            .filter(|p| *p != page)
+            .collect();
+        let (on, every) = self.widgets();
+        let on: Vec<_> = on.into_iter().filter(|p| *p != page).collect();
+        self.save_widget_order(&order);
+        self.save_widgets(&on, every);
+        let key = page.key();
+        self.save_widgets_keys(|t| {
+            t.remove(&key);
+            if let Some(n) = t.get_mut("names").and_then(|v| v.as_table_mut()) {
+                n.remove(&key);
+            }
+        });
+    }
+
+    /// The markets chosen from the browser, page by page (`[[widgets.quotes]]`,
+    /// `[[widgets.quotes-2]]`...): malformed entries, invalid ids and repeats left out, names
+    /// cleaned, at most [`crate::feeds::MAX_QUOTES`] a page.
+    pub fn quotes(&self) -> crate::ui::widgets::Lists<crate::feeds::QuoteChoice> {
+        use crate::feeds::{MAX_QUOTES, QuoteChoice, clean_name};
+        self.page_lists(crate::ui::widgets::Kind::Quotes, MAX_QUOTES, |v| {
+            let mut q = v.clone().try_into::<QuoteChoice>().ok()?;
+            q.name = clean_name(&q.name);
+            q.valid().then_some((q.key(), q))
+        })
+    }
+
+    pub fn save_quotes(&self, n: u8, quotes: &[crate::feeds::QuoteChoice]) {
+        self.save_list(crate::ui::widgets::Kind::Quotes, n, quotes);
+    }
+
+    /// The lists of a kind's pages: `parse` gives an item and its key (repeats left out).
+    fn page_lists<T: Clone>(
+        &self,
+        kind: crate::ui::widgets::Kind,
+        max: usize,
+        parse: impl Fn(&toml::Value) -> Option<(String, T)>,
+    ) -> crate::ui::widgets::Lists<T> {
+        let t = self.widgets_table();
+        let mut out = crate::ui::widgets::Lists::default();
+        for p in self.pages_of(kind) {
+            let mut keys: Vec<String> = Vec::new();
+            let mut list: Vec<T> = Vec::new();
+            for v in t
+                .get(&p.key())
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+            {
+                if let Some((k, x)) = parse(v)
+                    && !keys.contains(&k)
+                {
+                    keys.push(k);
+                    list.push(x);
+                }
+            }
+            list.truncate(max);
+            out.set(p.n, list);
+        }
+        out
+    }
+
+    fn save_list<T: serde::Serialize>(&self, kind: crate::ui::widgets::Kind, n: u8, items: &[T]) {
+        let list: Vec<toml::Value> = items
             .iter()
             .filter_map(|q| toml::Value::try_from(q).ok())
             .collect();
+        let key = crate::ui::widgets::Page::new(kind, n).key();
         self.save_widgets_keys(|t| {
-            t.insert("quotes".into(), list.into());
+            t.insert(key, list.into());
         });
     }
 
-    /// The other cities chosen from the browser (`[[widgets.cities]]`): as the markets, at most
-    /// [`crate::feeds::MAX_CITIES`], coordinates checked.
-    pub fn cities(&self) -> Vec<crate::feeds::CityChoice> {
+    /// The other cities chosen from the browser, page by page (`[[widgets.cities]]`...): as the
+    /// markets, at most [`crate::feeds::MAX_CITIES`] a page, coordinates checked.
+    pub fn cities(&self) -> crate::ui::widgets::Lists<crate::feeds::CityChoice> {
         use crate::feeds::{CityChoice, MAX_CITIES, clean_name};
-        let mut out: Vec<CityChoice> = Vec::new();
-        let t = self.widgets_table();
-        for v in t
-            .get("cities")
-            .and_then(|v| v.as_array())
-            .into_iter()
-            .flatten()
-        {
-            let Ok(mut c) = v.clone().try_into::<CityChoice>() else {
-                continue;
-            };
+        self.page_lists(crate::ui::widgets::Kind::Cities, MAX_CITIES, |v| {
+            let mut c = v.clone().try_into::<CityChoice>().ok()?;
             c.name = clean_name(&c.name);
             c.region = clean_name(&c.region);
             c.country = clean_name(&c.country);
-            if c.valid() && !c.name.is_empty() && !out.iter().any(|o| o.id == c.id) {
-                out.push(c);
-            }
-        }
-        out.truncate(MAX_CITIES);
-        out
+            (c.valid() && !c.name.is_empty()).then_some((c.key(), c))
+        })
     }
 
-    pub fn save_cities(&self, cities: &[crate::feeds::CityChoice]) {
-        let list: Vec<toml::Value> = cities
-            .iter()
-            .filter_map(|c| toml::Value::try_from(c).ok())
-            .collect();
-        self.save_widgets_keys(|t| {
-            t.insert("cities".into(), list.into());
-        });
+    pub fn save_cities(&self, n: u8, cities: &[crate::feeds::CityChoice]) {
+        self.save_list(crate::ui::widgets::Kind::Cities, n, cities);
     }
 
-    /// Home Assistant's entities for the widget (`[widgets] sensors`, `player`, `people`, the
+    /// Home Assistant's sensors, page by page (`[widgets] sensors = [...]`, `sensors-2`...).
+    pub fn sensors(&self) -> crate::ui::widgets::Lists<String> {
+        self.page_lists(
+            crate::ui::widgets::Kind::Sensors,
+            crate::ha::widgets::MAX_SENSORS,
+            |v| {
+                let id = v
+                    .as_str()
+                    .filter(|id| valid_entity(id, &["sensor", "input_number"]))?;
+                Some((id.to_string(), id.to_string()))
+            },
+        )
+    }
+
+    pub fn save_sensors(&self, n: u8, ids: &[String]) {
+        self.save_list(crate::ui::widgets::Kind::Sensors, n, ids);
+    }
+
+    /// Home Assistant's entities for the widget (every sensors' page's, `player`, `people`, the
     /// checks): what the hub subscribes to (ha/widgets.rs). Ids are checked for their domain.
     pub fn widget_ha(&self) -> crate::ha::widgets::Want {
-        use crate::ha::widgets::{MAX_PEOPLE, MAX_SENSORS};
+        use crate::ha::widgets::MAX_PEOPLE;
         let t = self.widgets_table();
         let ids = |key: &str, domains: &[&str], max: usize| -> Vec<String> {
             let mut out: Vec<String> = Vec::new();
@@ -389,7 +531,7 @@ impl Settings {
         };
         let flag = |k: &str| t.get(k).and_then(|v| v.as_bool()).unwrap_or(true);
         crate::ha::widgets::Want {
-            sensors: ids("sensors", &["sensor", "input_number"], MAX_SENSORS),
+            sensors: self.sensors().union(|s| s.clone()),
             player: t
                 .get("player")
                 .and_then(|v| v.as_str())
@@ -402,6 +544,8 @@ impl Settings {
         }
     }
 
+    /// The player, the people and the checks (the sensors are saved page by page:
+    /// [`Settings::save_sensors`]).
     pub fn save_widget_ha(&self, w: &crate::ha::widgets::Want) {
         let w = w.clone();
         self.save_widgets_keys(move |t| {
@@ -411,7 +555,6 @@ impl Settings {
                     .collect::<Vec<_>>()
                     .into()
             };
-            t.insert("sensors".into(), list(&w.sensors));
             t.insert("player".into(), w.player.as_str().into());
             t.insert("people".into(), list(w.people.as_deref().unwrap_or(&[])));
             t.insert("check_openings".into(), w.openings.into());
@@ -438,7 +581,7 @@ impl Settings {
 
     /// The pages on and the interval; every page is then `seen` (its default never applies
     /// again).
-    pub fn save_widgets(&self, on: &[crate::ui::widgets::Kind], every: u32) {
+    pub fn save_widgets(&self, on: &[crate::ui::widgets::Page], every: u32) {
         use crate::ui::widgets::Kind;
         let keys: Vec<toml::Value> = on.iter().map(|k| k.key().into()).collect();
         let seen: Vec<toml::Value> = Kind::ALL.iter().map(|k| k.key().into()).collect();
@@ -736,9 +879,12 @@ mod tests {
             id: id.into(),
             name: format!(" {id}\n"),
         };
-        s.save_quotes(&[q(Source::Yahoo, "AAPL"), q(Source::Coingecko, "bitcoin")]);
-        s.save_widgets(&[crate::ui::widgets::Kind::Quotes], 20);
-        let back = s.quotes();
+        s.save_quotes(
+            1,
+            &[q(Source::Yahoo, "AAPL"), q(Source::Coingecko, "bitcoin")],
+        );
+        s.save_widgets(&[crate::ui::widgets::Kind::Quotes.into()], 20);
+        let back = s.quotes().get(1).to_vec();
         assert_eq!(back.len(), 2);
         assert_eq!(back[0].name, "AAPL");
         assert_eq!(back[1].key(), "coingecko:bitcoin");
@@ -749,12 +895,12 @@ mod tests {
              {source = \"yahoo\", id = \"../etc\", name = \"\"}, 7]\n",
         )
         .unwrap();
-        assert_eq!(s.quotes().len(), 1);
+        assert_eq!(s.quotes().get(1).len(), 1);
         let many: Vec<QuoteChoice> = (0..12)
             .map(|i| q(Source::Yahoo, &format!("S{i}")))
             .collect();
-        s.save_quotes(&many);
-        assert_eq!(s.quotes().len(), crate::feeds::MAX_QUOTES);
+        s.save_quotes(1, &many);
+        assert_eq!(s.quotes().get(1).len(), crate::feeds::MAX_QUOTES);
         assert_eq!(s.widget_currency(), "usd");
         s.save_widget_currency("chf");
         assert_eq!(s.widget_currency(), "chf");
@@ -769,11 +915,14 @@ mod tests {
             lat,
             lon: 13.41,
         };
-        s.save_cities(&[city(1, 52.52), city(1, 52.52), city(2, 95.0), city(3, -1.0)]);
-        let back = s.cities();
+        s.save_cities(
+            1,
+            &[city(1, 52.52), city(1, 52.52), city(2, 95.0), city(3, -1.0)],
+        );
+        let back = s.cities().get(1).to_vec();
         assert_eq!(back.iter().map(|c| c.id).collect::<Vec<_>>(), [1, 3]);
         assert_eq!(
-            s.quotes().len(),
+            s.quotes().get(1).len(),
             crate::feeds::MAX_QUOTES,
             "the markets are kept"
         );
@@ -782,22 +931,29 @@ mod tests {
 
     #[test]
     fn widgets_default_on_and_read_back() {
-        use crate::ui::widgets::Kind;
+        use crate::ui::widgets::{Kind, Page};
         let dir =
             std::env::temp_dir().join(format!("home-companion-widgets-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let s = Settings::in_dir(&dir);
-        let defaults: Vec<Kind> = Kind::ALL.into_iter().filter(|k| *k != Kind::Home).collect();
+        let defaults: Vec<Page> = Kind::ALL
+            .into_iter()
+            .filter(|k| *k != Kind::Home)
+            .map(Page::from)
+            .collect();
         assert_eq!(s.widgets(), (defaults.clone(), 20));
-        assert_eq!(s.widget_order(), Kind::ALL.to_vec());
+        assert_eq!(s.widget_order(), Page::all());
         // The order is the user's.
-        s.save_widget_order(&[Kind::Shopping, Kind::Next]);
+        s.save_widget_order(&[Kind::Shopping.into(), Kind::Next.into()]);
         assert_eq!(
             &s.widget_order()[..3],
             [Kind::Shopping, Kind::Next, Kind::Quotes]
         );
-        s.save_widgets(&[Kind::Next, Kind::Shopping], 0);
-        assert_eq!(s.widgets(), (vec![Kind::Shopping, Kind::Next], 0));
+        s.save_widgets(&[Kind::Next.into(), Kind::Shopping.into()], 0);
+        assert_eq!(
+            s.widgets(),
+            (vec![Kind::Shopping.into(), Kind::Next.into()], 0)
+        );
         s.save_widgets(&[], 60);
         assert_eq!(s.widgets(), (Vec::new(), 60));
         // Other keys are kept, and the order too.
@@ -807,9 +963,9 @@ mod tests {
         s.save_widgets_keys(|t| {
             t.insert("currency".into(), "eur".into());
         });
-        s.save_widgets(&[Kind::Home], 20);
+        s.save_widgets(&[Kind::Home.into()], 20);
         assert!(s.table().unwrap()["widgets"].get("currency").is_some());
-        assert_eq!(s.widgets(), (vec![Kind::Home], 20));
+        assert_eq!(s.widgets(), (vec![Kind::Home.into()], 20));
         // The first version's file: its pages in its order, the new ones on at the end
         // (who is home stays off); a page turned off there stays off.
         std::fs::write(
@@ -841,9 +997,85 @@ mod tests {
         )
         .unwrap();
         // Saved once: every page seen, turning one off sticks.
-        s.save_widgets(&[Kind::Next], 20);
+        s.save_widgets(&[Kind::Next.into()], 20);
         assert_eq!(s.widgets().0, [Kind::Next]);
         assert_eq!(s.widget_order()[0], Kind::Shopping);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file of before several pages of a kind: its one list is the first page's, nothing to
+    /// do; a second page has its own list, its place, its name; removed, it leaves nothing.
+    #[test]
+    fn pages_of_a_kind_and_the_file_of_before() {
+        use crate::ui::widgets::{Kind, Page};
+        let dir = std::env::temp_dir().join(format!("home-companion-pages-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = Settings::in_dir(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            &s.path,
+            "[widgets]\nevery = 20\non = [\"quotes\", \"weather\"]\n\
+             order = [\"next\", \"quotes\", \"weather\"]\n\
+             seen = [\"next\", \"quotes\", \"weather\", \"cities\", \"shopping\", \"notes\", \"sensors\", \"check\", \"playing\", \"home\"]\n\
+             sensors = [\"sensor.a\"]\n\
+             [[widgets.quotes]]\nid = \"bitcoin\"\nname = \"Bitcoin\"\nsource = \"coingecko\"\n",
+        )
+        .unwrap();
+        let q1: Page = Kind::Quotes.into();
+        let q2 = Page::new(Kind::Quotes, 2);
+        assert_eq!(s.widgets().0, [q1, Kind::Weather.into()]);
+        assert_eq!(
+            s.widget_order()[..3],
+            [Kind::Next.into(), q1, Kind::Weather.into()]
+        );
+        assert_eq!(s.widget_order().len(), Kind::ALL.len());
+        assert_eq!(s.quotes().get(1)[0].key(), "coingecko:bitcoin");
+        assert_eq!(s.quotes().0.len(), 1);
+        assert_eq!(s.sensors().get(1), ["sensor.a"]);
+        assert_eq!(s.widget_ha().sensors, ["sensor.a"]);
+        // A second markets' page: on, after the last one on, its own list.
+        s.add_widget_page(q2, None, true);
+        assert_eq!(s.widgets().0, [q1, Kind::Weather.into(), q2]);
+        let o = s.widget_order();
+        assert_eq!(o.iter().position(|p| *p == q2), Some(3));
+        let q = |id: &str| crate::feeds::QuoteChoice {
+            source: crate::feeds::Source::Yahoo,
+            id: id.into(),
+            name: id.into(),
+        };
+        s.save_quotes(2, &[q("AAPL"), q("GC=F")]);
+        s.save_widget_name(q2, "  My\nstocks and more and more and more ");
+        let names = s.widget_names();
+        assert_eq!(names, [(q2, "My stocks and more and m".to_string())]);
+        assert_eq!(s.quotes().get(2).len(), 2);
+        assert_eq!(
+            s.quotes().get(1).len(),
+            1,
+            "the first page's list untouched"
+        );
+        let text = std::fs::read_to_string(&s.path).unwrap();
+        assert!(text.contains("[[widgets.quotes-2]]"), "{text}");
+        // A second sensors' page: the hub asks for both pages' sensors, once.
+        let s2 = Page::new(Kind::Sensors, 2);
+        s.add_widget_page(s2, Some(0), false);
+        s.save_sensors(2, &["sensor.b".into(), "sensor.a".into()]);
+        assert_eq!(s.widget_order()[0], s2);
+        assert!(!s.widgets().0.contains(&s2));
+        assert_eq!(s.widget_ha().sensors, ["sensor.a", "sensor.b"]);
+        // A list or a name of a page not in the turn is not read.
+        s.save_widgets_keys(|t| {
+            t.insert("cities-3".into(), toml::Value::Array(Vec::new()));
+        });
+        assert_eq!(s.cities().0.len(), 1);
+        // Removed: its place, its list, its name gone; the first page is never removed.
+        s.remove_widget_page(q2);
+        s.remove_widget_page(q1);
+        assert!(!s.widget_order().contains(&q2) && s.widget_order().contains(&q1));
+        assert!(s.widget_names().is_empty());
+        assert_eq!(s.quotes().0.len(), 1);
+        let text = std::fs::read_to_string(&s.path).unwrap();
+        assert!(!text.contains("quotes-2"), "{text}");
+        assert!(text.contains("coingecko"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

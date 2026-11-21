@@ -569,6 +569,14 @@ impl<B: Body> Panel<B> {
             (true, "/api/widgets/order") => {
                 relay(ask("widgets.order", json!({"order": field("order")})))
             }
+            (true, "/api/widgets/add") => relay(ask("widgets.add", json!({"kind": field("kind")}))),
+            (true, "/api/widgets/remove") => {
+                relay(ask("widgets.remove", json!({"page": field("page")})))
+            }
+            (true, "/api/widgets/name") => relay(ask(
+                "widgets.name",
+                json!({"page": field("page"), "name": field("name")}),
+            )),
             (true, "/api/search") => relay(ask(
                 "search.start",
                 json!({"what": field("what"), "q": field("q")}),
@@ -591,7 +599,8 @@ impl<B: Body> Panel<B> {
                 };
                 relay(ask(
                     &op,
-                    json!({"search": field("search"), "ref": field("ref"), "to": field("to")}),
+                    json!({"search": field("search"), "ref": field("ref"), "to": field("to"),
+                           "page": field("page")}),
                 ))
             }
             (true, p) if p.starts_with("/api/notes/") => {

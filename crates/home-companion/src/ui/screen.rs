@@ -26,7 +26,7 @@ use super::house::{self, Dnd, HouseCards};
 use super::light::{Auto, Curve};
 use super::lists::{self, Choice, ShopList};
 use super::next;
-use super::widgets::{self, Band, Kind as WidgetKind};
+use super::widgets::{self, Band, Kind as WidgetKind, Lists, Page as WidgetPage};
 use super::{
     AlarmLineView, MemoriesView, MemoryLine, MusicView, Screen, SettingsView, TimerLineView,
     UpdateView,
@@ -1459,9 +1459,14 @@ pub struct Ui<S: Screen> {
     /// The home's widget (widgets.rs): its turn, the pages that are on (none: no widget, the
     /// home as before), the interval of the turn (None: by hand only).
     widget: RefCell<Band>,
-    widget_on: RefCell<Vec<WidgetKind>>,
+    widget_on: RefCell<Vec<WidgetPage>>,
     /// Every page in the turn's order (the ones off keep their place).
-    widget_order: RefCell<Vec<WidgetKind>>,
+    widget_order: RefCell<Vec<WidgetPage>>,
+    /// The names given to pages from the browser (none: "Markets", "Markets 2").
+    widget_names: RefCell<Vec<(WidgetPage, String)>>,
+    /// The page whose own page a tap on the widget opened (the markets' or the cities' of
+    /// that page).
+    widget_opened: Cell<Option<WidgetPage>>,
     widget_every: Cell<Option<Duration>>,
     /// The data of the pages chosen from the browser and of Home Assistant's (feeds/, ha/).
     widget_data: RefCell<widgets::Data>,
@@ -1483,10 +1488,13 @@ pub struct Ui<S: Screen> {
     board: RefCell<Vec<brain_link::Note>>,
     /// The markets chosen from the browser (settings.toml), in their order, and the coins'
     /// currency.
-    widget_quotes: RefCell<Vec<crate::feeds::QuoteChoice>>,
+    widget_quotes: RefCell<Lists<crate::feeds::QuoteChoice>>,
     widget_currency: RefCell<String>,
     /// The other cities chosen from the browser, and their weather as last fetched.
-    widget_cities: RefCell<Vec<crate::feeds::CityChoice>>,
+    widget_cities: RefCell<Lists<crate::feeds::CityChoice>>,
+    /// Home Assistant's sensors chosen from the browser, page by page (`widget_ha.sensors` is
+    /// all of them, for the hub).
+    widget_sensors: RefCell<Lists<String>>,
     /// The home's weather is in °F (its last known unit): the other cities follow.
     fahrenheit: Cell<bool>,
     city_weather: RefCell<Vec<crate::feeds::openmeteo::CityWeather>>,
@@ -1622,8 +1630,9 @@ impl<S: Screen> model::Host for Ui<S> {
         }
         {
             let mut p = self.settings_pending.borrow_mut();
-            // The latest of each kind: Night and Widgets carry their whole section.
-            p.retain(|c| std::mem::discriminant(c) != std::mem::discriminant(change));
+            // The latest of each kind (of each page for a page's list): Night and Widgets
+            // carry their whole section; a page added or removed is never dropped.
+            p.retain(|c| !c.replaced_by(change));
             p.push(change.clone());
         }
         if let Some(me) = self.this.borrow().upgrade() {
@@ -1783,6 +1792,7 @@ fn demo_quotes() -> Vec<widgets::Trend> {
         let low = points.iter().copied().fold(f64::INFINITY, f64::min);
         let high = points.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         widgets::Trend {
+            key: format!("yahoo:{name}"),
             name: name.into(),
             value,
             decimals,
@@ -2182,13 +2192,18 @@ impl<S: Screen> Ui<S> {
                 WidgetKind::ALL
                     .into_iter()
                     .filter(|k| k.default_on())
+                    .map(WidgetPage::from)
                     .collect(),
                 widgets::DEFAULT_EVERY.as_secs() as u32,
             ),
         };
         let widget_order = match (&opts.demo, &settings) {
             (None, Some(s)) => s.widget_order(),
-            _ => WidgetKind::ALL.to_vec(),
+            _ => WidgetPage::all(),
+        };
+        let (widget_names, widget_sensors) = match (&opts.demo, &settings) {
+            (None, Some(s)) => (s.widget_names(), s.sensors()),
+            _ => (Vec::new(), Lists::default()),
         };
         let widget_ha = settings
             .as_ref()
@@ -2197,7 +2212,7 @@ impl<S: Screen> Ui<S> {
             .unwrap_or_default();
         let (widget_quotes, widget_currency, widget_cities) = match (&opts.demo, &settings) {
             (None, Some(s)) => (s.quotes(), s.widget_currency(), s.cities()),
-            _ => (Vec::new(), "usd".to_string(), Vec::new()),
+            _ => (Lists::default(), "usd".to_string(), Lists::default()),
         };
         // The demos never ask the internet (no cache, nothing chosen).
         let feeds = crate::feeds::Feeds::new(if demo { None } else { opts.state_dir.clone() });
@@ -2300,6 +2315,9 @@ impl<S: Screen> Ui<S> {
             widget: RefCell::new(Band::new(Instant::now())),
             widget_on: RefCell::new(widget_on),
             widget_order: RefCell::new(widget_order),
+            widget_names: RefCell::new(widget_names),
+            widget_opened: Cell::new(None),
+            widget_sensors: RefCell::new(widget_sensors),
             widget_data: RefCell::new(widgets::Data::default()),
             board: RefCell::new(Vec::new()),
             widget_ha: RefCell::new(widget_ha),
@@ -2966,9 +2984,12 @@ impl<S: Screen> Ui<S> {
         let ui = Rc::downgrade(self);
         self.screen.on_widget_tapped(move || {
             if let Some(ui) = ui.upgrade()
-                && let Some(kind) = ui.widget.borrow_mut().tap(Instant::now())
+                && let Some(page) = ui.widget.borrow_mut().tap(Instant::now())
             {
-                log::info!(event = "widget", page = kind.key(), why = "tap"; "widget: {} opened", kind.key());
+                // Before the screen opens its page (the markets', the cities'): that page's.
+                ui.widget_opened.set(Some(page));
+                let key = page.key();
+                log::info!(event = "widget", page = key.as_str(), why = "tap"; "widget: {key} opened");
             }
         });
         let ui = Rc::downgrade(self);
@@ -3922,11 +3943,11 @@ impl<S: Screen> Ui<S> {
             let (data, curves) = demo_ha(l);
             *self.ha_widgets.borrow_mut() = data;
             *self.ha_curves.borrow_mut() = curves;
-            self.widget_on.borrow_mut().push(WidgetKind::Home);
+            self.widget_on.borrow_mut().push(WidgetKind::Home.into());
         }
         if d.widget == Some(WidgetKind::Cities) {
             let (choices, weather) = demo_cities();
-            *self.widget_cities.borrow_mut() = choices;
+            *self.widget_cities.borrow_mut() = Lists::one(choices);
             *self.city_weather.borrow_mut() = weather;
         }
         desk.timers.truncate(d.widget_cards.min(1));
@@ -6668,8 +6689,8 @@ impl<S: Screen> Ui<S> {
                 .last_answer
                 .as_ref()
                 .map(|(a, _)| (w("last_answer"), a.clone())),
-            next_in_widget: on.contains(&WidgetKind::Next),
-            shopping_in_widget: on.contains(&WidgetKind::Shopping),
+            next_in_widget: on.contains(&WidgetKind::Next.into()),
+            shopping_in_widget: on.contains(&WidgetKind::Shopping.into()),
         };
         let picked = cards::pick_n(&alive, &cw, self.max_cards());
         *self.card_kinds.borrow_mut() = picked.iter().map(|c| c.kind).collect();
@@ -6713,6 +6734,7 @@ impl<S: Screen> Ui<S> {
         if !self.city_weather.borrow().is_empty() {
             self.widget_data.borrow_mut().cities = self.city_rows(now);
         }
+        let picks = self.widget_picks(&l, &|id: &str| id.to_string());
         let data = self.widget_data.borrow();
         let sources = widgets::Sources {
             next: &next,
@@ -6726,19 +6748,14 @@ impl<S: Screen> Ui<S> {
             check: &data.check,
             playing: data.playing.as_ref(),
             people: &data.people,
+            picks: &picks,
         };
         let mut pages = widgets::pages(&sources, &on, &words, now, &local_hm);
         // The markets in the order chosen, every one of them: one whose price has not come yet
         // (after a start, the sources answer one at a time) waits with "…" instead of missing.
-        let names: Vec<String> = self
-            .widget_quotes
-            .borrow()
-            .iter()
-            .map(|q| q.name.clone())
-            .collect();
-        if !names.is_empty() {
-            for p in pages.iter_mut().filter(|p| p.kind == WidgetKind::Quotes) {
-                *p = widgets::waiting(WidgetKind::Quotes, Some(p.clone()), &names, &words);
+        for p in pages.iter_mut().filter(|p| p.kind == WidgetKind::Quotes) {
+            if let Some(pk) = picks.iter().find(|x| x.page == p.page()) {
+                *p = widgets::waiting(p.page(), Some(p.clone()), pk, &words);
             }
         }
         drop(data);
@@ -6750,6 +6767,30 @@ impl<S: Screen> Ui<S> {
         }
     }
 
+    /// What each page of the kinds that repeat shows, in `l`'s words: its items (keys and
+    /// names; `sensor_name` names an entity) and its title.
+    pub(super) fn widget_picks(
+        &self,
+        l: &Locale,
+        sensor_name: &dyn Fn(&str) -> String,
+    ) -> Vec<widgets::Picks> {
+        // The demos draw their sample data as it is, chosen by nobody.
+        if self.opts.demo.is_some() {
+            return Vec::new();
+        }
+        widgets::picks_of(
+            &self.widget_order.borrow(),
+            &widgets::AllLists {
+                quotes: &self.widget_quotes.borrow(),
+                cities: &self.widget_cities.borrow(),
+                sensors: &self.widget_sensors.borrow(),
+                names: &self.widget_names.borrow(),
+            },
+            sensor_name,
+            &|k| l.text(k).to_string(),
+        )
+    }
+
     /// Settings → Screen → Widgets as they are.
     fn refresh_widget_settings(&self) {
         let l = self.locale.borrow();
@@ -6759,13 +6800,14 @@ impl<S: Screen> Ui<S> {
         } else {
             l.text("widgets_on").replace("{n}", &on.len().to_string())
         };
+        let names = self.widget_names.borrow();
         let pages: Vec<widgets::PageSetting> = self
             .widget_order
             .borrow()
             .iter()
             .map(|k| widgets::PageSetting {
-                kind: *k,
-                label: l.text(&format!("widget_{}", k.key())).to_string(),
+                page: *k,
+                label: model::page_label(*k, &names, &|w| l.text(w).to_string()),
                 on: on.contains(k),
                 hint: self.widget_hint(*k, &l),
             })
@@ -6776,10 +6818,11 @@ impl<S: Screen> Ui<S> {
 
     /// The line under a page in Settings → Screen → Widgets: what it shows is chosen from the
     /// browser (and how many are chosen).
-    fn widget_hint(&self, kind: WidgetKind, l: &Locale) -> String {
+    fn widget_hint(&self, page: WidgetPage, l: &Locale) -> String {
+        let kind = page.kind;
         let count = match kind {
             WidgetKind::Quotes | WidgetKind::Cities | WidgetKind::Sensors => {
-                Some(self.widget_chosen(kind))
+                Some(self.widget_chosen(page))
             }
             WidgetKind::Check | WidgetKind::Playing | WidgetKind::Home => None,
             WidgetKind::Notes => return l.text("widgets_hint_notes").to_string(),
@@ -6797,11 +6840,11 @@ impl<S: Screen> Ui<S> {
     }
 
     /// How many items of a page are chosen from the browser (markets, cities, sensors).
-    fn widget_chosen(&self, kind: WidgetKind) -> usize {
-        match kind {
-            WidgetKind::Quotes => self.widget_quotes.borrow().len(),
-            WidgetKind::Cities => self.widget_cities.borrow().len(),
-            WidgetKind::Sensors => self.widget_ha.borrow().sensors.len(),
+    fn widget_chosen(&self, page: WidgetPage) -> usize {
+        match page.kind {
+            WidgetKind::Quotes => self.widget_quotes.borrow().get(page.n).len(),
+            WidgetKind::Cities => self.widget_cities.borrow().get(page.n).len(),
+            WidgetKind::Sensors => self.widget_sensors.borrow().get(page.n).len(),
             _ => 0,
         }
     }
@@ -6809,10 +6852,10 @@ impl<S: Screen> Ui<S> {
     /// A switch of Settings → Screen → Widgets: the page joins or leaves the turn (and Next and
     /// Shopping go back to being cards when theirs is off); saved.
     fn widget_toggled(&self, key: &str, on: bool) {
-        let Some(kind) = WidgetKind::from_key(key) else {
+        let Some(kind) = WidgetPage::from_key(key) else {
             return;
         };
-        let list: Vec<WidgetKind> = {
+        let list: Vec<WidgetPage> = {
             let now = self.widget_on.borrow();
             self.widget_order
                 .borrow()
@@ -6854,7 +6897,7 @@ impl<S: Screen> Ui<S> {
             }
             Change::WidgetOrder(order) => {
                 // The pages on follow the new order.
-                let on: Vec<WidgetKind> = {
+                let on: Vec<WidgetPage> = {
                     let now = self.widget_on.borrow();
                     order.iter().copied().filter(|k| now.contains(k)).collect()
                 };
@@ -6864,9 +6907,74 @@ impl<S: Screen> Ui<S> {
                 self.refresh_widget_settings();
                 self.refresh_home();
             }
+            Change::WidgetAdded(p, at, on) => {
+                {
+                    let mut order = self.widget_order.borrow_mut();
+                    if !order.contains(&p) {
+                        let shown = self.widget_on.borrow();
+                        let at = at.unwrap_or_else(|| {
+                            shown
+                                .last()
+                                .and_then(|l| order.iter().position(|x| x == l))
+                                .map_or(0, |i| i + 1)
+                        });
+                        let at = at.min(order.len());
+                        order.insert(at, p);
+                    }
+                    if on {
+                        drop(order);
+                        let order = self.widget_order.borrow();
+                        let mut shown = self.widget_on.borrow_mut();
+                        shown.push(p);
+                        let now: Vec<WidgetPage> = order
+                            .iter()
+                            .copied()
+                            .filter(|x| shown.contains(x))
+                            .collect();
+                        *shown = now;
+                    }
+                }
+                self.clear_page_list(p);
+                let key = p.key();
+                log::info!(event = "widget_settings", page = key.as_str(); "widget: page {key} added");
+                self.refresh_widget_settings();
+                self.refresh_home();
+            }
+            Change::WidgetRemoved(p) => {
+                if p.n > 1 {
+                    self.widget_order.borrow_mut().retain(|x| *x != p);
+                    self.widget_on.borrow_mut().retain(|x| *x != p);
+                    self.widget_names.borrow_mut().retain(|(x, _)| *x != p);
+                    match p.kind {
+                        WidgetKind::Quotes => self.widget_quotes.borrow_mut().remove(p.n),
+                        WidgetKind::Cities => self.widget_cities.borrow_mut().remove(p.n),
+                        _ => self.widget_sensors.borrow_mut().remove(p.n),
+                    }
+                    let key = p.key();
+                    log::info!(event = "widget_settings", page = key.as_str(); "widget: page {key} removed");
+                    self.lists_changed();
+                }
+            }
+            Change::WidgetName(p, name) => {
+                let name = crate::settings::clean_page_name(&name);
+                let mut names = self.widget_names.borrow_mut();
+                names.retain(|(x, _)| *x != p);
+                if !name.is_empty() {
+                    names.push((p, name));
+                }
+                drop(names);
+                self.refresh_widget_settings();
+                self.refresh_home();
+            }
+            Change::Sensors(n, ids) => {
+                log::info!(event = "widget_settings", sensors = ids.len(); "widget: {} sensors chosen", ids.len());
+                self.widget_sensors.borrow_mut().set(n, ids);
+                self.lists_changed();
+            }
             Change::WidgetHa(w) => {
-                log::info!(event = "widget_settings", sensors = w.sensors.len(); "widget: Home Assistant's entities chosen");
-                *self.widget_ha.borrow_mut() = w;
+                log::info!(event = "widget_settings"; "widget: Home Assistant's entities chosen");
+                let sensors = self.widget_sensors.borrow().union(|s| s.clone());
+                *self.widget_ha.borrow_mut() = crate::ha::widgets::Want { sensors, ..w };
                 self.send_widget_want();
                 self.refresh_widget_settings();
             }
@@ -6874,19 +6982,15 @@ impl<S: Screen> Ui<S> {
                 *self.widget_currency.borrow_mut() = c;
                 self.configure_feeds();
             }
-            Change::Quotes(q) => {
+            Change::Quotes(n, q) => {
                 log::info!(event = "widget_settings", quotes = q.len(); "widget: {} markets chosen", q.len());
-                *self.widget_quotes.borrow_mut() = q;
-                self.configure_feeds();
-                self.apply_feeds();
-                self.refresh_widget_settings();
+                self.widget_quotes.borrow_mut().set(n, q);
+                self.lists_changed();
             }
-            Change::Cities(c) => {
+            Change::Cities(n, c) => {
                 log::info!(event = "widget_settings", cities = c.len(); "widget: {} cities chosen", c.len());
-                *self.widget_cities.borrow_mut() = c;
-                self.configure_feeds();
-                self.apply_feeds();
-                self.refresh_widget_settings();
+                self.widget_cities.borrow_mut().set(n, c);
+                self.lists_changed();
             }
             Change::Night(on, start, end) => {
                 self.desk.borrow_mut().night = (on, start, end);
@@ -6937,6 +7041,28 @@ impl<S: Screen> Ui<S> {
         }
     }
 
+    /// A page's list emptied (a page just added).
+    fn clear_page_list(&self, p: WidgetPage) {
+        match p.kind {
+            WidgetKind::Quotes => self.widget_quotes.borrow_mut().set(p.n, Vec::new()),
+            WidgetKind::Cities => self.widget_cities.borrow_mut().set(p.n, Vec::new()),
+            WidgetKind::Sensors => self.widget_sensors.borrow_mut().set(p.n, Vec::new()),
+            _ => {}
+        }
+    }
+
+    /// A page's list changed (or a page with its list gone): the feeds fetch every page's
+    /// items once, Home Assistant is asked for every page's sensors.
+    fn lists_changed(&self) {
+        let sensors = self.widget_sensors.borrow().union(|s| s.clone());
+        self.widget_ha.borrow_mut().sensors = sensors;
+        self.send_widget_want();
+        self.configure_feeds();
+        self.apply_feeds();
+        self.refresh_widget_settings();
+        self.refresh_home();
+    }
+
     /// Everything that depends on the language, in `code`'s words; the core told.
     fn apply_language(&self, code: &str) {
         let app = &self.screen;
@@ -6982,9 +7108,9 @@ impl<S: Screen> Ui<S> {
     /// What the feeds fetch: the choices as they are now.
     fn configure_feeds(&self) {
         let config = crate::feeds::FeedsConfig {
-            quotes: self.widget_quotes.borrow().clone(),
+            quotes: self.widget_quotes.borrow().union(|q| q.key()),
             currency: self.widget_currency.borrow().clone(),
-            cities: self.widget_cities.borrow().clone(),
+            cities: self.widget_cities.borrow().union(|c| c.id),
             fahrenheit: self.fahrenheit.get(),
         };
         self.feeds.borrow_mut().configure(config);
@@ -7001,7 +7127,7 @@ impl<S: Screen> Ui<S> {
             self.ha_quiet.set(Some(night || off));
             let _ = tx.send(HubCmd::Quiet(night || off));
         }
-        let on = |k: WidgetKind| self.widget_on.borrow().contains(&k);
+        let on = |k: WidgetKind| self.widget_on.borrow().iter().any(|p| p.kind == k);
         let active = crate::feeds::Active {
             quotes: crate::feeds::plan::active(
                 on(WidgetKind::Quotes),
@@ -7033,6 +7159,7 @@ impl<S: Screen> Ui<S> {
         let quotes: Vec<widgets::Trend> = self
             .widget_quotes
             .borrow()
+            .union(|q| q.key())
             .iter()
             .filter_map(|c| {
                 let q = snap.quote(&c.key())?;
@@ -7043,6 +7170,7 @@ impl<S: Screen> Ui<S> {
                     (_, false) => plan::YAHOO_CLOSED,
                 };
                 Some(widgets::Trend {
+                    key: c.key(),
                     name: c.name.clone(),
                     value: q.price,
                     decimals: q.decimals,
@@ -7062,6 +7190,7 @@ impl<S: Screen> Ui<S> {
         *self.city_weather.borrow_mut() = self
             .widget_cities
             .borrow()
+            .union(|c| c.id)
             .iter()
             .filter_map(|c| snap.city(c.id).cloned())
             .collect();
@@ -7105,24 +7234,49 @@ impl<S: Screen> Ui<S> {
         let l = self.locale.borrow();
         let w = widget_words(&l);
         let kind = self.screen.get_trends_kind();
-        let data = self.widget_data.borrow();
         let quotes = kind != "sensors";
-        let (items, title) = if quotes {
-            (&data.quotes, l.text("widget_quotes"))
+        let page = self.opened(if quotes {
+            WidgetKind::Quotes
         } else {
-            (&data.sensors, l.text("widget_sensors"))
+            WidgetKind::Sensors
+        });
+        let title = model::page_label(page, &self.widget_names.borrow(), &|k| {
+            l.text(k).to_string()
+        });
+        let data = self.widget_data.borrow();
+        let all = if quotes { &data.quotes } else { &data.sensors };
+        // That page's items, in its order.
+        let keys: Vec<String> = if quotes {
+            self.widget_quotes
+                .borrow()
+                .get(page.n)
+                .iter()
+                .map(|q| q.key())
+                .collect()
+        } else {
+            self.widget_sensors.borrow().get(page.n).to_vec()
+        };
+        let items: Vec<widgets::Trend> = keys
+            .iter()
+            .filter_map(|k| all.iter().find(|t| t.key == *k).cloned())
+            .collect();
+        let items = if keys.is_empty() && self.opts.demo.is_some() {
+            all.clone()
+        } else {
+            items
         };
         let symbols: Vec<(String, String)> = self
             .widget_quotes
             .borrow()
+            .union(|q| q.key())
             .iter()
-            .map(|c| (c.name.clone(), c.id.to_ascii_uppercase()))
+            .map(|c| (c.key(), c.id.to_ascii_uppercase()))
             .collect();
         let details = |t: &widgets::Trend| -> String {
             if quotes {
                 symbols
                     .iter()
-                    .find(|(n, _)| *n == t.name)
+                    .find(|(k, _)| *k == t.key)
                     .map(|(_, id)| id.clone())
                     .unwrap_or_default()
             } else {
@@ -7130,7 +7284,7 @@ impl<S: Screen> Ui<S> {
             }
         };
         let cards = widgets::trend_cards(
-            items,
+            &items,
             &details,
             &w,
             l.text("trends_high"),
@@ -7143,14 +7297,24 @@ impl<S: Screen> Ui<S> {
         } else {
             ""
         };
-        self.screen.set_trends(title, &cards, footer);
+        self.screen.set_trends(&title, &cards, footer);
+    }
+
+    /// The page of `kind` a tap on the widget opened (else its first).
+    fn opened(&self, kind: WidgetKind) -> WidgetPage {
+        self.widget_opened
+            .get()
+            .filter(|p| p.kind == kind && self.widget_order.borrow().contains(p))
+            .unwrap_or_else(|| kind.into())
     }
 
     /// The other cities' page: the one chosen on its chips (the first at first), its weather as
     /// the home's weather page shows it, in its own time.
     fn refresh_city(&self) {
         let l = self.locale.borrow();
-        let choices = self.widget_cities.borrow();
+        let page = self.opened(WidgetKind::Cities);
+        let lists = self.widget_cities.borrow();
+        let choices = lists.get(page.n);
         let weather = self.city_weather.borrow();
         let shown: Vec<(
             &crate::feeds::CityChoice,
@@ -7193,7 +7357,7 @@ impl<S: Screen> Ui<S> {
     /// temperature.
     fn city_rows(&self, now: i64) -> Vec<widgets::CityRow> {
         samples::city_rows_of(
-            &self.widget_cities.borrow(),
+            &self.widget_cities.borrow().union(|c| c.id),
             &self.city_weather.borrow(),
             now,
         )
@@ -7610,7 +7774,7 @@ impl<S: Screen> Ui<S> {
     fn widget_want(&self) -> crate::ha::widgets::Want {
         let on = self.widget_on.borrow();
         let w = self.widget_ha.borrow();
-        let has = |k: WidgetKind| on.contains(&k);
+        let has = |k: WidgetKind| on.iter().any(|p| p.kind == k);
         crate::ha::widgets::Want {
             sensors: if has(WidgetKind::Sensors) {
                 w.sensors.clone()
@@ -7651,6 +7815,7 @@ impl<S: Screen> Ui<S> {
             .map(|s| {
                 let c = curves.get(&s.id);
                 widgets::Trend {
+                    key: s.id.clone(),
                     name: s.name.clone(),
                     value: s.value,
                     decimals: s.decimals,
@@ -9060,7 +9225,7 @@ mod tests {
         // (Home Assistant is not linked: its status card is first.)
         assert_eq!(*ui.card_kinds.borrow(), ["status", "upcoming", "shopping"]);
         // All pages on: those two cards become the widget's pages, in the two slots left.
-        *ui.widget_on.borrow_mut() = WidgetKind::ALL.to_vec();
+        *ui.widget_on.borrow_mut() = WidgetPage::all();
         ui.refresh_home();
         assert_eq!(*ui.card_kinds.borrow(), ["status"]);
         assert!(w.get_widget_shown());
@@ -9142,7 +9307,7 @@ mod tests {
         let saved = Settings::in_dir(&dir);
         assert!(saved.home_compact());
         assert_eq!(saved.night(), (false, 21, 7));
-        assert_eq!(saved.widgets(), (vec![WidgetKind::Weather], 0));
+        assert_eq!(saved.widgets(), (vec![WidgetKind::Weather.into()], 0));
         assert_eq!(saved.lists(), ["todo.b"]);
         assert_eq!(saved.language().as_deref(), Some("it"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -9441,7 +9606,7 @@ mod tests {
             slint::platform::update_timers_and_animations();
         };
         let show = |kind: WidgetKind| {
-            *ui.widget_on.borrow_mut() = vec![kind];
+            *ui.widget_on.borrow_mut() = vec![kind.into()];
             ui.refresh_home();
             assert_eq!(ui.widget.borrow().kind(), Some(kind));
             w.set_page("home".into());
@@ -9453,17 +9618,46 @@ mod tests {
                 t
             })
             .collect();
+        let choice = |t: &widgets::Trend| crate::feeds::QuoteChoice {
+            source: crate::feeds::Source::Yahoo,
+            id: t.key["yahoo:".len()..].to_string(),
+            name: t.name.clone(),
+        };
+        let demo: Vec<_> = demo_quotes().iter().map(choice).collect();
+        *ui.widget_quotes.borrow_mut() = Lists::one(demo.clone());
         show(WidgetKind::Quotes);
         tap(800.0, 500.0);
         assert_eq!(w.get_page(), "trends");
         assert_eq!(w.get_trends_kind(), "quotes");
         ui.on_page("trends");
         assert_eq!(slint::Model::row_count(&w.get_trend_rows()), 5);
+        // A second markets' page with its own two: its own page in the turn, and a tap on it
+        // opens its own markets.
+        let second = WidgetPage::new(WidgetKind::Quotes, 2);
+        ui.widget_order.borrow_mut().push(second);
+        ui.widget_quotes.borrow_mut().set(1, demo[..3].to_vec());
+        ui.widget_quotes.borrow_mut().set(2, demo[3..].to_vec());
+        *ui.widget_on.borrow_mut() = vec![WidgetKind::Quotes.into(), second];
+        w.set_page("home".into());
+        ui.refresh_home();
+        assert_eq!(w.get_widget_count(), 2);
+        if ui.widget.borrow().page() != Some(second) {
+            let s = ui.widget.borrow_mut().swipe(1, Instant::now()).unwrap();
+            ui.screen.set_widget(&s);
+        }
+        assert_eq!(ui.widget.borrow().page(), Some(second));
+        assert_eq!(w.get_widget_title(), "Markets 2");
+        tap(800.0, 500.0);
+        assert_eq!(w.get_page(), "trends");
+        ui.on_page("trends");
+        assert_eq!(slint::Model::row_count(&w.get_trend_rows()), 2);
+        assert_eq!(w.get_trends_title(), "Markets 2");
+        ui.widget_order.borrow_mut().retain(|p| *p != second);
         let (choices, mut weather) = demo_cities();
         for c in &mut weather {
             c.at = now_unix() as i64;
         }
-        *ui.widget_cities.borrow_mut() = choices;
+        *ui.widget_cities.borrow_mut() = Lists::one(choices);
         *ui.city_weather.borrow_mut() = weather;
         show(WidgetKind::Cities);
         tap(800.0, 500.0);
@@ -9555,7 +9749,7 @@ mod tests {
             openings: true,
             batteries: true,
         };
-        *ui.widget_on.borrow_mut() = vec![WidgetKind::Sensors];
+        *ui.widget_on.borrow_mut() = vec![WidgetKind::Sensors.into()];
         let w = ui.widget_want();
         assert_eq!(w.sensors, ["sensor.a"]);
         assert!(w.player.is_empty() && w.people.is_none() && !w.openings && !w.batteries);
@@ -9606,7 +9800,7 @@ mod tests {
         // The first switch: Next off, a card again.
         tap(1172.0, 258.0);
         assert!(!on(0));
-        assert!(!ui.widget_on.borrow().contains(&WidgetKind::Next));
+        assert!(!ui.widget_on.borrow().contains(&WidgetKind::Next.into()));
         assert_eq!(w.get_widget_summary(), "8 on");
         // The markets (a taller row) and the weather.
         tap(1172.0, 334.0);
@@ -9635,7 +9829,10 @@ mod tests {
         let saved = Settings::in_dir(&dir).widgets();
         assert_eq!(saved.1, 60);
         assert_eq!(saved.0[0], WidgetKind::Weather);
-        assert!(!saved.0.contains(&WidgetKind::Next) && !saved.0.contains(&WidgetKind::Home));
+        assert!(
+            !saved.0.contains(&WidgetKind::Next.into())
+                && !saved.0.contains(&WidgetKind::Home.into())
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

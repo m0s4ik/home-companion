@@ -289,8 +289,11 @@ function busyHere() {
   return !!document.querySelector('.dragging') || !!(a && ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName) && a.type !== 'checkbox');
 }
 
+// A page of the turn by its id ("quotes", "quotes-2": the kinds whose content is a list can be
+// on the home more than once, each page with its own list).
 function pages() { return (D.widgets && D.widgets.pages) || []; }
-function page(kind) { return pages().find(p => p.kind === kind); }
+function page(id) { return pages().find(p => p.id === id); }
+function listOf(p) { return ((D.widgets && D.widgets.lists) || {})[p.id] || []; }
 function onPages() { return pages().filter(p => p.on); }
 
 // ---- Controls from the schema: a switch, a choice (two or three: segments), a number, some
@@ -420,11 +423,11 @@ function row(label, helpText, ctl, cls) {
 // ---- The widget's card as the screen draws it: header (icon, title, the right side), then
 // the rows of one window (curve rows, timed rows, plain rows) or the weather's own drawing.
 
-function drawCard(kind, model, win, emptyText) {
+function drawCard(kind, model, win, emptyText, label) {
   const c = el('div', 'wc');
   const hd = el('div', 'hd');
   const w = model && model.windows && model.windows.length ? model.windows[(win || 0) % model.windows.length] : null;
-  hd.append(ico(kind), el('span', 't', model ? model.title : (page(kind) || {}).label || ''));
+  hd.append(ico(kind), el('span', 't', model ? model.title : label || ''));
   if (w && w.aside) hd.append(el('span', 'a', w.aside));
   c.append(hd);
   if (model && model.layout === 'weather' && model.hero) return wrapCard(weatherCard(c, model.hero, w ? w.rows : []));
@@ -503,7 +506,9 @@ function today() {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function deviceScreen(kind, model, win) {
+// `p` the page in the slot (none: an empty slot).
+function deviceScreen(p, model, win) {
+  const kind = p ? p.kind : null;
   const s = el('div', 'scr');
   s.setAttribute('aria-hidden', 'true');
   const date = el('div', 'date');
@@ -516,9 +521,9 @@ function deviceScreen(kind, model, win) {
   }
   const slot = el('div', 'slot');
   const on = onPages();
-  const turns = on.length > 1 && on.some(p => p.kind === kind);
+  const turns = on.length > 1 && !!p && on.some(q => q.id === p.id);
   if (kind) {
-    const card = drawCard(kind, model, win, t('panel_empty_' + kind));
+    const card = drawCard(kind, model, win, t('panel_empty_' + kind), p.label);
     // Its height as the screen gives it (the CSS of .slot): the weather's block, its columns,
     // or its rows (none: as two, for the empty line).
     const w = model && model.windows && model.windows.length ? model.windows[(win || 0) % model.windows.length] : null;
@@ -531,7 +536,7 @@ function deviceScreen(kind, model, win) {
   slot.classList.toggle('turns', turns);
   if (turns) {
     const dots = el('div', 'dots');
-    for (const p of on) dots.append(el('i', p.kind === kind ? 'on' : null));
+    for (const q of on) dots.append(el('i', q.id === p.id ? 'on' : null));
     slot.append(dots);
   }
   const band = el('div', 'band');
@@ -684,8 +689,8 @@ function shownModel(p) {
 function homePage(r) {
   if (!D.widgets || !D.widgets.ok) return frag(pagehead(t('panel_tab_home')), el('p', 'lead', t('panel_error')));
   const on = onPages();
-  const showing = D.widgets.showing && on.some(p => p.kind === D.widgets.showing) ? D.widgets.showing : null;
-  const k = page(r.k) ? r.k : (showing || (on[0] || pages()[0] || {}).kind);
+  const showing = D.widgets.showing && on.some(p => p.id === D.widgets.showing) ? D.widgets.showing : null;
+  const k = page(r.k) ? r.k : (showing || (on[0] || pages()[0] || {}).id);
   const p = page(k);
   if (!p) return frag(pagehead(t('panel_tab_home')), el('p', 'lead', t('panel_error')));
   const { model, example } = shownModel(p);
@@ -693,9 +698,9 @@ function homePage(r) {
   const win = Math.min(S.win[k] || 0, Math.max(0, n - 1));
 
   const stage = el('div', 'stagecol');
-  stage.append(deviceFrame(deviceScreen(k, model, win), t('panel_device_preview')).device);
+  stage.append(deviceFrame(deviceScreen(p, model, win), t('panel_device_preview')).device);
   const only = el('div', 'cardonly');
-  only.append(drawCard(k, model, win, t('panel_empty_' + k)));
+  only.append(drawCard(p.kind, model, win, t('panel_empty_' + p.kind), p.label));
   stage.append(only);
   const note = el('p', 'preview-note');
   if (!p.on) note.append(el('span', 'tag', t('panel_not_on_home')), el('span', 'grow', t('panel_would_look')));
@@ -724,31 +729,41 @@ function homePage(r) {
   on.forEach((q, i) => {
     const b = el('button', 'tile');
     b.type = 'button';
-    b.id = 'tile-' + q.kind;
-    b.dataset.id = q.kind;
-    b.setAttribute('aria-pressed', String(q.kind === k));
+    b.id = 'tile-' + q.id;
+    b.dataset.id = q.id;
+    b.setAttribute('aria-pressed', String(q.id === k));
     b.setAttribute('aria-label', t('panel_pos_of', { w: q.label, a: i + 1, n: on.length }));
     b.title = t('panel_move_hint');
     b.append(el('span', 'n', i + 1));
-    if (q.kind === showing) { const d = el('i', 'live'); d.title = t('panel_showing_now'); b.append(d); }
+    if (q.id === showing) { const d = el('i', 'live'); d.title = t('panel_showing_now'); b.append(d); }
     b.append(ico(q.kind), el('b', null, q.label));
-    b.addEventListener('click', () => { if (!b.dataset.dragged) go('home/' + q.kind); });
+    b.addEventListener('click', () => { if (!b.dataset.dragged) go('home/' + q.id); });
     strip.append(b);
   });
   if (!on.length) strip.append(el('p', 'none', t('panel_no_widgets')));
   stripSort(strip, ids => saveOrder(ids));
   const offs = pages().filter(q => !q.on);
+  // A kind whose content is a list is always offered once more (another page with its own
+  // list), unless one of its pages is already offered off.
+  const more = (D.widgets.more || []).filter(m => !offs.some(q => q.kind === m.kind));
   const avail = el('div', 'avail');
-  avail.append(el('span', null, offs.length ? t('panel_can_add') : t('panel_all_on')));
-  for (const q of offs) {
+  avail.append(el('span', null, offs.length || more.length ? t('panel_can_add') : t('panel_all_on')));
+  const offer = (kd, label, pressed, fn) => {
     const b = el('button', 'tile off');
     b.type = 'button';
-    b.setAttribute('aria-pressed', String(q.kind === k));
+    b.setAttribute('aria-pressed', String(pressed));
     const plus = el('span', 'plus');
     plus.append(ico('plus'));
-    b.append(ico(q.kind), el('b', null, q.label), plus);
-    b.addEventListener('click', () => go('home/' + q.kind));
+    b.append(ico(kd), el('b', null, label), plus);
+    b.addEventListener('click', fn);
     avail.append(b);
+    return b;
+  };
+  for (const q of offs) offer(q.kind, q.label, q.id === k, () => go('home/' + q.id));
+  for (const m of more) {
+    const b = offer(m.kind, m.label, false, () => addAnother(m.kind, b));
+    b.id = 'more-' + m.kind;
+    b.setAttribute('aria-label', t('panel_add_another', { w: m.label }));
   }
   stage.append(th, strip, avail);
 
@@ -756,10 +771,10 @@ function homePage(r) {
   ed.setAttribute('aria-label', p.label);
   const eh = el('div', 'edhead');
   const ic = el('span', 'ic');
-  ic.append(ico(k));
+  ic.append(ico(p.kind));
   const words = el('div', 'grow');
-  const pos = on.findIndex(q => q.kind === k) + 1;
-  words.append(el('h2', null, p.label), el('p', null, p.on ? t('panel_pos_in', { a: pos, n: on.length }) : t('panel_what_' + k)));
+  const pos = on.findIndex(q => q.id === k) + 1;
+  words.append(el('h2', null, p.label), el('p', null, p.on ? t('panel_pos_in', { a: pos, n: on.length }) : t('panel_what_' + p.kind)));
   eh.append(ic, words);
   if (p.on) {
     const l = el('label', null, t('panel_on_home'));
@@ -779,11 +794,12 @@ function homePage(r) {
     ed.append(box);
   }
   const ctl = el('div', 'ctl');
-  (EDIT[k] || (() => {}))(ctl);
+  (EDIT[p.kind] || (() => {}))(ctl, p);
+  if (REPEATS.includes(p.kind)) ctl.append(pageBlock(p));
   ed.append(ctl);
   if (p.on && on.length > 1) {
     const f = el('div', 'edfoot');
-    const ids = on.map(q => q.kind);
+    const ids = on.map(q => q.id);
     const move = d => { const i = ids.indexOf(k); [ids[i], ids[i + d]] = [ids[i + d], ids[i]]; saveOrder(ids, true); };
     const before = button('btn quiet', t('panel_before'), () => move(-1), 'left');
     const after = el('button', 'btn quiet');
@@ -819,7 +835,7 @@ setInterval(async () => {
 
 // The turn's new order (the widgets off keep their place at the end).
 async function saveOrder(ids, quiet) {
-  const all = ids.concat(pages().filter(p => !ids.includes(p.kind)).map(p => p.kind));
+  const all = ids.concat(pages().filter(p => !ids.includes(p.id)).map(p => p.id));
   const r = await api('/api/widgets/order', { order: all });
   if (took(r)) toast(t('panel_order_saved'));
   else toast(errorText(r.error), true);
@@ -828,26 +844,37 @@ async function saveOrder(ids, quiet) {
 }
 
 // On: at the end of the turn. The same page then shows its controls.
-async function addToHome(kind, b) {
+async function addToHome(id, b) {
   b.disabled = true;
-  const on = onPages().map(x => x.kind).concat(kind);
-  const all = on.concat(pages().filter(x => !x.on && x.kind !== kind).map(x => x.kind));
+  const on = onPages().map(x => x.id).concat(id);
+  const all = on.concat(pages().filter(x => !x.on && x.id !== id).map(x => x.id));
   const r1 = await api('/api/widgets/order', { order: all });
   const r2 = r1.ok ? await api('/api/set', { key: 'widgets', value: on }) : r1;
   took(r1); took(r2);
   if (!r2.ok) { b.disabled = false; toast(errorText(r2.error), true); return; }
-  toast(t('panel_now_on', { w: page(kind).label }));
-  go('home/' + kind);
+  toast(t('panel_now_on', { w: page(id).label }));
+  go('home/' + id);
+}
+
+// Another page of a kind whose content is a list: on, at the end of the turn, its list empty;
+// the editor opens on it to choose what it shows.
+async function addAnother(kind, b) {
+  b.disabled = true;
+  const r = await api('/api/widgets/add', { kind });
+  if (!took(r)) { b.disabled = false; toast(errorText(r.error), true); return; }
+  const p = page(r.added);
+  toast(t('panel_now_on', { w: p ? p.label : kind }));
+  go('home/' + r.added);
 }
 
 // Off: the page stays (now as a preview); Undo puts it back where it was.
-async function removeFromHome(kind) {
-  const was = pages().map(x => x.kind);
-  const wasOn = onPages().map(x => x.kind);
-  const label = page(kind).label;
-  const r = await api('/api/set', { key: 'widgets', value: wasOn.filter(k => k !== kind) });
+async function removeFromHome(id) {
+  const was = pages().map(x => x.id);
+  const wasOn = onPages().map(x => x.id);
+  const label = page(id).label;
+  const r = await api('/api/set', { key: 'widgets', value: wasOn.filter(k => k !== id) });
   if (!took(r)) { toast(errorText(r.error), true); render(true); return; }
-  go('home/' + kind);
+  go('home/' + id);
   toast(t('panel_removed_home', { w: label }), {
     undo: async () => {
       const a = await api('/api/widgets/order', { order: was });
@@ -1046,13 +1073,13 @@ function multiBlock(c, key, extra) {
 
 // A list of chosen things: name and detail, its value now (from the preview), bin; in «Reorder»
 // a handle instead of the bin.
-function chosen(kind) {
-  const items = D.widgets[kind] || [];
-  const sorting = !!S.sorting[kind];
+function chosen(p) {
+  const kind = p.kind;
+  const items = listOf(p);
+  const sorting = !!S.sorting[p.id];
   const ul = el('ul', 'group');
   if (!items.length) ul.append(el('li', 'row empty', t('panel_' + kind + '_empty')));
-  const q = page(kind);
-  const rows = ((q && q.model && q.model.windows) || []).flatMap(w => w.rows);
+  const rows = ((p.model && p.model.windows) || []).flatMap(w => w.rows);
   for (const it of items) {
     const li = el('li', 'row');
     li.dataset.id = it.ref;
@@ -1072,7 +1099,7 @@ function chosen(kind) {
     if (sorting) li.append(ibtn('bars', t('panel_move', { w: it.name }), null, 'ibtn grip'));
     else {
       li.append(ibtn('trash', t('panel_remove_x', { w: it.name }), async () => {
-        const a = await api('/api/' + kind + '/remove', { ref: it.ref });
+        const a = await api('/api/' + kind + '/remove', { ref: it.ref, page: p.id });
         if (!took(a)) { toast(errorText(a.error), true); return; }
         render(true);
         toast(t('panel_removed', { w: short(it.name) }), a.undo ? { undo: undo } : {});
@@ -1082,7 +1109,7 @@ function chosen(kind) {
   }
   if (sorting) {
     sortable(ul, async (ids, id, keys) => {
-      const a = await api('/api/' + kind + '/move', { ref: id, to: ids.indexOf(id) });
+      const a = await api('/api/' + kind + '/move', { ref: id, to: ids.indexOf(id), page: p.id });
       if (!took(a)) toast(errorText(a.error), true);
       render(true);
       if (keys) refocus(id);
@@ -1092,12 +1119,12 @@ function chosen(kind) {
 }
 
 // «Reorder» for a widget's list: a quiet button next to its label.
-function chosenHead(kind, key) {
+function chosenHead(p, key) {
   const h = el('div', 'turnhead');
   h.append(el('span', 'lab grow', t(key)));
-  if ((D.widgets[kind] || []).length > 1) {
-    const sorting = !!S.sorting[kind];
-    h.append(button('btn quiet', t(sorting ? 'panel_finish' : 'panel_reorder'), () => { S.sorting[kind] = !sorting; render(true); }));
+  if (listOf(p).length > 1) {
+    const sorting = !!S.sorting[p.id];
+    h.append(button('btn quiet', t(sorting ? 'panel_finish' : 'panel_reorder'), () => { S.sorting[p.id] = !sorting; render(true); }));
   }
   return h;
 }
@@ -1223,15 +1250,17 @@ function finder(what, labelKey, has, add) {
 }
 
 // Adds a hit to a list; the answer's pages show it in the preview at once.
-function adder(kind) {
+// `p` the page whose list it is (none: the player).
+function adder(kind, p) {
   return async (h, search) => {
-    const a = await api(kind === 'player' ? '/api/player' : '/api/' + kind + '/add', { search, ref: h.ref });
+    const id = p ? p.id : '';
+    const a = await api(kind === 'player' ? '/api/player' : '/api/' + kind + '/add', { search, ref: h.ref, page: id });
     if (!took(a)) return a;
     if (kind !== 'player') {
-      const n = (D.widgets[kind] || []).length;
-      S.win[kind] = Math.floor(Math.max(0, n - 1) / 4);
+      const n = (a.lists && a.lists[id] || []).length;
+      S.win[id] = Math.floor(Math.max(0, n - 1) / 4);
       toast(t('panel_added', { w: short(h.name) }), {
-        undo: async () => { const r = await api('/api/' + kind + '/remove', { ref: h.ref }); if (took(r)) render(true); },
+        undo: async () => { const r = await api('/api/' + kind + '/remove', { ref: h.ref, page: id }); if (took(r)) render(true); },
       });
     } else {
       finds.player = null;
@@ -1244,11 +1273,11 @@ function adder(kind) {
 
 // Markets, other cities, sensors: the chosen rows, a search to add one, the help.
 function listBlock(kind, what, shownKey, addKey, helpKey) {
-  return c => {
-    const items = D.widgets[kind] || [];
-    c.append(chosenHead(kind, shownKey), chosen(kind));
+  return (c, p) => {
+    const items = listOf(p);
+    c.append(chosenHead(p, shownKey), chosen(p));
     if (items.length < D.widgets.limits[kind]) {
-      c.append(finder(what, addKey, h => items.some(x => x.ref === h.ref), adder(kind)));
+      c.append(finder(what, addKey, h => items.some(x => x.ref === h.ref), adder(kind, p)));
     } else c.append(help('panel_list_full'));
     if (kind === 'quotes') {
       const it = item('widgets_currency');
@@ -1263,6 +1292,46 @@ function listBlock(kind, what, shownKey, addKey, helpKey) {
   };
 }
 
+// The kinds whose content is a list: a page of them has a name and, from the second on, can
+// be removed.
+const REPEATS = ['quotes', 'cities', 'sensors'];
+
+// The page's own name (empty: «Markets 2») and, for a second page, removing it with its list.
+function pageBlock(p) {
+  const box = el('div', 'pageblock');
+  const id = 'name-' + p.id;
+  const i = el('input');
+  i.type = 'text';
+  i.id = id;
+  i.maxLength = (D.widgets.limits && D.widgets.limits.name) || 24;
+  i.value = p.name || '';
+  i.placeholder = p.label;
+  i.autocomplete = 'off';
+  const saveName = async () => {
+    const name = i.value.trim();
+    if (name === (p.name || '')) return;
+    const a = await api('/api/widgets/name', { page: p.id, name });
+    if (!took(a)) { toast(errorText(a.error), true); return; }
+    toast(t('panel_saved'));
+    render(true);
+  };
+  i.addEventListener('change', saveName);
+  i.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); i.blur(); } });
+  box.append(label(t('panel_page_name'), id), i, help('panel_page_name_help'));
+  if (p.n > 1) {
+    const rm = button('btn danger', t('panel_remove_page', { w: p.label }), async ev => {
+      ev.currentTarget.disabled = true;
+      const a = await api('/api/widgets/remove', { page: p.id });
+      if (!took(a)) { toast(errorText(a.error), true); render(true); return; }
+      go('home');
+      toast(t('panel_page_removed', { w: p.label }), a.undo ? { undo: async () => { await undo(); go('home/' + p.id); } } : {});
+    }, 'trash');
+    rm.id = 'remove-' + p.id;
+    box.append(rm);
+  }
+  return box;
+}
+
 const EDIT = {
   next: c => multiBlock(c, 'calendars'),
   shopping: c => {
@@ -1273,9 +1342,9 @@ const EDIT = {
   weather: c => c.append(el('p', 'lead', t('panel_help_weather'))),
   quotes: listBlock('quotes', 'quote', 'panel_shown_quotes', 'panel_add_quote', 'panel_src_quotes'),
   cities: listBlock('cities', 'city', 'panel_shown_cities', 'panel_add_city', 'panel_src_cities'),
-  sensors: c => {
+  sensors: (c, p) => {
     if (!D.widgets.ha) { c.append(el('p', 'lead', t('panel_no_ha'))); return; }
-    listBlock('sensors', 'sensor', 'panel_shown_sensors', 'panel_add_sensor', 'panel_src_sensors')(c);
+    listBlock('sensors', 'sensor', 'panel_shown_sensors', 'panel_add_sensor', 'panel_src_sensors')(c, p);
   },
   notes: c => notesBlock(c),
   check: c => {
@@ -1894,9 +1963,9 @@ function screenPage() {
   // Under the layer: the home as it looks now, until the first frame.
   const old = R.glass.querySelector('.scr');
   const on = onPages();
-  const k = (D.widgets && D.widgets.showing) || (on[0] || {}).kind;
+  const k = (D.widgets && D.widgets.showing) || (on[0] || {}).id;
   const p = k && page(k);
-  const fresh = deviceScreen(k, p ? shownModel(p).model : null, 0);
+  const fresh = deviceScreen(p || null, p ? shownModel(p).model : null, 0);
   if (old) old.replaceWith(fresh); else R.glass.prepend(fresh);
   screenView();
   if (!R.live && !R.poll) {
