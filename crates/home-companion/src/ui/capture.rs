@@ -19,6 +19,13 @@
 //! every presented frame, so the same id means nothing was drawn and nothing is read (an id can
 //! come back after two frames: a full read at least every [`RECHECK`] catches that). A read
 //! frame equal to the last one is not encoded.
+//!
+//! Privacy ([`Capture::set_hidden`]): the screen says at every page or dialog change whether
+//! what it shows may be sent. While hidden nothing is read and the last frame is dropped; every
+//! change bumps a generation, and a frame read under an older generation is never published (the
+//! check and the publishing happen under one lock). Once shown again, only a frame from a
+//! framebuffer presented after the change and at least [`REVEAL_AFTER`] later is published (or
+//! after [`REVEAL_AT_MOST`], for a screen that drew nothing new).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -35,6 +42,10 @@ pub const FAST_FOR: Duration = Duration::from_secs(3);
 /// A read of the buffer at least this often even when the CRTC shows the same id.
 pub const RECHECK: Duration = Duration::from_secs(2);
 pub const QUALITY: u8 = 70;
+/// After the screen may be sent again: frames read this soon are not published…
+pub const REVEAL_AFTER: Duration = Duration::from_millis(300);
+/// …nor before a new framebuffer, unless this long passed.
+pub const REVEAL_AT_MOST: Duration = Duration::from_millis(1500);
 /// Reasons that do not go away by trying again.
 const PERMANENT: &[&str] = &["renderer", "no_drm", "not_master", "tiled", "format"];
 
@@ -45,6 +56,8 @@ pub struct Frame {
     pub width: u32,
     pub height: u32,
     pub jpeg: Arc<Vec<u8>>,
+    /// The JPEG as base64, made once on the capture thread (the panel socket's JSON).
+    pub b64: Arc<String>,
 }
 
 /// The pixels of the scanned-out buffer, as they are in memory: rows of `stride` bytes, 4 bytes
@@ -161,6 +174,7 @@ impl Pipeline {
             seq: self.seq,
             width: w,
             height: h,
+            b64: Arc::new(base64(&jpeg)),
             jpeg: Arc::new(jpeg),
         }))
     }
@@ -189,7 +203,66 @@ pub enum Status {
     Unavailable(&'static str),
 }
 
+/// Whether frames may be published: the screen's privacy state and its generation.
+#[derive(Debug, Clone, Copy)]
+pub struct Gate {
+    pub generation: u64,
+    pub hidden: bool,
+    /// When it was last shown again.
+    pub revealed: Option<Instant>,
+}
+
+impl Gate {
+    fn new() -> Gate {
+        Gate {
+            generation: 0,
+            hidden: false,
+            revealed: None,
+        }
+    }
+
+    /// May a frame be published? `seen`: the generation it was read under; `id`: its
+    /// framebuffer; `id_at_change`: the framebuffer shown when the reader saw this generation.
+    pub fn allows(&self, seen: u64, id: u32, id_at_change: Option<u32>, now: Instant) -> bool {
+        if self.hidden || seen != self.generation {
+            return false;
+        }
+        match self.revealed {
+            None => true,
+            Some(t) => {
+                let since = now.saturating_duration_since(t);
+                since >= REVEAL_AT_MOST
+                    || (since >= REVEAL_AFTER && id_at_change.is_some_and(|old| old != id))
+            }
+        }
+    }
+}
+
+/// Bumped at every published frame and privacy change: the panel socket waits on it.
+static NEWS: (Mutex<u64>, std::sync::Condvar) = (Mutex::new(0), std::sync::Condvar::new());
+
+fn tell_news() {
+    *lock(&NEWS.0) += 1;
+    NEWS.1.notify_all();
+}
+
+/// The news counter now (to wait for anything after it).
+pub fn news() -> u64 {
+    *lock(&NEWS.0)
+}
+
+/// Waits until something happened after `seen`, at most `within`.
+pub fn wait_news(seen: u64, within: Duration) {
+    let g = lock(&NEWS.0);
+    let guard = match NEWS.1.wait_timeout_while(g, within, |n| *n == seen) {
+        Ok((g, _)) => g,
+        Err(e) => e.into_inner().0,
+    };
+    drop(guard);
+}
+
 struct Shared {
+    gate: Mutex<Gate>,
     latest: Mutex<Option<Frame>>,
     status: Mutex<Status>,
     wanted_until: Mutex<Instant>,
@@ -215,6 +288,7 @@ impl Capture {
         let now = Instant::now();
         Capture {
             shared: Arc::new(Shared {
+                gate: Mutex::new(Gate::new()),
                 latest: Mutex::new(None),
                 status: Mutex::new(Status::Idle),
                 wanted_until: Mutex::new(now),
@@ -261,6 +335,28 @@ impl Capture {
         }
     }
 
+    /// Whether what the screen shows may be sent (the screen says so at every page or dialog
+    /// change, and while the system suspends). Hidden: the last frame goes at once and nothing
+    /// read before the change is ever published.
+    pub fn set_hidden(&self, hidden: bool) {
+        {
+            let mut g = lock(&self.shared.gate);
+            if g.hidden == hidden {
+                return;
+            }
+            g.hidden = hidden;
+            g.generation += 1;
+            g.revealed = (!hidden).then(Instant::now);
+            *lock(&self.shared.latest) = None;
+        }
+        self.shared.forget.store(true, Ordering::Release);
+        tell_news();
+    }
+
+    pub fn hidden(&self) -> bool {
+        lock(&self.shared.gate).hidden
+    }
+
     /// The remote touched the screen: look often for a while.
     pub fn poke(&self) {
         *lock(&self.shared.fast_until) = Instant::now() + FAST_FOR;
@@ -276,6 +372,7 @@ impl Capture {
     pub fn stop(&self) {
         self.shared.stop.store(true, Ordering::Release);
         *lock(&self.shared.latest) = None;
+        tell_news();
     }
 
     pub fn latest(&self) -> Option<Frame> {
@@ -311,6 +408,9 @@ fn run(
     log::info!(event = "remote_screen"; "remote screen: capture started");
     let mut pipe = Pipeline::default();
     let mut last_id: Option<u32> = None;
+    // The generation last seen, and the framebuffer shown when it was first seen.
+    let mut seen_gen = u64::MAX;
+    let mut id_at_change: Option<u32> = None;
     let mut last_read = Instant::now() - RECHECK;
     let mut frames = 0u32;
     let mut busy = Duration::ZERO;
@@ -325,6 +425,12 @@ fn run(
             last_id = None;
         }
         let t0 = Instant::now();
+        let gate = *lock(&shared.gate);
+        if gate.hidden {
+            // Nothing is read while the screen shows what must not be sent.
+            std::thread::sleep(SLOW);
+            continue;
+        }
         let id = match source.current() {
             Ok(id) => id,
             Err(e) => {
@@ -333,6 +439,17 @@ fn run(
                 return;
             }
         };
+        if gate.generation != seen_gen {
+            seen_gen = gate.generation;
+            id_at_change = Some(id);
+        }
+        let waiting = gate.revealed.is_some_and(|t| t.elapsed() < REVEAL_AT_MOST)
+            && !gate.allows(seen_gen, id, id_at_change, Instant::now());
+        if waiting {
+            // Not yet: look again soon, without reading.
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        }
         if Some(id) != last_id || now.duration_since(last_read) >= RECHECK {
             last_id = Some(id);
             last_read = now;
@@ -348,9 +465,20 @@ fn run(
             }
             *lock(&shared.status) = Status::Running;
             if let Some(f) = made {
-                frames += 1;
-                *lock(&shared.fast_until) = now + FAST_FOR;
-                *lock(&shared.latest) = Some(f);
+                // Published only if nothing changed meanwhile (under the gate's lock: a change
+                // either comes before, and this is dropped, or after, and clears it).
+                let g = lock(&shared.gate);
+                if g.allows(seen_gen, id, id_at_change, Instant::now()) {
+                    frames += 1;
+                    *lock(&shared.fast_until) = now + FAST_FOR;
+                    *lock(&shared.latest) = Some(f);
+                    drop(g);
+                    tell_news();
+                } else {
+                    // Read under an older state: read again from scratch.
+                    pipe.forget();
+                    last_id = None;
+                }
             }
         }
         busy += t0.elapsed();
@@ -498,12 +626,35 @@ pub mod drm {
             };
             // SAFETY: F_DUPFD_CLOEXEC returns a new descriptor (or -1), which we then own.
             let d = unsafe { libc::fcntl(n, libc::F_DUPFD_CLOEXEC, 0) };
-            if d >= 0 {
-                // SAFETY: `d` was just made and is ours alone.
-                out.push(unsafe { OwnedFd::from_raw_fd(d) });
+            if d < 0 {
+                continue;
+            }
+            // SAFETY: `d` was just made and is ours alone.
+            let fd = unsafe { OwnedFd::from_raw_fd(d) };
+            // The number may have been closed and reused between readlink and dup: the
+            // duplicate must be the DRM character device the link named.
+            if same_device(&fd, &target) {
+                out.push(fd);
             }
         }
         out
+    }
+
+    /// `fd` is a character device of DRM (major 226), the one `path` names.
+    fn same_device(fd: &OwnedFd, path: &std::path::Path) -> bool {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        // SAFETY: fstat fills the struct we pass.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } != 0 {
+            return false;
+        }
+        let Ok(m) = std::fs::metadata(path) else {
+            return false;
+        };
+        (st.st_mode & libc::S_IFMT) == libc::S_IFCHR
+            && m.file_type().is_char_device()
+            && st.st_rdev == m.rdev()
+            && libc::major(st.st_rdev) == 226
     }
 
     impl Drm {
@@ -878,5 +1029,119 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(c.status(), Status::Unavailable("no_drm"));
+    }
+
+    #[test]
+    fn the_gate_publishes_only_fresh_frames() {
+        let t = Instant::now();
+        let mut g = Gate::new();
+        assert!(g.allows(0, 5, Some(5), t));
+        // Hidden: nothing; read under an older generation: nothing.
+        g.hidden = true;
+        g.generation = 1;
+        assert!(!g.allows(1, 6, Some(5), t));
+        g.hidden = false;
+        g.generation = 2;
+        g.revealed = Some(t);
+        assert!(
+            !g.allows(1, 6, Some(5), t + REVEAL_AFTER),
+            "older generation"
+        );
+        // Shown again: a new framebuffer and 300 ms, or 1.5 s whatever.
+        assert!(!g.allows(2, 6, Some(5), t), "too soon");
+        assert!(
+            !g.allows(2, 5, Some(5), t + REVEAL_AFTER),
+            "the same framebuffer"
+        );
+        assert!(g.allows(2, 6, Some(5), t + REVEAL_AFTER));
+        assert!(g.allows(2, 5, Some(5), t + REVEAL_AT_MOST));
+    }
+
+    /// A source whose framebuffer id and content the test moves.
+    struct Moving {
+        id: Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    impl Source for Moving {
+        fn current(&mut self) -> Result<u32, String> {
+            Ok(self.id.load(Ordering::Acquire))
+        }
+        fn read(&mut self, f: &mut dyn FnMut(&Raw) -> Result<(), String>) -> Result<(), String> {
+            let v = self.id.load(Ordering::Acquire) as u8;
+            let data = buffer(8, 8, 32, |x, y| [x as u8 ^ v, y as u8, v]);
+            f(&Raw {
+                data: &data,
+                width: 8,
+                height: 8,
+                stride: 32,
+                bgr: true,
+            })
+        }
+    }
+
+    fn until(what: impl Fn() -> bool) -> bool {
+        let t = Instant::now();
+        while !what() && t.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        what()
+    }
+
+    /// Finding: a page that must not be sent (a QR code) captured, then the remote goes home and
+    /// asks again: the cached frame must never come back.
+    #[test]
+    fn a_hidden_page_never_leaks_through_the_last_frame() {
+        let id = Arc::new(std::sync::atomic::AtomicU32::new(1));
+        let i = id.clone();
+        let c = Capture::new(0, move || {
+            Ok(Box::new(Moving { id: i.clone() }) as Box<dyn Source>)
+        });
+        c.want();
+        assert!(until(|| c.latest().is_some()));
+        // The private page comes on screen: hidden at once, the last frame gone.
+        c.set_hidden(true);
+        assert!(c.latest().is_none());
+        id.store(2, Ordering::Release);
+        std::thread::sleep(Duration::from_millis(700));
+        assert!(c.latest().is_none(), "nothing read while hidden");
+        // Back home: the framebuffer still shows the private page for a moment.
+        c.set_hidden(false);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(c.latest().is_none(), "not before a new frame");
+        let shown_at = Instant::now();
+        id.store(3, Ordering::Release);
+        assert!(until(|| c.latest().is_some()));
+        assert!(shown_at.elapsed() >= REVEAL_AFTER - Duration::from_millis(200));
+        // What it publishes was read from the new framebuffer.
+        let f = c.latest().unwrap();
+        let mut p = Pipeline::default();
+        let data = buffer(8, 8, 32, |x, y| [x as u8 ^ 3, y as u8, 3]);
+        let mine = p
+            .process(
+                &Raw {
+                    data: &data,
+                    width: 8,
+                    height: 8,
+                    stride: 32,
+                    bgr: true,
+                },
+                0,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(f.jpeg, mine.jpeg);
+        c.stop();
+    }
+
+    #[test]
+    fn news_wakes_the_waiter() {
+        let n = news();
+        let t = Instant::now();
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(50));
+            tell_news();
+        });
+        wait_news(n, Duration::from_secs(2));
+        assert!(t.elapsed() < Duration::from_secs(1));
     }
 }
