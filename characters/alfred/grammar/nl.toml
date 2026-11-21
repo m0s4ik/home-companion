@@ -77,6 +77,7 @@ yes = ["ja", "ja graag", "ja hoor", "ja prima", "jazeker", "zeker", "prima", "do
 no = ["nee", "nee dank je", "nee bedankt", "laat maar", "nee laat maar", "niet doen", "hoeft niet", "annuleer"]
 repeat = ["herhaal", "herhaal dat", "kun je dat herhalen", "zeg dat nog eens", "wat zei je", "nog een keer"]
 screen_off = ["zet het scherm uit", "scherm uit", "doe het scherm uit"]
+take_photo = ["maak een foto", "maak even een foto", "maak een foto van mij", "maak een foto van me", "neem een foto", "maak een fotootje", "maak een selfie"]
 dnd_on = [
     "niet storen",
     "stoor me niet",
