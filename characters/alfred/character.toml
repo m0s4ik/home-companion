@@ -284,3 +284,58 @@ size = [370, 607]
 frames = [185, 220]
 fps = 16
 rect = [247.1, 37.0, 825.6, 986.7]
+
+# The moment's poses (../README.md, "Animations"), made like the laptop from DGX clips that start
+# and end on idle.png. The link pages: the plug comes out with its cable (link_in, 0-38, 3 frames
+# fading into the loop), held (link_hold, 39-102, a 4 s loop), put away (link_out, 103-143, 3 frames
+# fading from the loop before it and 3 into idle after it). A job gone well: a hand on the chest,
+# a thumbs-up (satisfied_in, 0-19), held (satisfied_hold, 20-51, a 2 s loop), the same backwards
+# (satisfied_out, 52-70). A reflex done: a small nod, idle to idle (nod).
+[animations.link_in]
+file = "animations/link.png"
+size = [327, 605]
+frames = [0, 39]
+fps = 16
+rect = [265.8, 38.6, 777.1, 985.1]
+
+[animations.link_hold]
+file = "animations/link.png"
+size = [327, 605]
+frames = [39, 103]
+fps = 16
+rect = [265.8, 38.6, 777.1, 985.1]
+
+[animations.link_out]
+file = "animations/link.png"
+size = [327, 605]
+frames = [103, 144]
+fps = 16
+rect = [265.8, 38.6, 777.1, 985.1]
+
+[animations.satisfied_in]
+file = "animations/satisfied.png"
+size = [316, 605]
+frames = [0, 20]
+fps = 16
+rect = [290.8, 38.6, 784.9, 985.1]
+
+[animations.satisfied_hold]
+file = "animations/satisfied.png"
+size = [316, 605]
+frames = [20, 52]
+fps = 16
+rect = [290.8, 38.6, 784.9, 985.1]
+
+[animations.satisfied_out]
+file = "animations/satisfied.png"
+size = [316, 605]
+frames = [52, 71]
+fps = 16
+rect = [290.8, 38.6, 784.9, 985.1]
+
+[animations.nod]
+file = "animations/nod.png"
+size = [222, 604]
+frames = [0, 25]
+fps = 16
+rect = [339.3, 41.7, 686.4, 986.7]

@@ -45,12 +45,17 @@ of home-companion.
   earmuffs from behind his back, puts them on, the tape on his mouth, arms open) and `muted_out` (73-145, the same
   backwards), aligned on `idle.png`; the `muted` loop plays in between. Wan 2.2 on the DGX between `idle.png` and
   `muted.png`; 2 frames fading from the idle clip before it and 4 into the `muted` loop's first frame after it (the
-  clip still moves on its last frame), so neither joint jumps.
+  clip still moves on its last frame), so neither joint jumps. Five near-duplicate-then-jump frames of the clip
+  (22, 43, 48, 57, 61) were made again with optical flow on the DGX.
 - **Home Assistant page**: `animations/ha.png` (220 frames, 370x607, 16 fps) holds `ha_in` (0-34: the laptop from
   behind his back, opened), `ha_hold` (35-98, a 4 s loop, breathing), `ha_type_in` (99-117: fingers to the keys,
   the screen's light rises on his face), `ha_type` (118-165, a 3 s loop), `ha_type_out` (166-184, `ha_type_in`
   backwards) and `ha_out` (185-219: closed and put back behind him), aligned on `idle.png`; 3 fading frames after
   `ha_in`, `ha_type_in` and `ha_out` into the clip that follows. The laptop pose is the `working` one.
+- **The moment's poses**: `animations/link.png` (144 frames: `link_in` 0-38, the `link_hold` loop 39-102,
+  `link_out` 103-143), `animations/satisfied.png` (71 frames: `satisfied_in` 0-19, the `satisfied_hold` loop 20-51,
+  `satisfied_out` 52-70, `satisfied_in` backwards) and `animations/nod.png` (25 frames, idle to idle), made like the
+  laptop (3 fading frames after `link_in`, before and after `link_out`).
 - **How the animations were made**: Wan 2.2 I2V A14B (fp8, with the lightx2v 4-step LoRA; weights under
   Apache-2.0) in ComfyUI, from the poses, one clip per state.
 
@@ -74,4 +79,4 @@ its state, and open a pull request: contributions to the character are CC0 as we
   the pose as first and last frame (fal.ai's turbo variant, not the package's ComfyUI workflow), every second frame
   kept (16 fps), the last one dropped, `make-animation.py --threshold 12`.
 
-Missing today: an animation for the moment's poses (`link`, `working`, `satisfied`, `nod` stand still).
+Missing today: an animation for the `working` pose (it stands still).
