@@ -120,7 +120,7 @@ cp tools/airplay/uxplay-1.73.7-home-companion.patch tools/airplay/build-uxplay.s
 printf 'version=%s\ncommit=%s%s\nbuilt=%s\nweb_helper=%s\n' "$VERSION" "$COMMIT" "$DIRTY" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     "$WEB_FROM" | sed "s|$ROOT/||; s|$HOME|~|" >"$STAGE/VERSION"
 
-# Nothing private in the bundle's text files (the whole private range 192.168.0.0/16, as in the panel's
+# Nothing private in the bundle's text files (the whole private range 192.168.0.0/16, as in the panel's (check-private: allow)
 # IPAddressAllow, is not an address)
 if grep -rIn -E '192\.168\.|10\.100\.' "$STAGE" | grep -v -E '192\.168\.0\.0/16' | grep -q .; then
     echo "private-looking addresses in:" >&2

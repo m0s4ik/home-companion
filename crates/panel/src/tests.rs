@@ -53,11 +53,11 @@ const PEER: &str = "192.0.2.24";
 
 fn lan() -> IpAddr {
     // 192.0.2.x is documentation space, not private: the tests' browser is on 10.x.
-    "10.0.0.24".parse().unwrap()
+    "10.0.0.24".parse().unwrap() // check-private: allow
 }
 
 fn req(method: &str, target: &str, headers: &[(&str, &str)], body: &str) -> Request {
-    let mut h: Vec<(String, String)> = vec![("Host".into(), "10.0.0.5:8125".into())];
+    let mut h: Vec<(String, String)> = vec![("Host".into(), "10.0.0.5:8125".into())]; // check-private: allow
     h.extend(headers.iter().map(|(a, b)| (a.to_string(), b.to_string())));
     Request {
         method: method.into(),
@@ -69,7 +69,7 @@ fn req(method: &str, target: &str, headers: &[(&str, &str)], body: &str) -> Requ
 
 fn post(target: &str, body: &str, extra: &[(&str, &str)]) -> Request {
     let mut h = vec![
-        ("Origin", "http://10.0.0.5:8125"),
+        ("Origin", "http://10.0.0.5:8125"), // check-private: allow
         ("Content-Type", "application/json"),
         (
             "Cookie",
@@ -181,9 +181,9 @@ fn only_the_home_network_and_its_names() {
         assert_eq!(status(&p, &r), 421, "{host}");
     }
     for host in [
-        "10.0.0.5",
+        "10.0.0.5", // check-private: allow
         "[fd00::5]:8125",
-        "thinksmart.local:8125",
+        "thinksmart.local:8125", // check-private: allow
         "ThinkSmart",
         "localhost:8125",
     ] {
@@ -209,7 +209,7 @@ fn writes_need_the_same_origin_and_json() {
     r.headers[1].1 = "http://evil.example".into();
     assert_eq!(status(&p, &r), 403);
     let mut r = ok.clone();
-    r.headers[1].1 = "http://10.0.0.5:8125.evil.example".into();
+    r.headers[1].1 = "http://10.0.0.5:8125.evil.example".into(); // check-private: allow
     assert_eq!(status(&p, &r), 403);
     let r = post("/api/set", "{}", &[("Sec-Fetch-Site", "cross-site")]);
     assert_eq!(status(&p, &r), 403);
@@ -321,7 +321,7 @@ fn the_body_gets_only_what_it_should() {
     let asked = p.body.asked.lock().unwrap().last().cloned().unwrap();
     assert_eq!(
         asked,
-        json!({"op": "set", "token": GOOD, "peer": "10.0.0.24", "agent": {"browser": "Chrome", "os": "macOS"},
+        json!({"op": "set", "token": GOOD, "peer": "10.0.0.24", "agent": {"browser": "Chrome", "os": "macOS"}, // check-private: allow
                "lang": ["it-IT", "it", "en"], "key": "home_compact", "value": true})
     );
     assert_eq!(status(&p, &post("/api/set", r#"{"key":"nope"}"#, &[])), 400);
@@ -339,7 +339,7 @@ fn twenty_a_second() {
     assert_eq!(r429.status, 429);
     assert_eq!(header(&r429, "retry-after"), Some("1"));
     // Another address is not slowed; the same one is fine a second later.
-    assert_eq!(p.route(&r, "10.0.0.25".parse().unwrap(), t).status, 200);
+    assert_eq!(p.route(&r, "10.0.0.25".parse().unwrap(), t).status, 200); // check-private: allow
     assert_eq!(p.route(&r, lan(), t + Duration::from_secs(1)).status, 200);
 }
 

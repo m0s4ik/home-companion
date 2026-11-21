@@ -60,7 +60,7 @@ const PIC_H: u32 = 400;
 
 /// The sample screen at half size: the golden picture of the home with the widget.
 fn picture() -> Vec<u8> {
-    let png = include_bytes!("../out/golden/widget.png");
+    let png = include_bytes!("../fixtures/golden/widget.png");
     let img = image::load_from_memory(png).expect("golden png").to_rgb8();
     image::imageops::resize(&img, PIC_W, PIC_H, image::imageops::FilterType::Triangle).into_raw()
 }

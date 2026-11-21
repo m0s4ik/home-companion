@@ -610,15 +610,15 @@ mod tests {
     #[test]
     fn private_addresses() {
         for a in [
-            "10.1.2.3",
-            "172.16.0.1",
-            "192.168.1.1",
+            "10.1.2.3", // check-private: allow
+            "172.16.0.1", // check-private: allow
+            "192.168.1.1", // check-private: allow
             "127.0.0.1",
-            "169.254.1.1",
+            "169.254.1.1", // check-private: allow
             "::1",
             "fd00::1",
             "fe80::1",
-            "::ffff:10.0.0.1",
+            "::ffff:10.0.0.1", // check-private: allow
         ] {
             assert!(is_private(a.parse().unwrap()), "{a}");
         }
