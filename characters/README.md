@@ -36,6 +36,20 @@ Optional prop: `poses/dnd.png`, drawn on the floor at the figure's right foot wh
 day and night; at night at 55 %). Any size (shown 150 px wide), RGBA with a transparent background, or RGB on the
 character's background. Without it do not disturb shows only its line over the clock.
 
+Optional scenes of Home Assistant's cards: `scenes/<name>.png`, shown instead of the home's pose (`idle`) while a
+card with `pose: <name>` shows (README, "From your automations"), still (the home's animations wait), by day only.
+A pose picture like the others: the same size, the flat background, drawn with the character's `crop`, the figure's
+feet on the same line as in `idle` and the scene as tall as the figure where the crop's width allows. Names of
+lowercase letters, digits, `-` and `_`. A character ships none, or the ones that suit it: they are the house's
+(taking out the washing, at the barbecue), so a user adds their own in `<state_dir>/scenes/<character id>/` (on the
+device `/var/lib/home-companion/scenes/alfred/`, kept by updates), which comes before the character's `scenes/`.
+
+A scene may move: `scenes/<name>.toml` is its animation, a table as in character.toml (`file`, `size`, `frames`,
+`fps`, optional `pause`, `rect`) without the `[animations.…]` header, its `file` a sheet in the same directory made with
+[tools/make-animation.py](../tools/make-animation.py) from `<name>.png`, next to it. It loops over the scene while the card
+shows (also while an announcement is said over it) and its sheet is decoded when the scene comes and freed when it
+goes. A clip whose last frame is its first loops without a jump.
+
 Rules for the pictures:
 
 - PNG, 8 bits per channel (RGB or RGBA), **all the same size** within a character (Alfred: 1024x1024).
