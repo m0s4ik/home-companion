@@ -150,7 +150,8 @@ rect = [229.9, 1.0, 860.0, 988.2]
 # The settings pages (../README.md, "Animations"): one sheet, the toolbox comes out from behind his
 # back (0-31); every 12 s the spanner comes out from behind his back, he looks at it and puts it back
 # (32-143); the toolbox goes back behind him to the idle pose (144-175). Made with
-# tools/make-animation.py from poses/idle.png, brightness matched to it.
+# tools/make-animation.py (--threshold 4 --fill 2) from poses/idle.png, colours matched to it frame by
+# frame (tone curves fitted on the pixels that match the pose).
 [animations.settings_in]
 file = "animations/settings.png"
 size = [436, 605]
@@ -175,25 +176,26 @@ rect = [178.3, 38.6, 860.0, 985.1]
 
 # The "More" page (../README.md, "Animations"): one sheet, he turns his head to the page's tiles
 # (0-15), looks at them blinking now and then (16-79, every 8 s), looks ahead again (80-95). Made
-# with tools/make-animation.py from poses/idle.png, brightness matched to it.
+# with tools/make-animation.py (--threshold 4 --fill 2) from poses/idle.png, colours matched to it
+# frame by frame (tone curves fitted on the pixels that match the pose).
 [animations.more_in]
 file = "animations/more.png"
-size = [220, 605]
+size = [220, 604]
 frames = [0, 16]
 fps = 16
-rect = [336.2, 40.2, 680.2, 986.7]
+rect = [336.2, 40.2, 680.2, 985.1]
 
 [animations.more_hold]
 file = "animations/more.png"
-size = [220, 605]
+size = [220, 604]
 frames = [16, 80]
 fps = 16
 pause = 8
-rect = [336.2, 40.2, 680.2, 986.7]
+rect = [336.2, 40.2, 680.2, 985.1]
 
 [animations.more_out]
 file = "animations/more.png"
-size = [220, 605]
+size = [220, 604]
 frames = [80, 96]
 fps = 16
-rect = [336.2, 40.2, 680.2, 986.7]
+rect = [336.2, 40.2, 680.2, 985.1]

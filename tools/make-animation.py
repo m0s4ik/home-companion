@@ -5,7 +5,8 @@
 animation sheet (characters/README.md, "Animations") and prints its [animations.<name>] table.
 
 usage: make-animation.py FRAMES_DIR POSE_PNG OUT_PNG [--name NAME] [--fps 16] [--pause 0]
-                         [--part NAME:FIRST:END[:PAUSE]]... [--threshold 6] [--background "#03050d"]
+                         [--part NAME:FIRST:END[:PAUSE]]... [--threshold 6] [--fill 0]
+                         [--background "#03050d"]
 
 --part declares one more animation played from frames FIRST..END-1 of the same sheet (Alfred's
 loading clip contains the idle and wake-up clips, so the three share one sheet).
@@ -21,6 +22,9 @@ loading clip contains the idle and wake-up clips, so the three share one sheet).
   reconstructs it* by more than THRESHOLD (any channel), transparent (and black) elsewhere: the
   body keeps the previous pixel. Consecutive frames differ in 0.3-2 % of the pixels, so the sheet
   is small and the body holds only the changed pixels in memory.
+- --fill N: in each row of a frame, a gap of at most N unchanged pixels between two changed ones is
+  stored too (the body keeps a run of changed pixels as 8 bytes plus 4 per pixel, so filling gaps
+  of 1-2 pixels costs nothing and leaves fewer stale specks between the changed pixels).
 
 Needs Pillow and numpy (a tool for the build machine, not for the device).
 """
@@ -47,6 +51,25 @@ def bbox(mask):
     if len(xs) == 0:
         return None
     return xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
+
+
+def fill_gaps(mask, n):
+    """Rows of `mask` with every run of at most `n` False between two True set to True."""
+    out = mask.copy()
+    left = np.zeros(mask.shape, dtype=np.int32)  # distance to the nearest True on the left
+    right = np.zeros(mask.shape, dtype=np.int32)
+    w = mask.shape[1]
+    big = w + n + 1
+    d = np.full(mask.shape[0], big)
+    for x in range(w):
+        d = np.where(mask[:, x], 0, d + 1)
+        left[:, x] = d
+    d = np.full(mask.shape[0], big)
+    for x in range(w - 1, -1, -1):
+        d = np.where(mask[:, x], 0, d + 1)
+        right[:, x] = d
+    out |= (left + right - 1 <= n) & (left < big) & (right < big)
+    return out
 
 
 def align(frame0, pose, bg):
@@ -86,6 +109,7 @@ def main():
     ap.add_argument("--pause", type=float, default=0)
     ap.add_argument("--part", action="append", default=[])
     ap.add_argument("--threshold", type=int, default=6)
+    ap.add_argument("--fill", type=int, default=0)
     ap.add_argument("--background", default="#03050d")
     a = ap.parse_args()
 
@@ -115,6 +139,8 @@ def main():
     changed_total = 0
     for i in range(1, n):
         changed = np.abs(frames[i] - shown).max(axis=2) > a.threshold
+        if a.fill > 0:
+            changed = fill_gaps(changed, a.fill)
         shown[changed] = frames[i][changed]
         part = sheet[i * fh:(i + 1) * fh]
         part[changed, :3] = frames[i][changed]
