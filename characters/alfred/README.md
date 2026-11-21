@@ -41,6 +41,16 @@ of home-companion.
   `more_out` (80-95: he looks ahead again), aligned on `idle.png` and matched to its brightness; its key frame was a
   pose drawn with gpt-image-2.5-flare from `idle.png`. Going from More to the settings pages he looks ahead first,
   then takes out the toolbox (and the other way round).
+- **Earmuffs**: `animations/earmuffs.png` (146 frames, 381x610, 16 fps) holds `muted_in` (0-72: he takes the
+  earmuffs from behind his back, puts them on, the tape on his mouth, arms open) and `muted_out` (73-145, the same
+  backwards), aligned on `idle.png`; the `muted` loop plays in between. Wan 2.2 on the DGX between `idle.png` and
+  `muted.png`; 2 frames fading from the idle clip before it and 4 into the `muted` loop's first frame after it (the
+  clip still moves on its last frame), so neither joint jumps.
+- **Home Assistant page**: `animations/ha.png` (220 frames, 370x607, 16 fps) holds `ha_in` (0-34: the laptop from
+  behind his back, opened), `ha_hold` (35-98, a 4 s loop, breathing), `ha_type_in` (99-117: fingers to the keys,
+  the screen's light rises on his face), `ha_type` (118-165, a 3 s loop), `ha_type_out` (166-184, `ha_type_in`
+  backwards) and `ha_out` (185-219: closed and put back behind him), aligned on `idle.png`; 3 fading frames after
+  `ha_in`, `ha_type_in` and `ha_out` into the clip that follows. The laptop pose is the `working` one.
 - **How the animations were made**: Wan 2.2 I2V A14B (fp8, with the lightx2v 4-step LoRA; weights under
   Apache-2.0) in ComfyUI, from the poses, one clip per state.
 
