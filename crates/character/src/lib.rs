@@ -171,7 +171,7 @@ pub struct Character {
 }
 
 /// The animations a character may have (characters/README.md, "Animations").
-pub const ANIMATIONS: [&str; 19] = [
+pub const ANIMATIONS: [&str; 27] = [
     "loading",
     "wake",
     "idle",
@@ -195,6 +195,17 @@ pub const ANIMATIONS: [&str; 19] = [
     // In a loop while Home Assistant cannot be reached, and while the microphone switch is off.
     "offline",
     "muted",
+    // The microphone switched off: the earmuffs go on (then the `muted` loop), and come off.
+    "muted_in",
+    "muted_out",
+    // The Home Assistant page: the laptop comes out, is held, typed on while a job runs
+    // (`ha_type_in`, `ha_type`, `ha_type_out`) and goes away.
+    "ha_in",
+    "ha_hold",
+    "ha_type_in",
+    "ha_type",
+    "ha_type_out",
+    "ha_out",
 ];
 
 /// One animation: frames `first..end` of a sheet, shown in `rect` (pose pixels) at `fps`.
@@ -955,6 +966,18 @@ mod tests {
             assert_eq!(State::from_name(s.name()), Some(s));
         }
         assert!(ANIMATIONS.contains(&"offline") && ANIMATIONS.contains(&"muted"));
+        for name in [
+            "muted_in",
+            "muted_out",
+            "ha_in",
+            "ha_hold",
+            "ha_type_in",
+            "ha_type",
+            "ha_type_out",
+            "ha_out",
+        ] {
+            assert!(ANIMATIONS.contains(&name), "{name}");
+        }
     }
 
     /// Every character in the repository follows the format, poses aligned
@@ -1031,6 +1054,32 @@ mod tests {
             [(0, 32), (32, 144), (144, 176)]
         );
         assert_eq!(tools[1].pause, 12.0);
+        // The earmuffs: one sheet, on and (the same backwards) off; the `muted` loop between.
+        let ear = ["muted_in", "muted_out"].map(|n| c.animation(n).unwrap());
+        assert_eq!(ear[0].file, ear[1].file);
+        assert_eq!(ear.map(|a| (a.first, a.end)), [(0, 73), (73, 146)]);
+        // The laptop: one sheet, the holding and the typing in a loop (no pause).
+        let ha = [
+            "ha_in",
+            "ha_hold",
+            "ha_type_in",
+            "ha_type",
+            "ha_type_out",
+            "ha_out",
+        ]
+        .map(|n| c.animation(n).unwrap());
+        assert!(ha.iter().all(|a| a.file == ha[0].file && a.pause == 0.0));
+        assert_eq!(
+            ha.map(|a| (a.first, a.end)),
+            [
+                (0, 35),
+                (35, 99),
+                (99, 118),
+                (118, 166),
+                (166, 185),
+                (185, 220)
+            ]
+        );
         assert_eq!(
             c.state_animation(State::TimerFinished).unwrap().name,
             "speaking"

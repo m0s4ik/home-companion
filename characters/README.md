@@ -90,13 +90,21 @@ All optional; without one the still pose is shown.
 | `settings_in` | once when a settings page opens (Settings and the pages under it), after the home clip under way | `idle` |
 | `settings_hold` | once every `pause` seconds while a settings page is open and the screen is awake, still on its last frame in between (nothing redraws) | `settings_in`'s last frame |
 | `settings_out` | once when the settings pages are left for the home, after the settings clip under way; then the home as by day | `settings_hold`'s last frame |
+| `more_in`, `more_hold`, `more_out` | as the settings' ones, for the More page | `idle` |
+| `muted_in` | once when the microphone is switched off (on the home), after the clip under way; then `muted` in a loop. Needs `muted` and `muted_out` too, else the still `muted` pose with its loop as before | `idle` (ends on `muted`'s first frame) |
+| `muted_out` | once when it is switched on again, after the `muted` round under way; then the home as by day. `muted_in` played backwards: switched on while `muted_in` plays, it turns back from the same picture (and the other way round) | `muted`'s last frame |
+| `ha_in`, `ha_hold`, `ha_out` | as the settings' ones, for the Home Assistant page; `ha_hold` with no `pause` is a loop | `idle` |
+| `ha_type_in`, `ha_type`, `ha_type_out` | while a job of the Home Assistant page runs (its check, "Check and repair"): into the keys, `ha_type` in a loop, back to `ha_hold` when it ends (`ha_type_out` is `ha_type_in` backwards, turned back the same way) | `ha_hold`'s last frame |
 
 `fall_asleep`, `wake_from_sleep`, `settings_in` and `settings_out` are **transitions**: they start on one pose and
 end on another (their last frame left out, so the next picture follows without a repeat). They are decoration: a
 conversation cuts them at once. Opening and leaving the settings pages quickly never cuts a clip in the middle: the
 one under way plays to its end, then the next. The settings sheet is decoded only while a settings page is open (and
 until `settings_out` has played), like the night's only around the night. Without `settings_in` the settings pages
-show the normal pose; without `settings_out` leaving them goes back to it at once.
+show the normal pose; without `settings_out` leaving them goes back to it at once. Between the pages and states with
+their own things (settings, More, the Home Assistant page, the microphone off) the clip under way ends, what is held
+and no longer wanted is put away (`_out`), then what is wanted comes out (`_in`): never a cut. The settings',
+the Home Assistant page's and the earmuffs' (`muted_in`/`muted_out`) sheets are decoded only while needed.
 
 An animation is a **sheet**: one PNG, 8-bit RGBA, the frames stacked from top to bottom, all the same size.
 **Frame 0 is opaque** (the whole picture); in every following frame a pixel is **opaque where it changes** from

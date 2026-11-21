@@ -132,6 +132,26 @@ frames = [0, 80]
 fps = 16
 rect = [277.8, 45.7, 756.9, 984.7]
 
+# The microphone switch (../README.md, "Animations"): one sheet, he takes the earmuffs from behind
+# his back, puts them on, the tape on his mouth, arms open (muted_in, 0-72, ending on the `muted`
+# loop's first frame), and the same played backwards (muted_out, 73-145, ending on idle). Wan 2.2 on
+# the DGX from poses/idle.png and poses/muted.png; the joints softened by a few fading frames (2
+# from idle before, 4 into the loop after: ~/build/alfred-anim-moments/bridge.py), then
+# tools/make-animation.py --threshold 4 --fill 2, aligned on the clip's own first frame.
+[animations.muted_in]
+file = "animations/earmuffs.png"
+size = [381, 610]
+frames = [0, 73]
+fps = 16
+rect = [263.4, 30.9, 860.0, 986.0]
+
+[animations.muted_out]
+file = "animations/earmuffs.png"
+size = [381, 610]
+frames = [73, 146]
+fps = 16
+rect = [263.4, 30.9, 860.0, 986.0]
+
 # A house command went through: a bow, right hand on the chest (0-19 down, 20-28 held, 29-47 back
 # to the idle pose). Pose drawn with gpt-image-2.5-flare from poses/idle.png, frames by Wan 2.2.
 [animations.done]
@@ -217,3 +237,50 @@ size = [220, 604]
 frames = [80, 96]
 fps = 16
 rect = [336.2, 40.2, 680.2, 985.1]
+
+# The Home Assistant page (../README.md, "Animations"): one sheet, the laptop comes out from behind
+# his back and opens (0-34), he holds it, breathing (35-98, in a loop), fingers to the keys while the
+# screen lights his face (99-117), types (118-165, in a loop while a job runs), the reverse of the
+# keys (166-184), the laptop closed and back behind him to the idle pose (185-219). Made like the
+# earmuffs (3 fading frames after ha_in, ha_type_in and ha_out).
+[animations.ha_in]
+file = "animations/ha.png"
+size = [370, 607]
+frames = [0, 35]
+fps = 16
+rect = [247.1, 37.0, 825.6, 986.7]
+
+[animations.ha_hold]
+file = "animations/ha.png"
+size = [370, 607]
+frames = [35, 99]
+fps = 16
+rect = [247.1, 37.0, 825.6, 986.7]
+
+[animations.ha_type_in]
+file = "animations/ha.png"
+size = [370, 607]
+frames = [99, 118]
+fps = 16
+rect = [247.1, 37.0, 825.6, 986.7]
+
+[animations.ha_type]
+file = "animations/ha.png"
+size = [370, 607]
+frames = [118, 166]
+fps = 16
+rect = [247.1, 37.0, 825.6, 986.7]
+
+[animations.ha_type_out]
+file = "animations/ha.png"
+size = [370, 607]
+frames = [166, 185]
+fps = 16
+rect = [247.1, 37.0, 825.6, 986.7]
+
+[animations.ha_out]
+file = "animations/ha.png"
+size = [370, 607]
+frames = [185, 220]
+fps = 16
+rect = [247.1, 37.0, 825.6, 986.7]

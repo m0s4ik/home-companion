@@ -6,7 +6,7 @@ animation sheet (characters/README.md, "Animations") and prints its [animations.
 
 usage: make-animation.py FRAMES_DIR POSE_PNG OUT_PNG [--name NAME] [--fps 16] [--pause 0]
                          [--part NAME:FIRST:END[:PAUSE]]... [--threshold 6] [--fill 0]
-                         [--background "#03050d"]
+                         [--background "#03050d"] [--align-frame PNG]
 
 --part declares one more animation played from frames FIRST..END-1 of the same sheet (Alfred's
 loading clip contains the idle and wake-up clips, so the three share one sheet).
@@ -14,6 +14,8 @@ loading clip contains the idle and wake-up clips, so the three share one sheet).
 - Alignment: frame 0 is placed over POSE_PNG (the still pose the animation starts from) by
   matching the figure's bounding box, then refined by trying nearby scales and shifts (lowest mean
   difference), so the figure does not jump when the body switches between pose and animation.
+- --align-frame PNG: align this picture (same size as the frames) instead of frame 0: for frames
+  that start with a few made-up ones (a fade from another clip), the clip's own first frame.
 - Box: only the part of the frames where the figure ever is (plus a margin) is kept; the rest is the
   flat background. Pixels close to the background are snapped to it (no flicker, better
   compression).
@@ -111,6 +113,7 @@ def main():
     ap.add_argument("--threshold", type=int, default=6)
     ap.add_argument("--fill", type=int, default=0)
     ap.add_argument("--background", default="#03050d")
+    ap.add_argument("--align-frame", default=None)
     a = ap.parse_args()
 
     bg = parse_rgb(a.background)
@@ -128,7 +131,8 @@ def main():
     x1, y1 = min(w, box[2] + MARGIN), min(h, box[3] + MARGIN)
     frames = frames[:, y0:y1, x0:x1]
 
-    err, sx, sy, px, py = align(np.asarray(Image.open(files[0]).convert("RGB")).astype(np.int16), pose, bg)
+    first = a.align_frame or files[0]
+    err, sx, sy, px, py = align(np.asarray(Image.open(first).convert("RGB")).astype(np.int16), pose, bg)
     rect = [px + x0 * sx, py + y0 * sy, px + x1 * sx, py + y1 * sy]
 
     n, fh, fw = frames.shape[:3]

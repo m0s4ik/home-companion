@@ -26,6 +26,14 @@
 //! - **the More page**: the same with `more_in` (he turns to its tiles), `more_hold` now and then
 //!   and `more_out`. Going from one of these pages to the other puts the first page's things
 //!   away (its `_out`) before the second's `_in`.
+//! - **the microphone off**: the same with `muted_in` (the earmuffs and the tape), the `muted`
+//!   loop and `muted_out`. `muted_out` is `muted_in` backwards: switched on again while the
+//!   earmuffs go on, they come off from that same picture (and the other way round).
+//! - **the Home Assistant page**: `ha_in` (the laptop), `ha_hold` in a loop; while a job runs,
+//!   `ha_type_in`, `ha_type` in a loop, then `ha_type_out` (`ha_type_in` backwards) when it ends;
+//!   leaving the page, the keys first, then `ha_out`.
+//! - Every change between these (and the home) finishes the clip under way, puts away what is
+//!   held and not wanted, then takes out what is wanted: never a cut.
 //! - **a house command went through**: `done` once (a bow) on the home, then as after `wake`;
 //!   when it comes during the conversation, it plays when the home comes back (within
 //!   [`DONE_WAIT`]).
@@ -95,59 +103,127 @@ pub enum Mode {
     Settings,
     /// The More page: `more_in`, then `more_hold` now and then.
     More,
+    /// The microphone off: `muted_in` (the earmuffs), then the `muted` loop.
+    Muted,
+    /// The Home Assistant page: `ha_in` (the laptop), then `ha_hold` in a loop.
+    Ha,
+    /// The Home Assistant page while a job runs: the laptop out, `ha_type_in`, then `ha_type`
+    /// in a loop.
+    HaBusy,
     /// One fixed frame (the demos' screenshots of an animation).
     Frame(&'static str, u32),
 }
 
-/// A page with its own clips: `into` once, then `hold` now and then, `out` when it is left.
+/// Things the character takes out for a page or a state: `into` once, then `hold` now and then
+/// (every `pause` seconds of the hold animation; at once when it is 0: a loop), `out` when they
+/// go away. `mirrored`: `out` is `into` played backwards frame by frame, so a change of mind
+/// turns the clip under way back from the same picture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Act {
     into: &'static str,
     hold: &'static str,
     out: &'static str,
+    mirrored: bool,
 }
 
 const SETTINGS: Act = Act {
     into: "settings_in",
     hold: "settings_hold",
     out: "settings_out",
+    mirrored: false,
 };
 const MORE: Act = Act {
     into: "more_in",
     hold: "more_hold",
     out: "more_out",
+    mirrored: false,
+};
+const MUTED: Act = Act {
+    into: "muted_in",
+    hold: "muted",
+    out: "muted_out",
+    mirrored: true,
+};
+const HA: Act = Act {
+    into: "ha_in",
+    hold: "ha_hold",
+    out: "ha_out",
+    mirrored: false,
+};
+/// The hands on the laptop's keys: only with the laptop out ([`HA`] first).
+const TYPING: Act = Act {
+    into: "ha_type_in",
+    hold: "ha_type",
+    out: "ha_type_out",
+    mirrored: true,
 };
 
+/// What the character can hold, outermost first: the modes' things.
+const STACKS: [&[Act]; 5] = [&[SETTINGS], &[MORE], &[MUTED], &[HA], &[HA, TYPING]];
+
 impl Mode {
-    /// The page's clips, for the modes that have them.
-    fn act(self) -> Option<Act> {
+    /// What the character holds in this mode, outermost first (nothing: none of these).
+    fn stack(self) -> &'static [Act] {
         match self {
-            Mode::Settings => Some(SETTINGS),
-            Mode::More => Some(MORE),
-            _ => None,
+            Mode::Settings => STACKS[0],
+            Mode::More => STACKS[1],
+            Mode::Muted => STACKS[2],
+            Mode::Ha => STACKS[3],
+            Mode::HaBusy => STACKS[4],
+            _ => &[],
         }
+    }
+
+    /// A mode whose things come out, are held and go away (the Act sequence).
+    fn staged(self) -> bool {
+        !self.stack().is_empty()
     }
 }
 
-/// The page whose `into` or `hold` this clip is (it ends with the things held: leaving plays
-/// that page's `out` after it).
-fn held_by(clip: &str) -> Option<Act> {
-    [SETTINGS, MORE]
-        .into_iter()
-        .find(|a| clip == a.into || clip == a.hold)
+/// What the character holds once `clip` has played: what it took out or holds, or what is left
+/// once it put something away; nothing after any other clip.
+fn held_after(clip: &str) -> &'static [Act] {
+    for s in STACKS {
+        let top = s[s.len() - 1];
+        if clip == top.into || clip == top.hold {
+            return s;
+        }
+        if clip == top.out {
+            return &s[..s.len() - 1];
+        }
+    }
+    &[]
 }
+
+/// What comes next towards the mode's things.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Next {
+    /// This clip: the top thing put away, or the next one taken out.
+    Play(&'static str),
+    /// The things are as the mode wants them.
+    Held,
+    /// Nothing held and nothing to take out (or its clips not decoded yet).
+    Free,
+}
+
+/// A clip of the act modes that may start up to this late on the end of a loop's round and
+/// still go on from it (no stop on the last frame).
+const LATE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Tools {
-    /// The clip under way when the settings page opened (a home clip, or `settings_out`):
-    /// played to its end first.
-    Finish { clip: &'static str, start: Instant },
-    /// No settings clip yet (the sheet is being decoded): the pose.
+    /// No clip to play yet (the sheet is being decoded): the pose.
     Wait,
-    /// `settings_in` or one round of `settings_hold`.
+    /// A clip under way: one of the mode's (in, a round of hold, out), or the one that was under
+    /// way when the mode came (finished first).
     Clip { clip: &'static str, start: Instant },
-    /// Still on the clip's last frame until `settings_hold` plays again.
-    Still { clip: &'static str, until: Instant },
+    /// Still on the clip's last frame until the hold plays again; `seamless`: the hold is a loop
+    /// (no pause), it goes on at `until` exactly.
+    Still {
+        clip: &'static str,
+        until: Instant,
+        seamless: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -165,6 +241,15 @@ enum Night {
     Clip { clip: &'static str, start: Instant },
     /// The still sleeping pose until `sleeping` plays again (None: never).
     Still { until: Option<Instant> },
+}
+
+/// What was on screen when the mode changed.
+#[derive(Debug, Clone, Copy)]
+enum Under {
+    /// A clip under way.
+    Playing(&'static str, Instant),
+    /// The last frame of a clip that has played.
+    Ended(&'static str),
 }
 
 #[derive(Debug)]
@@ -225,8 +310,15 @@ impl Sequencer {
         self.mode
     }
 
+    fn has(&self, clip: &str) -> bool {
+        self.clips.contains_key(clip)
+    }
+
     /// A new mode starts its loop from the first frame; the same mode goes on. Home to night
     /// finishes the home clip under way and falls asleep; night to home wakes up from sleep.
+    /// Into and out of the modes with things (settings, More, muted, Home Assistant): the clip
+    /// under way is finished (or turned back, [`Sequencer::turn`]), then what is held but not
+    /// wanted is put away, then what is wanted comes out.
     pub fn set_mode(&mut self, mode: Mode, now: Instant) {
         if mode == self.mode {
             return;
@@ -235,40 +327,40 @@ impl Sequencer {
         self.mode = mode;
         self.since = now;
         self.home = Home::Still;
+        let under = match (prev, home, tools) {
+            (Mode::Home, Home::Clip { clip, start }, _) => Some(Under::Playing(clip, start)),
+            (Mode::Home, Home::Pause { clip, .. }, _) => Some(Under::Ended(clip)),
+            (p, _, Tools::Clip { clip, start }) if p.staged() => Some(Under::Playing(clip, start)),
+            (p, _, Tools::Still { clip, .. }) if p.staged() => Some(Under::Ended(clip)),
+            _ => None,
+        };
         match (prev, mode) {
-            (_, Mode::Settings | Mode::More) => {
-                self.tools = match (prev.act(), home, tools) {
-                    (None, Home::Clip { clip, start }, _) if prev == Mode::Home => {
-                        Tools::Finish { clip, start }
+            (_, m) if m.staged() => {
+                self.tools = match under {
+                    Some(Under::Playing(clip, start)) => {
+                        let (clip, start) = self.turn(clip, start, now);
+                        Tools::Clip { clip, start }
                     }
-                    // From the other page: its clip under way, or its things put away.
-                    (Some(_), _, Tools::Finish { clip, start } | Tools::Clip { clip, start }) => {
-                        Tools::Finish { clip, start }
-                    }
-                    (Some(_), _, Tools::Still { clip, .. }) => match self.put_away(clip) {
-                        Some(out) => Tools::Finish {
-                            clip: out,
-                            start: now,
-                        },
-                        None => self.tools_in(now),
-                    },
-                    _ => self.tools_in(now),
+                    Some(Under::Ended(clip)) => self.after(clip, now),
+                    None => self.start(now),
                 };
             }
-            // Leaving the page: its clip under way, then its things put away.
-            (Mode::Settings | Mode::More, Mode::Home) => {
+            // Leaving the things: the clip under way, then they are put away.
+            (p, Mode::Home) if p.staged() => {
                 self.done_until = None;
-                self.home = match tools {
-                    Tools::Finish { clip, start } => Home::Clip { clip, start },
-                    Tools::Clip { clip, start } => Home::Clip { clip, start },
-                    Tools::Still { clip, .. } => match self.put_away(clip) {
-                        Some(out) => Home::Clip {
+                self.home = match under {
+                    Some(Under::Playing(clip, start)) => {
+                        let (clip, start) = self.turn(clip, start, now);
+                        Home::Clip { clip, start }
+                    }
+                    Some(Under::Ended(clip)) => match self.next(held_after(clip)) {
+                        Next::Play(out) => Home::Clip {
                             clip: out,
                             start: now,
                         },
-                        None => Home::Still,
+                        _ => Home::Still,
                     },
-                    _ => Home::Still,
+                    None => Home::Still,
                 };
             }
             (_, Mode::Night) => {
@@ -291,7 +383,7 @@ impl Sequencer {
                     start: now,
                 };
             }
-            (Mode::Night, Mode::Home) if self.clips.contains_key("wake_from_sleep") => {
+            (Mode::Night, Mode::Home) if self.has("wake_from_sleep") => {
                 self.home = Home::Clip {
                     clip: "wake_from_sleep",
                     start: now,
@@ -301,42 +393,112 @@ impl Sequencer {
         }
     }
 
-    /// The page's `into` from `start`; without it its `hold`; without either the pose.
-    fn tools_in(&self, start: Instant) -> Tools {
-        let Some(act) = self.mode.act() else {
-            return Tools::Wait;
-        };
-        [act.into, act.hold]
-            .into_iter()
-            .find(|n| self.clips.contains_key(n))
-            .map_or(Tools::Wait, |clip| Tools::Clip { clip, start })
-    }
-
-    /// The `out` that follows `clip` when it ends with a page's things held (and is there).
-    fn put_away(&self, clip: &str) -> Option<&'static str> {
-        held_by(clip)
-            .map(|a| a.out)
-            .filter(|out| self.clips.contains_key(out))
-    }
-
-    /// A settings clip is on screen or still to play (its sheet must stay).
-    pub fn uses_settings(&self) -> bool {
-        let settings = |c: &str| c.starts_with("settings_");
-        match self.mode {
-            Mode::Settings => true,
-            Mode::More => matches!(self.tools, Tools::Finish { clip, .. } if settings(clip)),
-            Mode::Home => match self.home {
-                Home::Clip { clip, .. } | Home::Pause { clip, .. } => settings(clip),
-                Home::Still => false,
-            },
-            Mode::Night => matches!(self.night, Night::Finish { clip, .. } if settings(clip)),
-            _ => false,
+    /// What comes after `held` in this mode: the top thing put away if it is not wanted, else
+    /// the next wanted thing taken out (its `into`, or its `hold` without it). A clip not decoded
+    /// is skipped: its things count as put away, or as not out yet.
+    fn next(&self, held: &'static [Act]) -> Next {
+        let want = self.mode.stack();
+        let mut held = held;
+        while !want.starts_with(held) {
+            let top = held[held.len() - 1];
+            held = &held[..held.len() - 1];
+            if self.has(top.out) {
+                return Next::Play(top.out);
+            }
         }
+        if let Some(a) = want.get(held.len()) {
+            if let Some(c) = [a.into, a.hold].into_iter().find(|c| self.has(c)) {
+                return Next::Play(c);
+            }
+        }
+        if held.is_empty() {
+            Next::Free
+        } else {
+            Next::Held
+        }
+    }
+
+    /// The mode's first thing taken out from `now`, or the pose until its clips are there.
+    fn start(&self, now: Instant) -> Tools {
+        match self.next(&[]) {
+            Next::Play(clip) => Tools::Clip { clip, start: now },
+            _ => Tools::Wait,
+        }
+    }
+
+    /// What follows `clip`, ended at `end`, in a mode with things.
+    fn after(&self, clip: &'static str, end: Instant) -> Tools {
+        match self.next(held_after(clip)) {
+            Next::Play(c) => Tools::Clip {
+                clip: c,
+                start: end,
+            },
+            Next::Held => {
+                let hold = self.mode.stack().last().map(|a| a.hold);
+                let pause = hold
+                    .and_then(|h| self.clips.get(h))
+                    .map_or(f32::INFINITY, |h| h.pause.max(0.0));
+                Tools::Still {
+                    clip,
+                    until: end + Duration::from_secs_f32(pause.min(86400.0)),
+                    seamless: pause == 0.0,
+                }
+            }
+            Next::Free => Tools::Wait,
+        }
+    }
+
+    /// The clip under way when the mode changed, as it goes on: the `into` of a mirrored act
+    /// whose things are no longer wanted turns into its `out` at the same picture, the `out` of
+    /// things wanted again into the `into`; any other clip plays to its end.
+    fn turn(&self, clip: &'static str, start: Instant, now: Instant) -> (&'static str, Instant) {
+        let want = self.mode.stack();
+        for s in STACKS {
+            let a = s[s.len() - 1];
+            let back = if !a.mirrored {
+                continue;
+            } else if clip == a.into && !want.starts_with(s) {
+                a.out
+            } else if clip == a.out && want.starts_with(s) {
+                a.into
+            } else {
+                continue;
+            };
+            let (Some(t), Some(b)) = (self.clips.get(clip), self.clips.get(back)) else {
+                break;
+            };
+            let i = t.at(now.saturating_duration_since(start)).min(t.frames - 1);
+            let j = (t.frames - 1 - i).min(b.frames - 1);
+            // Halfway into frame j, so the frame shown now is j.
+            let into = Duration::from_secs_f32((j as f32 + 0.5) / b.fps);
+            return (back, now.checked_sub(into).unwrap_or(now));
+        }
+        (clip, start)
+    }
+
+    /// One of `clips` is on screen, under way or still to play (its sheet must stay).
+    pub fn uses(&self, clips: &[&str]) -> bool {
+        let current = match (self.mode, self.home, self.night, self.tools) {
+            (m, _, _, Tools::Clip { clip, .. } | Tools::Still { clip, .. }) if m.staged() => {
+                Some(clip)
+            }
+            (Mode::Home, Home::Clip { clip, .. } | Home::Pause { clip, .. }, _, _) => Some(clip),
+            (Mode::Night, _, Night::Finish { clip, .. }, _) => Some(clip),
+            _ => None,
+        };
+        let held = current.map_or(&[][..], held_after);
+        current.is_some_and(|c| clips.contains(&c))
+            || self
+                .mode
+                .stack()
+                .iter()
+                .chain(held)
+                .any(|a| [a.into, a.hold, a.out].iter().any(|c| clips.contains(c)))
     }
 
     /// `fall_asleep` from `start`, or straight to the still sleeping pose.
     fn fall_asleep(&self, start: Instant) -> Night {
-        if self.clips.contains_key("fall_asleep") {
+        if self.has("fall_asleep") {
             Night::Clip {
                 clip: "fall_asleep",
                 start,
@@ -364,7 +526,9 @@ impl Sequencer {
             Mode::Loop(name) => self.looped(name, now),
             Mode::Home => self.home(now, awake),
             Mode::Night => self.night(now),
-            Mode::Settings | Mode::More => self.tools(now, awake),
+            Mode::Settings | Mode::More | Mode::Muted | Mode::Ha | Mode::HaBusy => {
+                self.tools(now, awake)
+            }
             Mode::Frame(clip, index) => match self.clips.get(clip) {
                 Some(t) => Show::Frame {
                     clip,
@@ -379,15 +543,18 @@ impl Sequencer {
     pub fn moving(&self, awake: bool) -> bool {
         match self.mode {
             Mode::Still => false,
-            Mode::Loading => self.clips.contains_key("loading"),
-            Mode::Loop(name) => self.clips.contains_key(name),
+            Mode::Loading => self.has("loading"),
+            Mode::Loop(name) => self.has(name),
             Mode::Home => {
-                (awake && (self.clips.contains_key("idle") || self.clips.contains_key("wake")))
-                    || self.home != Home::Still
+                (awake && (self.has("idle") || self.has("wake"))) || self.home != Home::Still
             }
             Mode::Night => !matches!(self.night, Night::Still { .. }),
-            Mode::Settings | Mode::More => {
-                matches!(self.tools, Tools::Finish { .. } | Tools::Clip { .. })
+            Mode::Settings | Mode::More | Mode::Muted | Mode::Ha | Mode::HaBusy => {
+                match self.tools {
+                    Tools::Clip { .. } => true,
+                    Tools::Still { seamless, .. } => seamless && awake,
+                    Tools::Wait => false,
+                }
             }
             Mode::Frame(..) => false,
         }
@@ -413,7 +580,10 @@ impl Sequencer {
         loop {
             match self.night {
                 Night::Finish { clip, start } | Night::Clip { clip, start } => {
-                    let t = self.clips[clip];
+                    let Some(t) = self.clips.get(clip).copied() else {
+                        self.night = self.fall_asleep(now);
+                        continue;
+                    };
                     let end = start + t.length();
                     if now < end {
                         let index = t.at(now - start).min(t.frames - 1);
@@ -444,12 +614,12 @@ impl Sequencer {
         loop {
             match self.tools {
                 Tools::Wait => {
-                    self.tools = self.tools_in(now);
+                    self.tools = self.start(now);
                     if self.tools == Tools::Wait {
                         return Show::Pose;
                     }
                 }
-                Tools::Finish { clip, start } | Tools::Clip { clip, start } => {
+                Tools::Clip { clip, start } => {
                     let Some(t) = self.clips.get(clip).copied() else {
                         self.tools = Tools::Wait;
                         return Show::Pose;
@@ -459,44 +629,24 @@ impl Sequencer {
                         let index = t.at(now - start).min(t.frames - 1);
                         return Show::Frame { clip, index };
                     }
-                    let act = self.mode.act();
-                    let finished = matches!(self.tools, Tools::Finish { .. });
-                    self.tools = match held_by(clip) {
-                        // The other page's things: put away first.
-                        Some(other) if finished && Some(other) != act => {
-                            match self.put_away(clip) {
-                                Some(out) => Tools::Finish {
-                                    clip: out,
-                                    start: end,
-                                },
-                                None => self.tools_in(end),
-                            }
-                        }
-                        // This page's things held (a clip of it, or one carried from the home):
-                        // still until the next round.
-                        Some(_) => {
-                            let pause = act
-                                .and_then(|a| self.clips.get(a.hold))
-                                .map_or(f32::INFINITY, |h| h.pause.max(0.0));
-                            Tools::Still {
-                                clip,
-                                until: end + Duration::from_secs_f32(pause.min(86400.0)),
-                            }
-                        }
-                        None => self.tools_in(end),
-                    };
+                    self.tools = self.after(clip, end);
                 }
-                Tools::Still { clip, until } => {
-                    // From now, not from `until` (the clock ticks once a second while still);
-                    // only while the screen is awake.
-                    let hold = self.mode.act().map(|a| a.hold);
-                    if let Some(hold) =
-                        hold.filter(|h| awake && now >= until && self.clips.contains_key(h))
-                    {
-                        self.tools = Tools::Clip {
-                            clip: hold,
-                            start: now,
+                Tools::Still {
+                    clip,
+                    until,
+                    seamless,
+                } => {
+                    // A round with a pause from now, not from `until` (the clock ticks once a
+                    // second while still); a loop from `until` when on time. Only while the
+                    // screen is awake.
+                    let hold = self.mode.stack().last().map(|a| a.hold);
+                    if let Some(hold) = hold.filter(|h| awake && now >= until && self.has(h)) {
+                        let start = if seamless && now - until < LATE {
+                            until
+                        } else {
+                            now
                         };
+                        self.tools = Tools::Clip { clip: hold, start };
                         continue;
                     }
                     return match self.clips.get(clip) {
@@ -512,9 +662,7 @@ impl Sequencer {
     }
 
     fn home(&mut self, now: Instant, awake: bool) -> Show {
-        let first = ["wake", "idle"]
-            .into_iter()
-            .find(|n| self.clips.contains_key(n));
+        let first = ["wake", "idle"].into_iter().find(|n| self.has(n));
         loop {
             match self.home {
                 Home::Still => {
@@ -537,14 +685,15 @@ impl Sequencer {
                         let index = t.at(now - start).min(t.frames - 1);
                         return Show::Frame { clip, index };
                     }
-                    // A page's clip finished after the page was left: its things go away.
-                    if held_by(clip).is_some() {
-                        self.home = match self.put_away(clip) {
-                            Some(out) => Home::Clip {
+                    // A clip of things finished after they were left: they go away.
+                    let held = held_after(clip);
+                    if !held.is_empty() {
+                        self.home = match self.next(held) {
+                            Next::Play(out) => Home::Clip {
                                 clip: out,
                                 start: end,
                             },
-                            None => Home::Still,
+                            _ => Home::Still,
                         };
                         continue;
                     }
@@ -572,7 +721,7 @@ impl Sequencer {
                         };
                     }
                     self.home = Home::Clip {
-                        clip: if self.clips.contains_key("idle") {
+                        clip: if self.has("idle") {
                             "idle"
                         } else {
                             first.unwrap_or(clip)
@@ -710,6 +859,8 @@ pub fn static_name(name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SETTINGS_CLIPS: [&str; 3] = ["settings_in", "settings_hold", "settings_out"];
 
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
@@ -1036,7 +1187,7 @@ mod tests {
         let t0 = Instant::now();
         let mut s = tools_seq(t0);
         s.set_mode(Mode::Settings, t0);
-        assert!(s.uses_settings());
+        assert!(s.uses(&SETTINGS_CLIPS));
         assert_eq!(s.show(t0, true), frame("settings_in", 0));
         assert!(s.moving(true));
         assert_eq!(s.show(t0 + ms(200), true), frame("settings_in", 3));
@@ -1063,9 +1214,9 @@ mod tests {
         assert_eq!(s.show(t0 + ms(640), true), frame("settings_out", 3));
         // Then the idle pause on its last frame (the idle pose), and idle.
         assert_eq!(s.show(t0 + ms(700), true), frame("settings_out", 3));
-        assert!(s.uses_settings());
+        assert!(s.uses(&SETTINGS_CLIPS));
         assert_eq!(s.show(t0 + ms(1650), true), frame("idle", 0));
-        assert!(!s.uses_settings());
+        assert!(!s.uses(&SETTINGS_CLIPS));
     }
 
     #[test]
@@ -1084,7 +1235,7 @@ mod tests {
         assert_eq!(s.show(t0 + ms(500), true), frame("settings_in", 0));
         // A conversation cuts at once; back on the page, the tools come out again.
         s.set_mode(Mode::Loop("listening"), t0 + ms(550));
-        assert!(!s.uses_settings());
+        assert!(!s.uses(&SETTINGS_CLIPS));
         assert_eq!(s.show(t0 + ms(550), true), frame("listening", 0));
         s.set_mode(Mode::Settings, t0 + ms(900));
         assert_eq!(s.show(t0 + ms(900), true), frame("settings_in", 0));
@@ -1159,7 +1310,7 @@ mod tests {
         let t0 = Instant::now();
         let mut s = both_seq(t0);
         s.set_mode(Mode::More, t0);
-        assert!(!s.uses_settings());
+        assert!(!s.uses(&SETTINGS_CLIPS));
         assert_eq!(s.show(t0, true), frame("more_in", 0));
         assert_eq!(s.show(t0 + ms(300), true), frame("more_in", 3));
         // Now and then: one round of more_hold.
@@ -1179,20 +1330,282 @@ mod tests {
         assert_eq!(s.show(t0 + ms(300), true), frame("more_in", 3));
         // Settings opened from More: more_out, then the tools come out.
         s.set_mode(Mode::Settings, t0 + ms(400));
-        assert!(s.uses_settings());
+        assert!(s.uses(&SETTINGS_CLIPS));
         assert_eq!(s.show(t0 + ms(400), true), frame("more_out", 0));
         assert_eq!(s.show(t0 + ms(640), true), frame("more_out", 3));
         assert_eq!(s.show(t0 + ms(660), true), frame("settings_in", 0));
         // Back to More from the settings: the tools put away, then he turns to the tiles.
         assert_eq!(s.show(t0 + ms(950), true), frame("settings_in", 3));
         s.set_mode(Mode::More, t0 + ms(1000));
-        assert!(s.uses_settings());
+        assert!(s.uses(&SETTINGS_CLIPS));
         assert_eq!(s.show(t0 + ms(1000), true), frame("settings_out", 0));
         assert_eq!(s.show(t0 + ms(1260), true), frame("more_in", 0));
-        assert!(!s.uses_settings());
+        assert!(!s.uses(&SETTINGS_CLIPS));
         // A More clip under way when Settings opens is finished, then put away.
         s.set_mode(Mode::Settings, t0 + ms(1300));
         assert_eq!(s.show(t0 + ms(1300), true), frame("more_in", 0));
         assert_eq!(s.show(t0 + ms(1520), true), frame("more_out", 0));
+    }
+
+    /// `seq` with the earmuffs: muted_in and muted_out 8 frames (0.5 s), the muted loop 4
+    /// frames (0.25 s) with no pause.
+    fn muted_seq(t0: Instant) -> Sequencer {
+        let mut s = seq(t0);
+        for (name, frames) in [("muted_in", 8), ("muted", 4), ("muted_out", 8)] {
+            s.add(
+                name,
+                Timing {
+                    frames,
+                    fps: 16.0,
+                    pause: 0.0,
+                },
+            );
+        }
+        s
+    }
+
+    const MUTED_CLIPS: [&str; 2] = ["muted_in", "muted_out"];
+
+    #[test]
+    fn muted_puts_the_earmuffs_on_loops_and_takes_them_off() {
+        let t0 = Instant::now();
+        let mut s = muted_seq(t0);
+        s.set_mode(Mode::Muted, t0);
+        assert!(s.uses(&MUTED_CLIPS));
+        assert_eq!(s.show(t0, true), frame("muted_in", 0));
+        assert_eq!(s.show(t0 + ms(440), true), frame("muted_in", 7));
+        // Then the loop, round after round with no stop on the last frame.
+        assert_eq!(s.show(t0 + ms(500), true), frame("muted", 0));
+        assert_eq!(s.show(t0 + ms(690), true), frame("muted", 3));
+        assert_eq!(s.show(t0 + ms(750), true), frame("muted", 0));
+        assert!(s.moving(true));
+        // The screen asleep: still on the loop's last frame, nothing moves.
+        assert_eq!(s.show(t0 + ms(1000), false), frame("muted", 3));
+        assert!(!s.moving(false));
+        assert_eq!(s.show(t0 + ms(2000), true), frame("muted", 0));
+        // The microphone on again: the round ends, then the earmuffs come off, then idle.
+        s.set_mode(Mode::Home, t0 + ms(2100));
+        assert!(s.uses(&MUTED_CLIPS));
+        assert_eq!(s.show(t0 + ms(2100), true), frame("muted", 1));
+        assert_eq!(s.show(t0 + ms(2250), true), frame("muted_out", 0));
+        assert_eq!(s.show(t0 + ms(2700), true), frame("muted_out", 7));
+        // The idle pause on its last frame (the idle pose), then idle; the sheet may go.
+        assert_eq!(s.show(t0 + ms(3000), true), frame("muted_out", 7));
+        assert_eq!(s.show(t0 + ms(3750), true), frame("idle", 0));
+        assert!(!s.uses(&MUTED_CLIPS));
+    }
+
+    #[test]
+    fn muted_turns_back_from_the_same_picture() {
+        let t0 = Instant::now();
+        let mut s = muted_seq(t0);
+        s.set_mode(Mode::Muted, t0);
+        assert_eq!(s.show(t0 + ms(190), true), frame("muted_in", 3));
+        // Switched on again halfway: muted_out from the same picture (frame 7 - 3).
+        s.set_mode(Mode::Home, t0 + ms(200));
+        assert_eq!(s.show(t0 + ms(200), true), frame("muted_out", 4));
+        assert_eq!(s.show(t0 + ms(300), true), frame("muted_out", 6));
+        // Off again while they come off: on again from there.
+        s.set_mode(Mode::Muted, t0 + ms(320));
+        assert_eq!(s.show(t0 + ms(320), true), frame("muted_in", 1));
+        assert_eq!(s.show(t0 + ms(700), true), frame("muted_in", 7));
+        assert_eq!(s.show(t0 + ms(760), true), frame("muted", 0));
+    }
+
+    #[test]
+    fn muted_waits_for_the_home_clip_and_for_its_sheet() {
+        let t0 = Instant::now();
+        let mut s = muted_seq(t0);
+        assert_eq!(s.show(t0, true), frame("wake", 0));
+        // Switched off during wake: wake to its end (0.5 s), then the earmuffs.
+        s.set_mode(Mode::Muted, t0 + ms(100));
+        assert_eq!(s.show(t0 + ms(300), true), frame("wake", 4));
+        assert_eq!(s.show(t0 + ms(500), true), frame("muted_in", 0));
+        // Without the earmuffs' sheet yet: the pose (the idle one, the screen's choice) until
+        // it comes, then muted_in from its first frame.
+        let mut s = seq(t0);
+        s.set_mode(Mode::Muted, t0);
+        assert_eq!(s.show(t0, true), Show::Pose);
+        assert!(!s.moving(true));
+        assert!(s.uses(&MUTED_CLIPS));
+        s.add(
+            "muted_in",
+            Timing {
+                frames: 8,
+                fps: 16.0,
+                pause: 0.0,
+            },
+        );
+        assert_eq!(s.show(t0 + ms(800), true), frame("muted_in", 0));
+    }
+
+    #[test]
+    fn leaving_settings_with_the_microphone_off_puts_the_tools_away_then_the_earmuffs_on() {
+        let t0 = Instant::now();
+        let mut s = muted_seq(t0);
+        for (name, pause) in [
+            ("settings_in", 0.0),
+            ("settings_hold", 1.0),
+            ("settings_out", 0.0),
+        ] {
+            s.add(
+                name,
+                Timing {
+                    frames: 4,
+                    fps: 16.0,
+                    pause,
+                },
+            );
+        }
+        s.set_mode(Mode::Settings, t0);
+        assert_eq!(s.show(t0 + ms(300), true), frame("settings_in", 3));
+        s.set_mode(Mode::Muted, t0 + ms(400));
+        assert_eq!(s.show(t0 + ms(400), true), frame("settings_out", 0));
+        assert_eq!(s.show(t0 + ms(650), true), frame("muted_in", 0));
+        // And from the muted loop to the settings: the earmuffs off first.
+        assert_eq!(s.show(t0 + ms(1200), true), frame("muted", 0));
+        s.set_mode(Mode::Settings, t0 + ms(1210));
+        assert_eq!(s.show(t0 + ms(1390), true), frame("muted", 3));
+        assert_eq!(s.show(t0 + ms(1450), true), frame("muted_out", 0));
+        assert_eq!(s.show(t0 + ms(1950), true), frame("settings_in", 0));
+    }
+
+    /// `seq` with the laptop: ha_in and ha_out 8 frames (0.5 s), ha_hold 4 (0.25 s, a loop),
+    /// ha_type_in and ha_type_out 4, ha_type 4 (a loop).
+    fn ha_seq(t0: Instant) -> Sequencer {
+        let mut s = seq(t0);
+        for (name, frames) in [
+            ("ha_in", 8),
+            ("ha_hold", 4),
+            ("ha_type_in", 4),
+            ("ha_type", 4),
+            ("ha_type_out", 4),
+            ("ha_out", 8),
+        ] {
+            s.add(
+                name,
+                Timing {
+                    frames,
+                    fps: 16.0,
+                    pause: 0.0,
+                },
+            );
+        }
+        s
+    }
+
+    const HA_CLIPS: [&str; 6] = [
+        "ha_in",
+        "ha_hold",
+        "ha_type_in",
+        "ha_type",
+        "ha_type_out",
+        "ha_out",
+    ];
+
+    #[test]
+    fn ha_laptop_out_held_typed_on_and_put_away() {
+        let t0 = Instant::now();
+        let mut s = ha_seq(t0);
+        s.set_mode(Mode::Ha, t0);
+        assert!(s.uses(&HA_CLIPS));
+        assert_eq!(s.show(t0, true), frame("ha_in", 0));
+        assert_eq!(s.show(t0 + ms(500), true), frame("ha_hold", 0));
+        assert_eq!(s.show(t0 + ms(800), true), frame("ha_hold", 0)); // the loop again
+        // A job: the hold round ends, the fingers go to the keys, typing in a loop.
+        s.set_mode(Mode::HaBusy, t0 + ms(820));
+        assert_eq!(s.show(t0 + ms(820), true), frame("ha_hold", 1));
+        assert_eq!(s.show(t0 + ms(1000), true), frame("ha_type_in", 0));
+        assert_eq!(s.show(t0 + ms(1250), true), frame("ha_type", 0));
+        assert_eq!(s.show(t0 + ms(1500), true), frame("ha_type", 0));
+        // Done: the round ends, the hands off the keys, holding again.
+        s.set_mode(Mode::Ha, t0 + ms(1560));
+        assert_eq!(s.show(t0 + ms(1700), true), frame("ha_type", 3));
+        assert_eq!(s.show(t0 + ms(1750), true), frame("ha_type_out", 0));
+        assert_eq!(s.show(t0 + ms(2000), true), frame("ha_hold", 0));
+        // Leaving the page: the round ends, the laptop goes away, then the home.
+        s.set_mode(Mode::Home, t0 + ms(2100));
+        assert_eq!(s.show(t0 + ms(2250), true), frame("ha_out", 0));
+        assert_eq!(s.show(t0 + ms(2700), true), frame("ha_out", 7));
+        assert!(s.uses(&HA_CLIPS));
+        assert_eq!(s.show(t0 + ms(3750), true), frame("idle", 0));
+        assert!(!s.uses(&HA_CLIPS));
+    }
+
+    #[test]
+    fn ha_busy_at_once_takes_the_laptop_out_first() {
+        let t0 = Instant::now();
+        let mut s = ha_seq(t0);
+        // The page opens with its check running: laptop out, then the keys.
+        s.set_mode(Mode::HaBusy, t0);
+        assert_eq!(s.show(t0, true), frame("ha_in", 0));
+        assert_eq!(s.show(t0 + ms(500), true), frame("ha_type_in", 0));
+        // The check ends while the fingers go to the keys: they come back from that picture.
+        s.set_mode(Mode::Ha, t0 + ms(630));
+        assert_eq!(s.show(t0 + ms(630), true), frame("ha_type_out", 1));
+        assert_eq!(s.show(t0 + ms(800), true), frame("ha_hold", 0));
+    }
+
+    #[test]
+    fn leaving_the_ha_page_while_typing() {
+        let t0 = Instant::now();
+        let mut s = ha_seq(t0);
+        s.set_mode(Mode::HaBusy, t0);
+        assert_eq!(s.show(t0 + ms(800), true), frame("ha_type", 0));
+        // Home while typing: the round, the hands off the keys, the laptop away, the home.
+        s.set_mode(Mode::Home, t0 + ms(850));
+        assert_eq!(s.show(t0 + ms(950), true), frame("ha_type", 3));
+        assert_eq!(s.show(t0 + ms(1000), true), frame("ha_type_out", 0));
+        assert_eq!(s.show(t0 + ms(1250), true), frame("ha_out", 0));
+        assert_eq!(s.show(t0 + ms(1700), true), frame("ha_out", 7));
+        assert_eq!(s.show(t0 + ms(2750), true), frame("idle", 0));
+        // Home while the fingers go to the keys: they come back at once, then the laptop away.
+        let mut s = ha_seq(t0);
+        s.set_mode(Mode::HaBusy, t0);
+        assert_eq!(s.show(t0 + ms(560), true), frame("ha_type_in", 0));
+        s.set_mode(Mode::Home, t0 + ms(560));
+        assert_eq!(s.show(t0 + ms(560), true), frame("ha_type_out", 3));
+        assert_eq!(s.show(t0 + ms(600), true), frame("ha_out", 0));
+        // The screen asleep: still once the laptop is out (no hold round); the page left: it goes
+        // away at once.
+        let mut s = ha_seq(t0);
+        s.set_mode(Mode::Ha, t0);
+        assert_eq!(s.show(t0 + ms(800), false), frame("ha_in", 7));
+        assert!(!s.moving(false));
+        s.set_mode(Mode::Home, t0 + ms(900));
+        assert_eq!(s.show(t0 + ms(900), false), frame("ha_out", 0));
+        assert_eq!(s.show(t0 + ms(1500), false), Show::Pose);
+    }
+
+    #[test]
+    fn from_ha_to_settings_the_laptop_goes_first() {
+        let t0 = Instant::now();
+        let mut s = ha_seq(t0);
+        for (name, pause) in [
+            ("settings_in", 0.0),
+            ("settings_hold", 1.0),
+            ("settings_out", 0.0),
+        ] {
+            s.add(
+                name,
+                Timing {
+                    frames: 4,
+                    fps: 16.0,
+                    pause,
+                },
+            );
+        }
+        s.set_mode(Mode::HaBusy, t0);
+        assert_eq!(s.show(t0 + ms(800), true), frame("ha_type", 0));
+        s.set_mode(Mode::Settings, t0 + ms(800));
+        assert!(s.uses(&HA_CLIPS) && s.uses(&SETTINGS_CLIPS));
+        assert_eq!(s.show(t0 + ms(1000), true), frame("ha_type_out", 0));
+        assert_eq!(s.show(t0 + ms(1250), true), frame("ha_out", 0));
+        assert_eq!(s.show(t0 + ms(1750), true), frame("settings_in", 0));
+        assert!(!s.uses(&HA_CLIPS));
+        // And back: the tools away, then the laptop.
+        s.set_mode(Mode::Ha, t0 + ms(2100));
+        assert_eq!(s.show(t0 + ms(2100), true), frame("settings_out", 1));
+        assert_eq!(s.show(t0 + ms(2260), true), frame("ha_in", 0));
     }
 }
