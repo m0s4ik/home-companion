@@ -188,16 +188,9 @@ ul.rows .val .dn { color: var(--danger); }
 .wc.wx .sky { display: grid; place-items: center; }
 .wc.wx .sky svg { width: 7em; height: 7em; stroke: var(--accent); fill: none; stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
 .wc.wx .dv { align-self: stretch; margin: .25em 0; background: radial-gradient(circle, var(--text-3) 45%, transparent 50%) 0 0 / 2px .5em repeat-y; opacity: .6; }
-.wc.wx .lb { font-size: 1.25em; font-weight: 500; letter-spacing: .045em; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wc.wx .tr { display: flex; align-items: center; gap: 1.5em; }
-.wc.wx .tt { font-size: 6em; font-weight: 300; letter-spacing: -.02em; line-height: 1.12; font-variant-numeric: tabular-nums; }
-.wc.wx .rg { display: grid; gap: .15em; font-size: 1.75em; color: var(--text-2); font-variant-numeric: tabular-nums; }
-.wc.wx .fx { display: flex; align-items: center; gap: .5em; font-size: 1.5em; color: var(--text-2); font-variant-numeric: tabular-nums; }
-.wc.wx .fx span { margin-right: .5em; }
-.wc.wx .fx svg { width: 1em; height: 1em; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.wc.wx .fx svg.g { stroke: var(--accent); }
-.wc.wx .fx svg.a { stroke: var(--text-2); fill: var(--text-2); }
-.wc.wx .hrs { display: grid; grid-template-columns: repeat(5, 1fr); margin-top: 1em; padding-top: .9em; border-top: max(1px, .06em) solid var(--line-2); }
+.wc.wx .say { font-size: 2.5em; line-height: 1.2; }
+.wc.wx .rg { margin-top: .5em; font-size: 1.5em; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.wc.wx .hrs { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 1em; padding-top: .9em; border-top: max(1px, .06em) solid var(--line-2); }
 .wc.wx .hrs div { display: flex; align-items: center; justify-content: center; gap: .5em; }
 .wc.wx .hrs .h { font-size: 1.25em; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .wc.wx .hrs .d { font-size: 1.5em; }

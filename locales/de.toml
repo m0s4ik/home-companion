@@ -166,6 +166,8 @@ weather_lightning_rainy = "Gewitter"
 weather_windy = "Windig"
 weather_windy_variant = "Windig und bewölkt"
 weather_exceptional = "Außergewöhnlich"
+# In a sentence the conditions keep their capitals (nouns).
+weather_lowercase = "no"
 
 casa_home = "Start"
 casa_page_error = "Die Seite von Home Assistant ließ sich nicht öffnen."

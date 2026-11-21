@@ -193,7 +193,7 @@ fn short_day(date: &str, l: &Locale) -> String {
 }
 
 /// The home widget's weather columns (widgets.rs: `left` the hour or the day, `note` the
-/// condition, `text` the temperature): the next five hours from the one going on (`now`,
+/// condition, `text` the temperature): the next four hours from the one going on (`now`,
 /// seconds since the epoch; `hm` writes a time "15:00"); without an hourly forecast the days
 /// after `today` ("2026-11-08"), at most four, with their high.
 pub fn widget_columns(
@@ -216,7 +216,7 @@ pub fn widget_columns(
                 ..Default::default()
             })
         })
-        .take(5)
+        .take(4)
         .collect();
     if hours.len() >= 2 {
         return hours;
@@ -237,50 +237,21 @@ pub fn widget_columns(
         .collect()
 }
 
-/// The widget's big block: the weather now, or tomorrow's once the evening has come.
+/// The widget's big block: what the weather does next, in words, now or tomorrow's once the
+/// evening has come. The temperature now is already on the date's line above the widget, so
+/// the block leads with a sentence and keeps the numbers small.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WeatherHero {
     /// Tomorrow's forecast (else now).
     pub tomorrow: bool,
-    /// "Now · Cloudy", "Tomorrow · Rain".
+    /// "Nuvoloso, pioggia dalle 17:00", "Domani pioggia".
     pub label: String,
     /// Home Assistant's condition (the big icon).
     pub kind: String,
-    /// The big number: the temperature now, or tomorrow's high ("14°").
+    /// The temperature now or tomorrow's high ("14°"; the panel's data, the screen does not draw it).
     pub temp: String,
-    /// Beside it: "high 15°" (now only) and "low 8°"; empty when unknown.
-    pub high: String,
-    pub low: String,
-    /// The next sunrise and sunset, local ("07:05"); empty without `sun.sun`.
-    pub sunrise: String,
-    pub sunset: String,
-    /// "13 km/h" (empty: no wind data).
-    pub wind: String,
-    /// Where the wind blows to, degrees clockwise from up (its arrow); -1 without a bearing.
-    pub wind_to: i32,
-}
-
-/// The wind's arrow pointing `deg` degrees clockwise from up, as SVG path commands in a 24 x 24
-/// box ("" for -1: no bearing).
-pub fn arrow_path(deg: i32) -> String {
-    if deg < 0 {
-        return String::new();
-    }
-    let (s, c) = (deg as f64).to_radians().sin_cos();
-    let pts = [(12.0, 3.0), (19.0, 20.0), (12.0, 16.0), (5.0, 20.0)];
-    let mut out = String::new();
-    for (i, (x, y)) in pts.iter().enumerate() {
-        let (dx, dy) = (x - 12.0, y - 12.0);
-        let (rx, ry) = (12.0 + dx * c - dy * s, 12.0 + dx * s + dy * c);
-        out.push_str(&format!(
-            "{}{:.1} {:.1} ",
-            if i == 0 { "M" } else { "L" },
-            rx,
-            ry
-        ));
-    }
-    out.push('Z');
-    out
+    /// Under the sentence, small: "Oggi tra 8° e 15°", "Tra 9° e 12°"; empty when unknown.
+    pub range: String,
 }
 
 /// The sun's times are trusted for the day and the evening only when both are in the next day
@@ -308,21 +279,23 @@ pub fn evening(sun: Option<&Sun>, now: i64, local: &dyn Fn(i64) -> (String, i64)
     minutes(&hm).is_some_and(|m| m >= 18 * 60)
 }
 
-/// "13 km/h", "4.5 m/s": whole from 10 up, one decimal below.
-fn wind_text(speed: f64, unit: &str, sep: &str) -> String {
-    let v = if speed >= 10.0 {
-        format!("{}", speed.round() as i64)
-    } else {
-        number(speed, sep)
-    };
-    format!("{v} {unit}")
+/// Rain, snow, hail and storms: the weather one plans for.
+fn wet(condition: &str) -> bool {
+    matches!(
+        condition,
+        "rainy" | "pouring" | "snowy" | "snowy-rainy" | "hail" | "lightning" | "lightning-rainy"
+    )
 }
 
-/// The big block of the home widget's weather. Now during the day (the condition and the
-/// temperature now, today's high and low); tomorrow in the evening ([`evening`]) when the daily
-/// forecast has tomorrow with its high (its condition, the high as the big number, the low,
-/// its wind if the forecast says). `today` is the local date ("2026-11-08"), `now` seconds
-/// since the epoch.
+/// How long ahead the sentence looks for a change in the hourly forecast.
+const CHANGE_AHEAD: i64 = 8 * 3600;
+
+/// The widget's big block. During the day: the condition now in words and, when the hourly
+/// forecast turns from dry to wet or back in the next hours, from when ("Nuvoloso, pioggia dalle
+/// 17:00"), with today's range under it. In the evening ([`evening`]), when the daily forecast
+/// has tomorrow with its high: tomorrow's condition ("Domani pioggia") and its range. `today` is
+/// the local date ("2026-11-08"), `now` seconds since the epoch, `local` writes a time as
+/// ("15:30", local day number).
 pub fn hero(
     w: &Weather,
     l: &Locale,
@@ -330,10 +303,6 @@ pub fn hero(
     now: i64,
     local: &dyn Fn(i64) -> (String, i64),
 ) -> WeatherHero {
-    let sep = match l.text("decimal_separator") {
-        "decimal_separator" => ".",
-        s => s,
-    };
     let whole = |v: f64| format!("{}°", v.round() as i64);
     let words = |c: &str| {
         let key = condition_key(c);
@@ -341,6 +310,27 @@ pub fn hero(
             k if k == key => l.text("weather_exceptional").to_string(),
             s => s.to_string(),
         }
+    };
+    // The condition inside a sentence: lower case, except where the language says not to
+    // (German nouns).
+    let inner = |c: &str| {
+        let s = words(c);
+        if l.text("weather_lowercase") == "no" {
+            return s;
+        }
+        let mut it = s.chars();
+        it.next()
+            .map(|f| f.to_lowercase().chain(it).collect())
+            .unwrap_or_default()
+    };
+    let range = |key: &str, low: Option<f64>, high: Option<f64>| match (low, high) {
+        (Some(lo), Some(hi)) => l
+            .text(key)
+            .replace("{low}", &whole(lo))
+            .replace("{high}", &whole(hi)),
+        (None, Some(hi)) => l.text("weather_high").replace("{t}", &whole(hi)),
+        (Some(lo), None) => l.text("weather_low").replace("{t}", &whole(lo)),
+        (None, None) => String::new(),
     };
     let next_day = parse_date(today).map(|(d, _)| d + 1);
     let tomorrow = evening(w.sun.as_ref(), now, local)
@@ -351,50 +341,41 @@ pub fn hero(
                 .find(|d| parse_date(&d.date).map(|(n, _)| n) == next_day && d.high.is_some())
         })
         .flatten();
-    let (when, kind, temp, high, low, wind, bearing) = match tomorrow {
-        Some(d) => (
-            "weather_tomorrow",
-            d.condition.clone(),
-            d.high.map(whole).unwrap_or_default(),
-            String::new(),
-            d.low,
-            d.wind_speed,
-            d.wind_bearing,
-        ),
-        None => (
-            "weather_now",
-            w.condition.clone(),
-            whole(w.temperature),
-            w.today
-                .as_ref()
-                .and_then(|d| d.high)
-                .map(|t| l.text("weather_high").replace("{t}", &whole(t)))
-                .unwrap_or_default(),
-            w.today.as_ref().and_then(|d| d.low),
-            w.wind_speed,
-            w.wind_bearing,
-        ),
+    if let Some(d) = tomorrow {
+        return WeatherHero {
+            tomorrow: true,
+            label: l
+                .text("weather_tomorrow_is")
+                .replace("{next}", &inner(&d.condition)),
+            kind: d.condition.clone(),
+            temp: d.high.map(whole).unwrap_or_default(),
+            range: range("weather_range", d.low, d.high),
+        };
+    }
+    let change = w
+        .hours
+        .iter()
+        .filter(|h| h.at > now && h.at <= now + CHANGE_AHEAD)
+        .find(|h| wet(&h.condition) != wet(&w.condition));
+    let label = match change {
+        Some(h) => l
+            .text("weather_then")
+            .replace("{now}", &words(&w.condition))
+            .replace("{next}", &inner(&h.condition))
+            .replace("{time}", &local(h.at).0),
+        None => words(&w.condition),
     };
-    let time = |t: Option<i64>| t.map(|t| local(t).0).unwrap_or_default();
+    let day = w.today.as_ref();
     WeatherHero {
-        tomorrow: tomorrow.is_some(),
-        label: format!("{} · {}", l.text(when), words(&kind)),
-        kind,
-        temp,
-        high,
-        low: low
-            .map(|t| l.text("weather_low").replace("{t}", &whole(t)))
-            .unwrap_or_default(),
-        sunrise: time(w.sun.and_then(|s| s.next_rising)),
-        sunset: time(w.sun.and_then(|s| s.next_setting)),
-        wind: wind
-            .map(|v| wind_text(v, &w.wind_unit, sep))
-            .unwrap_or_default(),
-        // The bearing is where the wind comes from: the arrow points where it goes.
-        wind_to: match (wind, bearing) {
-            (Some(_), Some(b)) => ((b + 180.0).round() as i32).rem_euclid(360),
-            _ => -1,
-        },
+        tomorrow: false,
+        label,
+        kind: w.condition.clone(),
+        temp: whole(w.temperature),
+        range: range(
+            "weather_today_range",
+            day.and_then(|d| d.low),
+            day.and_then(|d| d.high),
+        ),
     }
 }
 
@@ -531,7 +512,7 @@ mod tests {
         );
         // Without a forecast: no columns (the page leaves the turn).
         assert!(widget_columns(&Weather::sample(), &locale("en"), "2026-11-03", 0, &hm).is_empty());
-        // With the hours: the next five from the one going on (14:25 → from 14:00).
+        // With the hours: the next four from the one going on (14:25 → from 14:00).
         let start = 20 * 86400 + 14 * 3600;
         let w = w.with_sample_hours(start - 3600);
         let c = widget_columns(&w, &locale("it"), "2026-11-03", start + 25 * 60, &hm);
@@ -546,7 +527,6 @@ mod tests {
                 ("15:00", "cloudy", "13°"),
                 ("16:00", "rainy", "12°"),
                 ("17:00", "rainy", "11°"),
-                ("18:00", "cloudy", "10°"),
             ]
         );
         // One hour left only: the days again.
@@ -634,27 +614,57 @@ mod tests {
     #[test]
     fn hero_now_in_the_day() {
         let now = at(14, 25);
-        let w = week().with_sample_sun(days_from_civil(2026, 11, 3), now);
+        let w = week()
+            .with_sample_sun(days_from_civil(2026, 11, 3), now)
+            .with_sample_hours(at(13, 0));
         let h = hero(&w, &locale("it"), "2026-11-03", now, &utc);
         assert_eq!(
             h,
             WeatherHero {
                 tomorrow: false,
-                label: "Adesso · Nuvoloso".into(),
+                // Cloudy now, the hourly forecast turns to rain at 16:00.
+                label: "Nuvoloso, pioggia dalle 16:00".into(),
                 kind: "cloudy".into(),
                 temp: "14°".into(),
-                high: "max 15°".into(),
-                low: "min 8°".into(),
-                sunrise: "06:58".into(),
-                sunset: "16:52".into(),
-                wind: "13 km/h".into(),
-                // From the south-west (225°): it blows to the north-east.
-                wind_to: 45,
+                range: "Oggi tra 8° e 15°".into(),
             }
         );
         let en = hero(&w, &locale("en"), "2026-11-03", now, &utc);
-        assert_eq!(en.label, "Now · Cloudy");
-        assert_eq!((en.high.as_str(), en.low.as_str()), ("high 15°", "low 8°"));
+        assert_eq!(en.label, "Cloudy, rainy from 16:00");
+        assert_eq!(en.range, "Today 8° to 15°");
+    }
+
+    #[test]
+    fn hero_says_a_change_only_when_dry_turns_wet_or_back() {
+        let now = at(14, 25);
+        let mut w = week().with_sample_hours(at(13, 0));
+        // Dry all along (cloudy, partly cloudy): the condition alone.
+        for h in &mut w.hours {
+            if wet(&h.condition) {
+                h.condition = "partlycloudy".into();
+            }
+        }
+        assert_eq!(
+            hero(&w, &locale("it"), "2026-11-03", now, &utc).label,
+            "Nuvoloso"
+        );
+        // Raining now, dry from the next hour.
+        w.condition = "rainy".into();
+        let h = hero(&w, &locale("it"), "2026-11-03", now, &utc);
+        assert_eq!(h.label, "Pioggia, nuvoloso dalle 15:00");
+        // German keeps its nouns' capitals.
+        w.hours.iter_mut().for_each(|h| h.condition = "fog".into());
+        w.condition = "snowy".into();
+        let de = hero(&w, &locale("de"), "2026-11-03", now, &utc);
+        let fog = locale("de").text("weather_fog").to_string();
+        assert!(de.label.contains(&format!(", {fog} ")), "{}", de.label);
+        // A change more than 8 hours ahead is not said.
+        let mut w = week().with_sample_hours(at(13, 0));
+        w.hours.iter_mut().for_each(|h| h.at += 9 * 3600);
+        assert_eq!(
+            hero(&w, &locale("en"), "2026-11-03", now, &utc).label,
+            "Cloudy"
+        );
     }
 
     #[test]
@@ -663,15 +673,14 @@ mod tests {
         let w = week().with_sample_sun(days_from_civil(2026, 11, 3), now);
         let h = hero(&w, &locale("it"), "2026-11-03", now, &utc);
         assert!(h.tomorrow);
-        assert_eq!(h.label, "Domani · Pioggia");
+        assert_eq!(h.label, "Domani pioggia");
         assert_eq!((h.kind.as_str(), h.temp.as_str()), ("rainy", "12°"));
-        // The high is the big number: only the low beside it.
-        assert_eq!((h.high.as_str(), h.low.as_str()), ("", "min 9°"));
-        // Tomorrow's sunrise and sunset; tomorrow's wind (11 km/h from 210°).
-        assert_eq!((h.sunrise.as_str(), h.sunset.as_str()), ("06:58", "16:52"));
-        assert_eq!((h.wind.as_str(), h.wind_to), ("11 km/h", 30));
+        assert_eq!(h.range, "Tra 9° e 12°");
         let en = hero(&w, &locale("en"), "2026-11-03", now, &utc);
-        assert_eq!(en.label, "Tomorrow · Rainy");
+        assert_eq!(
+            (en.label.as_str(), en.range.as_str()),
+            ("Tomorrow: rainy", "9° to 12°")
+        );
     }
 
     #[test]
@@ -681,43 +690,17 @@ mod tests {
         w.today = None;
         let h = hero(&w, &locale("en"), "2026-11-03", at(21, 0), &utc);
         assert!(!h.tomorrow);
-        assert_eq!(
-            (h.temp.as_str(), h.high.as_str(), h.low.as_str()),
-            ("14°", "", "")
-        );
-        // No sun.sun: no times. Tomorrow's day without a high: now.
-        assert_eq!((h.sunrise.as_str(), h.sunset.as_str()), ("", ""));
+        assert_eq!((h.temp.as_str(), h.range.as_str()), ("14°", ""));
+        // Tomorrow's day without a high: now.
         let mut w = week();
         w.next_days[0].high = None;
         assert!(!hero(&w, &locale("en"), "2026-11-03", at(21, 0), &utc).tomorrow);
-        // Tomorrow without wind in the forecast: no wind, no arrow.
+        // Only a high today: "high 15°".
         let mut w = week();
-        w.next_days[0].wind_speed = None;
-        let h = hero(&w, &locale("en"), "2026-11-03", at(21, 0), &utc);
-        assert!(h.tomorrow);
-        assert_eq!((h.wind.as_str(), h.wind_to), ("", -1));
-    }
-
-    #[test]
-    fn the_arrow_turns_with_the_wind() {
-        assert_eq!(arrow_path(-1), "");
-        assert_eq!(arrow_path(0), "M12.0 3.0 L19.0 20.0 L12.0 16.0 L5.0 20.0 Z");
-        // To the east: the tip on the right.
-        assert!(arrow_path(90).starts_with("M21.0 12.0 "));
-        assert!(arrow_path(180).starts_with("M12.0 21.0 "));
-    }
-
-    #[test]
-    fn wind_words() {
-        assert_eq!(wind_text(12.6, "km/h", ","), "13 km/h");
-        assert_eq!(wind_text(4.0, "kph", "."), "4 kph");
-        assert_eq!(wind_text(4.46, "m/s", ","), "4,5 m/s");
-        // A speed but no bearing: the words, no arrow.
-        let mut w = Weather::sample();
-        w.wind_bearing = None;
-        w.wind_unit = "m/s".into();
-        w.wind_speed = Some(3.2);
-        let h = hero(&w, &locale("it"), "2026-11-03", at(10, 0), &utc);
-        assert_eq!((h.wind.as_str(), h.wind_to), ("3,2 m/s", -1));
+        w.today.as_mut().unwrap().low = None;
+        assert_eq!(
+            hero(&w, &locale("en"), "2026-11-03", at(10, 0), &utc).range,
+            "high 15°"
+        );
     }
 }

@@ -434,6 +434,13 @@ weather_tomorrow = "Tomorrow"
 weather_now = "Now"
 weather_high = "high {t}"
 weather_low = "low {t}"
+# The weather widget's sentence: the condition now and when it changes, tomorrow's, the range.
+weather_then = "{now}, {next} from {time}"
+weather_tomorrow_is = "Tomorrow: {next}"
+weather_today_range = "Today {low} to {high}"
+weather_range = "{low} to {high}"
+# "no": a condition inside a sentence keeps its capital (German nouns).
+weather_lowercase = "yes"
 weather_no_forecast = "Home Assistant has no forecast for this place."
 ha_lists = "Lists and calendars"
 lists_title = "Lists and calendars"

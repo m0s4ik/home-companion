@@ -417,8 +417,8 @@ function drawCard(kind, model, win, emptyText) {
 }
 
 // The weather as the screen draws it with three slots: the sky big on the left, a dotted line,
-// what it is, the temperature big with its range beside it, sunrise, sunset and the wind's arrow;
-// the next hours small under it. No header: the block says what it is.
+// what the weather does next in words with the day's range small under it; the next hours small
+// under it. No header and no big number: the date's line above has the temperature now.
 function weatherCard(c, h, rows) {
   c.replaceChildren();
   c.classList.add('wx');
@@ -426,24 +426,8 @@ function weatherCard(c, h, rows) {
   const sky = el('div', 'sky');
   sky.append(ico(SKY[h.kind] || 'cloud', ''));
   const right = el('div', 'main');
-  const temp = el('div', 'tr');
-  temp.append(el('span', 'tt', h.temp));
-  const range = el('span', 'rg');
-  for (const x of [h.high, h.low]) if (x) range.append(el('span', null, x));
-  temp.append(range);
-  const facts = el('div', 'fx');
-  if (h.sunrise) facts.append(ico('rise', 'g'), el('span', null, h.sunrise));
-  if (h.sunset) facts.append(ico('set', 'g'), el('span', null, h.sunset));
-  if (h.wind) {
-    if (h.wind_to >= 0) {
-      // Where the wind blows to: the path turned about the box's centre (an SVG attribute).
-      const a = ico('arrow', 'a');
-      a.firstChild.setAttribute('transform', 'rotate(' + Number(h.wind_to) + ' 12 12)');
-      facts.append(a);
-    }
-    facts.append(el('span', null, h.wind));
-  }
-  right.append(el('div', 'lb', h.label), temp, facts);
+  right.append(el('div', 'say', h.label));
+  if (h.range) right.append(el('div', 'rg', h.range));
   top.append(sky, el('div', 'dv'), right);
   c.append(top);
   if (rows.length) {

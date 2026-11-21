@@ -1664,20 +1664,15 @@ export component WeatherGlyph inherits Icon {
 // The weather's big block (ui/weather.rs WeatherHero): now, or tomorrow in the evening.
 export struct WeatherHero {
     shown: bool,
-    // "Now · Cloudy" / "Tomorrow · Rain".
+    // What the weather does next in words: "Nuvoloso, pioggia dalle 17:00" / "Domani pioggia".
     label: string,
     // Home Assistant's condition (the big icon).
     kind: string,
-    // The big number ("14°") and beside it "high 15°" (now only), "low 8°".
+    // The temperature now or tomorrow's high ("14°"; not drawn: the date's line above has the
+    // temperature now).
     temp: string,
-    high: string,
-    low: string,
-    // The next sunrise and sunset ("06:58", "" none), the wind ("13 km/h", "" none) and where it
-    // blows to: its arrow as SVG path commands in a 24 x 24 box ("" no arrow).
-    sunrise: string,
-    sunset: string,
-    wind: string,
-    wind-arrow: string,
+    // Under the sentence, small: "Oggi tra 8° e 15°" ("" unknown).
+    range: string,
 }
 
 // A weather condition's icon drawn big: 112 px, or 144 with `large` (the compact home).
@@ -1715,68 +1710,6 @@ export component WeatherBig inherits Icon {
         : root.kind == "windy" ? Icons.weather-windy-112
         : root.kind == "windy-variant" ? Icons.weather-windy-variant-112
         : Icons.weather-cloudy-112);
-}
-
-// The line under the big temperature: sunrise, sunset, the wind's arrow and speed (24 px).
-component WeatherFacts inherits HorizontalLayout {
-    in property <WeatherHero> hero;
-    spacing: 12px;
-    alignment: start;
-    if root.hero.sunrise != "": Icon {
-        y: (parent.height - 24px) / 2;
-        width: 24px;
-        height: 24px;
-        source: Icons.weather-sunset-up-24;
-        color: Theme.accent;
-    }
-    if root.hero.sunrise != "": Text {
-        text: root.hero.sunrise;
-        font-family: "Inter Tnum";
-        font-size: Type.reading;
-        color: Theme.text-2;
-        vertical-alignment: center;
-    }
-    if root.hero.sunset != "": Rectangle { width: 12px; }
-    if root.hero.sunset != "": Icon {
-        y: (parent.height - 24px) / 2;
-        width: 24px;
-        height: 24px;
-        source: Icons.weather-sunset-down-24;
-        color: Theme.accent;
-    }
-    if root.hero.sunset != "": Text {
-        text: root.hero.sunset;
-        font-family: "Inter Tnum";
-        font-size: Type.reading;
-        color: Theme.text-2;
-        vertical-alignment: center;
-    }
-    if root.hero.wind != "" && (root.hero.sunrise != "" || root.hero.sunset != ""): Rectangle {
-        width: 12px;
-    }
-    // The arrow is a path Rust turns to the bearing (a rotated image does not draw on every
-    // renderer).
-    if root.hero.wind != "" && root.hero.wind-arrow != "": Rectangle {
-        width: 24px;
-        Path {
-            y: (parent.height - 24px) / 2;
-            width: 24px;
-            height: 24px;
-            viewbox-x: 0;
-            viewbox-y: 0;
-            viewbox-width: 24;
-            viewbox-height: 24;
-            commands: root.hero.wind-arrow;
-            fill: Theme.text-2;
-        }
-    }
-    if root.hero.wind != "": Text {
-        text: root.hero.wind;
-        font-family: "Inter Tnum";
-        font-size: Type.reading;
-        color: Theme.text-2;
-        vertical-alignment: center;
-    }
 }
 
 export component WidgetPanel inherits Rectangle {
@@ -1935,7 +1868,8 @@ export component WidgetPanel inherits Rectangle {
                     }
                 }
             }
-            // The weather in one row: the sky, the temperature, what it is, the range.
+            // The weather in one row: the sky and what it does next (the date's line above has
+            // the temperature now).
             if root.line && root.hero.shown: HorizontalLayout {
                 x: 28px;
                 width: parent.width - 56px;
@@ -1950,40 +1884,23 @@ export component WidgetPanel inherits Rectangle {
                     }
                 }
                 Text {
-                    text: root.hero.temp;
-                    font-family: "Inter Tnum";
-                    font-size: Type.headline;
-                    color: Theme.text;
-                    vertical-alignment: center;
-                    horizontal-stretch: 0;
-                }
-                Text {
                     text: root.hero.label;
-                    font-size: Type.reading;
-                    color: Theme.text-2;
+                    font-size: Type.body;
+                    color: Theme.text;
                     vertical-alignment: center;
                     overflow: elide;
                     horizontal-stretch: 1;
                 }
-                Text {
-                    text: root.hero.high != "" ? root.hero.high + " · " + root.hero.low : root.hero.low;
-                    font-family: "Inter Tnum";
-                    font-size: Type.reading;
-                    color: Theme.text-2;
-                    vertical-alignment: center;
-                    horizontal-stretch: 0;
-                }
             }
-            // The weather's big block: the sky on the left, a dotted line, the temperature as
-            // big as the band allows with the range beside it, sunrise, sunset and wind under it;
-            // the next hours small at the bottom when there is room (three slots and more).
+            // The weather's big block: the sky on the left, a dotted line, what the weather does
+            // next in words with the range small under it; the next hours small at the bottom
+            // when there is room (three slots and more).
             if root.big: hero-box := Rectangle {
                 property <bool> large: root.slots >= 4;
                 // Two slots: the block alone, packed tighter.
                 property <bool> tight: root.slots == 2;
                 property <bool> hours: root.slots >= 3 && root.columns && root.rows.length > 0;
-                // The block's height: label 28, the number's line, the facts' 32.
-                property <length> temp-size: self.large ? Type.display : Type.hero;
+                // The block's height (the sentence and the range centred in it).
                 property <length> top: self.tight ? 6px : 16px;
                 property <length> temp-line: self.large ? 176px : self.tight ? 94px : 108px;
                 property <length> block: self.top + 28px + self.temp-line + 36px;
@@ -2005,58 +1922,29 @@ export component WidgetPanel inherits Rectangle {
                     background: Theme.text-3;
                     opacity: 0.6;
                 }
-                Text {
+                // What the weather does next, in words, and the day's range small under it: no big
+                // number (the date's line above has the temperature now).
+                VerticalLayout {
                     x: hero-box.left-w + 40px;
                     y: hero-box.top;
-                    width: parent.width - self.x - 24px;
-                    height: 28px;
-                    text: root.hero.label;
-                    font-size: Type.caption;
-                    font-weight: 500;
-                    letter-spacing: 1px;
-                    color: Theme.text-2;
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
-                temp := Text {
-                    x: hero-box.left-w + 36px;
-                    y: hero-box.top + 28px;
-                    height: hero-box.temp-line;
-                    text: root.hero.temp;
-                    font-family: "Inter Tnum";
-                    font-weight: 300;
-                    font-size: hero-box.temp-size;
-                    letter-spacing: -2px;
-                    color: Theme.text;
-                    vertical-alignment: center;
-                }
-                // The range beside the number, one word under the other.
-                VerticalLayout {
-                    x: temp.x + temp.width + 24px;
-                    y: temp.y;
-                    width: parent.width - self.x - 24px;
-                    height: temp.height;
+                    width: parent.width - self.x - 32px;
+                    height: hero-box.block - hero-box.top - 8px;
                     alignment: center;
-                    spacing: 4px;
-                    if root.hero.high != "": Text {
-                        text: root.hero.high;
+                    spacing: hero-box.tight ? 6px : 12px;
+                    Text {
+                        text: root.hero.label;
+                        font-size: hero-box.large ? Type.title : Type.headline;
+                        color: Theme.text;
+                        wrap: word-wrap;
+                        overflow: elide;
+                        max-height: hero-box.large ? 2 * 60px : 2 * 50px;
+                    }
+                    if root.hero.range != "": Text {
+                        text: root.hero.range;
                         font-family: "Inter Tnum";
-                        font-size: Type.body;
+                        font-size: hero-box.large ? Type.body : Type.reading;
                         color: Theme.text-2;
                     }
-                    if root.hero.low != "": Text {
-                        text: root.hero.low;
-                        font-family: "Inter Tnum";
-                        font-size: Type.body;
-                        color: Theme.text-2;
-                    }
-                }
-                WeatherFacts {
-                    x: hero-box.left-w + 40px;
-                    y: temp.y + temp.height;
-                    width: parent.width - self.x - 24px;
-                    height: 32px;
-                    hero: root.hero;
                 }
                 // The next hours, one small line: the hour, the sky, the temperature.
                 if hero-box.hours: Rectangle {

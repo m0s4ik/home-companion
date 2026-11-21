@@ -1012,12 +1012,7 @@ macro_rules! impl_screen {
                         label: h.label.into(),
                         kind: h.kind.into(),
                         temp: h.temp.into(),
-                        high: h.high.into(),
-                        low: h.low.into(),
-                        sunrise: h.sunrise.into(),
-                        sunset: h.sunset.into(),
-                        wind: h.wind.into(),
-                        wind_arrow: crate::ui::weather::arrow_path(h.wind_to).into(),
+                        range: h.range.into(),
                     },
                 );
                 $m::CompanionWindow::set_widget_slots(self, w.slots as i32);

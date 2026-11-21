@@ -1017,9 +1017,9 @@ mod tests {
         // The weather (an example here): its big block and the next hours under it.
         let weather = &page(&w, "weather")["model"];
         assert_eq!(weather["layout"], "weather");
-        assert_eq!(weather["hero"]["label"], "Adesso · Nuvoloso");
-        assert_eq!(weather["hero"]["temp"], "14°");
-        assert_eq!(weather["windows"][0]["rows"].as_array().unwrap().len(), 5);
+        assert_eq!(weather["hero"]["label"], "Nuvoloso, pioggia dalle 18:00");
+        assert_eq!(weather["hero"]["range"], "Oggi tra 8° e 15°");
+        assert_eq!(weather["windows"][0]["rows"].as_array().unwrap().len(), 4);
         // A quote added: its row waits for the data.
         let r = call(
             &h,

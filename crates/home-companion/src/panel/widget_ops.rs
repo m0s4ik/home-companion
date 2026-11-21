@@ -270,9 +270,8 @@ pub fn model(v: &WidgetView, sample: bool) -> Value {
     };
     let mut m = json!({"title": v.title, "layout": layout, "sample": sample, "windows": windows});
     if let Some(h) = &v.hero {
-        m["hero"] = json!({"label": h.label, "kind": h.kind, "temp": h.temp, "high": h.high,
-            "low": h.low, "sunrise": h.sunrise, "sunset": h.sunset, "wind": h.wind,
-            "wind_to": h.wind_to, "tomorrow": h.tomorrow});
+        m["hero"] = json!({"label": h.label, "kind": h.kind, "temp": h.temp, "range": h.range,
+            "tomorrow": h.tomorrow});
     }
     m
 }
