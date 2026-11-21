@@ -984,15 +984,15 @@ mod tests {
         assert!(night.iter().all(|a| a.file == night[0].file));
         assert_eq!(night[1].pause, 60.0);
         assert_eq!(night.map(|a| a.frames()), [80, 64, 80]);
-        // The settings pages: one sheet, tools out, held every few seconds, put away.
+        // The settings pages: one sheet, the toolbox out, the spanner looked at now and then, put away.
         let tools =
             ["settings_in", "settings_hold", "settings_out"].map(|n| c.animation(n).unwrap());
         assert!(tools.iter().all(|a| a.file == tools[0].file));
         assert_eq!(
             tools.map(|a| (a.first, a.end)),
-            [(0, 56), (56, 120), (120, 176)]
+            [(0, 32), (32, 144), (144, 176)]
         );
-        assert_eq!(tools[1].pause, 6.0);
+        assert_eq!(tools[1].pause, 12.0);
         assert_eq!(
             c.state_animation(State::TimerFinished).unwrap().name,
             "speaking"
