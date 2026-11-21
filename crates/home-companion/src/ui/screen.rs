@@ -8679,7 +8679,7 @@ mod tests {
             })
             .collect();
         show(WidgetKind::Quotes);
-        tap(800.0, 420.0);
+        tap(800.0, 500.0);
         assert_eq!(w.get_page(), "trends");
         assert_eq!(w.get_trends_kind(), "quotes");
         ui.on_page("trends");
@@ -8691,7 +8691,7 @@ mod tests {
         *ui.widget_cities.borrow_mut() = choices;
         *ui.city_weather.borrow_mut() = weather;
         show(WidgetKind::Cities);
-        tap(800.0, 420.0);
+        tap(800.0, 500.0);
         assert_eq!(w.get_page(), "city");
         ui.on_page("city");
         assert_eq!(w.get_city_title(), "Berlin");
@@ -8713,7 +8713,7 @@ mod tests {
         ];
         ui.refresh_notes();
         show(WidgetKind::Notes);
-        tap(800.0, 420.0);
+        tap(800.0, 500.0);
         assert_eq!(w.get_page(), "notes");
         assert_eq!(slint::Model::row_count(&w.get_note_rows()), 2);
         ui.remove_later(Undo::Note(4));
@@ -8730,7 +8730,7 @@ mod tests {
         });
         show(WidgetKind::Playing);
         assert!(!w.get_widget_tappable());
-        tap(800.0, 420.0);
+        tap(800.0, 500.0);
         assert_eq!(w.get_page(), "home");
         let _ = std::fs::remove_dir_all(&dir);
     }
