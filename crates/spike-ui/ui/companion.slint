@@ -2738,7 +2738,8 @@ export component CompanionWindow inherits Window {
                     text: root.character-name.to-uppercase();
                 }
                 Group {
-                    height: 6 * 76px;
+                    // "Times in a row" shows only with conversation mode on.
+                    height: (root.conversation-mode ? 6 : 5) * 76px;
                     Row {
                         y: 0;
                         width: parent.width;
@@ -2796,6 +2797,7 @@ export component CompanionWindow inherits Window {
                     Row {
                         y: 304px;
                         width: parent.width;
+                        visible: root.conversation-mode;
                         kind: "";
                         icon: Icons.account-voice-28;
                         label: root.t.conversation-max;
@@ -2803,6 +2805,7 @@ export component CompanionWindow inherits Window {
                     Stepper {
                         x: parent.width - 16px - self.width;
                         y: 304px + 6px;
+                        visible: root.conversation-mode;
                         value-width: 200px;
                         font-size: 28px;
                         value: "\{root.conversation-max}";
@@ -2812,7 +2815,7 @@ export component CompanionWindow inherits Window {
                     }
                     // Extra poses of the character to download, for Home Assistant's cards.
                     Row {
-                        y: 380px;
+                        y: root.conversation-mode ? 380px : 304px;
                         width: parent.width;
                         icon: Icons.image-multiple-28;
                         label: root.t.poses-title;

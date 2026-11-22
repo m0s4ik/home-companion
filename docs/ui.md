@@ -211,7 +211,7 @@ its ring and the gold fill) and No stays a target that wins.
   cutoff — the configuration's `wake_word.cutoff`, else the model's — of +0.02 or −0.04, applied at once and kept in
   settings.toml; the log's near misses tell which one a voice needs; Conversation mode, a switch, off by default: after
   every spoken answer the microphone opens again without the wake word for `[conversation] follow_up_seconds`, and
-  a window nobody speaks in closes quietly; "Times in a row" with − and +, 1 to 10, 3 at first: how many such windows
+  a window nobody speaks in closes quietly; "Times in a row", a row shown only while the switch is on, with − and +, 1 to 10, 3 at first: how many such windows
   before the wake word is needed again; `conversation_mode` and `conversation_max` in settings.toml, neither on the
   browser panel), DEVICE (Volume, Screen → night mode on/off, from, to; About, with the version; **Suspend {name}** →
   "Suspend {name}?" / "{name} won't listen or play until you press Vol+ or Vol–. A running timer wakes him by
