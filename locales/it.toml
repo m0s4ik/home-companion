@@ -716,6 +716,8 @@ home_compact_help = "Schede più strette sotto la data: ce ne stanno 4 invece di
 language_help = "Dello schermo, della voce e di questo pannello."
 wake_sensitivity_help = "Meno = meno attivazioni per sbaglio, ma va chiamato più chiaramente."
 save_conversations_help = "Per rileggerle in Altro > Conversazioni. Restano su {name}."
+conversation_mode_help = "Dopo ogni risposta {name} ascolta ancora qualche secondo, senza doverlo chiamare."
+conversation_max_help = "Quante volte di seguito; poi aspetta di nuovo il suo nome."
 lists_todo_label_help = "Nessuna spuntata = tutte. Vale per il widget Spesa e per le pagine sullo schermo."
 lists_calendars_label_help = "Nessuno spuntato = tutti. Vale per il widget Prossimi e per le pagine sullo schermo."
 widgets_currency_help = "Azioni e indici restano nella valuta della loro borsa."

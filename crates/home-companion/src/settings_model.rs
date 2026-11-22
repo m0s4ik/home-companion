@@ -134,15 +134,14 @@ pub const ITEMS: &[Item] = &[
         "voice",
         Kind::Bool,
     )),
-    // On the screen only: whether the microphone opens by itself after an answer is chosen in
-    // front of the device, as the panel's own switch is.
-    item(
+    // Like the wake word's sensitivity: how readily the microphone opens, also from the panel.
+    on_panel(item(
         "conversation_mode",
         "conversation_mode",
         "voice",
         Kind::Bool,
-    ),
-    item(
+    )),
+    on_panel(item(
         "conversation_max",
         "conversation_max",
         "voice",
@@ -151,7 +150,7 @@ pub const ITEMS: &[Item] = &[
             max: crate::settings::CONVERSATION_MAX_MAX as i64,
             step: 1,
         },
-    ),
+    )),
     on_panel(item("lists", "lists_todo_label", "lists", Kind::Multi)),
     on_panel(item(
         "calendars",
@@ -188,6 +187,8 @@ pub const PANEL_KEYS: &[&str] = &[
     "volume",
     "wake_sensitivity",
     "keep_conversations",
+    "conversation_mode",
+    "conversation_max",
     "lists",
     "calendars",
 ];

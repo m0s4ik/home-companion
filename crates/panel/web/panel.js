@@ -1543,6 +1543,8 @@ function settingsGroup(key) {
   const night = D.values.night_on === true;
   for (const it of g.items) {
     if (it.key === 'night_end') continue;
+    // How many windows in a row: only with conversation mode on, as on the screen.
+    if (it.key === 'conversation_max' && D.values.conversation_mode !== true) continue;
     // The hours of the night: one row, only with the night on.
     if (it.key === 'night_start') {
       if (!night) continue;
