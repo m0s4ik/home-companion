@@ -289,7 +289,7 @@ downloads it (every file checked against its size and SHA-256) into `/var/lib/ho
 takes it away. A card then asks for it by its name. Making such a release:
 [tools/make-pose-catalogue.py](tools/make-pose-catalogue.py). The updates never take a `poses-` release for a version,
 but publish it with `--latest=false` so the repository's "Latest" stays the newest home-companion, and keep it among
-the 20 newest releases (the device reads only those).
+the newest 500 releases (the device looks through them page by page).
 
 The screen can be put to sleep and woken the same way, for example from a presence sensor:
 

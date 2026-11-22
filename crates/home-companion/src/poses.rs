@@ -7,7 +7,8 @@
 //!
 //! - **Where they come from**: the newest release of `[update] repo` (the same root-owned
 //!   setting as the updates, never the screen's) whose tag starts with `poses-` and has a
-//!   `poses.json` among its files: the catalogue ([`parse_catalogue`]). Each pose is a few
+//!   `poses.json` among its files: the catalogue ([`parse_catalogue`]). Looked for page by page
+//!   ([`find_release`]), so a poses release stays found however many versions come after it. Each pose is a few
 //!   files of that release (the picture, and an animation table and sheet if it moves), each
 //!   with its size and SHA-256 in the catalogue.
 //! - **Where they go**: `<state_dir>/poses/<character>/` ([`dir`]): the body's own directory,
@@ -34,6 +35,9 @@ pub fn dir(state_dir: &Path, character: &str) -> PathBuf {
 pub const CATALOGUE: &str = "poses.json";
 /// The tags of the catalogue's releases.
 pub const TAG_PREFIX: &str = "poses-";
+/// Releases per page asked of GitHub (its most), and how many pages at most: 500 releases.
+const PER_PAGE: u32 = 100;
+const MAX_PAGES: u32 = 5;
 /// A pose's file is at most this big (a sheet of 80 frames is ~8 MB).
 const MAX_FILE: u64 = 32 * 1024 * 1024;
 
@@ -392,9 +396,29 @@ pub fn spawn(repo: String, character: String, dir: PathBuf) -> (Sender<Cmd>, Rec
 }
 
 /// The catalogue of `repo`: its newest `poses-` release and its `poses.json`.
+/// A poses release: its tag, and its files by name with their download address.
+pub type Release = (String, BTreeMap<String, String>);
+
+/// The newest poses release ([`pick_release`]) over the pages of releases `page(n)` gives (from 1),
+/// newest first: page after page until one has it, a page is not full (the last), or
+/// [`MAX_PAGES`]. A version comes out more often than a poses release, so it is rarely on page 1.
+pub fn find_release(
+    mut page: impl FnMut(u32) -> Result<Value, String>,
+) -> Result<Option<Release>, String> {
+    for n in 1..=MAX_PAGES {
+        let releases = page(n)?;
+        if let Some(found) = pick_release(&releases) {
+            return Ok(Some(found));
+        }
+        if releases.as_array().map_or(0, Vec::len) < PER_PAGE as usize {
+            break;
+        }
+    }
+    Ok(None)
+}
+
 fn catalogue(repo: &str) -> Result<(Vec<Pose>, Vec<String>), String> {
-    let releases = crate::update::fetch(repo)?;
-    let (tag, assets) = pick_release(&releases)
+    let (tag, assets) = find_release(|n| crate::update::fetch_page(repo, PER_PAGE, n))?
         .ok_or_else(|| format!("no {TAG_PREFIX}… release with {CATALOGUE}"))?;
     let out = Command::new("curl")
         .args([
@@ -460,6 +484,58 @@ mod tests {
             .iter()
             .map(|a| (a.to_string(), format!("https://x/{a}")))
             .collect()
+    }
+
+    #[test]
+    fn a_poses_release_found_pages_after_the_versions() {
+        let version = |n: usize| json!({"tag_name": format!("v0.{n}.0"), "assets": []});
+        let full = |from: usize| json!((from..from + 100).map(version).collect::<Vec<_>>());
+        let poses = json!({"tag_name": "poses-v1",
+            "assets": [{"name": "poses.json", "browser_download_url": "u"}]});
+        // 230 versions after poses-v1: page 3 has it.
+        let mut asked = Vec::new();
+        let found = find_release(|n| {
+            asked.push(n);
+            Ok(match n {
+                1 => full(0),
+                2 => full(100),
+                _ => json!(
+                    (200..230)
+                        .map(version)
+                        .chain([poses.clone()])
+                        .collect::<Vec<_>>()
+                ),
+            })
+        })
+        .unwrap();
+        assert_eq!(found.map(|(t, _)| t).as_deref(), Some("poses-v1"));
+        assert_eq!(asked, [1, 2, 3]);
+        // None at all: stops at the first page that is not full.
+        let mut asked = Vec::new();
+        let none = find_release(|n| {
+            asked.push(n);
+            Ok(if n == 1 {
+                full(0)
+            } else {
+                json!([version(100)])
+            })
+        });
+        assert_eq!(none, Ok(None));
+        assert_eq!(asked, [1, 2]);
+        // Never more than MAX_PAGES pages, and GitHub's error is passed on.
+        let mut asked = 0;
+        assert_eq!(
+            find_release(|_| {
+                asked += 1;
+                Ok(full(0))
+            }),
+            Ok(None)
+        );
+        assert_eq!(asked, MAX_PAGES);
+        assert_eq!(
+            find_release(|_| Err("offline".into())),
+            Err("offline".to_string())
+        );
     }
 
     #[test]
