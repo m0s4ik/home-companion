@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Andrea Mattera
 
 //! The home's middle band: at most three cards (four on the compact home), the most urgent first:
-//! (0) a house command that just went through ("Studio: spento", with Undo while it can be
+//! (0) a house command that just went through ("Soggiorno: spento", with Undo while it can be
 //! undone; after its big pop-up, for its 20 s), (1) the body's own status (Home Assistant not answering), (1b) the setup in Home Assistant
 //! asking for the user ("Complete" when an AI appeared, or something to fix: it opens the
 //! Home Assistant page), (2) messages that need an OK (one
@@ -323,7 +323,7 @@ mod tests {
         let timers = [];
         let msgs = [("Promemoria".to_string(), "Dentista".to_string())];
         let a = Alive {
-            done: Some(("Studio".into(), "spento".into(), true)),
+            done: Some(("Soggiorno".into(), "spento".into(), true)),
             status: Some(("Offline".into(), "x".into())),
             messages: &msgs,
             timers: &timers,
@@ -339,7 +339,7 @@ mod tests {
         assert_eq!(kinds, ["done-undo", "status", "reminder"]);
         assert_eq!(
             (c[0].title.as_str(), c[0].text.as_str()),
-            ("Studio", "spento")
+            ("Soggiorno", "spento")
         );
     }
 

@@ -403,21 +403,24 @@ fn upcoming_events_on_subscribe_and_with_the_chosen_calendars() {
 fn a_whole_room_in_one_call() {
     let f = Fake {
         exposed: exposed(&[
-            ("light.studio", "Studio", ""),
-            ("light.studio_sx", "Studio SX", ""),
-            ("light.libreria", "Libreria", ""),
+            ("light.soggiorno", "Soggiorno", ""),
+            ("light.soggiorno_sx", "Soggiorno SX", ""),
+            ("light.piantana", "Piantana", ""),
             ("light.cucina", "Luce cucina", ""),
-            ("cover.studio", "Tapparella studio", "shutter"),
+            ("cover.soggiorno", "Tapparella soggiorno", "shutter"),
         ]),
         areas: vec![
-            ("light.studio", "Studio"),
-            ("light.studio_sx", "Studio"),
-            ("light.libreria", "Studio"),
+            ("light.soggiorno", "Soggiorno"),
+            ("light.soggiorno_sx", "Soggiorno"),
+            ("light.piantana", "Soggiorno"),
             ("light.cucina", "Cucina"),
-            ("cover.studio", "Studio"),
+            ("cover.soggiorno", "Soggiorno"),
         ],
-        // light.studio is the room's group (a Hue room): done through its lights, not twice.
-        groups: vec![("light.studio", vec!["light.studio_sx", "light.libreria"])],
+        // light.soggiorno is the room's group (a Hue room): done through its lights, not twice.
+        groups: vec![(
+            "light.soggiorno",
+            vec!["light.soggiorno_sx", "light.piantana"],
+        )],
         ..Fake::default()
     };
     let (cfg, dir) = setup("room", &fake_ha(f.clone()));
@@ -426,7 +429,7 @@ fn a_whole_room_in_one_call() {
     let (r, err) = tool(
         &b,
         "home_control",
-        json!({"area": "studio", "service": "turn_off"}),
+        json!({"area": "soggiorno", "service": "turn_off"}),
     );
     assert!(!err, "{r}");
     assert_eq!(r["done"].as_array().unwrap().len(), 2, "{r}");
@@ -440,15 +443,15 @@ fn a_whole_room_in_one_call() {
     assert_eq!(
         lights,
         [
-            "light.turn_off light.libreria",
-            "light.turn_off light.studio_sx"
+            "light.turn_off light.piantana",
+            "light.turn_off light.soggiorno_sx"
         ]
     );
     // The room's only shutter: its own gate, a question on the screen (never done at once).
     let (r, err) = tool(
         &b,
         "home_control",
-        json!({"area": "Studio", "domain": "cover", "service": "close_cover"}),
+        json!({"area": "Soggiorno", "domain": "cover", "service": "close_cover"}),
     );
     assert!(!err && r["asked"].is_object(), "{r}");
     assert!(services(&f).iter().all(|s| !s.starts_with("cover.")));
@@ -456,7 +459,7 @@ fn a_whole_room_in_one_call() {
     let (r, err) = tool(
         &b,
         "home_control",
-        json!({"entity_ids": ["light.cucina", "light.libreria"], "service": "turn_on"}),
+        json!({"entity_ids": ["light.cucina", "light.piantana"], "service": "turn_on"}),
     );
     assert!(!err && r["done"].as_array().unwrap().len() == 2, "{r}");
     let (r, err) = tool(

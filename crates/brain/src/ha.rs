@@ -542,7 +542,7 @@ mod tests {
         // A Hue room or a light group: an Undo snapshots each member, not the group.
         let exposed = json!({"exposed_entities": {"light.study": {"conversation": true}}});
         let states = json!([{"entity_id": "light.study", "state": "on",
-            "attributes": {"friendly_name": "Studio", "entity_id": ["light.a", "light.b"]}}]);
+            "attributes": {"friendly_name": "Soggiorno", "entity_id": ["light.a", "light.b"]}}]);
         let e = entities_from(&exposed, &states, &json!({}), &json!([]), &json!([]));
         assert_eq!(e[0].members, ["light.a", "light.b"]);
         assert!(e[0].attributes.get("entity_id").is_none());

@@ -4385,7 +4385,7 @@ pub fn rss_mb() -> f64 {
 }
 
 /// After a house command that went through, an answer this short only confirms it ("Fatto.",
-/// "Ho acceso la luce dello studio."): not spoken. A question or a longer answer (something
+/// "Ho acceso la luce del soggiorno."): not spoken. A question or a longer answer (something
 /// failed, or the user also asked something) still is.
 const QUIET_MAX_WORDS: usize = 8;
 
@@ -4483,12 +4483,12 @@ mod tests {
     #[test]
     fn short_answers_after_a_command_are_not_spoken() {
         assert!(quiet_after_command("Fatto."));
-        assert!(quiet_after_command("Ho acceso la luce dello studio."));
+        assert!(quiet_after_command("Ho acceso la luce del soggiorno."));
         assert!(quiet_after_command(" Done. "));
         assert!(!quiet_after_command(""));
         assert!(!quiet_after_command("Vuoi che accenda anche la cucina?"));
         assert!(!quiet_after_command(
-            "Ho acceso la luce dello studio, ma in cucina non trovo nessuna lampada."
+            "Ho acceso la luce del soggiorno, ma in cucina non trovo nessuna lampada."
         ));
     }
 

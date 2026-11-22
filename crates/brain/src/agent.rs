@@ -1999,7 +1999,7 @@ impl Brain {
                               volume_set…). If the result has asked, say nothing: the question is on \
                               the screen and the device listens for the answer. Locks, alarms, doors, \
                               gates and garage doors are never controlled by voice. For a whole room or \
-                              several devices ('spegni le luci dello studio', 'turn off the kitchen \
+                              several devices ('spegni le luci del soggiorno', 'turn off the kitchen \
                               lights') give area (and domain) or entity_ids instead of entity_id: one \
                               call does every device that may be done at once, and says which ones; \
                               never pick just one of them.",
