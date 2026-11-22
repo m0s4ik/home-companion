@@ -3197,16 +3197,18 @@ fn external(s: &str, max: usize) -> String {
 /// What a writing tool says when the user did not ask for it.
 const NOT_ASKED: &str = "the user did not ask for this: nothing was written. Answer the question itself \
      (say plainly when you cannot know, e.g. no web search)";
-/// Words of a request to put something on a list (Italian and English, lower case; a word's start
-/// is enough: "aggiung" for aggiungi, aggiungere).
+/// Words of a request to put something on a list (Italian, English, Dutch and German, lower case;
+/// a word's start is enough: "aggiung" for aggiungi, aggiungere).
 const ASK_ADD: &[&str] = &[
     "aggiung", "compra", "spesa", "lista", "metti", "mettere", "segna", "prend", "manca", "finit",
-    "buy", "add", "list", "shopping", "put ", "need",
+    "buy", "add", "list", "shopping", "put ", "need", "lijst", "boodschap", "voeg", "koop", "kopen",
+    "nodig", "zet ", "liste", "einkauf", "hinzu", "kauf", "brauch", "setz",
 ];
 /// … to take something off a list or tick it.
 const ASK_REMOVE: &[&str] = &[
     "togli", "rimuov", "cancell", "spunt", "comprat", "pres", "elimin", "lev", "remove", "delete",
-    "tick", "bought", "got ", "off",
+    "tick", "bought", "got ", "off", "verwijder", "haal", "vink", "gekocht", "schrap", "streep",
+    "entfern", "lösch", "streich", "gekauft", "abhak", "hake",
 ];
 /// … to write on the board.
 const ASK_NOTE: &[&str] = &[
@@ -3220,6 +3222,16 @@ const ASK_NOTE: &[&str] = &[
     "jot",
     "write down",
     "write on",
+    "prikbord",
+    "notitie",
+    "briefje",
+    "schrijf",
+    "noteer",
+    "pinnwand",
+    "notiz",
+    "zettel",
+    "schreib",
+    "notier",
 ];
 /// … to be reminded of something.
 const ASK_REMIND: &[&str] = &[
@@ -3232,6 +3244,15 @@ const ASK_REMIND: &[&str] = &[
     "alert",
     "notify",
     "tell me",
+    "herinner",
+    "geheugensteun",
+    "seintje",
+    "waarschuw",
+    "laat me weten",
+    "erinner",
+    "benachrichtig",
+    "sag mir",
+    "warn",
 ];
 
 /// Whether `text` has one of `words` (lower case, ignoring accents' absence).
@@ -3264,6 +3285,45 @@ mod tests {
         assert!(asked_in("Add milk to the shopping list", ASK_ADD));
         assert!(asked_in("Remind me at 5 to call mum", ASK_REMIND));
         assert!(!asked_in("What's the weather in Rome?", ASK_ADD));
+        // Dutch
+        assert!(asked_in("Zet melk op de boodschappenlijst", ASK_ADD));
+        assert!(asked_in("Voeg eieren toe aan het lijstje", ASK_ADD));
+        assert!(asked_in("We hebben brood nodig", ASK_ADD));
+        assert!(asked_in("Haal de melk van de lijst", ASK_REMOVE));
+        assert!(asked_in("Vink de eieren af", ASK_REMOVE));
+        assert!(asked_in("De kaas is gekocht", ASK_REMOVE));
+        assert!(asked_in(
+            "Schrijf op het prikbord dat de loodgieter komt",
+            ASK_NOTE
+        ));
+        assert!(asked_in(
+            "Maak een notitie dat de kat eten heeft gehad",
+            ASK_NOTE
+        ));
+        assert!(asked_in(
+            "Herinner me er morgen om 9 uur aan Jan te bellen",
+            ASK_REMIND
+        ));
+        assert!(asked_in("Geef me om vijf uur een seintje", ASK_REMIND));
+        assert!(!asked_in("Hoe warm is het nu in Amsterdam?", ASK_ADD));
+        assert!(!asked_in("Hoe warm is het nu in Amsterdam?", ASK_REMIND));
+        assert!(!asked_in("Hoe warm is het nu in Amsterdam?", ASK_NOTE));
+        assert!(!asked_in("Wat staat er op het prikbord?", ASK_REMIND));
+        // German
+        assert!(asked_in("Setz Milch auf die Einkaufsliste", ASK_ADD));
+        assert!(asked_in("Füge Eier hinzu", ASK_ADD));
+        assert!(asked_in("Streich das Brot von der Liste", ASK_REMOVE));
+        assert!(asked_in(
+            "Schreib an die Pinnwand, dass der Klempner kommt",
+            ASK_NOTE
+        ));
+        assert!(asked_in(
+            "Erinnere mich morgen um 9, Anna anzurufen",
+            ASK_REMIND
+        ));
+        assert!(!asked_in("Wie warm ist es gerade in Berlin?", ASK_ADD));
+        assert!(!asked_in("Wie warm ist es gerade in Berlin?", ASK_REMIND));
+        assert!(!asked_in("Wie warm ist es gerade in Berlin?", ASK_NOTE));
     }
 
     use super::*;
