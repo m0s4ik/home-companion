@@ -389,6 +389,15 @@ pub struct CoreConfig {
     pub follow_up_window: Duration,
 }
 
+impl CoreConfig {
+    /// The longest a run of Home Assistant can take: listening, then thinking. A conversation
+    /// mode window opens its run at once and gives someone who starts speaking at its end a
+    /// whole turn from there, so the window's length comes on top.
+    fn run_limit(&self) -> Duration {
+        self.follow_up_window + self.listen_timeout + self.think_timeout
+    }
+}
+
 impl Default for CoreConfig {
     fn default() -> Self {
         CoreConfig {
@@ -569,6 +578,9 @@ const TURNS_KEPT: usize = 8;
 
 /// A new utterance waits at most this long for the previous run's final message.
 const PREVIOUS_RUN_CAP: Duration = Duration::from_secs(3);
+
+/// Home Assistant's error code for speech-to-text that found no words in the audio.
+const NO_TEXT_RECOGNIZED: &str = "stt-no-text-recognized";
 /// After its question, a run quiet this long is over (Home Assistant ends it in about 2 s, the
 /// model's empty answer, without a word to the satellite).
 const ASKED_QUIET: Duration = Duration::from_secs(6);
@@ -1346,6 +1358,7 @@ impl Core {
         let mut c = Conversation::new(id, trigger);
         c.detection_at = Some(Instant::now());
         c.answering = answering;
+        c.window = window;
         self.cue("wake");
         self.d.mic.set(MicMode::Stream);
         self.last_recording = None;
@@ -2028,8 +2041,11 @@ impl Core {
                 r.link.send(ReflexRequest::End(g.id));
             }
         }
-        // Heard by Home Assistant from here on: no longer a window to close quietly.
-        self.window_vad = None;
+        // The reflexes sent it on: someone spoke, and gets a whole turn. A gate that only waits
+        // for the previous run decided nothing: the window's time runs on.
+        if g.st.is_some() {
+            self.window_vad = None;
+        }
         g.want = Some(Want {
             over,
             why,
@@ -2131,7 +2147,13 @@ impl Core {
         } else {
             // Home Assistant listens on, live; our detector (it has heard everything so far)
             // ends it at the user's silence, Home Assistant's own end of speech otherwise.
-            self.listen_deadline = Some(Instant::now() + self.cfg.listen_timeout);
+            if self.window_vad.is_some() {
+                // A conversation mode window that waited for the previous run: still a window,
+                // its time counted from its start, with what was heard while it waited.
+                self.window_vad = Some(g.vad.clone());
+            } else {
+                self.listen_deadline = Some(Instant::now() + self.cfg.listen_timeout);
+            }
             self.live_vad = Some(g.vad);
         }
     }
@@ -3021,6 +3043,20 @@ impl Core {
         log::warn!(event = "pipeline_error", code = code.as_str(), text = text.as_str(); "Home Assistant: {text} ({code})");
         match &self.conv {
             Some(c) if c.policy.swallows() => self.close("stopped"),
+            Some(c) if c.window && code == NO_TEXT_RECOGNIZED && self.phase.in_conversation() => {
+                // A cough or the television in a conversation mode window: Home Assistant
+                // found no words in it. Nobody asked for the window, so it ends as one nobody
+                // spoke in, not as a failed request.
+                log::info!(event = "follow_up_window_closed", heard = true; "conversation mode: no words in what was heard, back to the wake word");
+                self.mic_idle();
+                self.d.mic.request_reset();
+                self.stop_recorder();
+                self.close("no speech");
+                self.listen_deadline = None;
+                self.think_deadline = None;
+                self.wave.clear();
+                self.go_idle();
+            }
             Some(_) if self.phase.in_conversation() || self.phase == Phase::Ringing => {
                 let outcome = format!("error:{code}");
                 self.fail(&outcome);
@@ -3055,7 +3091,12 @@ impl Core {
                     // word, as Home Assistant would ask a voice satellite of its own.
                     // With conversation mode on, any other spoken answer opens a short window too,
                     // a few times in a row.
-                    let windows = (self.conversation_mode && self.follow_ups < self.follow_up_max)
+                    // Not with the microphone off (its switch moved while he spoke, or muted on
+                    // the screen): the window would show Listening and hear nothing.
+                    let mic_off = self.mic_muted || self.mic_switch_off;
+                    let windows = (self.conversation_mode
+                        && !mic_off
+                        && self.follow_ups < self.follow_up_max)
                         .then_some(self.cfg.follow_up_window);
                     let after = self.conv.as_ref().map_or(AfterAnswer::Nothing, |c| {
                         if c.policy.swallows() || c.trigger == Trigger::Announcement {
@@ -4234,7 +4275,7 @@ impl Core {
         if self
             .run
             .as_ref()
-            .is_some_and(|r| r.opened.elapsed() > self.cfg.listen_timeout + self.cfg.think_timeout)
+            .is_some_and(|r| r.opened.elapsed() > self.cfg.run_limit())
         {
             log::warn!(event = "timeout", stage = "run"; "Home Assistant's run never ended: forgotten");
             self.run_over("too old");
@@ -4527,6 +4568,20 @@ pub fn stop_is_a_false_wake(phase: Phase, trigger: Option<crate::conversation::T
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_run_may_last_a_window_and_a_whole_turn() {
+        // A window of 6 s, speech from its last moment for the 20 s of a turn, an answer after
+        // 55 s: 81 s after the run opened, and not forgotten as "too old".
+        let cfg = CoreConfig {
+            follow_up_window: Duration::from_secs(6),
+            listen_timeout: Duration::from_secs(20),
+            think_timeout: Duration::from_secs(60),
+            ..Default::default()
+        };
+        assert!(Duration::from_secs(6 + 20 + 55) <= cfg.run_limit());
+        assert_eq!(cfg.run_limit(), Duration::from_secs(86));
+    }
 
     #[test]
     fn courtesy_questions_do_not_open_the_microphone() {

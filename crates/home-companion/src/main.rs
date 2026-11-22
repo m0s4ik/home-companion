@@ -544,9 +544,7 @@ fn go<S: Screen>(
         screenshot_dir: cfg.ui.screenshot_dir.clone().into(),
         sounds_dir: Some(std::path::Path::new(&cfg.character.dir).join("sounds")),
         usage_prices: cfg.usage,
-        follow_up_window: Duration::from_secs_f32(
-            cfg.conversation.follow_up_seconds.clamp(0.0, 30.0),
-        ),
+        follow_up_window: cfg.conversation.follow_up_window(),
         ..Default::default()
     };
     // Local reflexes: the helper starts now (its model loads in a few seconds) and the core holds

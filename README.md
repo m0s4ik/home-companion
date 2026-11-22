@@ -182,7 +182,8 @@ only standing facts said by you (never what was done today, nor dates), and a na
 conversations).
 
 Alfred listens again by himself when his answer is a question. With **Settings → Conversation mode** (off by default)
-he also does after any other spoken answer, for a few seconds and without the wake word, so you can go on talking; a
+he also does after any other answer of Home Assistant he speaks (not after a reflex, which he answers by himself),
+for a few seconds and without the wake word, so you can go on talking; a
 window nobody speaks in closes without a sound. "Times in a row", shown under it while it is on (1 to 10, 3 at
 first), is how often he does so before the wake word is needed again, a question of his among them: a television must
 not keep him talking. Both are on the browser panel too. The window's length is the configuration's
