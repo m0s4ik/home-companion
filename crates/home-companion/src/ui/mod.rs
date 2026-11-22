@@ -486,6 +486,14 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_wake_step(&self, step: i32);
     fn get_wake_step(&self) -> i32;
     fn on_wake_step_changed(&self, f: impl Fn(i32) + 'static);
+    /// Settings → conversation mode (he listens again after every spoken answer).
+    fn set_conversation_mode(&self, on: bool);
+    fn get_conversation_mode(&self) -> bool;
+    fn on_conversation_mode_changed(&self, f: impl Fn(bool) + 'static);
+    /// … and how many times in a row.
+    fn set_conversation_max(&self, times: u32);
+    fn get_conversation_max(&self) -> u32;
+    fn on_conversation_max_changed(&self, f: impl Fn(i32) + 'static);
     /// The cloud services' use: the Home Assistant page's row ("" hides it) and its page.
     fn set_usage(&self, v: &UsageView);
     /// The microphone off: on, its line over the clock.
@@ -726,6 +734,8 @@ macro_rules! impl_screen {
                     wake_less,
                     wake_normal,
                     wake_more,
+                    conversation_mode,
+                    conversation_max,
                     setup_title,
                     setup_subtitle,
                     setup_step1,
@@ -1777,6 +1787,24 @@ macro_rules! impl_screen {
             }
             fn on_wake_step_changed(&self, f: impl Fn(i32) + 'static) {
                 $m::CompanionWindow::on_wake_step_changed(self, f)
+            }
+            fn set_conversation_mode(&self, on: bool) {
+                $m::CompanionWindow::set_conversation_mode(self, on);
+            }
+            fn get_conversation_mode(&self) -> bool {
+                $m::CompanionWindow::get_conversation_mode(self)
+            }
+            fn on_conversation_mode_changed(&self, f: impl Fn(bool) + 'static) {
+                $m::CompanionWindow::on_conversation_mode_changed(self, f)
+            }
+            fn set_conversation_max(&self, times: u32) {
+                $m::CompanionWindow::set_conversation_max(self, times as i32);
+            }
+            fn get_conversation_max(&self) -> u32 {
+                $m::CompanionWindow::get_conversation_max(self).max(0) as u32
+            }
+            fn on_conversation_max_changed(&self, f: impl Fn(i32) + 'static) {
+                $m::CompanionWindow::on_conversation_max_changed(self, f)
             }
             fn set_usage(&self, v: &UsageView) {
                 $m::CompanionWindow::set_usage_label(self, v.label.as_str().into());

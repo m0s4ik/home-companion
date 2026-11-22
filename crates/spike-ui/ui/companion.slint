@@ -274,6 +274,8 @@ export struct Words {
     wake_less: string,
     wake_normal: string,
     wake_more: string,
+    conversation_mode: string,
+    conversation_max: string,
     setup_title: string,
     setup_subtitle: string,
     setup_step1: string,
@@ -1032,6 +1034,10 @@ export component CompanionWindow inherits Window {
     in property <bool> home-compact: false;
     // Settings → how readily the character answers to his wake word: -1 less, 0 normal, 1 more.
     in property <int> wake-step: 0;
+    // Settings → conversation mode: he listens again after every spoken answer.
+    in property <bool> conversation-mode: false;
+    // … and how many times in a row before the wake word is needed again.
+    in property <int> conversation-max: 3;
     in property <int> night-start: 23;
     in property <int> night-end: 7;
     // Setup: what the body sees (Wi-Fi, where Home Assistant is).
@@ -1189,6 +1195,8 @@ export component CompanionWindow inherits Window {
     callback night-changed(bool, int, int);
     callback home-compact-changed(bool);
     callback wake-step-changed(int);
+    callback conversation-mode-changed(bool);
+    callback conversation-max-changed(int);
     callback setup-later();
     // The first start: search Home Assistant again; one picked (its address).
     callback find-search();
@@ -2730,7 +2738,7 @@ export component CompanionWindow inherits Window {
                     text: root.character-name.to-uppercase();
                 }
                 Group {
-                    height: 4 * 76px;
+                    height: 6 * 76px;
                     Row {
                         y: 0;
                         width: parent.width;
@@ -2772,9 +2780,39 @@ export component CompanionWindow inherits Window {
                             root.wake-step-changed(max(-1, min(1, root.wake-step + d)));
                         }
                     }
-                    // Extra poses of the character to download, for Home Assistant's cards.
+                    // After every spoken answer the microphone opens again for a few seconds.
                     Row {
                         y: 228px;
+                        width: parent.width;
+                        kind: "toggle";
+                        icon: Icons.account-voice-28;
+                        label: root.t.conversation-mode;
+                        on: root.conversation-mode;
+                        toggled(v) => {
+                            root.conversation-mode-changed(v);
+                        }
+                    }
+                    // How many times in a row he listens again before the wake word is needed.
+                    Row {
+                        y: 304px;
+                        width: parent.width;
+                        kind: "";
+                        icon: Icons.account-voice-28;
+                        label: root.t.conversation-max;
+                    }
+                    Stepper {
+                        x: parent.width - 16px - self.width;
+                        y: 304px + 6px;
+                        value-width: 200px;
+                        font-size: 28px;
+                        value: "\{root.conversation-max}";
+                        step(d) => {
+                            root.conversation-max-changed(root.conversation-max + d);
+                        }
+                    }
+                    // Extra poses of the character to download, for Home Assistant's cards.
+                    Row {
+                        y: 380px;
                         width: parent.width;
                         icon: Icons.image-multiple-28;
                         label: root.t.poses-title;

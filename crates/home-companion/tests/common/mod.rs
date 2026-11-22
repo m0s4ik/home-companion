@@ -332,6 +332,8 @@ pub struct Setup {
     /// false: the real wake thread over the null (silent) microphone.
     pub scripted_mic: Option<Vec<Utt>>,
     pub think_timeout: Option<Duration>,
+    /// Conversation mode's window (None: the core's own).
+    pub follow_up: Option<Duration>,
 }
 
 impl Setup {
@@ -342,6 +344,7 @@ impl Setup {
             helper: Helper::None,
             scripted_mic: None,
             think_timeout: None,
+            follow_up: None,
         }
     }
     /// The reflexes play `utts`, and the microphone speaks them.
@@ -554,6 +557,9 @@ pub fn run_setup(setup: Setup) -> Run {
     };
     if let Some(t) = setup.think_timeout {
         core_cfg.think_timeout = t;
+    }
+    if let Some(window) = setup.follow_up {
+        core_cfg.follow_up_window = window;
     }
     let core = std::thread::spawn(move || Core::new(core_cfg, deps).run(core_rx));
     let scenario = setup.scenario;

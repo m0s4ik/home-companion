@@ -27,6 +27,7 @@ pub struct Config {
     pub ui: UiCfg,
     pub screen: ScreenCfg,
     pub timers: TimersCfg,
+    pub conversation: ConversationCfg,
     pub home_assistant: HomeAssistantCfg,
     pub weather: WeatherCfg,
     /// Lists in Home Assistant (`todo.*` entities) shown on the screen.
@@ -262,6 +263,16 @@ pub struct TimersCfg {
     pub overdue_limit_seconds: u64,
 }
 
+/// Settings → "Conversation mode" (off unless the user switches it on, with how many times in a
+/// row): the window after an answer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ConversationCfg {
+    /// How long the microphone stays open after a spoken answer, without the wake word (at
+    /// most 30 s; 0 = never, whatever the switch says).
+    pub follow_up_seconds: f32,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Paths {
@@ -294,6 +305,7 @@ impl Default for Config {
             ui: UiCfg::default(),
             screen: ScreenCfg::default(),
             timers: TimersCfg::default(),
+            conversation: ConversationCfg::default(),
             home_assistant: HomeAssistantCfg::default(),
             weather: WeatherCfg::default(),
             lists: ListsCfg::default(),
@@ -422,6 +434,14 @@ impl Default for TimersCfg {
             bell_repeats: 6,
             bell_gap_seconds: 1.0,
             overdue_limit_seconds: 600,
+        }
+    }
+}
+
+impl Default for ConversationCfg {
+    fn default() -> Self {
+        ConversationCfg {
+            follow_up_seconds: 6.0,
         }
     }
 }
@@ -1020,6 +1040,7 @@ mod tests {
         assert_eq!(back.satellite.bind, "0.0.0.0:10700");
         assert!(back.satellite.allowed.is_empty());
         assert_eq!(back.timers.bell_repeats, 6);
+        assert_eq!(back.conversation.follow_up_seconds, 6.0);
         assert_eq!(back.screen.idle_brightness, 600);
         assert_eq!(back.screen.active_brightness, 4095);
     }

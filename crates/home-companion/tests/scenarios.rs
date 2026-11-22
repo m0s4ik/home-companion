@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Andrea Mattera
 
-//! The body's side of the Yes/No question and of the reflex gate, row by row (C01-C25): each
+//! The body's side of the Yes/No question and of the reflex gate, row by row (C01-C26): each
 //! test a sequence seen for real (the model's ways of asking, the answering channels, the
 //! timings), the core in-process against the fake Home Assistant, the brain's events injected
 //! as the screen forwards them, and the brain's port recorded. C24 is in src/ui/house.rs.
@@ -813,6 +813,126 @@ fn c22_an_empty_answer_does_not() {
     let r = answered("", bye(2000));
     assert_clean(&r);
     assert_eq!(r.outcomes(), vec![pair("talk", "played")]);
+}
+
+/// Conversation mode (Settings) switched on at the home, then a plain conversation answered
+/// `said`, then `rest`; the window lasts 1.5 s, at most `max()` in a row.
+fn conversing(said: &str, max: fn() -> UiEvent, mic: Vec<Utt>, rest: Vec<Step>) -> Run {
+    let mut s = Setup::new(
+        sc(cat(vec![
+            hello(),
+            hear("che ore sono", 800),
+            answer(said),
+            rest,
+        ])),
+        vec![
+            press(When::View(Phase::Home), 50, || {
+                UiEvent::ConversationMode(true)
+            }),
+            press(When::Ms(50), 0, max),
+            press(When::Ms(50), 0, talk),
+        ],
+    )
+    .mic(mic);
+    s.follow_up = Some(std::time::Duration::from_millis(1500));
+    run_setup(s)
+}
+
+/// A window nobody speaks in: Home Assistant's run opened, ended by the satellite, and its
+/// "nothing heard".
+fn unanswered() -> Vec<Step> {
+    vec![
+        Step::WaitDetection { timeout_ms: 9000 },
+        Step::ExpectAudioStop { timeout_ms: 4000 },
+        Step::SendError {
+            text: "No text recognized".into(),
+            code: "stt-no-text-recognized".into(),
+        },
+    ]
+}
+
+#[test]
+fn c26_conversation_mode_listens_again_after_a_plain_answer() {
+    let r = conversing(
+        "Sono le cinque.",
+        || UiEvent::ConversationMax(3),
+        vec![Utt::says(""), Utt::says(""), Utt::silent()],
+        cat(vec![
+            hear("e domani che giorno è", 800),
+            answer("Sabato."),
+            unanswered(),
+            bye(500),
+        ]),
+    );
+    assert_clean(&r);
+    assert_eq!(r.answers(), vec!["Sono le cinque.", "Sabato."]);
+    assert_eq!(
+        r.outcomes(),
+        vec![
+            pair("talk", "played"),
+            pair("follow_up", "played"),
+            pair("follow_up", "stopped")
+        ]
+    );
+    // The window nobody spoke in closed without a sound and without the error's face.
+    assert_eq!(r.cues("error"), 0, "{:?}", r.summary.cues);
+    assert_eq!(r.cues("not_understood"), 0);
+    assert!(!r.views.contains(&Phase::Error), "{:?}", r.views);
+}
+
+#[test]
+fn c26_conversation_mode_stops_after_the_most_in_a_row() {
+    // One window at most: the second answer goes back to the wake word.
+    let r = conversing(
+        "Sono le cinque.",
+        || UiEvent::ConversationMax(1),
+        vec![Utt::says(""), Utt::says("")],
+        cat(vec![
+            hear("e domani che giorno è", 800),
+            answer("Sabato."),
+            bye(2500),
+        ]),
+    );
+    assert_clean(&r);
+    assert_eq!(
+        r.outcomes(),
+        vec![pair("talk", "played"), pair("follow_up", "played")]
+    );
+    assert_eq!(r.record.run_pipelines.len(), 2);
+}
+
+#[test]
+fn c26_conversation_mode_leaves_a_question_its_whole_turn() {
+    // A question of his is answered well after the window's 1.5 s would have closed.
+    let r = conversing(
+        "A che ora?",
+        || UiEvent::ConversationMax(3),
+        vec![
+            Utt::says(""),
+            Utt {
+                speech: vec![(3.0, 3.8)],
+                ..Utt::says("")
+            },
+            Utt::silent(),
+        ],
+        cat(vec![
+            hear("alle cinque", 4000),
+            answer("Va bene."),
+            unanswered(),
+            bye(500),
+        ]),
+    );
+    assert_clean(&r);
+    assert_eq!(r.answers(), vec!["A che ora?", "Va bene."]);
+    assert_eq!(r.cues("error"), 0, "{:?}", r.summary.cues);
+}
+
+#[test]
+fn c26_without_conversation_mode_a_plain_answer_ends_it() {
+    let r = answered("Sono le cinque.", bye(2500));
+    assert_clean(&r);
+    assert_eq!(r.outcomes(), vec![pair("talk", "played")]);
+    assert_eq!(r.record.run_pipelines.len(), 1);
 }
 
 /// Do not disturb does not silence the success sound of a spoken yes received, as it does not

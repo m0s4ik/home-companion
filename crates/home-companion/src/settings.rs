@@ -8,7 +8,9 @@
 //! `ha_url = "http://ha.example:8123"` (Home Assistant picked on the first-start page
 //! when the configuration has no `[home_assistant] url`), `[assistant]` (the AI, speech-to-text
 //! and voice chosen on the Home Assistant page), `wake_sensitivity = "more"` (how readily the
-//! character answers to his wake word: less, normal, more).
+//! character answers to his wake word: less, normal, more), `conversation_mode = true` (he
+//! listens again after every spoken answer, not only after a question of his) and
+//! `conversation_max = 3` (how many times in a row).
 
 use std::path::{Path, PathBuf};
 
@@ -95,6 +97,11 @@ pub fn clean_page_name(name: &str) -> String {
         .trim()
         .to_string()
 }
+
+/// Conversation mode's windows in a row: the stepper's ends and where it starts.
+pub const CONVERSATION_MAX_MIN: u32 = 1;
+pub const CONVERSATION_MAX_MAX: u32 = 10;
+pub const CONVERSATION_MAX_DEFAULT: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -213,6 +220,31 @@ impl Settings {
 
     pub fn save_home_compact(&self, on: bool) {
         self.save_logged("home_compact", on.into());
+    }
+
+    /// Settings → "Conversation mode": after every spoken answer the microphone opens again for
+    /// a few seconds without the wake word (core.rs, `[conversation]` of the configuration);
+    /// off by default.
+    pub fn conversation_mode(&self) -> bool {
+        self.flag("conversation_mode").unwrap_or(false)
+    }
+
+    pub fn save_conversation_mode(&self, on: bool) {
+        self.save_logged("conversation_mode", on.into());
+    }
+
+    /// Settings → how many times in a row conversation mode listens again before the wake word
+    /// is needed (a television must not keep a conversation going): 1 to 10, 3 by default.
+    pub fn conversation_max(&self) -> u32 {
+        self.table()
+            .and_then(|t| t.get("conversation_max")?.as_integer())
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| (CONVERSATION_MAX_MIN..=CONVERSATION_MAX_MAX).contains(n))
+            .unwrap_or(CONVERSATION_MAX_DEFAULT)
+    }
+
+    pub fn save_conversation_max(&self, times: u32) {
+        self.save_logged("conversation_max", (times as i64).into());
     }
 
     /// The `[widgets]` section as it is (empty without one).
@@ -1118,6 +1150,15 @@ mod tests {
         assert!(s.keep_conversations());
         s.save_keep_conversations(false);
         assert!(!s.keep_conversations());
+        assert!(!s.conversation_mode(), "off by default");
+        s.save_conversation_mode(true);
+        assert!(s.conversation_mode());
+        assert_eq!(s.conversation_max(), 3, "three by default");
+        s.save_conversation_max(5);
+        assert_eq!(s.conversation_max(), 5);
+        s.save_conversation_max(0);
+        assert_eq!(s.conversation_max(), 3, "out of range: the default");
+        assert!(!s.keep_conversations(), "the other keys stay");
         assert!(!s.setup_later());
         s.save_setup_later();
         assert!(s.setup_later());
