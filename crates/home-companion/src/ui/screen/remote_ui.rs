@@ -204,17 +204,24 @@ impl<S: Screen> Ui<S> {
                 return Some("suspended");
             }
         }
-        match self.screen.get_dialog().as_str() {
-            "panel-ask" => return Some("access"),
-            // Installing an update, unlinking Home Assistant: for whoever is in front of it.
-            "update" | "unlink" => return Some("confirm"),
-            _ => {}
+        let dialog = self.screen.get_dialog();
+        if dialog == "panel-ask" {
+            return Some("access");
+        }
+        // The dialogs a remote finger may see and answer, by name: any other (installing an
+        // update, unlinking Home Assistant, forgetting the memories, clearing the
+        // conversations, suspending, deleting a photo, revoking the devices) is for whoever is
+        // in front of it, and so is a dialog added later until it is put here.
+        if !remote_dialog_allowed(&dialog) {
+            return Some("confirm");
         }
         if self.mirror_shown() {
             return Some("mirror");
         }
         match self.screen.get_page().as_str() {
             "camera" | "photo" | "photos" => Some("camera"),
+            // What he remembers and what was said: read only on the device.
+            "memories" | "chat" => Some("private"),
             "panel" | "setup" => Some("code"),
             "mirror" => Some("mirror"),
             _ => None,
@@ -278,4 +285,10 @@ impl<S: Screen> Ui<S> {
             self.refresh_remote();
         }
     }
+}
+
+/// The dialogs the remote screen may show and touch (remote_hidden_now): none open, a new timer
+/// or alarm, the result of an update. Everything else is hidden from it.
+pub(crate) fn remote_dialog_allowed(dialog: &str) -> bool {
+    matches!(dialog, "" | "new-timer" | "new-alarm" | "update-result")
 }

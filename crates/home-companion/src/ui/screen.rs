@@ -9759,12 +9759,37 @@ mod tests {
         assert!(ui.remote_accepts(epoch));
         // The confirmations of an update and of Home Assistant's unlink: not sent, not touched,
         // and a touch queued before the dialog opened is not dispatched.
-        for d in ["update", "unlink"] {
+        // So are the other confirmations (forget, clear, suspend, a photo, revoking every
+        // device): only the dialogs named as allowed are sent and touched.
+        for d in [
+            "update",
+            "unlink",
+            "forget",
+            "clear",
+            "suspend",
+            "photo-delete",
+            "panel-revoke-all",
+            "a-dialog-added-later",
+        ] {
             w.set_dialog(d.into());
             assert_eq!(call("screen.frame", json!({}))["hidden"], "confirm", "{d}");
             assert!(!ui.remote_accepts(epoch), "{d}");
         }
+        w.set_dialog("new-timer".into());
+        assert!(ui.remote_accepts(epoch));
         w.set_dialog("".into());
+        assert!(ui.remote_accepts(epoch));
+        // The memories and the conversations: read only on the device.
+        for page in ["memories", "chat"] {
+            w.set_page(page.into());
+            assert_eq!(
+                call("screen.frame", json!({}))["hidden"],
+                "private",
+                "{page}"
+            );
+            assert!(!ui.remote_accepts(epoch), "{page}");
+        }
+        w.set_page("home".into());
         assert!(ui.remote_accepts(epoch));
         // Ended while the sessions were busy answering: no sign, no frame, then the tick ends it.
         {

@@ -12,12 +12,15 @@
 //!   asked for a frame within [`IDLE`]; the same device (another tab) takes over;
 //! - the session ends after [`IDLE`] without frame requests, when the device is revoked, when
 //!   the switch or the panel is turned off, and at once with Stop on the screen's sign
-//!   («Controlled by …»); after Stop on the screen nobody may start for [`COOLDOWN`];
+//!   («Controlled by …»); after Stop on the screen nobody may start for [`COOLDOWN`], and the
+//!   device that was stopped not at all until the switch is turned off (and on again) on the
+//!   device: whoever is in front of it said no, and the browser must not just try again;
 //! - touches: at most [`MAX_EVENTS`] in a request and [`EVENTS_PER_SECOND`], coordinates
 //!   between 0 and 1 of the picture (anything else refuses the whole request);
-//! - some pages are never sent and never touched (the camera, the photos, Settings → Access from
-//!   the browser with its one-time QR code, Home Assistant's linking QR code, AirPlay mirroring,
-//!   the access dialog): the screen decides ([`super::protocol::PanelHost::remote_hidden`]).
+//! - some pages are never sent and never touched (the camera, the photos, the memories and the
+//!   conversations, Settings → Access from the browser with its one-time QR code, Home
+//!   Assistant's linking QR code, AirPlay mirroring, the access dialog and every confirmation
+//!   but a few named ones): the screen decides ([`super::protocol::PanelHost::remote_hidden`]).
 //!
 //! Pure: the time comes from the caller.
 
@@ -125,6 +128,8 @@ pub enum TouchKind {
 pub struct Remote {
     pub controller: Option<Controller>,
     stopped_at: Option<Instant>,
+    /// Devices (session hashes) stopped on the screen: refused until the switch goes off.
+    shut_out: Vec<String>,
     window: Option<(Instant, u32)>,
 }
 
@@ -141,9 +146,10 @@ impl Remote {
         if !enabled {
             return Err(Refusal::Off);
         }
-        if self
-            .stopped_at
-            .is_some_and(|t| now.duration_since(t) < COOLDOWN)
+        if self.shut_out.iter().any(|h| h == hash)
+            || self
+                .stopped_at
+                .is_some_and(|t| now.duration_since(t) < COOLDOWN)
         {
             return Err(Refusal::Stopped);
         }
@@ -189,8 +195,18 @@ impl Remote {
 
     /// Ends the session (if any): the one that ended.
     pub fn stop(&mut self, why: End, now: Instant) -> Option<Controller> {
-        if why == End::Screen {
-            self.stopped_at = Some(now);
+        match why {
+            End::Screen => {
+                self.stopped_at = Some(now);
+                if let Some(c) = &self.controller {
+                    if !self.shut_out.contains(&c.hash) {
+                        self.shut_out.push(c.hash.clone());
+                    }
+                }
+            }
+            // The switch (or the panel) off: whoever was stopped may come back once it is on.
+            End::Off => self.shut_out.clear(),
+            _ => {}
         }
         self.controller.take()
     }
@@ -308,24 +324,37 @@ mod tests {
     fn stop_on_the_screen_holds_everyone_off_a_while() {
         let mut r = Remote::default();
         let t = Instant::now();
+        let at = |s: u64| t + Duration::from_secs(s);
         r.start("a", &Agent::default(), "", true, t).unwrap();
         assert!(r.stop(End::Screen, t).is_some());
         assert_eq!(
-            r.start("a", &Agent::default(), "", true, t + Duration::from_secs(5)),
+            r.start("a", &Agent::default(), "", true, at(5)),
             Err(Refusal::Stopped)
         );
         assert_eq!(
-            r.start("b", &Agent::default(), "", true, t + Duration::from_secs(5)),
+            r.start("b", &Agent::default(), "", true, at(5)),
             Err(Refusal::Stopped)
         );
+        // After the cooldown another device may, the one stopped may not: not by trying again.
         assert!(
-            r.start("a", &Agent::default(), "", true, t + COOLDOWN)
+            r.start("b", &Agent::default(), "", true, t + COOLDOWN)
+                .is_ok()
+        );
+        r.stop(End::Browser, t + COOLDOWN);
+        assert_eq!(
+            r.start("a", &Agent::default(), "", true, t + COOLDOWN * 10),
+            Err(Refusal::Stopped)
+        );
+        // The switch off and on again on the device lets it back.
+        r.stop(End::Off, t + COOLDOWN * 10);
+        assert!(
+            r.start("a", &Agent::default(), "", true, t + COOLDOWN * 10)
                 .is_ok()
         );
         // Stop in the browser: no wait.
-        r.stop(End::Browser, t + COOLDOWN);
+        r.stop(End::Browser, t + COOLDOWN * 10);
         assert!(
-            r.start("a", &Agent::default(), "", true, t + COOLDOWN)
+            r.start("a", &Agent::default(), "", true, t + COOLDOWN * 10)
                 .is_ok()
         );
     }
