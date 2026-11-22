@@ -870,6 +870,6 @@ calendar_names = "Famiglia|Lavoro"
 
 # v0.2 ui
 house_light = "Luce cucina"
-house_lights = "Studio sinistra, Studio centro, Studio destra, Libreria"
+house_lights = "Soggiorno sinistra, Soggiorno centro, Soggiorno destra, Piantana"
 house_question = "Tapparella del soggiorno: la chiudo?"
 house_blind = "Tapparella del soggiorno"

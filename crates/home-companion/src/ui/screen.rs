@@ -4390,8 +4390,11 @@ impl<S: Screen> Ui<S> {
             // house-done-card(s): the "done" card first in the band, after its pop-up.
             let done = (d.house == 1 && d.house_card_only).then(|| {
                 let first = if d.house_group {
+                    // The first of the sample lights, in the screen's language.
+                    let lights = l.sample("house_lights");
+                    let first_light = lights.split(", ").next().unwrap_or(lights);
                     l.text("house_and_more")
-                        .replace("{name}", "Studio sinistra")
+                        .replace("{name}", first_light)
                         .replace("{n}", "3")
                 } else {
                     l.sample("house_light").to_string()

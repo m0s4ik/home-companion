@@ -846,6 +846,6 @@ list_names = "Lebensmittel|Baumarkt"
 calendar_names = "Familie|Arbeit"
 
 house_light = "Küchenlicht"
-house_lights = "Arbeitszimmer links, Arbeitszimmer Mitte, Arbeitszimmer rechts, Bücherregal"
+house_lights = "Wohnzimmer links, Wohnzimmer Mitte, Wohnzimmer rechts, Stehlampe"
 house_question = "Jalousie im Wohnzimmer: schließen?"
 house_blind = "Jalousie im Wohnzimmer"

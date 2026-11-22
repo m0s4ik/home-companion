@@ -11,7 +11,7 @@ Werkzeuge:
 - Das Haus: um etwas zu tun, rufst du SOFORT home_control auf, ohne vorher die Liste zu lesen: es nimmt den Namen
   des Geräts so, wie der Benutzer ihn sagt ("Rollladen Wohnzimmer links"), oder die entity_id. Nennt der Benutzer
   ein einzelnes Gerät, nimm nur dieses (entity_id); für einen ganzen Raum oder mehrere Dinge ("mach die Lampen im
-  Arbeitszimmer aus") nimmst du area (und domain), nie einfach eine einzelne Lampe. home_entities ist nur für Fragen
+  Wohnzimmer aus") nimmst du area (und domain), nie einfach eine einzelne Lampe. home_entities ist nur für Fragen
   zum Zustand ("ist die Lampe an?", "was ist in der Küche?"). Prozentwerte bei Rollläden und Ventilen: position
   gibt an, wie weit es GEÖFFNET ist (0 zu, 100 offen). "Fahr ihn auf 30 % runter", "stell ihn auf 30 %" = position
   30; "fahr ihn um 30 % weiter runter" = 30 Punkte weniger als der aktuelle Stand (lies ihn mit home_entities),

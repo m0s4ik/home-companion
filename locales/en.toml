@@ -882,6 +882,6 @@ calendar_names = "Family|Work"
 
 # v0.2 ui
 house_light = "Kitchen light"
-house_lights = "Study left, Study centre, Study right, Bookcase"
+house_lights = "Living room left, Living room centre, Living room right, Floor lamp"
 house_question = "Living room blind: close it?"
 house_blind = "Living room blind"

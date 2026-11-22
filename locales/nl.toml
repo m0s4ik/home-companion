@@ -879,6 +879,6 @@ calendar_names = "Gezin|Werk"
 
 # v0.2 ui
 house_light = "Keukenlamp"
-house_lights = "Werkkamer links, Werkkamer midden, Werkkamer rechts, Boekenkast"
+house_lights = "Woonkamer links, Woonkamer midden, Woonkamer rechts, Staande lamp"
 house_question = "Rolluik woonkamer: dichtdoen?"
 house_blind = "Rolluik woonkamer"

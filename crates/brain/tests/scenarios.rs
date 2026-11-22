@@ -36,26 +36,29 @@ fn house() -> Fake {
     Fake {
         exposed: exposed(&[
             ("light.kitchen", "Kitchen light", ""),
-            ("light.study_left", "Study left", ""),
-            ("light.study_right", "Study right", ""),
-            ("light.study", "Study", ""),
+            ("light.office_left", "Office left", ""),
+            ("light.office_right", "Office right", ""),
+            ("light.office", "Office", ""),
             ("cover.living_left", "Living room left blind", "shutter"),
             ("cover.living_right", "Living room right blind", "shutter"),
-            ("cover.study", "Study blind", "shutter"),
+            ("cover.office", "Office blind", "shutter"),
             ("valve.garden", "Garden water", "water"),
             ("lock.front", "Front door", ""),
             ("cover.garage", "Garage door", "garage"),
         ]),
         areas: vec![
             ("light.kitchen", "Kitchen"),
-            ("light.study_left", "Study"),
-            ("light.study_right", "Study"),
-            ("light.study", "Study"),
+            ("light.office_left", "Office"),
+            ("light.office_right", "Office"),
+            ("light.office", "Office"),
             ("cover.living_left", "Living room"),
             ("cover.living_right", "Living room"),
-            ("cover.study", "Study"),
+            ("cover.office", "Office"),
         ],
-        groups: vec![("light.study", vec!["light.study_left", "light.study_right"])],
+        groups: vec![(
+            "light.office",
+            vec!["light.office_left", "light.office_right"],
+        )],
         states: vec![("todo.shopping", "Shopping")],
         ..Fake::default()
     }
@@ -242,7 +245,7 @@ fn b03_a_room_with_one_cover_asks() {
     let mut s = S::new("b03");
     let r = s.call(
         "home_control",
-        json!({"area": "Study", "domain": "cover", "service": "close_cover"}),
+        json!({"area": "Office", "domain": "cover", "service": "close_cover"}),
     );
     assert_shape(&r);
     S::asked(&r);
@@ -280,7 +283,7 @@ fn b04_a_room_with_two_covers_one_question() {
 fn b05_a_no_then_the_same_call_in_the_same_turn() {
     let mut s = S::new("b05");
     s.turn(7, "chiudi la tapparella", None);
-    let r = s.call("home_control", close("cover.study"));
+    let r = s.call("home_control", close("cover.office"));
     let q = S::asked(&r);
     s.expect(&[], &["confirm"]);
     s.answer(q, false, "screen");
@@ -289,7 +292,7 @@ fn b05_a_no_then_the_same_call_in_the_same_turn() {
         (ev[0]["yes"].clone(), ev[0]["via"].clone()),
         (json!(false), json!("screen"))
     );
-    let mut again = close("cover.study");
+    let mut again = close("cover.office");
     again["confirm_id"] = json!(q);
     let r = s.call("home_control", again);
     assert_eq!(r["state"], "answered_no", "{r}");
@@ -300,12 +303,12 @@ fn b05_a_no_then_the_same_call_in_the_same_turn() {
 fn after_a_no_a_new_turn_asks_again(name: &str, later_ms: i64) {
     let mut s = S::new(name);
     s.turn(7, "chiudi la tapparella", None);
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     s.answer(q, false, "screen");
     s.expect(&[], &["confirm", "confirm_done"]);
     s.advance(later_ms);
     s.turn(8, "chiudi la tapparella", None);
-    let mut again = close("cover.study");
+    let mut again = close("cover.office");
     again["confirm_id"] = json!(q);
     let r = s.call("home_control", again);
     let q2 = S::asked(&r);
@@ -327,12 +330,12 @@ fn b07_after_a_no_minutes_later_asks_again() {
 #[test]
 fn b08_a_screen_yes_executes_without_pending() {
     let mut s = S::new("b08");
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     s.expect(&[], &["confirm"]);
     let r = s.answer(q, true, "screen");
     assert_eq!(r["ok"], true, "{r}");
     let ev = s.expect(
-        &["cover.close_cover cover.study"],
+        &["cover.close_cover cover.office"],
         &["changed", "confirm_done"],
     );
     assert_eq!(ev[1]["via"], "screen");
@@ -341,7 +344,7 @@ fn b08_a_screen_yes_executes_without_pending() {
 #[test]
 fn b09_a_voice_yes_waits_a_second() {
     let mut s = S::new("b09");
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     s.expect(&[], &["confirm"]);
     let r = s.answer(q, true, "voice_reflex");
     assert_eq!(r["state"], "confirming", "{r}");
@@ -351,7 +354,7 @@ fn b09_a_voice_yes_waits_a_second() {
     s.expect(&[], &[]);
     s.advance(1);
     let ev = s.expect(
-        &["cover.close_cover cover.study"],
+        &["cover.close_cover cover.office"],
         &["changed", "confirm_done"],
     );
     assert_eq!(
@@ -362,7 +365,7 @@ fn b09_a_voice_yes_waits_a_second() {
 
 fn voice_yes_then(name: &str, yes: bool, via: &str) -> S {
     let mut s = S::new(name);
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     s.answer(q, true, "voice_reflex");
     s.expect(&[], &["confirm", "confirm_pending"]);
     s.advance(500);
@@ -398,7 +401,7 @@ fn b11_the_stop_word_inside_the_second_is_a_no() {
 fn b12_a_screen_yes_inside_the_second_executes_once() {
     let mut s = voice_yes_then("b12", true, "screen");
     let ev = s.expect(
-        &["cover.close_cover cover.study"],
+        &["cover.close_cover cover.office"],
         &["changed", "confirm_done"],
     );
     assert_eq!(ev[1]["via"], "screen");
@@ -410,13 +413,13 @@ fn b12_a_screen_yes_inside_the_second_executes_once() {
 fn b13_a_yes_heard_by_home_assistant() {
     let mut s = S::new("b13");
     s.turn(7, "chiudi la tapparella", None);
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     s.expect(&[], &["confirm"]);
     s.turn(8, "Sì.", Some(q));
     s.expect(&[], &["confirm_pending"]);
     s.advance(CONFIRM_DELAY_MS);
     let ev = s.expect(
-        &["cover.close_cover cover.study"],
+        &["cover.close_cover cover.office"],
         &["changed", "confirm_done"],
     );
     assert_eq!(ev[1]["via"], "voice_ha");
@@ -426,7 +429,7 @@ fn b13_a_yes_heard_by_home_assistant() {
 fn b14_a_no_heard_by_home_assistant() {
     let mut s = S::new("b14");
     s.turn(7, "chiudi la tapparella", None);
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     s.expect(&[], &["confirm"]);
     s.turn(8, "No, grazie.", Some(q));
     let ev = s.expect(&[], &["confirm_done"]);
@@ -439,7 +442,7 @@ fn b14_a_no_heard_by_home_assistant() {
 #[test]
 fn b15_a_yes_in_a_turn_that_answers_nothing() {
     let mut s = S::new("b15");
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     s.expect(&[], &["confirm"]);
     s.turn(8, "sì", None);
     s.advance(5000);
@@ -456,7 +459,7 @@ fn b15_a_yes_in_a_turn_that_answers_nothing() {
 #[test]
 fn b16_sentences_that_are_not_an_answer() {
     let mut s = S::new("b16");
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     s.expect(&[], &["confirm"]);
     for (i, t) in [
         "Si può sapere che ore sono?",
@@ -479,21 +482,21 @@ fn b16_sentences_that_are_not_an_answer() {
 fn b17_the_model_calls_again_after_the_yes() {
     let mut s = S::new("b17");
     s.turn(7, "chiudi la tapparella", None);
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     s.turn(8, "sì", Some(q));
     s.expect(&[], &["confirm", "confirm_pending"]);
-    let r = s.call("home_control", close("cover.study"));
+    let r = s.call("home_control", close("cover.office"));
     assert_eq!(r["state"], "confirming", "{r}");
     assert!(r["asked"].is_null());
     s.expect(&[], &[]);
     s.advance(CONFIRM_DELAY_MS);
     s.expect(
-        &["cover.close_cover cover.study"],
+        &["cover.close_cover cover.office"],
         &["changed", "confirm_done"],
     );
-    let r = s.call("home_control", close("cover.study"));
+    let r = s.call("home_control", close("cover.office"));
     assert_eq!(r["state"], "done", "{r}");
-    let mut wrong = close("cover.study");
+    let mut wrong = close("cover.office");
     wrong["confirm_id"] = json!(q + 1000);
     let r = s.call("home_control", wrong);
     assert_eq!(r["state"], "done", "{r}");
@@ -504,7 +507,7 @@ fn b17_the_model_calls_again_after_the_yes() {
 #[test]
 fn b18_double_answers() {
     let mut s = S::new("b18");
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     s.expect(&[], &["confirm"]);
     // voice_ha and timeout are the brain's own names, never an answer from the body.
     for via in ["voice_ha", "timeout"] {
@@ -520,7 +523,7 @@ fn b18_double_answers() {
         (json!(true), json!("yes"))
     );
     s.expect(
-        &["cover.close_cover cover.study"],
+        &["cover.close_cover cover.office"],
         &["changed", "confirm_done"],
     );
     let q = S::asked(&s.call("home_control", close("cover.living_left")));
@@ -541,7 +544,7 @@ fn b19a_lights_at_once_the_lock_never() {
     let mut s = S::new("b19a");
     let r = s.call(
         "home_control",
-        json!({"entity_ids": ["light.kitchen", "light.study_left", "lock.front"], "service": "turn_off"}),
+        json!({"entity_ids": ["light.kitchen", "light.office_left", "lock.front"], "service": "turn_off"}),
     );
     assert_shape(&r);
     assert_eq!(r["done"].as_array().unwrap().len(), 2, "{r}");
@@ -553,7 +556,7 @@ fn b19a_lights_at_once_the_lock_never() {
             "scene.create",
             "light.turn_off light.kitchen",
             "scene.create",
-            "light.turn_off light.study_left",
+            "light.turn_off light.office_left",
         ],
         &["changed", "changed"],
     );
@@ -565,13 +568,13 @@ fn b19b_a_blind_asks_the_garage_never() {
     let mut s = S::new("b19b");
     let r = s.call(
         "home_control",
-        json!({"entity_ids": ["cover.study", "cover.garage"], "service": "close_cover"}),
+        json!({"entity_ids": ["cover.office", "cover.garage"], "service": "close_cover"}),
     );
     assert_shape(&r);
     S::asked(&r);
     assert_eq!(r["refused"], json!(["Garage door"]));
     let ev = s.expect(&[], &["confirm"]);
-    assert_eq!(ev[0]["names"], json!(["Study blind"]));
+    assert_eq!(ev[0]["names"], json!(["Office blind"]));
 }
 
 #[test]
@@ -579,15 +582,15 @@ fn b20_groups_made_up_ids_and_areas() {
     let mut s = S::new("b20");
     let r = s.call(
         "home_control",
-        json!({"entity_ids": ["light.study", "light.study_left", "light.study_right"], "service": "turn_on"}),
+        json!({"entity_ids": ["light.office", "light.office_left", "light.office_right"], "service": "turn_on"}),
     );
     assert_eq!(r["done"].as_array().unwrap().len(), 2, "{r}");
     s.expect(
         &[
             "scene.create",
-            "light.turn_on light.study_left",
+            "light.turn_on light.office_left",
             "scene.create",
-            "light.turn_on light.study_right",
+            "light.turn_on light.office_right",
         ],
         &["changed", "changed"],
     );
@@ -614,57 +617,57 @@ fn b21_services_and_data_outside_the_table() {
     for service in ["toggle", "set_cover_tilt_position"] {
         let r = s.call(
             "home_control",
-            json!({"entity_id": "cover.study", "service": service}),
+            json!({"entity_id": "cover.office", "service": service}),
         );
         let e = r["error"].as_str().unwrap_or_else(|| panic!("{r}"));
         assert!(e.contains("close_cover") && e.contains("open_cover"), "{e}");
     }
     let r = s.call(
         "home_control",
-        json!({"entity_id": "cover.study", "service": "close_cover", "data": {"brightness_pct": 10}}),
+        json!({"entity_id": "cover.office", "service": "close_cover", "data": {"brightness_pct": 10}}),
     );
     assert!(r["error"].as_str().unwrap().contains("position"), "{r}");
     let r = s.call(
         "home_control",
-        json!({"entity_id": "cover.study", "service": "set_cover_position", "data": {"position": 150}}),
+        json!({"entity_id": "cover.office", "service": "set_cover_position", "data": {"position": 150}}),
     );
     assert!(r["error"].is_string(), "{r}");
     s.expect(&[], &[]);
     let r = s.call(
         "home_control",
-        json!({"entity_id": "cover.study", "service": "close_cover", "data": {"entity_id": "cover.garage"}}),
+        json!({"entity_id": "cover.office", "service": "close_cover", "data": {"entity_id": "cover.garage"}}),
     );
     let q = S::asked(&r);
     s.answer(q, true, "screen");
     s.expect(
-        &["cover.close_cover cover.study"],
+        &["cover.close_cover cover.office"],
         &["confirm", "changed", "confirm_done"],
     );
 }
 
 fn changed_between_question_and_yes(name: &str, change: impl FnOnce(&S)) {
     let mut s = S::new(name);
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     s.expect(&[], &["confirm"]);
     change(&s);
     s.answer(q, true, "screen");
     let ev = s.expect(&[], &["confirm_done"]);
     assert_eq!(
         ev[0],
-        json!({"event": "confirm_done", "id": q, "yes": true, "via": "screen", "failed": ["Study blind"]})
+        json!({"event": "confirm_done", "id": q, "yes": true, "via": "screen", "failed": ["Office blind"]})
     );
 }
 
 #[test]
 fn b22a_the_gate_becomes_never() {
     changed_between_question_and_yes("b22a", |s| {
-        s.b.set_gate("cover.study", Some("never")).unwrap()
+        s.b.set_gate("cover.office", Some("never")).unwrap()
     });
 }
 
 #[test]
 fn b22b_no_longer_exposed() {
-    changed_between_question_and_yes("b22b", |s| s.f.unexpose("cover.study"));
+    changed_between_question_and_yes("b22b", |s| s.f.unexpose("cover.office"));
 }
 
 #[test]
@@ -696,10 +699,10 @@ fn b23_one_of_two_fails() {
 fn b24_a_second_question_while_one_is_open() {
     let mut s = S::new("b24");
     s.turn(7, "chiudi la tapparella", None);
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     let first = s.expect(&[], &["confirm"])[0].clone();
     s.advance(5000);
-    let r = s.call("home_control", close("cover.study"));
+    let r = s.call("home_control", close("cover.office"));
     assert_eq!(r["state"], "waiting", "{r}");
     assert_eq!(r["asked"]["id"], q, "{r}");
     assert_eq!(r["say"], SAY_NOTHING);
@@ -723,7 +726,7 @@ fn b24_a_second_question_while_one_is_open() {
 #[test]
 fn b25_too_late() {
     let mut s = S::new("b25");
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     s.expect(&[], &["confirm"]);
     s.advance(30_001);
     let ev = s.expect(&[], &["confirm_done"]);
@@ -744,7 +747,7 @@ fn b25_too_late() {
 #[test]
 fn b26_a_body_that_reconnects_sees_the_question() {
     let mut s = S::new("b26");
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     let first = s.expect(&[], &["confirm"])[0].clone();
     let names = |v: &[Value]| -> Vec<String> {
         v.iter()
@@ -769,10 +772,10 @@ fn b26_a_body_that_reconnects_sees_the_question() {
 #[test]
 fn b27_undo_after_a_yes() {
     let mut s = S::new("b27");
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     s.answer(q, true, "screen");
     let ev = s.expect(
-        &["scene.create", "cover.close_cover cover.study"],
+        &["scene.create", "cover.close_cover cover.office"],
         &["confirm", "changed", "confirm_done"],
     );
     assert_eq!(ev[1]["undo"], true);
@@ -790,13 +793,13 @@ fn b27b_undo_of_a_position_after_a_yes() {
     let mut s = S::new("b27b");
     let q = S::asked(&s.call(
         "home_control",
-        json!({"entity_id": "cover.study", "service": "set_cover_position", "data": {"position": 0}}),
+        json!({"entity_id": "cover.office", "service": "set_cover_position", "data": {"position": 0}}),
     ));
     s.answer(q, true, "screen");
     let ev = s.expect(
         &[
             "scene.create",
-            "cover.set_cover_position cover.study {\"position\":0}",
+            "cover.set_cover_position cover.office {\"position\":0}",
         ],
         &["confirm", "changed", "confirm_done"],
     );
@@ -814,10 +817,10 @@ fn b27b_undo_of_a_position_after_a_yes() {
 fn b28_the_answering_turn_after_a_no() {
     let mut s = S::new("b28");
     s.turn(7, "chiudi la tapparella", None);
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     s.turn(8, "no", Some(q));
     s.expect(&[], &["confirm", "confirm_done"]);
-    let r = s.call("home_control", close("cover.study"));
+    let r = s.call("home_control", close("cover.office"));
     assert_eq!(r["state"], "answered_no", "{r}");
     s.expect(&[], &[]);
 }
@@ -825,7 +828,7 @@ fn b28_the_answering_turn_after_a_no() {
 #[test]
 fn b29_legacy_heard_and_said() {
     let mut s = S::with("b29", |c| c.memory.session_gap_minutes = 0);
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     s.expect(&[], &["confirm"]);
     s.control(json!({"cmd": "heard", "text": "sì"}));
     s.advance(2000);
@@ -856,7 +859,7 @@ fn b29_legacy_heard_and_said() {
 #[test]
 fn b30_a_restarted_brain_knows_no_old_question() {
     let mut s = S::new("b30");
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     s.expect(&[], &["confirm"]);
     let b2 = Brain::with_clock(s.cfg.clone(), s.clock.clone()).unwrap();
     let (r, _) = brain::control::answer(
@@ -871,9 +874,9 @@ fn b30_a_restarted_brain_knows_no_old_question() {
 fn b31_a_new_call_after_the_turn_ended() {
     let mut s = S::new("b31");
     s.turn(7, "chiudi la tapparella", None);
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     s.turn_end(7, "");
-    let q2 = S::asked(&s.call("home_control", close("cover.study")));
+    let q2 = S::asked(&s.call("home_control", close("cover.office")));
     assert_ne!(q, q2);
     let ev = s.expect(&[], &["confirm", "confirm_done", "confirm"]);
     assert_eq!(
@@ -911,7 +914,7 @@ fn b32_a_light_at_once_with_undo() {
 fn answered_outside_then_the_same_call(name: &str, yes: bool, via: &str) {
     let mut s = S::new(name);
     s.turn(7, "chiudi la tapparella", None);
-    let q = S::asked(&s.call("home_control", close("cover.study")));
+    let q = S::asked(&s.call("home_control", close("cover.office")));
     s.expect(&[], &["confirm"]);
     s.answer(q, yes, via);
     if yes {
@@ -921,7 +924,7 @@ fn answered_outside_then_the_same_call(name: &str, yes: bool, via: &str) {
             0
         });
         s.expect(
-            &["cover.close_cover cover.study"],
+            &["cover.close_cover cover.office"],
             &if via == "voice_reflex" {
                 vec!["confirm_pending", "changed", "confirm_done"]
             } else {
@@ -931,7 +934,7 @@ fn answered_outside_then_the_same_call(name: &str, yes: bool, via: &str) {
     } else {
         s.expect(&[], &["confirm_done"]);
     }
-    let r = s.call("home_control", close("cover.study"));
+    let r = s.call("home_control", close("cover.office"));
     assert_eq!(
         r["state"],
         if yes { "done" } else { "answered_no" },
