@@ -415,7 +415,13 @@ fn run(
 
 /// The repository's releases, newest first (GitHub's API through curl: no TLS in the body).
 pub(crate) fn fetch(repo: &str) -> Result<Value, String> {
-    let url = format!("https://api.github.com/repos/{repo}/releases?per_page=20");
+    fetch_page(repo, 20, 1)
+}
+
+/// One page of the releases of `repo`, newest first (`per_page` at most 100, `page` from 1).
+pub(crate) fn fetch_page(repo: &str, per_page: u32, page: u32) -> Result<Value, String> {
+    let url =
+        format!("https://api.github.com/repos/{repo}/releases?per_page={per_page}&page={page}");
     let out = Command::new("curl")
         .args([
             "-fsS",
