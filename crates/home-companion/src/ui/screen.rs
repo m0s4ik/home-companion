@@ -37,7 +37,9 @@ use crate::core::{CoreEvent, MirrorInfo, Phase, UiCommand, UiEvent};
 use crate::ha::hub::{HubCmd, HubMsg};
 use crate::ha::weather::Weather;
 use crate::history::History;
-use crate::settings::{Settings, WakeSensitivity};
+use crate::settings::{
+    CONVERSATION_MAX_DEFAULT, CONVERSATION_MAX_MAX, CONVERSATION_MAX_MIN, Settings, WakeSensitivity,
+};
 use crate::settings_model::{self as model, Change};
 
 mod panel_ui;
@@ -1677,6 +1679,8 @@ impl<S: Screen> model::Host for Ui<S> {
                 json!(WakeSensitivity::from_step(self.screen.get_wake_step()).key())
             }
             "keep_conversations" => json!(self.history.borrow().keeps()),
+            "conversation_mode" => json!(self.screen.get_conversation_mode()),
+            "conversation_max" => json!(self.screen.get_conversation_max()),
             "lists" if hub => json!(self.choice.borrow().lists),
             "calendars" if hub => json!(self.choice.borrow().calendars),
             "panel" => json!(self.panel.borrow().on),
@@ -2545,6 +2549,16 @@ impl<S: Screen> Ui<S> {
             .map(Settings::wake_sensitivity)
             .unwrap_or_default();
         self.screen.set_wake_step(sensitivity.step());
+        self.screen.set_conversation_mode(
+            self.settings
+                .as_ref()
+                .is_some_and(Settings::conversation_mode),
+        );
+        self.screen.set_conversation_max(
+            self.settings
+                .as_ref()
+                .map_or(CONVERSATION_MAX_DEFAULT, Settings::conversation_max),
+        );
         let ui = Rc::downgrade(self);
         self.screen.on_state_changed(move |app, s| {
             let Some(ui) = ui.upgrade() else { return };
@@ -3040,6 +3054,20 @@ impl<S: Screen> Ui<S> {
                     &*ui,
                     Change::WakeSensitivity(WakeSensitivity::from_step(step)),
                 );
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_conversation_mode_changed(move |on| {
+            if let Some(ui) = ui.upgrade() {
+                model::commit(&*ui, Change::ConversationMode(on));
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_conversation_max_changed(move |times| {
+            if let Some(ui) = ui.upgrade() {
+                // The stepper stops at its ends.
+                let times = times.clamp(CONVERSATION_MAX_MIN as i32, CONVERSATION_MAX_MAX as i32);
+                model::commit(&*ui, Change::ConversationMax(times as u32));
             }
         });
         let ui = Rc::downgrade(self);
@@ -7175,6 +7203,15 @@ impl<S: Screen> Ui<S> {
                 self.history.borrow_mut().set_keep(keep);
                 self.refresh_desk();
             }
+            Change::ConversationMode(on) => {
+                self.screen.set_conversation_mode(on);
+                // The core opens the windows: from the next answer on.
+                self.send(UiEvent::ConversationMode(on));
+            }
+            Change::ConversationMax(times) => {
+                self.screen.set_conversation_max(times);
+                self.send(UiEvent::ConversationMax(times));
+            }
             Change::Lists(lists) => {
                 self.choice.borrow_mut().lists = lists.clone();
                 if let Some(tx) = self.hub_tx.borrow().as_ref() {
@@ -9326,6 +9363,36 @@ mod tests {
                 WakeSensitivity::Less
             ]
         );
+        // Settings → conversation mode: off at first; the switch shows it, tells the core and
+        // writes it.
+        assert!(!w.get_conversation_mode());
+        w.invoke_conversation_mode_changed(true);
+        assert!(w.get_conversation_mode());
+        w.invoke_conversation_mode_changed(false);
+        let sent: Vec<bool> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                CoreEvent::Ui(UiEvent::ConversationMode(on)) => Some(on),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sent, [true, false]);
+        // … and how many times in a row: three at first, one at a time, never past the ends.
+        assert_eq!(w.get_conversation_max(), 3);
+        w.invoke_conversation_max_changed(4);
+        assert_eq!(w.get_conversation_max(), 4);
+        w.invoke_conversation_max_changed(0);
+        assert_eq!(w.get_conversation_max(), 1, "clamped");
+        w.invoke_conversation_max_changed(11);
+        assert_eq!(w.get_conversation_max(), 10, "clamped");
+        let sent: Vec<u32> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                CoreEvent::Ui(UiEvent::ConversationMax(n)) => Some(n),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sent, [4, 1, 10]);
         drop(ui);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -9458,6 +9525,11 @@ mod tests {
         assert!(!ui.history.borrow().keeps());
         set("wake_sensitivity", json!("less"));
         assert_eq!(ui.screen.get_wake_step(), -1);
+        set("conversation_mode", json!(true));
+        assert!(ui.screen.get_conversation_mode());
+        assert_eq!(model::get(&*ui, "conversation_mode"), Some(json!(true)));
+        set("conversation_max", json!(5));
+        assert_eq!(ui.screen.get_conversation_max(), 5);
         set("volume", json!(55));
         assert_eq!(ui.volume.get(), 55);
         assert_eq!(model::get(&*ui, "volume"), Some(json!(55)));
@@ -9474,6 +9546,8 @@ mod tests {
         let saved = Settings::in_dir(&dir);
         assert!(saved.home_compact());
         assert_eq!(saved.night(), (false, 21, 7));
+        assert!(saved.conversation_mode());
+        assert_eq!(saved.conversation_max(), 5);
         assert_eq!(saved.widgets(), (vec![WidgetKind::Weather.into()], 0));
         assert_eq!(saved.lists(), ["todo.b"]);
         assert_eq!(saved.language().as_deref(), Some("it"));

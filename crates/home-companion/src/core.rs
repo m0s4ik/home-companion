@@ -76,6 +76,10 @@ pub enum UiEvent {
     /// Settings → how readily the character answers to his wake word: saved, and applied by the
     /// wake word thread before its next frame.
     WakeSensitivity(WakeSensitivity),
+    /// Settings → "Conversation mode" switched (the screen saves it): from the next answer on.
+    ConversationMode(bool),
+    /// Settings → how many of its windows may follow one another.
+    ConversationMax(u32),
     /// Timer e sveglie: a new timer of this many seconds (a local one).
     /// Seconds and what it is for, when said.
     TimerStart(u64, Option<String>),
@@ -380,6 +384,9 @@ pub struct CoreConfig {
     pub sounds_dir: Option<PathBuf>,
     /// Prices for the cloud services' rough cost (usage.rs).
     pub usage_prices: crate::usage::Prices,
+    /// Conversation mode (Settings, off by default): how long the microphone stays open after
+    /// a spoken answer that is not a question (zero: never).
+    pub follow_up_window: Duration,
 }
 
 impl Default for CoreConfig {
@@ -398,6 +405,7 @@ impl Default for CoreConfig {
             screenshot_dir: PathBuf::from("."),
             sounds_dir: None,
             usage_prices: Default::default(),
+            follow_up_window: Duration::from_secs(6),
         }
     }
 }
@@ -586,6 +594,17 @@ pub struct Core {
     error_until: Option<Instant>,
     flash_until: Option<Instant>,
     listen_deadline: Option<Instant>,
+    /// Settings → "Conversation mode": every spoken answer opens a short listening window.
+    conversation_mode: bool,
+    /// At most this many such windows in a row before the wake word is needed again (Settings).
+    follow_up_max: u32,
+    /// Such windows opened in a row since the last wake word, touch or question.
+    follow_ups: u32,
+    /// The conversation about to start is such a window (it listens for a shorter time).
+    follow_window: bool,
+    /// The conversation listening now is such a window, and what was heard in it so far: when
+    /// its time is up with nobody speaking it ends quietly (nothing was asked of anyone).
+    window_vad: Option<Vad>,
     think_deadline: Option<Instant>,
     speak_deadline: Option<Instant>,
     wave: VecDeque<f32>,
@@ -818,6 +837,11 @@ impl Core {
             error_until: None,
             flash_until: None,
             listen_deadline: None,
+            conversation_mode: false,
+            follow_up_max: crate::settings::CONVERSATION_MAX_DEFAULT,
+            follow_ups: 0,
+            follow_window: false,
+            window_vad: None,
             think_deadline: None,
             speak_deadline: None,
             wave: VecDeque::with_capacity(BARS),
@@ -876,6 +900,8 @@ impl Core {
         if let Some(s) = &self.d.settings {
             self.mic_muted = s.mic_muted();
             self.airplay_on = s.airplay_on();
+            self.conversation_mode = s.conversation_mode();
+            self.follow_up_max = s.conversation_max();
             if let Some(dir) = s.path.parent() {
                 self.usage = Some(crate::usage::Usage::in_dir(dir));
             }
@@ -1284,6 +1310,13 @@ impl Core {
         self.speaking_text.clear();
         self.speaking_since = None;
         self.speaking_len = None;
+        // A conversation mode window listens for a shorter time; anything else (the wake word,
+        // a touch, a question of his) starts the count of windows again.
+        let window = std::mem::take(&mut self.follow_window);
+        if !window {
+            self.follow_ups = 0;
+        }
+        self.window_vad = window.then(Vad::new);
         let id = self.next_id;
         let gated = self.d.reflexes.as_ref().is_some_and(|r| {
             // The answer to a question: decoded against the answers only (a short "no" is
@@ -1344,7 +1377,12 @@ impl Core {
             self.go_idle();
             return;
         }
-        self.listen_deadline = Some(Instant::now() + self.cfg.listen_timeout);
+        let listen = if window {
+            self.cfg.follow_up_window
+        } else {
+            self.cfg.listen_timeout
+        };
+        self.listen_deadline = Some(Instant::now() + listen);
         self.wave.clear();
         self.set_phase(Phase::Listening);
     }
@@ -1724,6 +1762,9 @@ impl Core {
             self.wave.pop_back();
         }
         self.wave.push_front(level_to_bar(f.level.rms_dbfs));
+        if let Some(v) = &mut self.window_vad {
+            v.push(&f.samples);
+        }
         let over = self.live_vad.as_mut().is_some_and(|v| {
             v.push(&f.samples);
             live_speech_over(v)
@@ -1986,6 +2027,8 @@ impl Core {
                 r.link.send(ReflexRequest::End(g.id));
             }
         }
+        // Heard by Home Assistant from here on: no longer a window to close quietly.
+        self.window_vad = None;
         g.want = Some(Want {
             over,
             why,
@@ -3009,10 +3052,16 @@ impl Core {
                 if is_answer {
                     // A question back ("Cosa devo ricordarti?"): listen again without the wake
                     // word, as Home Assistant would ask a voice satellite of its own.
-                    let follow = self.conv.as_ref().is_some_and(|c| {
-                        !c.policy.swallows()
-                            && c.trigger != Trigger::Announcement
-                            && asks_for_answer(&c.answer)
+                    // With conversation mode on, any other spoken answer opens a short window too,
+                    // a few times in a row.
+                    let windows = (self.conversation_mode && self.follow_ups < self.follow_up_max)
+                        .then_some(self.cfg.follow_up_window);
+                    let after = self.conv.as_ref().map_or(AfterAnswer::Nothing, |c| {
+                        if c.policy.swallows() || c.trigger == Trigger::Announcement {
+                            AfterAnswer::Nothing
+                        } else {
+                            after_answer(&c.answer, windows)
+                        }
                     });
                     if let Some(c) = &mut self.conv {
                         c.stream = None;
@@ -3021,9 +3070,20 @@ impl Core {
                     self.close("played");
                     if self.phase == Phase::Speaking {
                         self.go_idle();
-                        if follow {
-                            log::info!(event = "follow_up"; "the answer was a question: listening again");
-                            self.start_conversation(Trigger::FollowUp);
+                        match after {
+                            AfterAnswer::Question => {
+                                log::info!(event = "follow_up"; "the answer was a question: listening again");
+                                self.start_conversation(Trigger::FollowUp);
+                            }
+                            AfterAnswer::Window => {
+                                let n = self.follow_ups + 1;
+                                log::info!(event = "follow_up_window", n = n, of = self.follow_up_max, seconds = self.cfg.follow_up_window.as_secs_f64(); "conversation mode: window {n} of {}, listening for {:.0} s", self.follow_up_max, self.cfg.follow_up_window.as_secs_f32());
+                                self.follow_window = true;
+                                self.start_conversation(Trigger::FollowUp);
+                                // The start counts from zero for anything but a window.
+                                self.follow_ups = n;
+                            }
+                            AfterAnswer::Nothing => {}
                         }
                     }
                 } else if self.bell == Some(id) {
@@ -3265,6 +3325,14 @@ impl Core {
                     st.save_wake_sensitivity(s);
                 }
                 self.d.mic.set_wake_sensitivity(s);
+            }
+            UiEvent::ConversationMode(on) => {
+                log::info!(event = "conversation_mode", on = on; "conversation mode {}", if on { "on" } else { "off" });
+                self.conversation_mode = on;
+            }
+            UiEvent::ConversationMax(n) => {
+                log::info!(event = "conversation_max", times = n; "conversation mode: {n} in a row at most");
+                self.follow_up_max = n;
             }
             UiEvent::ControlTile(k) => self.on_control_tile(&k),
             UiEvent::MusicToggle => self.on_music_toggle(),
@@ -4088,6 +4156,25 @@ impl Core {
             }
         }
         if self.phase == Phase::Listening
+            && self.window_vad.is_some()
+            && self.listen_deadline.is_some_and(|t| now >= t)
+        {
+            // A conversation mode window's time is up. Someone speaking gets a whole turn, as
+            // after the wake word; with nothing said it closes as Stop would, without a sound.
+            let heard = match (&self.gate, &self.window_vad) {
+                (Some(g), _) => Some(&g.vad),
+                (None, v) => v.as_ref(),
+            };
+            let speaking = heard.is_some_and(|v| v.speech_ms() >= Vad::MIN_SPEECH_MS);
+            self.window_vad = None;
+            if speaking {
+                self.listen_deadline = Some(Instant::now() + self.cfg.listen_timeout);
+            } else {
+                log::info!(event = "follow_up_window_closed"; "conversation mode: nothing said, back to the wake word");
+                self.stop_conversation();
+            }
+        }
+        if self.phase == Phase::Listening
             && self.gate.is_some()
             && self.listen_deadline.is_some_and(|t| now >= t)
         {
@@ -4293,6 +4380,30 @@ fn live_speech_over(v: &Vad) -> bool {
 /// See [`live_speech_over`].
 const LIVE_END_SILENCE_MS: u32 = 1_500;
 
+/// What follows an answer once it has been spoken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterAnswer {
+    /// Back to the wake word.
+    Nothing,
+    /// He asked something: a whole listening turn.
+    Question,
+    /// Conversation mode: a short window in case the user goes on.
+    Window,
+}
+
+/// `window`: conversation mode's listening time when a window may open now (the mode is on and
+/// fewer than the most in a row were opened); an answer with nothing to say (no letter or
+/// digit) and a window of zero seconds open none.
+fn after_answer(answer: &str, window: Option<Duration>) -> AfterAnswer {
+    if asks_for_answer(answer) {
+        AfterAnswer::Question
+    } else if window.is_some_and(|w| !w.is_zero()) && answer.chars().any(char::is_alphanumeric) {
+        AfterAnswer::Window
+    } else {
+        AfterAnswer::Nothing
+    }
+}
+
 fn asks_for_answer(answer: &str) -> bool {
     let a = answer.trim_end();
     if !a.ends_with('?') {
@@ -4417,6 +4528,29 @@ mod tests {
         assert!(!asks_for_answer("Fatto. C'è altro?"));
         assert!(!asks_for_answer("Done. Anything else I can do?"));
         assert!(!asks_for_answer("Fatto."));
+        // Conversation mode: a window after an answer that says something, never in place of a
+        // question's own turn, never for a window of no length or with the mode off.
+        let six = Some(Duration::from_secs(6));
+        assert_eq!(after_answer("Fatto.", None), AfterAnswer::Nothing);
+        assert_eq!(after_answer("Fatto.", six), AfterAnswer::Window);
+        assert_eq!(
+            after_answer("Done. Anything else I can do?", six),
+            AfterAnswer::Window
+        );
+        assert_eq!(
+            after_answer("Chiudo la tapparella del salotto?", six),
+            AfterAnswer::Question
+        );
+        assert_eq!(
+            after_answer("Chiudo la tapparella del salotto?", None),
+            AfterAnswer::Question
+        );
+        assert_eq!(after_answer("", six), AfterAnswer::Nothing);
+        assert_eq!(after_answer(" … ", six), AfterAnswer::Nothing);
+        assert_eq!(
+            after_answer("Fatto.", Some(Duration::ZERO)),
+            AfterAnswer::Nothing
+        );
     }
     use super::*;
 

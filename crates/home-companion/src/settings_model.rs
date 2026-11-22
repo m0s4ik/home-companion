@@ -134,6 +134,24 @@ pub const ITEMS: &[Item] = &[
         "voice",
         Kind::Bool,
     )),
+    // On the screen only: whether the microphone opens by itself after an answer is chosen in
+    // front of the device, as the panel's own switch is.
+    item(
+        "conversation_mode",
+        "conversation_mode",
+        "voice",
+        Kind::Bool,
+    ),
+    item(
+        "conversation_max",
+        "conversation_max",
+        "voice",
+        Kind::Int {
+            min: crate::settings::CONVERSATION_MAX_MIN as i64,
+            max: crate::settings::CONVERSATION_MAX_MAX as i64,
+            step: 1,
+        },
+    ),
     on_panel(item("lists", "lists_todo_label", "lists", Kind::Multi)),
     on_panel(item(
         "calendars",
@@ -202,6 +220,8 @@ pub enum Change {
     Volume(u8),
     WakeSensitivity(WakeSensitivity),
     KeepConversations(bool),
+    ConversationMode(bool),
+    ConversationMax(u32),
     Lists(Vec<String>),
     Calendars(Vec<String>),
     UpdatePrerelease(bool),
@@ -380,6 +400,8 @@ pub fn get(host: &dyn Host, key: &str) -> Option<Value> {
         "volume" => int(s.volume()? as i64),
         "wake_sensitivity" => json!(s.wake_sensitivity().key()),
         "keep_conversations" => json!(s.keep_conversations()),
+        "conversation_mode" => json!(s.conversation_mode()),
+        "conversation_max" => int(s.conversation_max() as i64),
         "lists" => json!(s.lists()),
         "calendars" => json!(s.calendars()),
         "update_prerelease" => json!(s.update_prerelease().unwrap_or(false)),
@@ -518,6 +540,12 @@ pub fn change_for(host: &dyn Host, key: &str, value: &Value) -> Result<Change, S
                 .ok_or(SetError::Invalid)?,
         ),
         "keep_conversations" => Change::KeepConversations(v.as_bool().unwrap_or(true)),
+        "conversation_mode" => Change::ConversationMode(v.as_bool().unwrap_or(false)),
+        "conversation_max" => Change::ConversationMax(
+            v.as_i64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or(SetError::Invalid)?,
+        ),
         "lists" | "calendars" => {
             let mut chosen = strings(&v);
             // All of them is "all": the lists Home Assistant adds later show too.
@@ -556,6 +584,8 @@ pub fn save(s: &Settings, change: &Change) {
         Change::Volume(p) => s.save_volume(*p),
         Change::WakeSensitivity(w) => s.save_wake_sensitivity(*w),
         Change::KeepConversations(k) => s.save_keep_conversations(*k),
+        Change::ConversationMode(on) => s.save_conversation_mode(*on),
+        Change::ConversationMax(n) => s.save_conversation_max(*n),
         Change::Lists(l) => s.save_lists(l),
         Change::Calendars(c) => s.save_calendars(c),
         Change::UpdatePrerelease(on) => s.save_update_prerelease(*on),
@@ -796,6 +826,12 @@ pub(crate) mod tests {
                 Change::KeepConversations(false),
             ),
             (
+                "conversation_mode",
+                json!(true),
+                Change::ConversationMode(true),
+            ),
+            ("conversation_max", json!(5), Change::ConversationMax(5)),
+            (
                 "lists",
                 json!(["todo.hardware"]),
                 Change::Lists(vec!["todo.hardware".into()]),
@@ -842,6 +878,8 @@ pub(crate) mod tests {
         assert_eq!(s.volume(), Some(35));
         assert_eq!(s.wake_sensitivity(), WakeSensitivity::More);
         assert!(!s.keep_conversations());
+        assert!(s.conversation_mode());
+        assert_eq!(s.conversation_max(), 5);
         assert_eq!(s.lists(), ["todo.hardware"]);
         assert!(s.calendars().is_empty());
         assert_eq!(s.update_prerelease(), Some(true));
@@ -862,6 +900,9 @@ pub(crate) mod tests {
             ("volume", json!(33)),
             ("volume", json!(105)),
             ("home_compact", json!(1)),
+            ("conversation_mode", json!("on")),
+            ("conversation_max", json!(0)),
+            ("conversation_max", json!(11)),
             ("language", json!("xx")),
             ("wake_sensitivity", json!("loud")),
             ("widgets", json!(["next", "next"])),
