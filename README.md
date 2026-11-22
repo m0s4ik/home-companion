@@ -270,10 +270,31 @@ event_data:
   seconds: 600         # optional: the card goes away by itself
   device: Alfred       # optional: only the device with this name (default: every device)
   pose: working        # optional: a pose of the character instead of its home pose while the card shows
+  quiet: true          # optional: no sound and no waking the screen
 ```
 
 The card plays the soft reminder sound by day and goes away with its OK. `home_companion_card_dismiss` with an `id`
 takes a card away.
+
+A card that is sent again and again with fresh values under the same `id` (the barbecue's probes every minute, the hot
+tub warming up) takes `quiet: true`: it replaces the card in its place without the sound and without waking the screen.
+Send the first one without it, so the card is noticed once:
+
+```yaml
+- event: home_companion_card
+  event_data: {id: barbecue, title: Barbecue, text: Heating up, icon: mdi:grill}
+- repeat:
+    while: [{condition: state, entity_id: input_boolean.barbecue, state: "on"}]
+    sequence:
+      - event: home_companion_card
+        event_data:
+          id: barbecue
+          title: Barbecue
+          text: "Probe {{ states('sensor.probe_1_temperature') }} °C"
+          icon: mdi:grill
+          quiet: true
+      - delay: {minutes: 1}
+```
 
 With `pose`, the character takes that pose on the home for as long as the card shows, with its animation if it has a
 looping one (the deck chair of `offline`), also while an announcement is said over it; not at night, and the

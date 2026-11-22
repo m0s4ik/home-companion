@@ -3981,6 +3981,7 @@ impl<S: Screen> Ui<S> {
                             seconds: None,
                             // Shown only if a pose "laundry" was downloaded (none in the screenshots).
                             pose: Some("laundry".into()),
+                            quiet: false,
                         }),
                         Instant::now(),
                     );
@@ -4114,6 +4115,7 @@ impl<S: Screen> Ui<S> {
                     icon: Some("mdi:washing-machine".into()),
                     seconds: None,
                     pose: None,
+                    quiet: false,
                 }),
                 Instant::now(),
             );
@@ -8022,11 +8024,12 @@ impl<S: Screen> Ui<S> {
                 self.apply_ha_widgets();
             }
             HubMsg::Card(ev) => {
-                let show = matches!(ev, crate::ha::events::CardEvent::Show(_));
+                // A card that is `quiet` (an update with fresh values) neither sounds nor wakes.
+                let chimes = ev.chimes();
                 let changed = self.desk.borrow_mut().ha_cards.apply(ev, Instant::now());
                 if changed {
                     // Like a reminder: a soft wake and its sound, by day only.
-                    if show && !self.desk.borrow().night_now {
+                    if chimes && !self.desk.borrow().night_now {
                         self.wake(WakeSource::Conversation);
                         self.send(UiEvent::Reminder);
                     }
@@ -10017,7 +10020,7 @@ mod tests {
         .unwrap();
         let character =
             Rc::new(character::load(&character::repo_characters().join("alfred")).unwrap());
-        let (tx, _rx) = std::sync::mpsc::channel();
+        let (tx, events) = std::sync::mpsc::channel();
         let opts = UiOptions {
             locales: locale::repo_locales(),
             language: locale::DEFAULT.into(),
@@ -10050,6 +10053,7 @@ mod tests {
                 icon: None,
                 seconds: None,
                 pose: None,
+                quiet: false,
             }))
         };
         // The OK of the first card of Home Assistant on the home, whatever else is shown.
@@ -10089,6 +10093,41 @@ mod tests {
         ui.apply_hub(show(None));
         assert!(tap(&ui));
         assert!(ids(&fired).is_empty());
+        // A card sounds; the same card sent again `quiet` (fresh values) does not, nor a new
+        // quiet one, and it still replaces the card by its id.
+        let reminders = |rx: &std::sync::mpsc::Receiver<CoreEvent>| {
+            rx.try_iter()
+                .filter(|e| matches!(e, CoreEvent::Ui(UiEvent::Reminder)))
+                .count()
+        };
+        let quiet = |id: &str, text: &str| {
+            HubMsg::Card(CardEvent::Show(HaCard {
+                id: Some(id.into()),
+                text: text.into(),
+                quiet: true,
+                ..Default::default()
+            }))
+        };
+        reminders(&events);
+        ui.apply_hub(show(Some("kamado")));
+        assert_eq!(reminders(&events), 1);
+        ui.apply_hub(quiet("kamado", "T1 180 °C"));
+        ui.apply_hub(quiet("kamado", "T1 182 °C"));
+        ui.apply_hub(quiet("pool", "36 °C"));
+        assert_eq!(reminders(&events), 0);
+        let texts: Vec<String> = ui
+            .desk
+            .borrow()
+            .ha_cards
+            .views("")
+            .into_iter()
+            .map(|(_, text, _)| text)
+            .collect();
+        assert_eq!(texts, ["T1 182 °C", "36 °C"]);
+        ui.apply_hub(HubMsg::Card(CardEvent::Dismiss("kamado".into())));
+        ui.apply_hub(HubMsg::Card(CardEvent::Dismiss("pool".into())));
+        ids(&fired);
+
         // Do not disturb: the tap is what counts.
         ui.set_dnd(Some(now_unix() as u64 + 3600));
         assert!(ui.dnd_on());

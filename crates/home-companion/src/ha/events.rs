@@ -16,6 +16,7 @@
 //!   seconds: 600         # optional: the card goes away by itself
 //!   device: Alfred       # optional: only the device with this name (default: every device)
 //!   pose: working        # optional: a pose of the character (downloaded, or its own by state) while the card shows
+//!   quiet: true          # optional: no sound and no waking the screen (an update of a card already shown)
 //! ```
 //!
 //! `home_companion_card_dismiss` with `id` takes a card away.
@@ -51,6 +52,9 @@ pub struct HaCard {
     /// downloaded one (Settings → Poses) or one of its own by state name (`working`); only
     /// lowercase letters, digits, `-` and `_`.
     pub pose: Option<String>,
+    /// No sound and no waking the screen: for a card sent again and again with fresh values (a
+    /// temperature every minute) under the same `id`. The card shows and replaces as any other.
+    pub quiet: bool,
 }
 
 /// What an event asks.
@@ -58,6 +62,13 @@ pub struct HaCard {
 pub enum CardEvent {
     Show(HaCard),
     Dismiss(String),
+}
+
+impl CardEvent {
+    /// Whether it calls for attention when it changes what is shown: a card, unless `quiet`.
+    pub fn chimes(&self) -> bool {
+        matches!(self, CardEvent::Show(c) if !c.quiet)
+    }
 }
 
 /// The card longest and widest the screen takes: longer texts are cut.
@@ -112,6 +123,7 @@ pub fn parse(msg: &Value, device: &str) -> Option<CardEvent> {
                 .and_then(Value::as_u64)
                 .filter(|n| *n > 0),
             pose: s("pose").and_then(pose_name),
+            quiet: data.get("quiet").and_then(Value::as_bool).unwrap_or(false),
         })),
         DISMISS_EVENT => Some(CardEvent::Dismiss(s("id")?.to_string())),
         _ => None,
@@ -193,8 +205,21 @@ mod tests {
                 icon: Some("mdi:washing-machine".into()),
                 seconds: Some(600),
                 pose: None,
+                quiet: false,
             }))
         );
+        assert!(parse(&m, "Alfred").unwrap().chimes());
+        // An update: the same card, quiet.
+        let m = event(
+            CARD_EVENT,
+            json!({"id": "kamado", "text": "T1 182 °C", "quiet": true}),
+        );
+        let quiet = parse(&m, "Alfred").unwrap();
+        assert!(matches!(&quiet, CardEvent::Show(c) if c.quiet));
+        assert!(!quiet.chimes());
+        // Only a true boolean is quiet.
+        let m = event(CARD_EVENT, json!({"text": "x", "quiet": "yes"}));
+        assert!(parse(&m, "Alfred").unwrap().chimes());
         let m = event(DISMISS_EVENT, json!({"id": "washing"}));
         assert_eq!(
             parse(&m, "Alfred"),
