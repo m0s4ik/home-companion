@@ -92,9 +92,11 @@ German and Dutch.
 
 **Screen** shows the device's screen live and turns taps and drags in the browser into real touches. It is off until
 switched on **on the device** (Settings → Access from the browser → Remote screen); one device controls it at a
-time, a sign above Alfred says which, and **Stop** on it ends the session at once (a real finger always wins). The
-camera, the photos, the codes that let devices in and AirPlay mirroring are never sent. Frames are made only while
-someone watches.
+time, a sign above Alfred says which, and **Stop** on it ends the session at once (a real finger always wins) and keeps
+that device out until the switch is turned off and on again. The camera, the photos, the memories, the conversations,
+the codes that let devices in, AirPlay mirroring and every confirmation but a new timer or alarm are never sent nor
+touched. A remote finger can do what a finger can, the Home Assistant view included: switch it on only on a home
+network you trust. Frames are made only while someone watches.
 
 ### 🗣️ Talk to it
 
