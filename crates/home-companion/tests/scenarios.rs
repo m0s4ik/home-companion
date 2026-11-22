@@ -902,6 +902,28 @@ fn c26_conversation_mode_stops_after_the_most_in_a_row() {
 }
 
 #[test]
+fn c26_conversation_mode_counts_a_question_in_its_windows() {
+    // Noise heard in the only window and answered with a question ("Può ripetere?"): the
+    // question counts as one more in a row, so the microphone does not open again.
+    let r = conversing(
+        "Sono le cinque.",
+        || UiEvent::ConversationMax(1),
+        vec![Utt::says(""), Utt::says("")],
+        cat(vec![
+            hear("la colonna può ripetere", 800),
+            answer("Mi perdoni, non ho capito. Può ripetere?"),
+            bye(2500),
+        ]),
+    );
+    assert_clean(&r);
+    assert_eq!(
+        r.outcomes(),
+        vec![pair("talk", "played"), pair("follow_up", "played")]
+    );
+    assert_eq!(r.record.run_pipelines.len(), 2);
+}
+
+#[test]
 fn c26_conversation_mode_leaves_a_question_its_whole_turn() {
     // A question of his is answered well after the window's 1.5 s would have closed.
     let r = conversing(

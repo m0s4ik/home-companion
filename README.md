@@ -182,8 +182,9 @@ conversations).
 Alfred listens again by himself when his answer is a question. With **Settings → Conversation mode** (off by default)
 he also does after any other spoken answer, for a few seconds and without the wake word, so you can go on talking; a
 window nobody speaks in closes without a sound. "Times in a row", shown under it while it is on (1 to 10, 3 at
-first), is how often he does so before the wake word is needed again: a television must not keep him talking. The
-window's length is the configuration's `[conversation] follow_up_seconds` (6).
+first), is how often he does so before the wake word is needed again, a question of his among them: a television must
+not keep him talking. Both are on the browser panel too. The window's length is the configuration's
+`[conversation] follow_up_seconds` (6).
 
 So that the assistant knows these facts at every conversation, Alfred writes them (at most 1500 characters) into Home
 Assistant as the state `sensor.alfred_memory`, which his agent's instructions read. Like any state, every Home

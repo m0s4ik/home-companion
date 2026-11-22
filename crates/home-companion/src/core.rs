@@ -1310,10 +1310,11 @@ impl Core {
         self.speaking_text.clear();
         self.speaking_since = None;
         self.speaking_len = None;
-        // A conversation mode window listens for a shorter time; anything else (the wake word,
-        // a touch, a question of his) starts the count of windows again.
+        // A conversation mode window listens for a shorter time. The count of windows starts
+        // again only when the user starts (the wake word, a touch): a follow-up of any kind keeps
+        // it, so an answer to noise ("Can you repeat?") cannot run past the most in a row.
         let window = std::mem::take(&mut self.follow_window);
-        if !window {
+        if trigger != Trigger::FollowUp {
             self.follow_ups = 0;
         }
         self.window_vad = window.then(Vad::new);
@@ -3071,17 +3072,29 @@ impl Core {
                     if self.phase == Phase::Speaking {
                         self.go_idle();
                         match after {
+                            // Within conversation mode's windows a question of his counts as one
+                            // of them: noise heard in a window and answered "Can you repeat?"
+                            // must not keep the microphone open. Outside them, as always.
+                            AfterAnswer::Question
+                                if self.conversation_mode
+                                    && self.follow_ups > 0
+                                    && self.follow_ups >= self.follow_up_max =>
+                            {
+                                log::info!(event = "follow_up_window_closed", n = self.follow_ups, of = self.follow_up_max; "conversation mode: a question, but already {} in a row: back to the wake word", self.follow_ups);
+                            }
                             AfterAnswer::Question => {
-                                log::info!(event = "follow_up"; "the answer was a question: listening again");
+                                if self.conversation_mode && self.follow_ups > 0 {
+                                    self.follow_ups += 1;
+                                }
+                                log::info!(event = "follow_up", n = self.follow_ups; "the answer was a question: listening again");
                                 self.start_conversation(Trigger::FollowUp);
                             }
                             AfterAnswer::Window => {
                                 let n = self.follow_ups + 1;
                                 log::info!(event = "follow_up_window", n = n, of = self.follow_up_max, seconds = self.cfg.follow_up_window.as_secs_f64(); "conversation mode: window {n} of {}, listening for {:.0} s", self.follow_up_max, self.cfg.follow_up_window.as_secs_f32());
                                 self.follow_window = true;
-                                self.start_conversation(Trigger::FollowUp);
-                                // The start counts from zero for anything but a window.
                                 self.follow_ups = n;
+                                self.start_conversation(Trigger::FollowUp);
                             }
                             AfterAnswer::Nothing => {}
                         }

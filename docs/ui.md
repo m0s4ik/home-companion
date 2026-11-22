@@ -212,8 +212,8 @@ its ring and the gold fill) and No stays a target that wins.
   settings.toml; the log's near misses tell which one a voice needs; Conversation mode, a switch, off by default: after
   every spoken answer the microphone opens again without the wake word for `[conversation] follow_up_seconds`, and
   a window nobody speaks in closes quietly; "Times in a row", a row shown only while the switch is on, with − and +, 1 to 10, 3 at first: how many such windows
-  before the wake word is needed again; `conversation_mode` and `conversation_max` in settings.toml, neither on the
-  browser panel), DEVICE (Volume, Screen → night mode on/off, from, to; About, with the version; **Suspend {name}** →
+  (a question of his within them counts as one) before the wake word is needed again; `conversation_mode` and
+  `conversation_max` in settings.toml, both on the browser panel too), DEVICE (Volume, Screen → night mode on/off, from, to; About, with the version; **Suspend {name}** →
   "Suspend {name}?" / "{name} won't listen or play until you press Vol+ or Vol–. A running timer wakes him by
   itself." Cancel · **Suspend**). Reached from More, or a double tap on the mouth.
 - **Home Assistant** (the tile in More, the setup card, the control centre): linked, one row per check of the setup
