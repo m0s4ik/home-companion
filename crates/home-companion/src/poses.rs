@@ -395,7 +395,6 @@ pub fn spawn(repo: String, character: String, dir: PathBuf) -> (Sender<Cmd>, Rec
     (cmd_tx, rx)
 }
 
-/// The catalogue of `repo`: its newest `poses-` release and its `poses.json`.
 /// A poses release: its tag, and its files by name with their download address.
 pub type Release = (String, BTreeMap<String, String>);
 
@@ -417,6 +416,7 @@ pub fn find_release(
     Ok(None)
 }
 
+/// The catalogue of `repo`: its newest `poses-` release and its `poses.json`.
 fn catalogue(repo: &str) -> Result<(Vec<Pose>, Vec<String>), String> {
     let (tag, assets) = find_release(|n| crate::update::fetch_page(repo, PER_PAGE, n))?
         .ok_or_else(|| format!("no {TAG_PREFIX}… release with {CATALOGUE}"))?;
