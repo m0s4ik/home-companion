@@ -152,7 +152,7 @@ pub fn clean_query(what: What, q: &str) -> Option<String> {
     let ok = |c: char| match what {
         What::Quote => c.is_alphanumeric() || matches!(c, ' ' | '.' | '-' | '^' | '=' | '&'),
         What::City => c.is_alphabetic() || matches!(c, ' ' | '-' | '\'' | '.'),
-        What::Sensor | What::Player | What::Person => {
+        What::Sensor | What::Player | What::Person | What::Tile(_) => {
             c.is_alphanumeric() || matches!(c, ' ' | '-' | '\'' | '.' | '_' | '(' | ')')
         }
     };

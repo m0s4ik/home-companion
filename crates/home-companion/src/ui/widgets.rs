@@ -827,6 +827,11 @@ fn data_from(
 
 /// A number in the screen's words: `decimals` digits, the thousands grouped.
 pub fn format_number(v: f64, decimals: u8, w: &Words) -> String {
+    format_number_sep(v, decimals, w.decimal, w.group)
+}
+
+/// [`format_number`] with the separators given (the board's tiles have no [`Words`]).
+pub fn format_number_sep(v: f64, decimals: u8, decimal: char, group: char) -> String {
     // Never a string of a hundred digits: past a trillion (or not a number) a dash.
     if !v.is_finite() || v.abs() >= 1e15 {
         return "—".into();
@@ -836,7 +841,7 @@ pub fn format_number(v: f64, decimals: u8, w: &Words) -> String {
     let mut grouped = String::new();
     for (i, c) in int.chars().enumerate() {
         if i > 0 && (int.len() - i) % 3 == 0 {
-            grouped.push(w.group);
+            grouped.push(group);
         }
         grouped.push(c);
     }
@@ -847,7 +852,7 @@ pub fn format_number(v: f64, decimals: u8, w: &Words) -> String {
     }
     out.push_str(&grouped);
     if !frac.is_empty() {
-        out.push(w.decimal);
+        out.push(decimal);
         out.push_str(frac);
     }
     out

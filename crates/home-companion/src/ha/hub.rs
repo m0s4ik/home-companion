@@ -1302,6 +1302,7 @@ mod tests {
             people: None,
             openings: true,
             batteries: false,
+            ..Default::default()
         }))
         .unwrap();
         let get = read_frame(&mut s, &mut buf);

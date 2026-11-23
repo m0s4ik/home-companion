@@ -573,6 +573,7 @@ impl Settings {
             people: Some(ids("people", &["person"], MAX_PEOPLE)),
             openings: flag("check_openings"),
             batteries: flag("check_batteries"),
+            ..Default::default()
         }
     }
 
@@ -781,6 +782,45 @@ impl Settings {
 
     pub fn save_wake_sensitivity(&self, s: WakeSensitivity) {
         self.save_logged("wake_sensitivity", s.key().into());
+    }
+
+    /// `board.json`, next to settings.toml (the board's pages and custom widgets: ui/board.rs).
+    pub fn board_path(&self) -> PathBuf {
+        self.path.with_file_name("board.json")
+    }
+
+    /// The board, validated (without Home Assistant's catalogue: the gates read the device
+    /// classes again when the screen draws). Missing: empty; broken: empty, said in the log;
+    /// a tile that cannot stay is left out, said in the log.
+    pub fn board(&self) -> crate::ui::board::Board {
+        use crate::ui::board;
+        let path = self.board_path();
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return board::Board::default(),
+            Err(e) => {
+                log::warn!(event = "board"; "{}: {e}: an empty board", path.display());
+                return board::Board::default();
+            }
+        };
+        let (b, mut why) = board::parse(&text);
+        let (b, more) = board::validate(b, &[]);
+        why.extend(more);
+        for w in &why {
+            log::warn!(event = "board"; "{}: {w}", path.display());
+        }
+        b
+    }
+
+    /// Writes the board (to a temporary file, then renamed: never half a file).
+    pub fn save_board(&self, b: &crate::ui::board::Board) -> std::io::Result<()> {
+        let path = self.board_path();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = path.with_extension("json.new");
+        std::fs::write(&tmp, crate::ui::board::to_json(b))?;
+        std::fs::rename(&tmp, &path)
     }
 
     fn flag(&self, key: &str) -> Option<bool> {
@@ -1165,6 +1205,54 @@ mod tests {
         assert_eq!(s.volume(), Some(40));
         std::fs::write(&s.path, "volume = 300\n").unwrap();
         assert_eq!(s.volume(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_board_is_written_whole_and_read_back() {
+        use crate::ui::board::{Board, Canvas, Tile, TileKind};
+        let dir = std::env::temp_dir().join(format!(
+            "home-companion-settings-board-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = Settings::in_dir(&dir);
+        assert_eq!(s.board_path(), dir.join("board.json"));
+        assert_eq!(s.board(), Board::default(), "missing: empty");
+        let b = Board {
+            pages: vec![Canvas {
+                id: "p1".into(),
+                name: "Living room".into(),
+                tiles: vec![Tile {
+                    x: 0,
+                    y: 0,
+                    w: 2,
+                    h: 1,
+                    kind: TileKind::Button,
+                    entity_id: "light.living_room".into(),
+                    name: String::new(),
+                    icon: String::new(),
+                    confirm: None,
+                    service: None,
+                    service_data: None,
+                }],
+            }],
+            ..Default::default()
+        };
+        s.save_board(&b).unwrap();
+        assert_eq!(s.board(), b);
+        assert!(!dir.join("board.json.new").exists(), "renamed into place");
+        // A tile that cannot stay goes; the rest stays.
+        let mut bad = b.clone();
+        bad.pages[0].tiles.push(Tile {
+            entity_id: "lock.front".into(),
+            x: 2,
+            ..b.pages[0].tiles[0].clone()
+        });
+        s.save_board(&bad).unwrap();
+        assert_eq!(s.board(), b);
+        std::fs::write(s.board_path(), "{ not json").unwrap();
+        assert_eq!(s.board(), Board::default(), "broken: empty");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

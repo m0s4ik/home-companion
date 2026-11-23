@@ -246,6 +246,18 @@ pub enum What {
     Sensor,
     Player,
     Person,
+    /// An entity for a tile of the board (ui/board.rs), of this kind.
+    Tile(crate::ui::board::TileKind),
+}
+
+impl What {
+    /// Answered from Home Assistant's catalogue in memory (ha/widgets.rs), not by this thread.
+    pub fn from_catalogue(self) -> bool {
+        matches!(
+            self,
+            What::Sensor | What::Player | What::Person | What::Tile(_)
+        )
+    }
 }
 
 /// What a search's hit becomes when it is added.
@@ -875,7 +887,7 @@ impl Worker {
                     }));
                 }
             }
-            What::Sensor | What::Player | What::Person => {}
+            What::Sensor | What::Player | What::Person | What::Tile(_) => {}
             What::City => {
                 let lang = if lang.len() == 2 && lang.bytes().all(|b| b.is_ascii_lowercase()) {
                     lang

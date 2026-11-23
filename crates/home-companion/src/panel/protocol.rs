@@ -858,7 +858,7 @@ mod tests {
             }
             // A canned answer: the words searched become a hit's name (they are a source's
             // text now).
-            if matches!(what, What::Sensor | What::Player | What::Person) {
+            if what.from_catalogue() {
                 let f = crate::ha::widgets::search(&self.ha_catalog(), what, q);
                 s.insert(id.into(), SearchState::Done(f));
                 return true;

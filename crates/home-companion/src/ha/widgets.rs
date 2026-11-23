@@ -95,23 +95,38 @@ struct Attrs {
     state_class: Option<String>,
 }
 
-/// The domains the widget may ever show; anything else (locks, alarms, trackers, cameras…)
-/// never enters the catalogue, so it can never reach the browser panel either.
-pub const DOMAINS: [&str; 5] = [
+/// The domains the widget and the board's tiles may ever show; anything else (locks, alarms,
+/// trackers, cameras…) never enters the catalogue, so it can never reach the browser panel
+/// either. Of these, an entity the gates never allow (a garage door, a gate, a relay named so:
+/// [`safety::SafetyCfg::entity_gate`]) stays out too.
+pub const DOMAINS: [&str; 17] = [
     "sensor",
     "input_number",
     "binary_sensor",
     "media_player",
     "person",
+    "light",
+    "switch",
+    "fan",
+    "input_boolean",
+    "automation",
+    "scene",
+    "script",
+    "button",
+    "input_button",
+    "cover",
+    "valve",
+    "number",
 ];
 
 /// A `get_states` answer (its text) → the catalogue, by name. A sensor counts only when its
-/// state is a number (or unavailable now); a `binary_sensor` only when it is an opening.
+/// state is a number (or unavailable now); what the gates never allow is left out.
 pub fn parse_catalog(text: &str) -> Result<Vec<Entity>, String> {
     let a: Answer = serde_json::from_str(text).map_err(|e| format!("get_states: {e}"))?;
     if !a.success {
         return Err("get_states refused".into());
     }
+    let gates = safety::SafetyCfg::default();
     let mut out: Vec<Entity> = a
         .result
         .into_iter()
@@ -135,8 +150,7 @@ pub fn parse_catalog(text: &str) -> Result<Vec<Entity>, String> {
                 "sensor" => {
                     r.state.parse::<f64>().is_ok() || super::weather::is_unavailable(&r.state)
                 }
-                "binary_sensor" => e.opening(),
-                _ => true,
+                _ => gates.entity_gate(&e.id, &e.device_class, &e.name) != safety::Gate::Never,
             };
             ok.then_some(e)
         })
@@ -161,6 +175,12 @@ pub struct Want {
     /// What to check: openings, batteries (each may be off).
     pub openings: bool,
     pub batteries: bool,
+    /// The board's tiles' entities (ui/board.rs: at most [`crate::ui::board::MAX_ENTITIES`]),
+    /// those whose day is drawn (a wide `sensor` tile), and the services the tiles' "Advanced"
+    /// set by hand: (entity id, "domain.service"), the only calls outside the closed list.
+    pub tiles: Vec<String>,
+    pub tile_curves: Vec<String>,
+    pub advanced: Vec<(String, String)>,
 }
 
 /// Every entity the widget needs now, sorted (the subscription's `entity_ids`).
@@ -183,6 +203,7 @@ pub fn wanted(w: &Want, catalog: &[Entity]) -> Vec<String> {
         log::info!(event = "ha_widgets"; "to check: {} entities, the first {MAX_CHECK} by name", check.len());
     }
     out.extend(check.into_iter().take(MAX_CHECK));
+    out.extend(w.tiles.iter().take(crate::ui::board::MAX_ENTITIES).cloned());
     out.sort();
     out.dedup();
     out
@@ -197,7 +218,7 @@ pub fn unsubscribe(id: u64, subscription: u64) -> String {
     json!({"id": id, "type": "unsubscribe_events", "subscription": subscription}).to_string()
 }
 
-/// An entity's state as the widget needs it.
+/// An entity's state as the widget and the board's tiles need it: of the attributes only these.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct State {
     pub state: String,
@@ -205,6 +226,52 @@ pub struct State {
     pub unit: String,
     pub title: String,
     pub artist: String,
+    pub device_class: String,
+    /// `brightness` (0-255), `volume_level` (0-1), `current_position` (0-100), `percentage`
+    /// (0-100), and an input number's `min`, `max`, `step`.
+    pub brightness: Option<f64>,
+    pub volume: Option<f64>,
+    pub position: Option<f64>,
+    pub percentage: Option<f64>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub step: Option<f64>,
+}
+
+/// The numeric attributes kept (attribute → field).
+fn number_slot<'a>(st: &'a mut State, key: &str) -> Option<&'a mut Option<f64>> {
+    Some(match key {
+        "brightness" => &mut st.brightness,
+        "volume_level" => &mut st.volume,
+        "current_position" => &mut st.position,
+        "percentage" => &mut st.percentage,
+        "min" => &mut st.min,
+        "max" => &mut st.max,
+        "step" => &mut st.step,
+        _ => return None,
+    })
+}
+
+const NUMBERS: [&str; 7] = [
+    "brightness",
+    "volume_level",
+    "current_position",
+    "percentage",
+    "min",
+    "max",
+    "step",
+];
+
+/// The numeric attributes of `a` (an attributes object) into `st`: only those present.
+fn read_numbers(st: &mut State, a: &Value) {
+    for k in NUMBERS {
+        if let Some(v) = a.get(k) {
+            let n = v.as_f64().filter(|n| n.is_finite());
+            if let Some(slot) = number_slot(st, k) {
+                *slot = n;
+            }
+        }
+    }
 }
 
 /// The states of the subscribed entities.
@@ -227,13 +294,16 @@ impl States {
         if let Some(all) = ev.get("a").and_then(Value::as_object) {
             for (id, e) in all {
                 let a = e.get("a").cloned().unwrap_or(Value::Null);
-                let new = State {
+                let mut new = State {
                     state: e.get("s").and_then(Value::as_str).unwrap_or("").into(),
                     name: attr(&a, "friendly_name").unwrap_or_default(),
                     unit: attr(&a, "unit_of_measurement").unwrap_or_default(),
                     title: attr(&a, "media_title").unwrap_or_default(),
                     artist: attr(&a, "media_artist").unwrap_or_default(),
+                    device_class: attr(&a, "device_class").unwrap_or_default(),
+                    ..Default::default()
                 };
+                read_numbers(&mut new, &a);
                 if self.by_id.get(id) != Some(&new) {
                     self.by_id.insert(id.clone(), new);
                     changed = true;
@@ -261,6 +331,10 @@ impl States {
                         if let Some(v) = attr(a, "media_artist") {
                             st.artist = v;
                         }
+                        if let Some(v) = attr(a, "device_class") {
+                            st.device_class = v;
+                        }
+                        read_numbers(st, a);
                     }
                 }
                 if let Some(gone) = c.pointer("/-/a").and_then(Value::as_array) {
@@ -268,7 +342,12 @@ impl States {
                         match k {
                             "media_title" => st.title.clear(),
                             "media_artist" => st.artist.clear(),
-                            _ => {}
+                            "device_class" => st.device_class.clear(),
+                            k => {
+                                if let Some(slot) = number_slot(st, k) {
+                                    *slot = None;
+                                }
+                            }
                         }
                     }
                 }
@@ -421,6 +500,7 @@ pub fn search(catalog: &[Entity], role: crate::feeds::What, q: &str) -> Vec<crat
             What::Sensor => e.numeric(),
             What::Player => e.domain() == "media_player",
             What::Person => e.domain() == "person",
+            What::Tile(kind) => crate::ui::board::offered(kind, e),
             _ => false,
         })
         .filter(|e| {
@@ -550,8 +630,10 @@ mod tests {
             "alarm_control_panel.house",
             "device_tracker.phone_one",
             "sensor.status_text",
-            "binary_sensor.motion_hall",
             "camera.garden",
+            // Never controlled: a garage door by its class, a relay by its name.
+            "cover.garage",
+            "switch.relay_2",
         ] {
             assert!(!ids.contains(&gone), "{gone}");
         }
@@ -563,6 +645,14 @@ mod tests {
             "media_player.speaker",
             "person.ada",
             "sensor.power",
+            "binary_sensor.motion_hall",
+            "light.lamp",
+            "cover.living_room",
+            "switch.coffee_machine",
+            "scene.movie_night",
+            "valve.garden_water",
+            "fan.ceiling",
+            "number.speaker_offset",
         ] {
             assert!(ids.contains(&kept), "{kept}");
         }
@@ -599,6 +689,7 @@ mod tests {
             people: Some(vec!["person.ada".into(), "person.bob".into()]),
             openings: true,
             batteries: true,
+            ..Default::default()
         }
     }
 
@@ -626,6 +717,17 @@ mod tests {
             ..want()
         };
         assert_eq!(wanted(&off, &c).len(), 3);
+        // The board's tiles join the same subscription, at most MAX_ENTITIES of them.
+        let tiles = Want {
+            tiles: (0..70).map(|i| format!("light.l{i:02}")).collect(),
+            ..off.clone()
+        };
+        let with_tiles = wanted(&tiles, &c);
+        assert_eq!(with_tiles.len(), 3 + crate::ui::board::MAX_ENTITIES);
+        assert!(
+            with_tiles.contains(&"light.l63".to_string())
+                && !with_tiles.contains(&"light.l64".to_string())
+        );
         assert_eq!(
             subscribe(4, &ids[..1]),
             r#"{"entity_ids":["binary_sensor.front_door"],"id":4,"type":"subscribe_entities"}"#
@@ -716,6 +818,52 @@ mod tests {
         assert_eq!(keys(What::Player, "speak"), ["media_player.speaker"]);
         assert_eq!(keys(What::Person, ""), ["person.ada", "person.bob"]);
         assert!(keys(What::Sensor, "lock").is_empty() && keys(What::Person, "lock").is_empty());
+        // The board's tiles: by kind, never what the gates refuse.
+        use crate::ui::board::TileKind;
+        assert_eq!(keys(What::Tile(TileKind::Button), "lamp"), ["light.lamp"]);
+        assert_eq!(
+            keys(What::Tile(TileKind::Level), "shutter"),
+            ["cover.living_room"]
+        );
+        assert!(keys(What::Tile(TileKind::Button), "garage").is_empty());
+        assert!(keys(What::Tile(TileKind::Button), "front").is_empty());
+        assert!(
+            keys(What::Tile(TileKind::Level), "coffee").is_empty(),
+            "a switch has no level"
+        );
+        assert_eq!(
+            keys(What::Tile(TileKind::Sensor), "motion"),
+            ["binary_sensor.motion_hall"]
+        );
+    }
+
+    #[test]
+    fn the_tiles_attributes_are_kept_and_follow_changes() {
+        let mut s = States::default();
+        let full = serde_json::json!({"a": {
+            "light.lamp": {"s": "on", "a": {"friendly_name": "Lamp", "brightness": 128,
+                "color_mode": "brightness", "supported_color_modes": ["brightness"]}},
+            "cover.living_room": {"s": "open", "a": {"device_class": "shutter",
+                "current_position": 70}},
+            "input_number.target": {"s": "21.0", "a": {"min": 5, "max": 30, "step": 0.5,
+                "unit_of_measurement": "°C"}}}});
+        assert!(s.apply(&full));
+        let lamp = &s.by_id["light.lamp"];
+        assert_eq!((lamp.brightness, lamp.name.as_str()), (Some(128.0), "Lamp"));
+        assert_eq!(s.by_id["cover.living_room"].device_class, "shutter");
+        assert_eq!(s.by_id["cover.living_room"].position, Some(70.0));
+        let t = &s.by_id["input_number.target"];
+        assert_eq!((t.min, t.max, t.step), (Some(5.0), Some(30.0), Some(0.5)));
+        // The light goes off: Home Assistant takes its brightness away.
+        let off = serde_json::json!({"c": {"light.lamp": {"+": {"s": "off"}, "-": {"a": ["brightness"]}}}});
+        assert!(s.apply(&off));
+        assert_eq!(s.by_id["light.lamp"].brightness, None);
+        assert_eq!(s.by_id["light.lamp"].state, "off");
+        let moved =
+            serde_json::json!({"c": {"cover.living_room": {"+": {"a": {"current_position": 20}}}}});
+        assert!(s.apply(&moved));
+        assert_eq!(s.by_id["cover.living_room"].position, Some(20.0));
+        assert!(!s.apply(&moved), "the same again: nothing changes");
     }
 
     #[test]

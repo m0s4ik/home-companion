@@ -566,8 +566,8 @@ impl<S: Screen> PanelHost for Ui<S> {
         self.widget_names.borrow().clone()
     }
     fn search_start(&self, id: &str, what: crate::feeds::What, q: &str, lang: &str) -> bool {
-        use crate::feeds::{SearchState, What};
-        if matches!(what, What::Sensor | What::Player | What::Person) {
+        use crate::feeds::SearchState;
+        if what.from_catalogue() {
             // Answered at once from the catalogue in memory.
             let found = crate::ha::widgets::search(&self.ha_catalog.borrow(), what, q);
             self.feeds.borrow().put_search(id, SearchState::Done(found));

@@ -8,6 +8,7 @@
 
 pub mod anim;
 pub mod backlight;
+pub mod board;
 pub mod camera;
 pub mod capture;
 pub mod cards;

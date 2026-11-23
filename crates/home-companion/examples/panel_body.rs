@@ -260,7 +260,7 @@ impl PanelHost for Demo {
         self.started
             .borrow_mut()
             .insert(id.to_string(), Instant::now());
-        if matches!(what, What::Sensor | What::Player | What::Person) {
+        if what.from_catalogue() {
             let f = home_companion::ha::widgets::search(&self.ha_catalog(), what, q);
             self.searches
                 .borrow_mut()

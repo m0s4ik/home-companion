@@ -7998,6 +7998,9 @@ impl<S: Screen> Ui<S> {
             },
             openings: has(WidgetKind::Check) && w.openings,
             batteries: has(WidgetKind::Check) && w.batteries,
+            tiles: w.tiles.clone(),
+            tile_curves: w.tile_curves.clone(),
+            advanced: w.advanced.clone(),
         }
     }
 
@@ -10077,6 +10080,7 @@ mod tests {
             people: Some(vec![]),
             openings: true,
             batteries: true,
+            ..Default::default()
         };
         *ui.widget_on.borrow_mut() = vec![WidgetKind::Sensors.into()];
         let w = ui.widget_want();
