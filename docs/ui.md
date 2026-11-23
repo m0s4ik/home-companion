@@ -80,7 +80,8 @@ draws a textured quad. Sizes: 48 the action band and tiles, 44 inside the gold d
 weather, 28 rows and the HUD, 24 inside the timer ring. Glyphs: dock `view-dashboard` (HA), `microphone`,
 `dots-horizontal` (More); `home` only means "back to the character" (the button over Home Assistant);
 `timer-sand-full` for a heavy view, `plus` for "+1 minute", `timer-plus`/`alarm-plus` for new timers and alarms.
-`Path` stays only for shapes that are data (the timer ring).
+`Path` stays only for shapes that are data (the timer ring, the curves) and for the board's tiles, whose icons are
+the user's choice among the whole set (§7): drawn from their path data at their size.
 
 ## 5. Components (`design/components.slint`)
 
@@ -89,8 +90,8 @@ weather, 28 rows and the HUD, 24 inside the timer ring. Glyphs: dock `view-dashb
 12 o'clock, one short path a second), cards (`Card`, `InfoCard`, `TimerCard`, `NowPlayingCard`), `PageHeader`,
 `Tile`, `SectionTitle`, `Group` + `Row` (chevron, check or switch), `Stepper`, `Chip`, `TimerLine` (24 px between
 pause and cancel), `AlarmLine`, `ChatUser` / `ChatCharacter` (as tall as their text) / `ChatSeparator`, `Step`,
-`Dialog` (scrim, icon, title, text, content, Cancel ring + gold action), `VolumeHud`, `ControlTile` and `LevelBar`
-(the control centre). No shadows, no blur, no gradients over content (one 48 px fade at the top of the chat list).
+`Dialog` (scrim, icon or an icon's path data, title, text, content, Cancel ring + gold action), `VolumeHud`,
+`ControlTile` and `LevelBar` (the control centre), `BoardTile` and `BoardGrid` (the board, §7). No shadows, no blur, no gradients over content (one 48 px fade at the top of the chat list).
 
 The house **Yes/No question** (a cover, a valve) is a `Dialog` the brain owns: it opens on the brain's `confirm`
 and closes on its `confirm_done` only (a tap marks it and waits; safety nets: its expiry, 3 s after a tap). A spoken
@@ -286,7 +287,56 @@ its ring and the gold fill) and No stays a target that wins.
   first items; tap = the page), a tile in More and a page of open items (a circle and the text; a tap ticks it in
   Home Assistant and it goes).
 
-## 7. Home Assistant's view
+## 7. The board
+
+Tiles of Home Assistant's entities (`crates/home-companion/src/ui/board.rs`, the model; `ui/board/draw.rs`, what
+`BoardTile` draws; `ui/screen/board_ui.rs`, the screen's side), saved in `<state_dir>/board.json` and chosen from the
+browser panel. Named "Board" ("Plancia" in Italian).
+
+- **The page** (`page == "board"`): the character keeps his stage; the header (chevron, the page's name, the time
+  small) and a grid of **4 x 4 cells of 193 x 157 px, 12 apart, at x 424, y 112** (808 x 664, to y 776); the pages'
+  dots at y 784 (6 px, 16 apart). Up to six pages; a page without tiles is not shown. With nothing on the board yet:
+  three rows of dashed places with a plus (`#24262d`, the plus `#33353d`) and, in the fourth, "Tiles are added from
+  the browser (Settings > Access from the browser)." in `text-3`.
+- **Opening and closing**: a swipe in from the home's right edge (a 40 px strip at x ≥ 1240, from y 48 so the
+  control centre's pull keeps the top; it opens when dragged 120 px; every touch there is logged as `edge_swipe`
+  with its outcome); the page comes in from the right (translate, 180 ms). A thin handle (4 x 48 px, `#3a3832`, at
+  x 1262, y 376) shows on the home only while a page has tiles. Back: the chevron, a swipe to the right on the
+  first page (on the others it is the previous page; to the left the next one), or a minute alone, as every page.
+- **A tile** is 1 x 1, 2 x 1, 2 x 2 or 4 x 1 cells (a level 2 x 1 or 4 x 1): `surface`, a 1 px `line` border,
+  radius 24, padding 18 x 20 (14 x 18 in the widget's smaller cells). **Button**: the icon (40 px; 36 in the widget)
+  at the top left, the name (24 Medium; 22) and the state (20; 18, "On · 60%" for a dimmed light, "Scene" for a
+  scene) at the bottom; 2 x 2 centred with a 96 px icon. **Sensor**: 1 x 1 the icon 28 in `text-2`, the value 40
+  Tnum, the name 20 `text-3`; wider a header (icon 28, the name 22 `text-2`), the value 48 Tnum at the bottom left and
+  the day's curve (150 x 44 at 2 x 1, 440 x 44 at 4 x 1, stroke 2 px `text-2`); 2 x 2 the value 96 Light, the curve as
+  wide as the tile, 84 tall, in `accent`, and "min 8.1° · max 14.9°" under it. **Level**: the name and its state on
+  the top line, a 72 px bar (56 in the widget) on `surface-2` filled in `accent-deep`, the icon 32 in gold at its
+  left end, the value 24 Tnum at its right end; a drag sets it, a tap on its icon's end switches it.
+- **States**: off (`surface`, the icon `text-2`); **on** (`accent-deep`, a border of `accent` at 35 %, the icon and
+  the state in gold; a level shows it with its bar); **waiting** after a tap until Home Assistant's new state (at
+  most 4 s: the icon dims to 55 % once, in 180 ms, and stays so); **unavailable** (the icon `#4a4740`, the name
+  `text-3`, no touch); **failed** (a `danger` border and "Didn't work" for 3 s, with the error sound). Nothing moves
+  at rest; a tile is redrawn only when its data changes, and only while it is seen (the page on screen, or the
+  custom widget on the home, the screen on): what changed meanwhile is drawn when it comes back.
+- **Icons** are MDI glyphs drawn from their path data (`Path`, 24 x 24 view box), the defaults by domain and device
+  class built into the binary, any other read from the bundle's `icons/mdi.json` beside `locales/` (only the ones in
+  use stay in memory).
+- **A level** is sent when the finger lifts and at most every 300 ms while it drags.
+- **The question**: a cover, a valve (or a tile with "Ask first") asks before its call, in the house question's
+  window (§5): the tile's icon in gold instead of the question mark, "Close Shutter?" (the verb from what the call
+  does to the state it finds: open/close, turn on/off, play/pause, run, "Set … to 40%?" for a level), the page's
+  name under it, No · **Yes**, the 30 s line; 30 s without an answer is a No. The screen has **one** question: the
+  brain's if it has one, else the tile's. A tap that would ask while the brain's question is open is refused (the
+  error sound, nothing sent); a brain's question that comes while a tile's is open closes the tile's as a No.
+  Neither is ever sent to nor answered by the remote screen. Locks, alarms, garage doors and gates are never on the
+  board.
+- **The custom widget** (`widgets::Kind::Custom`, "Custom" in Settings → Widgets: one switch for every custom
+  widget): a page of the widget's turn for each of the board's widget canvases that has tiles, **4 x 2 cells of
+  193 x 130** drawn in the slot itself (no panel around them; 272 px, the dots in the last 16). With one free slot:
+  row 0 only, in one 88 px line, each tile its icon (32), name (20 Medium) and value or state (18). Its tiles take
+  taps and drags as on the page; a swipe across still turns the widget.
+
+## 8. Home Assistant's view
 
 - At rest nothing is on top of the page. A tap anywhere (it still reaches the page) and the first 4 s after opening
   show the **home indicator** (160 x 6 ivory pill with a dark rim) and the **home button** (96 px, as big as Talk:
@@ -312,7 +362,7 @@ its ring and the gold fill) and No stays a target that wins.
   his error pose: "Home Assistant's view is not available", what happens next, band Close · **Retry**. The first
   load without a frame: the same layout with "Loading Home Assistant…" and the sliding line.
 
-## 8. Navigation
+## 9. Navigation
 
 ```
                  ┌───────────── More ─────────────┐
@@ -320,6 +370,7 @@ its ring and the gold fill) and No stays a target that wins.
   │  │           │ Home Assistant (Music, Memories…)│
   │  └─card──▶ the page of that card                └──────────────────────────────┘
   ├─pull from the top──▶ control centre
+  ├─swipe in from the right edge──▶ the board ──back / swipe right / 60 s alone──▶ home
   ├─HA──▶ Home Assistant's view ──swipe in / home button / Vol+ Vol−──▶ Home
   │      (not linked yet: the HA button opens Link Home Assistant, the QR code)
   └─Talk or «Okay Alfred» (anywhere) ──▶ conversation ──▶ back where it started
@@ -328,7 +379,7 @@ its ring and the gold fill) and No stays a target that wins.
                                        └──the session ends──▶ the page it opened over
 ```
 
-## 9. Motion and cost
+## 10. Motion and cost
 
 Allowed: the wave (25-30 fps, 72 small rectangles), the toggle's knob (120 ms), Stop's ring colour (160 ms), the
 HUD, the home button's fades (150 / 300 ms), the swipe (translate only), Home Assistant's view coming in and going
@@ -338,7 +389,8 @@ veil, and is not drawn while the view covers it; after a swipe it goes on from w
 mirrored screen coming in and going out (the same 400 ms curve, up from the bottom edge, the home stepping back under
 it, the video growing its last tenth), the "Okay Alfred" bar over it (down from the top, 180 ms), the timer ring
 (1 Hz), the ringing ring (alpha, 1.6 s), the start-up line, the widget's new page fading in (180 ms, once a
-turn: about ten frames every 20 s; nothing moves between two turns). Not allowed: blur, shadows, full-screen alpha animations
+turn: about ten frames every 20 s; nothing moves between two turns), the board's page coming in (translate,
+180 ms) and a tile's icon dimming once after a tap (180 ms). Not allowed: blur, shadows, full-screen alpha animations
 (a static scrim behind a dialog is fine), animated font sizes, anything moving on the idle home but the character
 (and the widget's fade, once a turn).
 The night pose is dimmed once in Rust (no opacity layer).
