@@ -259,6 +259,30 @@ fn advanced_services_icons_and_names_are_checked() {
 }
 
 #[test]
+fn advanced_data_never_names_a_target() {
+    let mut t = tile(TileKind::Button, "script.good_night", 0, 0, 1, 1);
+    t.service = Some("script.turn_on".into());
+    t.service_data = Some(json!({
+        "entity_id": "light.other", "device_id": "d", "area_id": "a", "floor_id": "f",
+        "label_id": "l", "target": {"entity_id": "light.other"}, "variables": {"x": 1}
+    }));
+    let (b, why) = validate(board(vec![page(vec![t.clone()])], vec![]), &[]);
+    let kept = &b.pages[0].tiles[0];
+    assert_eq!(kept.service_data, Some(json!({"variables": {"x": 1}})));
+    assert_eq!(why.len(), 1, "{why:#?}");
+    assert!(why[0].contains("names a target"));
+    let on = st("on");
+    assert_eq!(
+        action_for(&t, Some(&on)),
+        None,
+        "unvalidated: no call at all"
+    );
+    let call = action_for(kept, Some(&on)).unwrap();
+    assert_eq!(call.entity_id, "script.good_night");
+    assert!(!data_targets(&call.data));
+}
+
+#[test]
 fn what_a_tap_does_by_domain() {
     use TileKind::*;
     let on = st("on");

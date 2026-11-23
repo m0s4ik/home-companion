@@ -301,6 +301,24 @@ fn clean_id(s: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// The keys of a service call's data that name a target: Home Assistant merges them with the
+/// call's own target, so an "Advanced" tile's data could act on other entities. A tile's target
+/// is always its own entity: these keys are stripped by [`validate`] and refused by the hub.
+pub const TARGET_KEYS: [&str; 6] = [
+    "entity_id",
+    "device_id",
+    "area_id",
+    "floor_id",
+    "label_id",
+    "target",
+];
+
+/// `data` names a target of its own ([`TARGET_KEYS`]).
+pub fn data_targets(data: &Value) -> bool {
+    data.as_object()
+        .is_some_and(|o| o.keys().any(|k| TARGET_KEYS.contains(&k.as_str())))
+}
+
 /// A `domain.service` name (lower case letters, digits, `_`).
 fn split_service(s: &str) -> Option<(&str, &str)> {
     let (d, v) = s.split_once('.')?;
@@ -430,6 +448,14 @@ pub fn validate(b: Board, catalog: &[Entity]) -> (Board, Vec<String>) {
                         "{at}: service_data not an object or too big (left out)"
                     ));
                     t.service_data = None;
+                }
+                if let Some(Value::Object(o)) = &mut t.service_data
+                    && o.keys().any(|k| TARGET_KEYS.contains(&k.as_str()))
+                {
+                    o.retain(|k, _| !TARGET_KEYS.contains(&k.as_str()));
+                    why.push(format!(
+                        "{at}: service_data names a target (left out: the tile's own entity is the target)"
+                    ));
                 }
                 if !t.icon.is_empty() && !valid_icon(&t.icon) {
                     why.push(format!("{at}: icon {:?} (left out)", t.icon));
@@ -590,6 +616,9 @@ pub fn action_for(tile: &Tile, st: Option<&State>) -> Option<Call> {
             .clone()
             .filter(Value::is_object)
             .unwrap_or_else(|| Value::Object(Default::default()));
+        if data_targets(&data) {
+            return None;
+        }
         return Some(Call::new(s, &tile.entity_id, data));
     }
     let service = domain_action(tile.domain())?;

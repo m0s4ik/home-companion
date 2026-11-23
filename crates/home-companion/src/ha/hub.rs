@@ -324,6 +324,9 @@ pub fn check_call(
     if !data.is_object() {
         return Err("service data is not an object".into());
     }
+    if crate::ui::board::data_targets(data) {
+        return Err("service data names a target: a tile's target is its own entity".into());
+    }
     Ok(())
 }
 
@@ -1624,6 +1627,25 @@ mod tests {
         assert!(ok("lock", "unlock", "lock.front").is_err());
         assert!(ok("homeassistant", "toggle", "lock.front").is_err());
         assert!(check_call(&w, &s, "light", "turn_on", "light.living_room", &json!([1])).is_err());
+        for key in crate::ui::board::TARGET_KEYS {
+            let redirect = json!({ key: "lock.front", "variables": {} });
+            assert!(
+                check_call(&w, &s, "script", "turn_off", "script.good_night", &redirect).is_err(),
+                "{key} redirects the call"
+            );
+        }
+        assert_eq!(
+            check_call(
+                &w,
+                &s,
+                "script",
+                "turn_off",
+                "script.good_night",
+                &json!({"variables": {"entity_id": "x"}})
+            ),
+            Ok(()),
+            "only the data's own keys are a target"
+        );
         assert_eq!(
             call_message(
                 5,
