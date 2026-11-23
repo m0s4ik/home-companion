@@ -25,6 +25,7 @@ use serde_json::Value;
 
 use crate::ha::widgets::{Curve, Entity, State, States};
 
+pub mod draw;
 mod icon_table;
 pub mod icons;
 
@@ -699,6 +700,31 @@ pub fn needs_confirm(tile: &Tile, device_class: &str) -> bool {
     })
 }
 
+/// The locale key of a tile's question ("Close {name}?"): what the call does, from the state
+/// it acts on (a cover open is closed, a light on is switched off). `board_ask_level` says
+/// "{pct}".
+pub fn ask_key(call: &Call, state: &str) -> &'static str {
+    match (call.domain.as_str(), call.service.as_str()) {
+        (_, "set_cover_position" | "volume_set" | "set_value" | "set_percentage") => {
+            "board_ask_level"
+        }
+        ("light", "turn_on") if call.data.get("brightness_pct").is_some() => "board_ask_level",
+        (_, "toggle") => {
+            let domain = call.entity_id.split('.').next().unwrap_or("");
+            match domain {
+                "cover" | "valve" if matches!(state, "open" | "opening") => "board_ask_close",
+                "cover" | "valve" => "board_ask_open",
+                _ if state == "on" => "board_ask_off",
+                _ => "board_ask_on",
+            }
+        }
+        (_, "media_play_pause") if state == "playing" => "board_ask_pause",
+        (_, "media_play_pause") => "board_ask_play",
+        (_, "turn_on") if call.domain == "light" => "board_ask_on",
+        _ => "board_ask_run",
+    }
+}
+
 // ---- icons and words -------------------------------------------------------------------------
 
 /// The default icon (an MDI name) of a domain and a device class.
@@ -808,6 +834,11 @@ pub struct BoardWords {
     pub detected: String,
     pub clear: String,
     pub unavailable: String,
+    /// A scene's tile ("Scene"), a call that failed ("Didn't work").
+    pub scene: String,
+    pub failed: String,
+    /// A wide sensor's day: "min {low} · max {high}".
+    pub range: String,
     pub decimal: char,
     pub group: char,
 }
@@ -837,6 +868,9 @@ impl BoardWords {
             detected: text("board_detected"),
             clear: text("board_clear"),
             unavailable: text("board_unavailable"),
+            scene: text("board_label_scene"),
+            failed: text("board_failed"),
+            range: text("board_range"),
             decimal: ch("number_decimal", '.'),
             group: ch("number_group", ','),
         }
@@ -891,6 +925,14 @@ fn with_unit(n: String, unit: &str) -> String {
     }
 }
 
+/// The digits after the separator of a state that is a number.
+fn decimals_of(st: &State) -> u8 {
+    st.state
+        .trim()
+        .split_once('.')
+        .map_or(0, |(_, f)| f.len().min(4) as u8)
+}
+
 /// A state that is a number, in the screen's words, with its unit.
 fn number_text(st: &State, w: &BoardWords) -> Option<String> {
     let v: f64 = st
@@ -899,13 +941,28 @@ fn number_text(st: &State, w: &BoardWords) -> Option<String> {
         .parse()
         .ok()
         .filter(|v: &f64| v.is_finite())?;
-    let decimals = st
-        .state
-        .trim()
-        .split_once('.')
-        .map_or(0, |(_, f)| f.len().min(4) as u8);
-    let n = crate::ui::widgets::format_number_sep(v, decimals, w.decimal, w.group);
+    let n = crate::ui::widgets::format_number_sep(v, decimals_of(st), w.decimal, w.group);
     Some(with_unit(n, &st.unit))
+}
+
+/// A wide sensor's day in words: "min 8.1° · max 14.9°" (as many digits as its state).
+fn range_text(st: &State, c: &Curve, w: &BoardWords) -> String {
+    if !c.low.is_finite() || !c.high.is_finite() || w.range.is_empty() {
+        return String::new();
+    }
+    let n = |v: f64| {
+        let t =
+            crate::ui::widgets::format_number_sep(v, decimals_of(st).max(1), w.decimal, w.group);
+        // The unit's sign only ("°", "%"): the value above has the whole unit.
+        match st.unit.as_str() {
+            u if u.starts_with('°') => format!("{t}°"),
+            "%" => format!("{t}%"),
+            _ => t,
+        }
+    };
+    w.range
+        .replace("{low}", &n(c.low))
+        .replace("{high}", &n(c.high))
 }
 
 /// A `level` tile's position, 0-100 (None when unknown).
@@ -1029,8 +1086,11 @@ pub struct TileView {
     pub name: String,
     /// A sensor's or a level's value ("21.5 °C", "40%"); "" none.
     pub value: String,
-    /// The state in words ("On", "Open"); "" none.
+    /// The state in words ("On", "Open", "On · 60%" for a dimmed light, "Didn't work"); ""
+    /// none.
     pub status: String,
+    /// A wide sensor's day in words ("min 8.1° · max 14.9°"); "" none.
+    pub range: String,
     /// A `level` tile's position, 0-100.
     pub level: Option<u8>,
     /// A wide sensor's last day.
@@ -1079,10 +1139,23 @@ pub fn view(
             } else {
                 t.icon.clone()
             };
-            let status = st.map_or_else(
+            let mut status = st.map_or_else(
                 || w.unavailable.clone(),
                 |s| state_words(domain, class, &s.state, w),
             );
+            if domain == "scene" && !gone {
+                status = w.scene.clone();
+            }
+            // A light on at less than full: how much ("On · 60%"); a level tile has its bar.
+            if t.kind == TileKind::Button
+                && domain == "light"
+                && let Some(p) = st
+                    .filter(|s| s.state == "on")
+                    .and_then(|s| level_of(domain, s))
+                    .filter(|p| *p < 100)
+            {
+                status = format!("{status} · {p}%");
+            }
             let (value, level) = match (t.kind, st) {
                 (_, None) => (String::new(), None),
                 (TileKind::Sensor, Some(s)) if domain != "binary_sensor" => {
@@ -1113,9 +1186,16 @@ pub fn view(
             } else {
                 TileState::Off
             };
+            if state == TileState::Failed {
+                status = w.failed.clone();
+            }
             let curve = (t.kind == TileKind::Sensor && t.w >= 2)
                 .then(|| curves.get(&t.entity_id).cloned())
                 .flatten();
+            let range = match (&curve, st) {
+                (Some(c), Some(s)) if t.h >= 2 && !gone => range_text(s, c, w),
+                _ => String::new(),
+            };
             TileView {
                 x: t.x,
                 y: t.y,
@@ -1128,6 +1208,7 @@ pub fn view(
                 name,
                 value,
                 status,
+                range,
                 level,
                 curve,
                 tappable,

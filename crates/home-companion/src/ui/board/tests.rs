@@ -626,6 +626,65 @@ fn the_screen_model_of_a_page() {
 }
 
 #[test]
+fn the_words_of_a_dimmed_light_a_scene_a_failure_and_a_days_range() {
+    use TileKind::*;
+    let canvas = page(vec![
+        tile(Button, "light.lamp", 0, 0, 1, 1),
+        tile(Button, "scene.movie", 1, 0, 1, 1),
+        tile(Sensor, "sensor.outdoor", 0, 1, 2, 2),
+        tile(Button, "switch.tv", 2, 0, 1, 1),
+    ]);
+    let s = states(&[
+        (
+            "light.lamp",
+            State {
+                brightness: Some(153.0),
+                ..st("on")
+            },
+        ),
+        ("scene.movie", st("2026-11-03T10:00:00+00:00")),
+        (
+            "sensor.outdoor",
+            State {
+                unit: "°C".into(),
+                ..st("12.5")
+            },
+        ),
+        ("switch.tv", st("off")),
+    ]);
+    let curves: HashMap<String, Curve> = [(
+        "sensor.outdoor".to_string(),
+        Curve {
+            points: vec![0.0, 1.0],
+            first: 9.0,
+            low: 8.1,
+            high: 14.94,
+        },
+    )]
+    .into();
+    let now = Instant::now();
+    let mut p = Pending::default();
+    p.failed("switch.tv", now);
+    let v = view(&canvas, &s, &curves, &p, &words(), now);
+    assert_eq!(v[0].status, "On · 60%");
+    assert_eq!(v[1].status, "Scene");
+    assert_eq!(v[2].range, "min 8.1° · max 14.9°");
+    assert_eq!(
+        (v[3].state, v[3].status.as_str()),
+        (TileState::Failed, "Didn't work")
+    );
+    let it = view(
+        &canvas,
+        &s,
+        &curves,
+        &p,
+        &BoardWords::from_locale(&locale("it")),
+        now,
+    );
+    assert_eq!(it[2].range, "min 8,1° · max 14,9°");
+}
+
+#[test]
 fn a_tap_waits_for_its_state_at_most_four_seconds_and_a_failure_shows_three() {
     let canvas = page(vec![tile(TileKind::Button, "light.a", 0, 0, 1, 1)]);
     let mut s = states(&[("light.a", st("off"))]);
@@ -731,4 +790,31 @@ fn offered_by_kind_never_what_the_gates_refuse() {
         Sensor,
         &entity("binary_sensor.motion", "Motion", "motion")
     ));
+}
+
+#[test]
+fn a_questions_verb_follows_the_state() {
+    use TileKind::*;
+    let shutter = tile(Button, "cover.living_room", 0, 0, 1, 1);
+    let call = |t: &Tile, state: &str| action_for(t, Some(&st(state))).unwrap();
+    assert_eq!(ask_key(&call(&shutter, "open"), "open"), "board_ask_close");
+    assert_eq!(
+        ask_key(&call(&shutter, "closed"), "closed"),
+        "board_ask_open"
+    );
+    let valve = tile(Button, "valve.garden", 0, 0, 1, 1);
+    assert_eq!(
+        ask_key(&call(&valve, "opening"), "opening"),
+        "board_ask_close"
+    );
+    let light = tile(Button, "light.lamp", 0, 0, 1, 1);
+    assert_eq!(ask_key(&call(&light, "on"), "on"), "board_ask_off");
+    assert_eq!(ask_key(&call(&light, "off"), "off"), "board_ask_on");
+    let scene = tile(Button, "scene.movie", 0, 0, 1, 1);
+    assert_eq!(ask_key(&call(&scene, "x"), "x"), "board_ask_run");
+    let tv = tile(Button, "media_player.tv", 0, 0, 1, 1);
+    assert_eq!(ask_key(&call(&tv, "playing"), "playing"), "board_ask_pause");
+    let bar = tile(Level, "cover.living_room", 0, 0, 2, 1);
+    let set = set_level(&bar, Some(&st("open")), 40).unwrap();
+    assert_eq!(ask_key(&set, "open"), "board_ask_level");
 }
