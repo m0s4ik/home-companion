@@ -446,6 +446,20 @@ impl Default for ConversationCfg {
     }
 }
 
+impl ConversationCfg {
+    /// The window's length: `follow_up_seconds` within 0 to 30 s. `nan` is a number in TOML
+    /// (and passes through `clamp`, which a `Duration` then refuses with a panic): it counts
+    /// as not written, the default.
+    pub fn follow_up_window(&self) -> Duration {
+        let s = if self.follow_up_seconds.is_nan() {
+            ConversationCfg::default().follow_up_seconds
+        } else {
+            self.follow_up_seconds
+        };
+        Duration::from_secs_f32(s.clamp(0.0, 30.0))
+    }
+}
+
 impl Default for HomeAssistantCfg {
     fn default() -> Self {
         HomeAssistantCfg {
@@ -1030,6 +1044,23 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn the_window_length_survives_any_number() {
+        let window = |toml: &str| {
+            let c: Config = toml::from_str(toml).unwrap();
+            c.conversation.follow_up_window().as_secs_f32()
+        };
+        assert_eq!(window(""), 6.0);
+        assert_eq!(window("[conversation]\nfollow_up_seconds = 2.5"), 2.5);
+        assert_eq!(window("[conversation]\nfollow_up_seconds = 0"), 0.0);
+        assert_eq!(window("[conversation]\nfollow_up_seconds = -3"), 0.0);
+        assert_eq!(window("[conversation]\nfollow_up_seconds = 600"), 30.0);
+        assert_eq!(window("[conversation]\nfollow_up_seconds = inf"), 30.0);
+        assert_eq!(window("[conversation]\nfollow_up_seconds = -inf"), 0.0);
+        // Not a number: the default, not a panic at start.
+        assert_eq!(window("[conversation]\nfollow_up_seconds = nan"), 6.0);
     }
 
     #[test]

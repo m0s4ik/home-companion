@@ -91,6 +91,9 @@ pub struct Conversation {
     pub answering: Option<i64>,
     /// We ended our microphone stream with `audio-stop` (the Stop button).
     pub audio_stop_sent: bool,
+    /// Opened by conversation mode after an answer, not by the user: nobody asked for it, so
+    /// with nothing understood in it it ends without the error's sound and face.
+    pub window: bool,
     /// The answer's audio stream, while it plays.
     pub stream: Option<audio::Stream>,
 }
@@ -142,6 +145,7 @@ impl Conversation {
             policy: AnswerPolicy::Play,
             answering: None,
             audio_stop_sent: false,
+            window: false,
             stream: None,
         }
     }
