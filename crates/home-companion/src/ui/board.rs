@@ -25,6 +25,9 @@ use serde_json::Value;
 
 use crate::ha::widgets::{Curve, Entity, State, States};
 
+mod icon_table;
+pub mod icons;
+
 /// The file's format.
 pub const VERSION: u32 = 1;
 /// Pages at most, tiles on a page at most, custom widgets at most, tiles in a widget at most.

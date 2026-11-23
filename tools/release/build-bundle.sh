@@ -14,6 +14,8 @@
 #                      libwpewebkit-2.0-dev 2.54, which an amd64 cross setup does not have; built here with
 #                      `make -C web/home-companion-web` when its pkg-config file is found
 #   UXPLAY=<file>      UxPlay already built by tools/airplay/build-uxplay.sh (else it is built now)
+#   MDI_JS=<file>      @mdi/js 7.4.47's mdi.js, for the board's icons (opt/icons/mdi.json, made by
+#                      tools/make-board-icons.py); without it `npm pack @mdi/js@7.4.47` fetches it
 #   JOBS=<n>           cargo's jobs (default 6)
 # The Vosk language models are not in the bundle (~50-90 MB each): install.sh downloads them.
 set -eu
@@ -78,6 +80,15 @@ file "$STAGE/opt/airplay/uxplay" | grep -q 'ARM aarch64' || { echo "uxplay: not 
 echo "== data, packaging, docs"
 cp -R characters "$STAGE/opt/characters"
 cp -R locales "$STAGE/opt/locales"
+# The board's icons (every MDI icon as path data, read by the body only for a tile's icon that is
+# not built in): beside the locales, as the body looks for them.
+if [ -z "${MDI_JS:-}" ]; then
+    rm -rf "$OUT/mdi" && mkdir -p "$OUT/mdi"
+    (cd "$OUT/mdi" && npm pack -q @mdi/js@7.4.47 >/dev/null && tar -xzf mdi-js-7.4.47.tgz)
+    MDI_JS=$OUT/mdi/package/mdi.js
+fi
+head -n 1 "$MDI_JS" | grep -q 'Material Design Icons v7.4.47' || { echo "$MDI_JS: not @mdi/js 7.4.47" >&2; exit 1; }
+python3 -I tools/make-board-icons.py "$MDI_JS" --json "$STAGE/opt/icons/mdi.json" >/dev/null
 cp packaging/home-companion.service packaging/home-companion-brain.service packaging/home-companion-web.service \
     packaging/home-companion.nft packaging/99-home-companion-backlight.rules \
     packaging/home-companion-update.sh packaging/home-companion-update.service packaging/home-companion-update.path \
@@ -108,6 +119,9 @@ cp tools/airplay/uxplay-1.73.7-home-companion.patch tools/airplay/build-uxplay.s
     echo "- TensorFlow Lite Micro, microfrontend, FlatBuffers (Apache-2.0) and KISS FFT (BSD-3-Clause) in
   opt/home-companion (the wake word): licenses/wakeword-THIRD_PARTY.md.
 - femtovg 0.27.0 (in opt/home-companion): MIT OR Apache-2.0, with source/femtovg-0.27.0-rotation.patch."
+    echo "- opt/icons/mdi.json and the board's built-in icons in opt/home-companion: Material Design Icons 7.4.47"
+    echo "  (Pictogrammers, https://pictogrammers.com/library/mdi/), path data from @mdi/js, Apache-2.0"
+    echo "  (licenses/Apache-2.0.txt); the screen's other icons are the same set."
     echo "- opt/home-companion-web links the system's WPE WebKit (LGPL-2.1/BSD) dynamically; nothing of it is in the bundle."
     echo
     echo "## Rust crates compiled into the binaries (name version | licence)"

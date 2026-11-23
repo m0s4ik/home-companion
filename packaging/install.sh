@@ -365,6 +365,10 @@ if [ "$WEB_AVAILABLE" = yes ]; then
 fi
 tree "$HERE/opt/characters" "$PREFIX/characters"
 tree "$HERE/opt/locales" "$PREFIX/locales"
+# The board's icons (Material Design Icons), read beside the locales.
+if [ -d "$HERE/opt/icons" ]; then
+    tree "$HERE/opt/icons" "$PREFIX/icons"
+fi
 
 # ---------------------------------------------------------------- Vosk models
 # ensure_model LANG NAME SHA256: /opt/home-companion/reflex/LANG, downloaded, checked and slimmed once
