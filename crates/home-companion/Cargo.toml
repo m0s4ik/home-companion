@@ -56,6 +56,8 @@ toml = "1"
 qrcodegen = "1.8"
 # The HTTP server pieces shared with the brain and the browser panel (std only).
 httpd = { path = "../httpd" }
+# The gates of the house, the same table as the brain's (the board's tiles).
+safety = { path = "../safety" }
 
 # As spike-ui: fontconfig is opened with dlopen, not linked (the device has none; our fonts are
 # embedded).

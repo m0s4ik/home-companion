@@ -27,3 +27,5 @@ libc = "0.2"
 reflex = { path = "../reflex" }
 # The HTTP server pieces shared with the body (std only).
 httpd = { path = "../httpd" }
+# The gates of the house (shared with the body).
+safety = { path = "../safety" }
