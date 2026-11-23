@@ -1241,6 +1241,8 @@ export component DoneCard inherits Rectangle {
 // taps outside do nothing); without it a tap outside closes, like the X.
 export component Dialog inherits Rectangle {
     in property <image> icon;
+    // Or an MDI glyph's path data (a board tile's icon), drawn in the icon's place.
+    in property <string> icon-path: "";
     in property <color> icon-color: Theme.accent;
     in property <string> title;
     in property <string> text;
@@ -1277,7 +1279,7 @@ export component Dialog inherits Rectangle {
     }
     property <bool> buttons: root.cancel != "" || root.confirm != "";
     box := Rectangle {
-        property <length> top-pad: root.icon.width > 0 ? 104px : 48px;
+        property <length> top-pad: root.icon.width > 0 || root.icon-path != "" ? 104px : 48px;
         property <length> body-y: title-text.y + title-text.preferred-height
             + (root.text != "" ? 8px + body-text.preferred-height : 0px);
         property <length> buttons-y: self.body-y + 32px + root.content-height
@@ -1332,6 +1334,19 @@ export component Dialog inherits Rectangle {
             source: root.icon;
             color: root.icon-color;
             rotation-angle: root.spinning ? mod(animation-tick() / 1ms, 1200) / 1200 * 360deg : 0deg;
+        }
+        if root.icon-path != "": Path {
+            x: (parent.width - self.width) / 2;
+            y: 40px;
+            width: 48px;
+            height: 48px;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: root.icon-path;
+            fill: root.icon-color;
+            stroke-width: 0;
         }
         title-text := Text {
             x: 40px;
@@ -1629,6 +1644,480 @@ export component LevelBar inherits Rectangle {
     }
 }
 
+// --- The board (ui/board.rs, ui/board/draw.rs): tiles of Home Assistant's entities on a grid of
+// cells, on the board's pages (4 x 4 cells of 193 x 157) and in the custom widget (4 x 2 of
+// 193 x 130; one line of 193 x 88). Every value is data from Rust, icons included (MDI path
+// data, drawn with a Path in a 24 x 24 box). Nothing moves at rest: a tile redraws when its data
+// changes; after a tap its icon dims once (180 ms) while it waits for Home Assistant.
+
+export struct BoardTileData {
+    // Its index in its canvas's tiles (what a tap names).
+    id: int,
+    // Place and size, in cells.
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    // "button", "sensor", "level".
+    kind: string,
+    // "off", "on", "pending", "unavailable", "failed".
+    state: string,
+    // SVG path data in a 24 x 24 box.
+    icon: string,
+    name: string,
+    value: string,
+    status: string,
+    range: string,
+    // 0-100, -1 none.
+    level: int,
+    // The day's curve, path commands in the tile's curve box (draw.rs `curve_box`).
+    curve: string,
+    tappable: bool,
+}
+
+// An MDI glyph from its path data.
+component TileGlyph inherits Path {
+    in property <string> data;
+    in property <color> color;
+    viewbox-x: 0;
+    viewbox-y: 0;
+    viewbox-width: 24;
+    viewbox-height: 24;
+    commands: root.data;
+    fill: root.color;
+    stroke-width: 0;
+}
+
+export component BoardTile inherits Rectangle {
+    in property <BoardTileData> tile;
+    // The widget's cells (130 px tall): a little tighter.
+    in property <bool> small: false;
+    // The widget's one line: icon, name and value side by side.
+    in property <bool> line: false;
+    callback tapped();
+    // A level dragged: the value, and whether the finger lifted.
+    callback level-changed(int, bool);
+    // A swipe across the tile (+1 to the next page, -1 back).
+    callback swiped(int);
+    property <bool> on: root.tile.state == "on";
+    property <bool> pending: root.tile.state == "pending";
+    property <bool> gone: root.tile.state == "unavailable";
+    property <bool> failed: root.tile.state == "failed";
+    property <bool> level: root.tile.kind == "level";
+    property <bool> sensor: root.tile.kind == "sensor";
+    // The gold ground of a thing that is on (a level's bar shows it instead).
+    property <bool> gold: root.on && !root.level;
+    property <length> pad-x: root.small ? 18px : 20px;
+    property <length> pad-y: root.small ? 14px : 18px;
+    property <color> icon-color: root.gone ? #4a4740 : root.pending || root.gold ? Theme.accent : Theme.text-2;
+    property <color> name-color: root.gone ? Theme.text-3 : Theme.text;
+    property <color> status-color: root.gone ? Theme.night : root.failed ? Theme.danger
+        : root.pending ? Theme.text-2 : root.gold ? Theme.accent : Theme.text-3;
+    // After a tap the icon dims once and stays so until Home Assistant answers.
+    property <float> icon-alpha: root.pending ? 0.55 : 1;
+    animate icon-alpha { duration: 180ms; }
+    // While a finger drags the bar: its value (-1: none).
+    property <int> drag: -1;
+    property <int> shown-level: root.drag >= 0 ? root.drag : root.tile.level;
+    border-radius: root.line ? Grid.card-radius : Grid.tile-radius;
+    background: touch.pressed && root.tile.tappable && !root.level ? Theme.surface-2
+        : root.gold ? Theme.accent-deep : Theme.surface;
+    border-width: 1px;
+    border-color: root.failed ? Theme.danger : root.gold ? Theme.accent.with-alpha(0.35) : Theme.line;
+    clip: true;
+
+    // The whole tile: a tap does its action; a swipe across is the page's (or the widget's turn).
+    touch := TouchArea {
+        enabled: !root.level || root.line;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.up && self.has-hover) {
+                if (abs(self.mouse-x - self.pressed-x) > 48px) {
+                    root.swiped(self.mouse-x < self.pressed-x ? 1 : -1);
+                } else if (abs(self.mouse-y - self.pressed-y) < 48px && root.tile.tappable) {
+                    Feedback.tap();
+                    root.tapped();
+                }
+            }
+        }
+    }
+
+    // ---- One line (the widget with one free slot).
+    if root.line: Rectangle {
+        TileGlyph {
+            x: 18px;
+            y: (parent.height - self.height) / 2;
+            width: 32px;
+            height: 32px;
+            data: root.tile.icon;
+            color: root.icon-color;
+            opacity: root.icon-alpha;
+        }
+        VerticalLayout {
+            x: 64px;
+            width: parent.width - 64px - 14px;
+            alignment: center;
+            Text {
+                text: root.tile.name;
+                font-size: 20px;
+                font-weight: 500;
+                color: root.name-color;
+                overflow: elide;
+            }
+            Text {
+                text: root.tile.value != "" ? root.tile.value : root.tile.status;
+                font-family: root.tile.value != "" ? "Inter Tnum" : "";
+                font-size: 18px;
+                color: root.status-color;
+                overflow: elide;
+            }
+        }
+    }
+
+    // ---- A button: the icon at the top, the name and the state at the bottom; 2 x 2 centred.
+    if !root.line && root.tile.kind == "button" && root.tile.h < 2: Rectangle {
+        TileGlyph {
+            x: root.pad-x;
+            y: root.pad-y;
+            width: root.small ? 36px : 40px;
+            height: self.width;
+            data: root.tile.icon;
+            color: root.icon-color;
+            opacity: root.icon-alpha;
+        }
+        VerticalLayout {
+            x: root.pad-x;
+            y: parent.height - root.pad-y - self.height;
+            width: parent.width - 2 * root.pad-x;
+            height: self.preferred-height;
+            Text {
+                text: root.tile.name;
+                font-size: root.small ? 22px : 24px;
+                font-weight: 500;
+                color: root.name-color;
+                overflow: elide;
+            }
+            if root.tile.status != "": Text {
+                text: root.tile.status;
+                font-size: root.small ? 18px : 20px;
+                color: root.status-color;
+                overflow: elide;
+            }
+        }
+    }
+    if !root.line && root.tile.kind == "button" && root.tile.h >= 2: VerticalLayout {
+        x: root.pad-x;
+        width: parent.width - 2 * root.pad-x;
+        alignment: center;
+        spacing: 4px;
+        Rectangle {
+            height: 96px + 12px;
+            TileGlyph {
+                x: (parent.width - self.width) / 2;
+                y: 0;
+                width: 96px;
+                height: 96px;
+                data: root.tile.icon;
+                color: root.icon-color;
+                opacity: root.icon-alpha;
+            }
+        }
+        Text {
+            text: root.tile.name;
+            font-size: 24px;
+            font-weight: 500;
+            color: root.name-color;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+        if root.tile.status != "": Text {
+            text: root.tile.status;
+            font-size: 20px;
+            color: root.status-color;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    // ---- A sensor 1 x 1: the icon, the value, the name under it.
+    if !root.line && root.sensor && root.tile.w == 1: Rectangle {
+        TileGlyph {
+            x: root.pad-x;
+            y: root.pad-y;
+            width: 28px;
+            height: 28px;
+            data: root.tile.icon;
+            color: root.gone ? #4a4740 : Theme.text-2;
+        }
+        VerticalLayout {
+            x: root.pad-x;
+            y: parent.height - root.pad-y - self.height;
+            width: parent.width - 2 * root.pad-x;
+            height: self.preferred-height;
+            spacing: 2px;
+            Text {
+                text: root.tile.value;
+                font-family: "Inter Tnum";
+                font-size: root.small ? 34px : 40px;
+                color: root.name-color;
+                overflow: elide;
+            }
+            Text {
+                text: root.tile.name;
+                font-size: root.small ? 18px : 20px;
+                color: Theme.text-3;
+                overflow: elide;
+            }
+        }
+    }
+    // ---- A wide sensor: the icon and the name in a header, the value, the day's curve.
+    if !root.line && root.sensor && root.tile.w > 1: wide := Rectangle {
+        property <bool> tall: root.tile.h >= 2;
+        TileGlyph {
+            x: root.pad-x;
+            y: root.pad-y;
+            width: 28px;
+            height: 28px;
+            data: root.tile.icon;
+            color: root.gone ? #4a4740 : Theme.text-2;
+        }
+        Text {
+            x: root.pad-x + 28px + 10px;
+            y: root.pad-y;
+            width: parent.width - self.x - root.pad-x;
+            height: 28px;
+            text: root.tile.name;
+            font-size: root.small ? 20px : 22px;
+            color: root.gone ? Theme.text-3 : Theme.text-2;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if !wide.tall: Text {
+            x: root.pad-x;
+            y: parent.height - root.pad-y - self.height;
+            width: root.tile.curve != "" ? parent.width - 2 * root.pad-x - (root.tile.w > 2 ? 440px : 150px) - 12px
+                : parent.width - 2 * root.pad-x;
+            height: root.small ? 44px : 52px;
+            text: root.tile.value;
+            font-family: "Inter Tnum";
+            font-size: root.small ? 40px : 48px;
+            color: root.name-color;
+            vertical-alignment: bottom;
+            overflow: elide;
+        }
+        if !wide.tall && root.tile.curve != "": Path {
+            x: parent.width - 20px - self.width;
+            y: parent.height - 22px - self.height;
+            width: root.tile.w > 2 ? 440px : 150px;
+            height: 44px;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: self.width / 1px;
+            viewbox-height: 44;
+            commands: root.tile.curve;
+            stroke: Theme.text-2;
+            stroke-width: 2px;
+        }
+        if wide.tall: Text {
+            x: root.pad-x;
+            y: root.pad-y + 28px + 18px;
+            width: parent.width - 2 * root.pad-x;
+            height: 100px;
+            text: root.tile.value;
+            font-family: "Inter Tnum";
+            font-size: 96px;
+            font-weight: 300;
+            letter-spacing: -2px;
+            color: root.name-color;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if wide.tall && root.tile.curve != "": Path {
+            x: 20px;
+            y: parent.height - root.pad-y - 26px - 10px - self.height;
+            width: parent.width - 40px;
+            height: 84px;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: self.width / 1px;
+            viewbox-height: 84;
+            commands: root.tile.curve;
+            stroke: Theme.accent;
+            stroke-width: 2px;
+        }
+        if wide.tall: Text {
+            x: root.pad-x;
+            y: parent.height - root.pad-y - 26px;
+            width: parent.width - 2 * root.pad-x;
+            height: 26px;
+            text: root.tile.range;
+            font-family: "Inter Tnum";
+            font-size: 20px;
+            color: Theme.text-3;
+            overflow: elide;
+        }
+    }
+
+    // ---- A level: the name and its state over a bar the finger drags (a tap on its icon
+    // switches it on and off).
+    if !root.line && root.level: Rectangle {
+        property <length> bar-h: root.small ? 56px : 72px;
+        HorizontalLayout {
+            x: root.pad-x;
+            y: root.pad-y;
+            width: parent.width - 2 * root.pad-x;
+            height: 30px;
+            spacing: 12px;
+            Text {
+                text: root.tile.name;
+                font-size: root.small ? 22px : 24px;
+                font-weight: 500;
+                color: root.name-color;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            if root.tile.status != "": Text {
+                text: root.tile.status;
+                font-size: root.small ? 18px : 20px;
+                color: root.failed ? Theme.danger : Theme.text-3;
+                vertical-alignment: center;
+                horizontal-stretch: 0;
+            }
+        }
+        bar := Rectangle {
+            x: root.pad-x;
+            y: parent.height - root.pad-y - self.height;
+            width: parent.width - 2 * root.pad-x;
+            height: parent.bar-h;
+            border-radius: self.height / 2;
+            background: Theme.surface-2;
+            clip: true;
+            if root.shown-level > 0: Rectangle {
+                x: 0;
+                width: max(bar.height, bar.width * clamp(root.shown-level, 0, 100) / 100);
+                height: bar.height;
+                border-radius: bar.height / 2;
+                background: root.gone ? Theme.surface : Theme.accent-deep;
+            }
+            TileGlyph {
+                x: 22px;
+                y: (bar.height - self.height) / 2;
+                width: 32px;
+                height: 32px;
+                data: root.tile.icon;
+                color: root.gone ? #4a4740 : Theme.accent;
+                opacity: root.icon-alpha;
+            }
+            Text {
+                x: bar.width - 22px - self.width;
+                width: 120px;
+                height: bar.height;
+                text: root.drag >= 0 ? root.drag + "%" : root.tile.value;
+                font-family: "Inter Tnum";
+                font-size: 24px;
+                color: root.gone ? Theme.text-3 : Theme.text;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+            // The icon's end of the bar: a tap there switches it; anywhere else a drag sets it.
+            bar-touch := TouchArea {
+                enabled: root.tile.tappable;
+                property <int> at: round(clamp(self.mouse-x / self.width, 0, 1) * 100);
+                property <bool> dragging: false;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        self.dragging = false;
+                    } else if (e.kind == PointerEventKind.up) {
+                        if (self.dragging) {
+                            root.level-changed(self.at, true);
+                            root.drag = -1;
+                        } else if (self.pressed-x < 76px) {
+                            Feedback.tap();
+                            root.tapped();
+                        } else {
+                            root.drag = -1;
+                            root.level-changed(self.at, true);
+                        }
+                        self.dragging = false;
+                    }
+                }
+                moved => {
+                    if (self.pressed && (self.dragging || abs(self.mouse-x - self.pressed-x) > 8px)) {
+                        self.dragging = true;
+                        root.drag = self.at;
+                        root.level-changed(self.at, false);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Tiles on a grid of `columns` x `rows` cells: each where its x, y, w, h say. A swipe across
+// the grid (on a gap, an empty cell or a tile) says +1 or -1; a tile's tap and level say its
+// `id`.
+export component BoardGrid inherits Rectangle {
+    in property <[BoardTileData]> tiles;
+    in property <int> columns: 4;
+    in property <int> rows: 4;
+    in property <length> cell-width: 193px;
+    in property <length> cell-height: 157px;
+    in property <length> gap: 12px;
+    // The widget's one line.
+    in property <bool> line: false;
+    // Empty cells drawn as dashed places with a plus (a board with nothing on it yet).
+    in property <bool> empty-cells: false;
+    callback tapped(int);
+    callback level-changed(int, int, bool);
+    callback swiped(int);
+    width: root.columns * root.cell-width + (root.columns - 1) * root.gap;
+    height: root.rows * root.cell-height + (root.rows - 1) * root.gap;
+    TouchArea {
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.up && abs(self.mouse-x - self.pressed-x) > 48px) {
+                root.swiped(self.mouse-x < self.pressed-x ? 1 : -1);
+            }
+        }
+    }
+    if root.empty-cells: Rectangle {
+        for n in root.columns * root.rows: Rectangle {
+            x: mod(n, root.columns) * (root.cell-width + root.gap);
+            y: floor(n / root.columns) * (root.cell-height + root.gap);
+            width: root.cell-width;
+            height: root.cell-height;
+            border-radius: Grid.tile-radius;
+            border-width: 2px;
+            border-color: #24262d;
+            Icon {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 36px;
+                height: 36px;
+                source: Icons.plus-36;
+                color: #33353d;
+            }
+        }
+    }
+    for t[i] in root.tiles: BoardTile {
+        x: t.x * (root.cell-width + root.gap);
+        y: t.y * (root.cell-height + root.gap);
+        width: t.w * root.cell-width + (t.w - 1) * root.gap;
+        height: t.h * root.cell-height + (t.h - 1) * root.gap;
+        tile: t;
+        small: root.cell-height < 150px;
+        line: root.line;
+        tapped => {
+            root.tapped(t.id);
+        }
+        level-changed(v, done) => {
+            root.level-changed(t.id, v, done);
+        }
+        swiped(d) => {
+            root.swiped(d);
+        }
+    }
+}
+
 // --- The home's widget (ui/widgets.rs): one panel under the cards that takes the slots they
 // leave free and turns through what is around the house. Rows are data, filled by Rust; the
 // panel only draws them. `slots`: 1 = one row as tall as a card, no header; 2 = a header and
@@ -1725,7 +2214,7 @@ export component WeatherBig inherits Icon {
 
 export component WidgetPanel inherits Rectangle {
     // "next", "quotes", "weather", "cities", "shopping", "notes", "sensors", "check", "playing",
-    // "home".
+    // "home", "custom" (the board's tiles).
     in property <string> kind;
     // A tap opens a page of its own (now playing and who is home have none: no press either).
     in property <bool> tappable: true;
@@ -1739,10 +2228,16 @@ export component WidgetPanel inherits Rectangle {
     in property <int> seq: 0;
     // The weather's big block (with `columns`: the next hours under it, small).
     in property <WeatherHero> hero;
+    // "custom": the board's tiles in the slot itself, no panel around them (4 x 2 cells of
+    // 193 x 130; one line: row 0, 88 px tall). A tile's tap and level go out with its id.
+    in property <[BoardTileData]> tiles;
+    callback tile-tapped(int);
+    callback tile-level(int, int, bool);
     callback tapped();
     // +1 the next page (a swipe to the left), -1 the previous one.
     callback swiped(int);
     width: Grid.col-width;
+    property <bool> custom: root.kind == "custom";
     property <bool> big: root.hero.shown && !root.line;
     property <bool> line: root.slots <= 1;
     property <bool> dots: root.count > 1 && !root.line;
@@ -1774,10 +2269,10 @@ export component WidgetPanel inherits Rectangle {
         width: parent.width;
         height: root.dots ? parent.height - 16px : parent.height;
         border-radius: Grid.card-radius;
-        background: touch.pressed && root.tappable ? Theme.surface-2 : Theme.surface;
-        border-width: 1px;
+        background: root.custom ? transparent : touch.pressed && root.tappable ? Theme.surface-2 : Theme.surface;
+        border-width: root.custom ? 0 : 1px;
         border-color: Theme.line;
-        Rectangle {
+        if !root.custom: Rectangle {
             opacity: root.alpha;
             // One row, as a card: the page's icon, then the row.
             if root.line && !root.columns: Rectangle {
@@ -2155,6 +2650,23 @@ export component WidgetPanel inherits Rectangle {
                     Feedback.tap();
                     root.tapped();
                 }
+            }
+        }
+        if root.custom: BoardGrid {
+            opacity: root.alpha;
+            tiles: root.tiles;
+            columns: 4;
+            rows: root.line ? 1 : 2;
+            cell-height: root.line ? 88px : 130px;
+            line: root.line;
+            tapped(id) => {
+                root.tile-tapped(id);
+            }
+            level-changed(id, v, done) => {
+                root.tile-level(id, v, done);
+            }
+            swiped(d) => {
+                root.swiped(d);
             }
         }
     }

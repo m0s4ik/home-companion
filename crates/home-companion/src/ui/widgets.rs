@@ -64,10 +64,14 @@ pub enum Kind {
     Playing,
     /// Home Assistant: who is home. Off by default (anyone in the room reads it).
     Home,
+    /// The board's custom widgets (ui/board.rs): their tiles drawn in the slot, one page of the
+    /// turn per widget canvas that has tiles. One entry in the order and one switch stand for
+    /// all of them.
+    Custom,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 10] = [
+    pub const ALL: [Kind; 11] = [
         Kind::Next,
         Kind::Quotes,
         Kind::Weather,
@@ -78,6 +82,7 @@ impl Kind {
         Kind::Check,
         Kind::Playing,
         Kind::Home,
+        Kind::Custom,
     ];
 
     /// The pages the first version knew: a `[widgets]` section without `seen` was written by it.
@@ -96,6 +101,7 @@ impl Kind {
             Kind::Check => "check",
             Kind::Playing => "playing",
             Kind::Home => "home",
+            Kind::Custom => "custom",
         }
     }
 
@@ -110,8 +116,12 @@ impl Kind {
 
     /// A tap on the page opens a page of its own (what to check, now playing and who is home
     /// have none: the widget's window already goes through every row).
+    /// The custom widget's tiles take their own taps.
     pub fn tappable(self) -> bool {
-        !matches!(self, Kind::Check | Kind::Playing | Kind::Home)
+        !matches!(
+            self,
+            Kind::Check | Kind::Playing | Kind::Home | Kind::Custom
+        )
     }
 
     /// Its content is a list the user chooses: it can be on the home more than once, each page
@@ -497,6 +507,15 @@ pub struct Data {
     pub people: Vec<Person>,
 }
 
+/// A custom widget of the board (its tiles are drawn by the screen from the board, not from
+/// here): its name, and a row per tile (its name, its value or state) for the browser panel's
+/// preview and the turn's log.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CustomPage {
+    pub title: String,
+    pub rows: Vec<WidgetRow>,
+}
+
 /// What may become a page, already in the screen's words where the body formats them.
 #[derive(Debug, Default)]
 pub struct Sources<'a> {
@@ -514,6 +533,8 @@ pub struct Sources<'a> {
     pub check: &'a [CheckRow],
     pub playing: Option<&'a Playing>,
     pub people: &'a [Person],
+    /// The board's custom widgets that have tiles, in the board's order.
+    pub custom: &'a [CustomPage],
     /// What each page of the kinds that repeat shows (`quotes`, `cities` and `sensors` hold
     /// every page's items); a page without its picks shows every item of its kind.
     pub picks: &'a [Picks],
@@ -554,6 +575,11 @@ pub fn pages<P: Into<Page> + Copy>(
             continue;
         }
         seen.push(p);
+        if p.kind == Kind::Custom {
+            // One switch, every custom widget with tiles.
+            out.extend((1..=s.custom.len()).filter_map(|n| custom_page(s, n as u8)));
+            continue;
+        }
         out.extend(page(s, p, w, now, local));
     }
     out.truncate(MAX_PAGES);
@@ -570,6 +596,9 @@ pub fn page(
     local: &dyn Fn(i64) -> (String, i64),
 ) -> Option<WidgetView> {
     let p: Page = p.into();
+    if p.kind == Kind::Custom {
+        return custom_page(s, p.n);
+    }
     let picks = s.picks(p);
     let mut v = kind_page(s, p.kind, picks, w, now, local)?;
     v.n = p.n;
@@ -604,7 +633,25 @@ fn kind_page(
         Kind::Check => check_page(s.check, w),
         Kind::Playing => s.playing.and_then(|p| playing_page(p, w)),
         Kind::Home => home_page(s.people, w),
+        Kind::Custom => custom_page(s, 1),
     }
+}
+
+/// The `n`-th custom widget (1 the first) as a page of the turn.
+fn custom_page(s: &Sources, n: u8) -> Option<WidgetView> {
+    let c = s.custom.get(usize::from(n).checked_sub(1)?)?;
+    let first = c.rows.first()?.clone();
+    Some(WidgetView {
+        kind: Kind::Custom,
+        n,
+        title: c.title.clone(),
+        aside: String::new(),
+        rows: c.rows.clone(),
+        columns: false,
+        line: Some(first),
+        window: String::new(),
+        hero: None,
+    })
 }
 
 /// What the browser panel shows of the choices that are not lists (the lists are the sources'
@@ -1418,6 +1465,11 @@ impl Band {
             turns: HashMap::new(),
             told: None,
         }
+    }
+
+    /// The slots the page on screen is cut to.
+    pub fn slots(&self) -> usize {
+        self.slots
     }
 
     /// The kind of the page on screen.

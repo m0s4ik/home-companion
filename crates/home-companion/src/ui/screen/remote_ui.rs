@@ -215,8 +215,9 @@ impl<S: Screen> Ui<S> {
         if !remote_dialog_allowed(&dialog) {
             return Some("confirm");
         }
-        // The brain's Yes/No question about the house: never answered from afar, never sent.
-        if self.house.borrow().ask.is_some() {
+        // A Yes/No question of the house (the brain's, or a board tile's): never answered from
+        // afar, never sent.
+        if self.house.borrow().ask.is_some() || self.tile_board.borrow().ask.is_some() {
             return Some("confirm");
         }
         if self.mirror_shown() {

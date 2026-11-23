@@ -41,6 +41,9 @@ pub enum UiEvent {
     Home,
     /// Something the user waited for worked (linked to Home Assistant): the "ok" sound.
     Success,
+    /// Something touched did not work (a board tile's call refused, or a tile's question
+    /// refused while another question is open): the error sound.
+    Failed,
     /// Something the character says aloud in Home Assistant's voice (Home Assistant's setup is
     /// done: "Tutto pronto"): the success sound now, the words when they come.
     Say(String),
@@ -3499,6 +3502,14 @@ impl Core {
                     self.next_voice_id += 1;
                     v.say(id, &text, self.ha.is_connected());
                     self.say_wait = Some((id, Instant::now() + Duration::from_secs(6)));
+                }
+            }
+            UiEvent::Failed => {
+                if !self.speaker_busy()
+                    && !matches!(self.phase, Phase::Speaking | Phase::Ringing)
+                    && !self.dnd(now_unix())
+                {
+                    self.cue("error");
                 }
             }
             UiEvent::Success => {

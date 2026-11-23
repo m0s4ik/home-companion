@@ -31,6 +31,8 @@ pub struct Samples {
     pub check: Vec<CheckRow>,
     pub playing: Playing,
     pub people: Vec<Person>,
+    /// The demo board's custom widget.
+    pub custom: Vec<widgets::CustomPage>,
 }
 
 impl Samples {
@@ -47,6 +49,7 @@ impl Samples {
             check: &self.check,
             playing: Some(&self.playing),
             people: &self.people,
+            custom: &self.custom,
             picks: &[],
         }
     }
@@ -205,6 +208,21 @@ pub fn samples(l: &Locale) -> Samples {
         check: ha.check,
         playing: ha.playing.unwrap_or_default(),
         people: ha.people,
+        custom: {
+            let (b, states, curves) = super::board_ui::demo_board(false);
+            let v = crate::ui::board::view(
+                &b.widgets[0],
+                &states,
+                &curves,
+                &Default::default(),
+                &crate::ui::board::BoardWords::from_locale(l),
+                std::time::Instant::now(),
+            );
+            vec![widgets::CustomPage {
+                title: b.widgets[0].name.clone(),
+                rows: super::board_ui::custom_rows(&v),
+            }]
+        },
     }
 }
 

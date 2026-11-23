@@ -336,6 +336,7 @@ fn status(host: &dyn PanelHost, page: Page, word: &dyn Fn(&str) -> String) -> St
         Kind::Next => word("panel_status_next"),
         Kind::Weather => word("panel_status_weather"),
         Kind::Check => word("panel_status_check"),
+        Kind::Custom => word("panel_status_custom"),
     }
 }
 

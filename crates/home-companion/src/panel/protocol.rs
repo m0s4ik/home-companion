@@ -1635,7 +1635,7 @@ mod tests {
             &mut s,
             json!({"op": "widgets.order", "token": t, "order": order}),
         );
-        assert_eq!(r["order"][0]["kind"], "home");
+        assert_eq!(r["order"][0]["kind"], "custom");
         for bad in [
             json!(["next"]),
             json!(["next", "next"]),

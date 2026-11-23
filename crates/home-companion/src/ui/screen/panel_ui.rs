@@ -663,6 +663,7 @@ impl<S: Screen> PanelHost for Ui<S> {
                 .map_or_else(|| id.to_string(), |e| e.name.clone())
         };
         let picks = self.widget_picks(&l, &name_of);
+        let custom = self.custom_pages();
         let d = self.desk.borrow();
         let next = crate::ui::next::merge(&d.upcoming, &d.events, now);
         let data = self.widget_data.borrow();
@@ -682,6 +683,7 @@ impl<S: Screen> PanelHost for Ui<S> {
             check: &data.check,
             playing: data.playing.as_ref(),
             people: &data.people,
+            custom: &custom,
             picks: &picks,
         };
         let samples = super::samples::samples(&l);

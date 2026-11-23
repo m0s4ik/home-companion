@@ -42,6 +42,7 @@ use crate::settings::{
 };
 use crate::settings_model::{self as model, Change};
 
+mod board_ui;
 mod panel_ui;
 mod remote_ui;
 pub mod samples;
@@ -615,10 +616,13 @@ pub struct Demo {
     /// page, its access dialog, the home's card after too many requests; `settings-panel-remote`
     /// (4), `remote-sign` (5): the remote screen's switch on, its sign.
     pub panel: u8,
+    /// `--state board` (1), `board-confirm` (2), `board-empty` (3), `widget-custom*` (4): the
+    /// board on sample data (board_ui::demo_board).
+    pub board: u8,
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 110] = [
+pub const DEMO_STATES: [&str; 115] = [
     "home",
     "cards",
     "cards-setup",
@@ -729,6 +733,11 @@ pub const DEMO_STATES: [&str; 110] = [
     "settings-panel-remote",
     "remote-sign",
     "poses",
+    "board",
+    "board-confirm",
+    "board-empty",
+    "widget-custom",
+    "widget-custom-line",
 ];
 
 impl Demo {
@@ -1034,6 +1043,20 @@ impl Demo {
             },
             "muted-anim-in" => Demo {
                 frame: Some(("muted_in", 50)),
+                ..home.clone()
+            },
+            "board" | "board-confirm" | "board-empty" => Demo {
+                board: match s {
+                    "board" => 1,
+                    "board-confirm" => 2,
+                    _ => 3,
+                },
+                ..page("board")
+            },
+            "widget-custom" | "widget-custom-line" => Demo {
+                widget: Some(WidgetKind::Custom),
+                widget_cards: if s == "widget-custom-line" { 2 } else { 0 },
+                board: 4,
                 ..home.clone()
             },
             "trends" => Demo {
@@ -1608,6 +1631,12 @@ pub struct Ui<S: Screen> {
         RefCell<Receiver<crate::poses::Msg>>,
     )>,
     pose_view: RefCell<PoseView>,
+    /// The board (ui/board.rs): its page, its custom widgets, its calls and question.
+    tile_board: RefCell<board_ui::BoardUi>,
+    /// Puts a tile back when Home Assistant did not answer (runs only while one waits).
+    board_timer: Timer,
+    /// A level dragged faster than it may be sent: the last value, sent when it may.
+    level_timer: Timer,
     this: RefCell<Weak<Self>>,
 }
 
@@ -2284,6 +2313,7 @@ impl<S: Screen> Ui<S> {
         let opts_auto = opts.screen.auto.filter(|_| !demo).map(Auto::new);
         let opts_linked = opts.ha_linked;
         let opts_state_dir = opts.state_dir.clone();
+        let opts_locales = opts.locales.clone();
         let opts_panel = opts.panel.clone();
         let panel_on = settings.as_ref().is_some_and(Settings::panel_on);
         let remote_on = settings.as_ref().is_some_and(Settings::panel_screen);
@@ -2428,6 +2458,14 @@ impl<S: Screen> Ui<S> {
             announcing: Cell::new(false),
             pose_downloads,
             pose_view: RefCell::new(PoseView::default()),
+            tile_board: RefCell::new(board_ui::BoardUi {
+                icons: super::board::icons::Icons::new(super::board::icons::file_beside(
+                    &opts_locales,
+                )),
+                ..Default::default()
+            }),
+            board_timer: Timer::default(),
+            level_timer: Timer::default(),
             this: RefCell::new(Weak::new()),
         });
         *ui.this.borrow_mut() = Rc::downgrade(&ui);
@@ -2467,6 +2505,8 @@ impl<S: Screen> Ui<S> {
         ui.wire();
         ui.wire_panel();
         ui.wire_remote();
+        ui.wire_board();
+        ui.load_board();
         ui.refresh_remote();
         ui.start_wifi();
         ui.screen.set_error_pose(ui.pose(State::Error));
@@ -2780,6 +2820,11 @@ impl<S: Screen> Ui<S> {
         let ui = Rc::downgrade(self);
         self.screen.on_ask_answered(move |yes| {
             if let Some(ui) = ui.upgrade() {
+                // A tile's question (no brain's open): the body's own answer.
+                if ui.house.borrow().ask.is_none() {
+                    ui.board_answer(yes, "screen");
+                    return;
+                }
                 // The core sends it to the brain; the card stays until the brain closes it.
                 let id = ui.house.borrow_mut().answer(ui.now(), yes);
                 if let Some(id) = id {
@@ -3104,7 +3149,7 @@ impl<S: Screen> Ui<S> {
             if let Some(ui) = ui.upgrade() {
                 let shown = ui.widget.borrow_mut().swipe(dir, Instant::now());
                 if let Some(s) = shown {
-                    ui.screen.set_widget(&s);
+                    ui.show_widget(&s);
                 }
             }
         });
@@ -4297,6 +4342,7 @@ impl<S: Screen> Ui<S> {
         }
         self.screen.set_music(self.desk.borrow().music.as_ref());
         self.show_demo_v02(&d, &l);
+        self.show_demo_board(d.board);
         self.show_demo_widget(&d, &l);
         if d.panel > 0 {
             self.demo_panel(d.panel == 2);
@@ -4364,7 +4410,7 @@ impl<S: Screen> Ui<S> {
                 }
                 let shown = self.widget.borrow_mut().swipe(1, Instant::now());
                 if let Some(s) = shown {
-                    self.screen.set_widget(&s);
+                    self.show_widget(&s);
                 }
             }
         }
@@ -6355,6 +6401,12 @@ impl<S: Screen> Ui<S> {
             // Leaving the page closes the port.
             self.link.borrow_mut().take();
         }
+        if page == "board" {
+            // Its page as it is now (it waited while it was not seen).
+            self.render_board(false);
+        } else if page == "home" {
+            self.board_seen_again();
+        }
         if page == "poses" {
             self.poses_refresh();
         } else if page == "settings" {
@@ -6923,6 +6975,7 @@ impl<S: Screen> Ui<S> {
             self.widget_data.borrow_mut().cities = self.city_rows(now);
         }
         let picks = self.widget_picks(&l, &|id: &str| id.to_string());
+        let custom = self.custom_pages();
         let data = self.widget_data.borrow();
         let sources = widgets::Sources {
             next: &next,
@@ -6936,6 +6989,7 @@ impl<S: Screen> Ui<S> {
             check: &data.check,
             playing: data.playing.as_ref(),
             people: &data.people,
+            custom: &custom,
             picks: &picks,
         };
         let mut pages = widgets::pages(&sources, &on, &words, now, &local_hm);
@@ -6951,7 +7005,7 @@ impl<S: Screen> Ui<S> {
         drop(l);
         let shown = self.widget.borrow_mut().offer(pages, slots, Instant::now());
         if let Some(s) = shown {
-            self.screen.set_widget(&s);
+            self.show_widget(&s);
         }
     }
 
@@ -7012,7 +7066,7 @@ impl<S: Screen> Ui<S> {
             WidgetKind::Quotes | WidgetKind::Cities | WidgetKind::Sensors => {
                 Some(self.widget_chosen(page))
             }
-            WidgetKind::Check | WidgetKind::Playing | WidgetKind::Home => None,
+            WidgetKind::Check | WidgetKind::Playing | WidgetKind::Home | WidgetKind::Custom => None,
             WidgetKind::Notes => return l.text("widgets_hint_notes").to_string(),
             _ => return String::new(),
         };
@@ -7564,6 +7618,7 @@ impl<S: Screen> Ui<S> {
     /// (what is over leaves Next).
     fn tick_widget(&self, now: Instant, minute: bool) {
         self.tick_feeds();
+        self.board_seen_again();
         if self.widget_on.borrow().is_empty() {
             return;
         }
@@ -7576,7 +7631,7 @@ impl<S: Screen> Ui<S> {
             .borrow_mut()
             .tick(now, paused, self.widget_every.get(), minute);
         if let Some(s) = shown {
-            self.screen.set_widget(&s);
+            self.show_widget(&s);
         }
     }
 
@@ -7980,7 +8035,7 @@ impl<S: Screen> Ui<S> {
         let on = self.widget_on.borrow();
         let w = self.widget_ha.borrow();
         let has = |k: WidgetKind| on.iter().any(|p| p.kind == k);
-        crate::ha::widgets::Want {
+        let mut want = crate::ha::widgets::Want {
             sensors: if has(WidgetKind::Sensors) {
                 w.sensors.clone()
             } else {
@@ -7998,10 +8053,11 @@ impl<S: Screen> Ui<S> {
             },
             openings: has(WidgetKind::Check) && w.openings,
             batteries: has(WidgetKind::Check) && w.batteries,
-            tiles: w.tiles.clone(),
-            tile_curves: w.tile_curves.clone(),
-            advanced: w.advanced.clone(),
-        }
+            ..Default::default()
+        };
+        // The board's tiles: their entities, the wide sensors' days, the Advanced services.
+        self.board_want(&mut want);
+        want
     }
 
     fn send_widget_want(&self) {
@@ -8108,8 +8164,8 @@ impl<S: Screen> Ui<S> {
                 self.render_shopping();
                 self.refresh_home();
             }
-            // The board's tiles: drawn in the screen phase (ui/board.rs).
-            HubMsg::Tiles(_) | HubMsg::Called { .. } => {}
+            HubMsg::Tiles(s) => self.board_states(s),
+            HubMsg::Called { id, ok, error } => self.board_called(id, ok, error),
         }
     }
 
@@ -8706,7 +8762,16 @@ impl<S: Screen> Ui<S> {
             let left = self.house.borrow().popup_left(Instant::now());
             self.screen.set_done_popup(true, left);
         }
-        let left = self.house.borrow().ask_left(now_unix);
+        let mut left = self.house.borrow().ask_left(now_unix);
+        if self.house.borrow().ask.is_none() {
+            // A tile's question: its 30 s, then a No.
+            if self.board_question_tick(Instant::now()) {
+                return;
+            }
+            if let Some((_, _, _, l)) = self.board_question(Instant::now()) {
+                left = l;
+            }
+        }
         if (left - self.ask_left.get()).abs() >= 0.004 {
             self.ask_left.set(left);
             self.screen.set_ask_left(left);
@@ -8764,14 +8829,26 @@ impl<S: Screen> Ui<S> {
         self.refresh_home();
         let left = h.ask_left(self.now());
         self.ask_left.set(left);
-        match &h.ask {
-            Some(a) => {
+        // One question on screen: the brain's, else a tile's (board_ui.rs); a tile's open when
+        // the brain asks is a No.
+        if h.ask.is_some() {
+            self.board_question_yields();
+        }
+        match (&h.ask, self.board_question(Instant::now())) {
+            (Some(a), _) => {
+                self.screen.set_ask_icon("");
                 self.screen.set_ask(true, &a.text, &a.names_line(), left);
                 let title = a.working_title(self.locale.borrow().text("house_others"));
                 self.screen
                     .set_ask_working(a.working(), &title, a.undo_wanted());
             }
-            None => {
+            (None, Some((title, line, icon, left))) => {
+                self.screen.set_ask_icon(&icon);
+                self.screen.set_ask(true, &title, &line, left);
+                self.screen.set_ask_working(false, "", false);
+            }
+            (None, None) => {
+                self.screen.set_ask_icon("");
                 self.screen.set_ask(false, "", "", 0.0);
                 self.screen.set_ask_working(false, "", false);
             }
@@ -9450,6 +9527,131 @@ mod tests {
     }
 
     /// A headless Ui on its own state directory, Home Assistant not linked, no first start.
+    /// The board on a real (headless) screen: replaced and saved, followed by the hub, a tap
+    /// sent at once and waiting for its state, a failure shown, a shutter asking first, a
+    /// level sent at most every 300 ms and when the finger lifts, and one question at a time
+    /// with the brain's.
+    #[test]
+    fn the_boards_taps_levels_and_question() {
+        use board_ui::Place;
+        use slint::Model;
+        let (ui, dir) = headless_ui("board");
+        let w = &ui.screen;
+        let (hub, cmds) = std::sync::mpsc::channel();
+        *ui.hub_tx.borrow_mut() = Some(hub);
+        let (b, states, curves) = board_ui::demo_board(false);
+        ui.ha_curves.borrow_mut().extend(curves);
+        assert!(ui.replace_board(b).is_empty());
+        assert_eq!(Settings::in_dir(&dir).board().pages.len(), 2, "saved");
+        assert!(w.get_board_handle());
+        let want = cmds
+            .try_iter()
+            .filter_map(|c| match c {
+                HubCmd::SetWidgets(w) => Some(w),
+                _ => None,
+            })
+            .last()
+            .unwrap();
+        assert!(want.tiles.contains(&"cover.living_room".to_string()));
+        assert_eq!(
+            want.tile_curves,
+            ["sensor.outdoor_temperature", "sensor.power"]
+        );
+        ui.apply_hub(HubMsg::Tiles(states));
+        w.set_page("board".into());
+        ui.render_board(false);
+        assert_eq!(w.get_board_title(), "Living room");
+        assert_eq!((w.get_board_index(), w.get_board_count()), (0, 2));
+        let tile = |i: usize| w.get_board_tiles().row_data(i).unwrap();
+        assert_eq!(w.get_board_tiles().row_count(), 9);
+        assert_eq!(
+            (tile(1).name.as_str(), tile(1).state.as_str()),
+            ("Floor lamp", "on")
+        );
+        // A light: at once, then it waits for its state.
+        ui.board_tap(Place::Page(0), 2);
+        let sent = |cmds: &std::sync::mpsc::Receiver<HubCmd>| {
+            cmds.try_iter()
+                .filter_map(|c| match c {
+                    HubCmd::Call {
+                        id,
+                        domain,
+                        service,
+                        entity_id,
+                        data,
+                    } => Some((id, format!("{domain}.{service}"), entity_id, data)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let calls = sent(&cmds);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            (calls[0].1.as_str(), calls[0].2.as_str()),
+            ("homeassistant.toggle", "light.ceiling")
+        );
+        assert_eq!(tile(2).state, "pending");
+        // Refused by Home Assistant: the tile says so.
+        ui.apply_hub(HubMsg::Called {
+            id: calls[0].0,
+            ok: false,
+            error: Some("no".into()),
+        });
+        assert_eq!(
+            (tile(2).state.as_str(), tile(2).status.as_str()),
+            ("failed", "Didn't work")
+        );
+        // The shutter asks first; No does nothing, Yes sends it.
+        ui.board_tap(Place::Page(0), 6);
+        assert!(sent(&cmds).is_empty());
+        assert!(w.get_ask_shown());
+        assert_eq!(w.get_ask_text(), "Close Shutter?");
+        assert_eq!(w.get_ask_names(), "Living room");
+        assert!(!w.get_ask_icon_path().is_empty());
+        ui.board_answer(true, "screen");
+        assert!(!w.get_ask_shown());
+        let calls = sent(&cmds);
+        assert_eq!(
+            (calls[0].1.as_str(), calls[0].2.as_str()),
+            ("cover.toggle", "cover.living_room")
+        );
+        // A level: the first value at once, the next within 300 ms waits, the finger's lift goes.
+        ui.board_level(Place::Page(0), 0, 40, false);
+        ui.board_level(Place::Page(0), 0, 45, false);
+        ui.board_level(Place::Page(0), 0, 55, true);
+        let calls = sent(&cmds);
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert_eq!(calls[0].3, json!({"brightness_pct": 40}));
+        assert_eq!(calls[1].3, json!({"brightness_pct": 55}));
+        // One question at a time: the brain's wins over a tile's, and a tile's waits for none.
+        ui.board_tap(Place::Page(0), 6);
+        assert!(w.get_ask_shown());
+        ui.house.borrow_mut().confirm(
+            9,
+            "Open the valve?".into(),
+            Vec::new(),
+            now_unix() as i64 + 30,
+            ui.now(),
+        );
+        ui.render_house();
+        assert_eq!(w.get_ask_text(), "Open the valve?");
+        assert_eq!(w.get_ask_icon_path(), "");
+        assert!(ui.tile_board.borrow().ask.is_none(), "the tile's is a No");
+        ui.board_tap(Place::Page(0), 6);
+        assert!(
+            ui.tile_board.borrow().ask.is_none(),
+            "refused while the brain asks"
+        );
+        assert_eq!(w.get_ask_text(), "Open the valve?");
+        assert!(sent(&cmds).is_empty());
+        // Swiping across the pages.
+        ui.house.borrow_mut().clear_question();
+        ui.render_house();
+        w.invoke_board_swiped(1);
+        assert_eq!(w.get_board_title(), "Night");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn headless_ui(name: &str) -> (Rc<Ui<super::super::sw::CompanionWindow>>, PathBuf) {
         let dir =
             std::env::temp_dir().join(format!("home-companion-{name}-{}", std::process::id()));
@@ -9828,8 +10030,18 @@ mod tests {
         assert!(ui.remote_accepts(epoch));
         w.set_dialog("".into());
         assert!(ui.remote_accepts(epoch));
-        // The brain's Yes/No question about the house: not sent, not touched (a remote finger
-        // never answers it).
+        // A Yes/No question of the house, a board tile's or the brain's: not sent, not touched
+        // (a remote finger never answers it).
+        let (b, states, _) = board_ui::demo_board(false);
+        ui.tile_board.borrow_mut().states = states;
+        ui.apply_board(b);
+        ui.board_tap(board_ui::Place::Page(0), 6);
+        assert!(w.get_ask_shown());
+        assert_eq!(call("screen.frame", json!({}))["hidden"], "confirm");
+        assert!(!ui.remote_accepts(epoch));
+        ui.board_answer(false, "screen");
+        assert!(!w.get_ask_shown());
+        assert!(ui.remote_accepts(epoch));
         ui.house.borrow_mut().confirm(
             7,
             "Close the shutter?".into(),
@@ -10126,7 +10338,7 @@ mod tests {
             ("next".into(), "weather".into(), "home".into())
         );
         assert!(on(0) && on(2) && !on(9));
-        assert_eq!(w.get_widget_summary(), "9 on");
+        assert_eq!(w.get_widget_summary(), "10 on");
         // The pages chosen from the browser say so under their switch.
         assert_eq!(
             w.get_widget_pages().row_data(1).unwrap().hint,
@@ -10136,7 +10348,7 @@ mod tests {
         tap(1172.0, 258.0);
         assert!(!on(0));
         assert!(!ui.widget_on.borrow().contains(&WidgetKind::Next.into()));
-        assert_eq!(w.get_widget_summary(), "8 on");
+        assert_eq!(w.get_widget_summary(), "9 on");
         // The markets (a taller row) and the weather.
         tap(1172.0, 334.0);
         tap(1172.0, 438.0);

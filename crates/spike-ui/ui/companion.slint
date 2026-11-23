@@ -24,7 +24,7 @@ import { ScrollFade, MusicBar, CornerClock,
     Icon, BareButton, PrimaryButton, PillButton, InfoCard, TimerCard, NowPlayingCard, PageHeader,
     Tile, SectionTitle, Row, Group, TimerLine, AlarmLine, ChatUser, ChatCharacter, ChatSeparator,
     Step, Stepper, Chip, Dialog, Separator, VolumeHud, GlyphButton, ControlTile, LevelBar, Feedback,
-    DoneCard, Status, WidgetPanel, WidgetRow, WeatherHero
+    DoneCard, Status, WidgetPanel, WidgetRow, WeatherHero, BoardGrid, BoardTileData
 } from "design/components.slint";
 import { CasaScreen, CasaBridge } from "casa.slint";
 import { WeatherPage, ListsPage, PickPage, EventRow, ForecastRow, ChoiceRow, PickRow } from "ha-pages.slint";
@@ -1074,6 +1074,38 @@ export component CompanionWindow inherits Window {
     in property <float> ask-left: 1;
     callback ask-answered(bool);
     callback ask-cancel();
+    // A tile's question (the body's own, ui/screen/board_ui.rs): the tile's icon as MDI path
+    // data in the question's window ("" = the brain's question, with its question mark).
+    in property <string> ask-icon-path: "";
+
+    // ---- The board (ui/board.rs): a page of tiles opened by a swipe in from the right edge of
+    // the home; its page's name, tiles, place among the pages; nothing on it yet (`board-empty`:
+    // dashed places and a line saying where tiles come from).
+    in property <string> board-title: "";
+    in property <[BoardTileData]> board-tiles: [];
+    in property <int> board-index: 0;
+    in property <int> board-count: 0;
+    in property <bool> board-empty: false;
+    in property <string> board-hint: "";
+    // A page has tiles: a thin handle on the home's right edge says the board is there.
+    in property <bool> board-handle: false;
+    // The custom widget's tiles (the page of the turn on screen, when it is one).
+    in property <[BoardTileData]> widget-tiles: [];
+    // A tile touched ("page" or "widget", its id), a level set (and whether the finger lifted).
+    callback board-tapped(string, int);
+    callback board-level(string, int, int, bool);
+    // A swipe across the page: +1 the next page, -1 the previous one.
+    callback board-swiped(int);
+    // A touch that started on the home's right edge, when it is over (for the log): "board"
+    // (it opened), "short", "tap"; how far it went.
+    callback board-edge(string, length);
+    // How far the board's page has come in from the right (0 away, 1 in place).
+    property <float> board-in: root.page == "board" ? 1 : 0;
+    animate board-in {
+        duration: 180ms;
+        easing: ease-out;
+    }
+
     // The done pop-up goes on from the question's window (its size and place, no new window).
     in property <bool> done-from-ask: false;
     // Do not disturb: on, and its line ("Do not disturb · until 07:00").
@@ -1771,6 +1803,13 @@ export component CompanionWindow inherits Window {
             count: root.widget-count;
             seq: root.widget-seq;
             tappable: root.widget-tappable;
+            tiles: root.widget-tiles;
+            tile-tapped(id) => {
+                root.board-tapped("widget", id);
+            }
+            tile-level(id, v, done) => {
+                root.board-level("widget", id, v, done);
+            }
             // A tap opens the page's own page (Rust holds the turn and logs it).
             tapped => {
                 root.widget-tapped();
@@ -1823,6 +1862,36 @@ export component CompanionWindow inherits Window {
             label: root.t.more;
             clicked => {
                 root.page = "altro";
+            }
+        }
+
+        // The board is a swipe in from the right edge away: a thin handle says so when a page has
+        // tiles. The strip (40 px, under the control center's pull at the top) is right of the
+        // desk column, where nothing else takes a touch; it opens the board when dragged 120 px.
+        if root.board-handle: Rectangle {
+            x: 1262px;
+            y: 376px;
+            width: 4px;
+            height: 48px;
+            border-radius: 2px;
+            background: #3a3832;
+        }
+        TouchArea {
+            x: root.width - 40px;
+            y: 48px;
+            width: 40px;
+            height: root.height - 48px;
+            property <length> pulled: self.pressed-x - self.mouse-x;
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.up) {
+                    if (self.pulled > 120px) {
+                        Feedback.tap();
+                        root.page = "board";
+                        root.board-edge("board", self.pulled);
+                    } else {
+                        root.board-edge(self.pulled > 8px ? "short" : "tap", self.pulled);
+                    }
+                }
             }
         }
     }
@@ -3220,6 +3289,72 @@ export component CompanionWindow inherits Window {
     // ---- The markets or the sensors chosen from the browser, one card each: name, value, the
     // change, the day's curve (520 x 96), its low and high; the sources' credit at the end.
     // Read only: they are chosen from the browser.
+    // ---- The board: the page's tiles on a 4 x 4 grid of the desk (x 424, y 112; cells of
+    // 193 x 157, 12 apart), its name and the time in the header, the pages' dots at the bottom.
+    // It comes in from the right (180 ms) and leaves by a swipe to the right on its first page,
+    // by the chevron, or after a minute alone like every page.
+    if root.desk && root.desk-page == "board": Rectangle {
+        x: round((1 - root.board-in) * Grid.col-width / 1px) * 1px;
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.board-title;
+            clock: root.clock;
+            back => {
+                root.page = "home";
+            }
+        }
+        BoardGrid {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            tiles: root.board-tiles;
+            columns: 4;
+            // Nothing on it yet: three rows of places, the fourth says where tiles come from.
+            rows: root.board-empty ? 3 : 4;
+            empty-cells: root.board-empty;
+            tapped(id) => {
+                root.board-tapped("page", id);
+            }
+            level-changed(id, v, done) => {
+                root.board-level("page", id, v, done);
+            }
+            swiped(d) => {
+                if (d < 0 && root.board-index == 0) {
+                    Feedback.back();
+                    root.page = "home";
+                } else {
+                    root.board-swiped(d);
+                }
+            }
+        }
+        if root.board-count > 1: Rectangle {
+            x: Grid.col-x;
+            y: 784px;
+            width: Grid.col-width;
+            height: 10px;
+            for i in root.board-count: Rectangle {
+                x: (parent.width - root.board-count * 16px + 10px) / 2 + i * 16px;
+                y: 2px;
+                width: 6px;
+                height: 6px;
+                border-radius: 3px;
+                background: i == root.board-index ? Theme.accent : Theme.line;
+            }
+        }
+        if root.board-empty && root.board-hint != "": Text {
+            x: Grid.col-x;
+            y: Grid.page-y + 3 * (157px + 12px);
+            width: Grid.col-width;
+            height: 157px;
+            text: root.board-hint;
+            font-size: 24px;
+            color: Theme.text-3;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+
     if root.desk && root.desk-page == "trends": Rectangle {
         PageHeader {
             x: Grid.col-x;
@@ -5676,7 +5811,9 @@ export component CompanionWindow inherits Window {
         // The veil stays to the end: one window, and the page under it does not read through.
         scrim: true;
         closable: root.ask-done;
-        icon: root.ask-done ? Icons.check-circle-48 : root.ask-working ? Icons.refresh-44 : Icons.help-circle-48;
+        icon: root.ask-icon-path != "" && self.asking ? @image-url("") : root.ask-done ? Icons.check-circle-48
+            : root.ask-working ? Icons.refresh-44 : Icons.help-circle-48;
+        icon-path: self.asking ? root.ask-icon-path : "";
         title: root.ask-done ? root.done-name : root.ask-working ? root.ask-working-title : root.ask-text;
         text: root.ask-done ? root.done-state : root.ask-working ? root.t.ask_executing : root.ask-names;
         text-gold: root.ask-done;

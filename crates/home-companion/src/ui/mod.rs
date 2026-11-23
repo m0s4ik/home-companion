@@ -509,7 +509,43 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn on_ask_answered(&self, f: impl Fn(bool) + 'static);
     /// Cancel in the question's window (after the yes).
     fn on_ask_cancel(&self, f: impl Fn() + 'static);
+    /// A tile's question: its icon's path data in the question's window ("" = the brain's).
+    fn set_ask_icon(&self, path: &str);
+    /// The board's page: its name, its tiles, its place among the pages, and whether the
+    /// board has nothing on it yet (with the line saying where tiles come from).
+    fn set_board(
+        &self,
+        title: &str,
+        tiles: &[board::draw::TileDraw],
+        index: usize,
+        count: usize,
+        empty: bool,
+        hint: &str,
+    );
+    /// The thin handle on the home's right edge (a page has tiles).
+    fn set_board_handle(&self, on: bool);
+    /// The custom widget's tiles.
+    fn set_widget_tiles(&self, tiles: &[board::draw::TileDraw]);
+    /// A tile touched: "page" or "widget", its index in its canvas.
+    fn on_board_tapped(&self, f: impl Fn(String, i32) + 'static);
+    /// A level dragged: where, its index, the value 0-100, the finger lifted.
+    fn on_board_level(&self, f: impl Fn(String, i32, i32, bool) + 'static);
+    /// A swipe across the board's page: +1 the next, -1 the previous.
+    fn on_board_swiped(&self, f: impl Fn(i32) + 'static);
+    /// A touch from the home's right edge is over: its outcome and how far it went (px).
+    fn on_board_edge(&self, f: impl Fn(String, f32) + 'static);
 }
+
+/// The board's tiles in Slint's struct.
+fn board_tiles<T: From<BoardTileFields>>(tiles: &[board::draw::TileDraw]) -> Vec<T> {
+    tiles
+        .iter()
+        .map(|t| T::from(BoardTileFields(t.clone())))
+        .collect()
+}
+
+/// A tile for `From` into the generated struct (one per renderer module).
+pub struct BoardTileFields(pub board::draw::TileDraw);
 
 /// A fact on the "Ricordi" page.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -1861,6 +1897,47 @@ macro_rules! impl_screen {
             fn on_ask_cancel(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_ask_cancel(self, f)
             }
+            fn set_ask_icon(&self, path: &str) {
+                $m::CompanionWindow::set_ask_icon_path(self, path.into())
+            }
+            fn set_board(
+                &self,
+                title: &str,
+                tiles: &[board::draw::TileDraw],
+                index: usize,
+                count: usize,
+                empty: bool,
+                hint: &str,
+            ) {
+                let rows: Vec<$m::BoardTileData> = board_tiles(tiles);
+                $m::CompanionWindow::set_board_title(self, title.into());
+                $m::CompanionWindow::set_board_tiles(self, model!(rows));
+                $m::CompanionWindow::set_board_index(self, index as i32);
+                $m::CompanionWindow::set_board_count(self, count as i32);
+                $m::CompanionWindow::set_board_empty(self, empty);
+                $m::CompanionWindow::set_board_hint(self, hint.into());
+            }
+            fn set_board_handle(&self, on: bool) {
+                $m::CompanionWindow::set_board_handle(self, on)
+            }
+            fn set_widget_tiles(&self, tiles: &[board::draw::TileDraw]) {
+                let rows: Vec<$m::BoardTileData> = board_tiles(tiles);
+                $m::CompanionWindow::set_widget_tiles(self, model!(rows));
+            }
+            fn on_board_tapped(&self, f: impl Fn(String, i32) + 'static) {
+                $m::CompanionWindow::on_board_tapped(self, move |w, i| f(w.into(), i))
+            }
+            fn on_board_level(&self, f: impl Fn(String, i32, i32, bool) + 'static) {
+                $m::CompanionWindow::on_board_level(self, move |w, i, v, done| {
+                    f(w.into(), i, v, done)
+                })
+            }
+            fn on_board_swiped(&self, f: impl Fn(i32) + 'static) {
+                $m::CompanionWindow::on_board_swiped(self, f)
+            }
+            fn on_board_edge(&self, f: impl Fn(String, f32) + 'static) {
+                $m::CompanionWindow::on_board_edge(self, move |o, d| f(o.into(), d))
+            }
             fn on_ha_dismiss(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_ha_dismiss(self, f)
             }
@@ -1869,6 +1946,28 @@ macro_rules! impl_screen {
             }
         }
     };
+}
+
+impl From<BoardTileFields> for sw::BoardTileData {
+    fn from(BoardTileFields(t): BoardTileFields) -> Self {
+        sw::BoardTileData {
+            id: t.index as i32,
+            x: t.x as i32,
+            y: t.y as i32,
+            w: t.w as i32,
+            h: t.h as i32,
+            kind: t.kind.into(),
+            state: t.state.into(),
+            icon: t.icon.into(),
+            name: t.name.into(),
+            value: t.value.into(),
+            status: t.status.into(),
+            range: t.range.into(),
+            level: t.level,
+            curve: t.curve.into(),
+            tappable: t.tappable,
+        }
+    }
 }
 
 impl_screen!(sw);

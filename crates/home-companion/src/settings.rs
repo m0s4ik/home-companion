@@ -1057,7 +1057,8 @@ mod tests {
                 Kind::Notes,
                 Kind::Sensors,
                 Kind::Check,
-                Kind::Playing
+                Kind::Playing,
+                Kind::Custom
             ]
         );
         // A first version's file with every page off: all stay off.
@@ -1088,7 +1089,7 @@ mod tests {
             &s.path,
             "[widgets]\nevery = 20\non = [\"quotes\", \"weather\"]\n\
              order = [\"next\", \"quotes\", \"weather\"]\n\
-             seen = [\"next\", \"quotes\", \"weather\", \"cities\", \"shopping\", \"notes\", \"sensors\", \"check\", \"playing\", \"home\"]\n\
+             seen = [\"next\", \"quotes\", \"weather\", \"cities\", \"shopping\", \"notes\", \"sensors\", \"check\", \"playing\", \"home\", \"custom\"]\n\
              sensors = [\"sensor.a\"]\n\
              [[widgets.quotes]]\nid = \"bitcoin\"\nname = \"Bitcoin\"\nsource = \"coingecko\"\n",
         )
