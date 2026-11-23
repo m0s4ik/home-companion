@@ -12,9 +12,14 @@
 //!   `render_template` subscription over the `todo` and `calendar` domains: a few hundred bytes
 //!   even on a big installation, and it follows entities that come and go).
 //!
+//! - **the board's tiles** (ui/board.rs): their entities join the widget's one subscription,
+//!   their states go to the screen within [`TILES_EVERY`], and a tap is a `call_service` from a
+//!   closed list ([`check_call`]), answered with [`HubMsg::Called`]. A call made while the link
+//!   is down is answered at once as failed, never sent later.
+//!
 //! Which lists are subscribed: the user's choice (Settings: `lists`), else every `todo.*`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io;
 use std::net::TcpStream;
 use std::sync::Arc;
@@ -60,6 +65,16 @@ pub enum HubCmd {
     Catalog,
     /// The screen is off or it is night: no sensor's curve is fetched meanwhile.
     Quiet(bool),
+    /// A tile's call (`call_service` on one entity), answered with [`HubMsg::Called`] and the
+    /// same `id`: only an entity of the board's tiles, only a service of the closed list or the
+    /// tile's own "Advanced" one ([`check_call`]).
+    Call {
+        id: u64,
+        domain: String,
+        service: String,
+        entity_id: String,
+        data: Value,
+    },
 }
 
 /// What the screen gets.
@@ -89,6 +104,14 @@ pub enum HubMsg {
     Widgets(super::widgets::WidgetsData),
     /// A sensor's last 24 hours (None: none to draw).
     Curve(String, Option<super::widgets::Curve>),
+    /// The states of the board's tiles' entities, when they changed.
+    Tiles(super::widgets::States),
+    /// The answer to [`HubCmd::Call`]: done, or why not.
+    Called {
+        id: u64,
+        ok: bool,
+        error: Option<String>,
+    },
 }
 
 /// What the hub knows of its link across connections: when the last message came (seconds since
@@ -256,17 +279,100 @@ pub fn remove_message(id: u64, list: &str, uid: &str) -> Value {
            "service_data": {"item": uid}, "target": {"entity_id": list}})
 }
 
+/// A tile's call may go: an entity of the board's tiles, of a domain a tile may control, that
+/// the gates allow (with the device class and name Home Assistant gave it), and a service of
+/// the closed list ([`crate::ui::board::allowed`]) or the tile's "Advanced" one; `data` an
+/// object. Err: why not.
+pub fn check_call(
+    want: &super::widgets::Want,
+    states: &super::widgets::States,
+    domain: &str,
+    service: &str,
+    entity_id: &str,
+    data: &Value,
+) -> Result<(), String> {
+    use crate::ui::board::TileKind;
+    if !want.tiles.iter().any(|t| t == entity_id) {
+        return Err(format!("{entity_id} is not on the board"));
+    }
+    let controllable: Vec<&str> = TileKind::Button
+        .domains()
+        .iter()
+        .chain(TileKind::Level.domains())
+        .copied()
+        .collect();
+    if !crate::settings::valid_entity(entity_id, &controllable) {
+        return Err(format!("{entity_id} is not controlled from a tile"));
+    }
+    let gates = safety::SafetyCfg::default();
+    let st = states.by_id.get(entity_id);
+    let (class, name) = st.map_or(("", ""), |s| (s.device_class.as_str(), s.name.as_str()));
+    if gates.entity_gate(entity_id, class, name) == safety::Gate::Never
+        || gates.never_domains.iter().any(|d| d == domain)
+    {
+        return Err(format!("{entity_id} is never controlled"));
+    }
+    let named = format!("{domain}.{service}");
+    if !crate::ui::board::allowed(domain, service)
+        && !want
+            .advanced
+            .iter()
+            .any(|(e, s)| e == entity_id && *s == named)
+    {
+        return Err(format!("{named} is not allowed"));
+    }
+    if !data.is_object() {
+        return Err("service data is not an object".into());
+    }
+    Ok(())
+}
+
+/// The `call_service` message of a tile's call.
+pub fn call_message(id: u64, domain: &str, service: &str, entity_id: &str, data: &Value) -> Value {
+    json!({"id": id, "type": "call_service", "domain": domain, "service": service,
+           "service_data": data, "target": {"entity_id": entity_id}})
+}
+
 // ---- the thread ------------------------------------------------------------------------------
 
-fn pause(d: Duration, stop: fn() -> bool) -> bool {
+fn pause(d: Duration, stop: fn() -> bool, offline: &mut dyn FnMut() -> bool) -> bool {
     let until = Instant::now() + d;
     while Instant::now() < until {
-        if stop() {
+        if stop() || !offline() {
             return false;
         }
         std::thread::sleep((until - Instant::now()).min(Duration::from_millis(250)));
     }
     !stop()
+}
+
+/// While the link is down: a tile's call is answered as failed at once (never sent later, when
+/// nobody waits for it any more); every other command waits in `backlog` for the next
+/// connection. False: the screen is gone.
+fn drain_offline(
+    cmds: &Receiver<HubCmd>,
+    backlog: &mut VecDeque<HubCmd>,
+    tx: &Sender<HubMsg>,
+) -> bool {
+    loop {
+        match cmds.try_recv() {
+            Ok(HubCmd::Call { id, .. }) => {
+                if tx
+                    .send(HubMsg::Called {
+                        id,
+                        ok: false,
+                        error: Some("Home Assistant is not connected".into()),
+                    })
+                    .is_err()
+                {
+                    return false;
+                }
+            }
+            Ok(c) => backlog.push_back(c),
+            Err(TryRecvError::Empty) => return true,
+            Err(TryRecvError::Disconnected) => return false,
+        }
+    }
 }
 
 fn run(cfg: HubConfig, tx: Sender<HubMsg>, cmds: Receiver<HubCmd>, stop: fn() -> bool) {
@@ -288,8 +394,10 @@ fn run(cfg: HubConfig, tx: Sender<HubMsg>, cmds: Receiver<HubCmd>, stop: fn() ->
     // the offline sign goes soon after Home Assistant is back (the backoff alone grows to 5 min).
     let mut told_down = false;
     let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(300));
+    // Commands that came while the link was down (tiles' calls excepted: drain_offline).
+    let mut backlog: VecDeque<HubCmd> = VecDeque::new();
     loop {
-        if stop() {
+        if stop() || !drain_offline(&cmds, &mut backlog, &tx) {
             return;
         }
         // Checked again every minute: a link made on the screen is picked up by itself.
@@ -297,7 +405,9 @@ fn run(cfg: HubConfig, tx: Sender<HubMsg>, cmds: Receiver<HubCmd>, stop: fn() ->
             Ok(t) => t,
             Err(e) => {
                 log::debug!("cards and lists: {e}");
-                if !pause(Duration::from_secs(60), stop) {
+                if !pause(Duration::from_secs(60), stop, &mut || {
+                    drain_offline(&cmds, &mut backlog, &tx)
+                }) {
                     return;
                 }
                 continue;
@@ -314,6 +424,7 @@ fn run(cfg: HubConfig, tx: Sender<HubMsg>, cmds: Receiver<HubCmd>, stop: fn() ->
             &mut want,
             &mut wd,
             &mut link,
+            &mut backlog,
             stop,
         ) {
             Ok(()) => return,
@@ -346,7 +457,7 @@ fn run(cfg: HubConfig, tx: Sender<HubMsg>, cmds: Receiver<HubCmd>, stop: fn() ->
         } else {
             delay
         };
-        if !pause(delay, stop) {
+        if !pause(delay, stop, &mut || drain_offline(&cmds, &mut backlog, &tx)) {
             return;
         }
     }
@@ -364,6 +475,7 @@ fn session(
     want: &mut super::widgets::Want,
     wd: &mut WidgetSide,
     link: &mut LinkState,
+    backlog: &mut VecDeque<HubCmd>,
     stop: fn() -> bool,
 ) -> Result<(), String> {
     let lost = |e: io::Error| format!("{}:{}: {e}", ep.host, ep.port);
@@ -459,6 +571,8 @@ fn session(
         .map_err(lost)?;
     let mut fire_ids: Vec<u64> = Vec::new();
     let mut fire_refused = false;
+    // Tiles' calls sent: message id → the screen's id.
+    let mut calls: HashMap<u64, u64> = HashMap::new();
     wd.connected();
     if wd.catalog_due(want) {
         wd.ask_catalog(&mut ws, &mut take_id).map_err(lost)?;
@@ -475,7 +589,11 @@ fn session(
         }
         let mut changed_lists = false;
         loop {
-            match cmds.try_recv() {
+            let next = match backlog.pop_front() {
+                Some(c) => Ok(c),
+                None => cmds.try_recv(),
+            };
+            match next {
                 Ok(HubCmd::Done { list, uid }) => {
                     ws.send_text(&tick_message(take_id(), &list, &uid).to_string())
                         .map_err(lost)?;
@@ -524,6 +642,42 @@ fn session(
                     }
                 }
                 Ok(HubCmd::Quiet(q)) => wd.quiet = q,
+                Ok(HubCmd::Call {
+                    id,
+                    domain,
+                    service,
+                    entity_id,
+                    data,
+                }) => match check_call(want, &wd.states, &domain, &service, &entity_id, &data) {
+                    Ok(()) => {
+                        let mid = take_id();
+                        if calls.len() >= 32 {
+                            // Never answered: the oldest are given up.
+                            let oldest = calls.keys().min().copied().unwrap_or(mid);
+                            calls.remove(&oldest);
+                        }
+                        calls.insert(mid, id);
+                        ws.send_text(
+                            &call_message(mid, &domain, &service, &entity_id, &data).to_string(),
+                        )
+                        .map_err(lost)?;
+                        log::info!(event = "ha_board_call", entity = entity_id.as_str(); "tile: {domain}.{service} on {entity_id}");
+                    }
+                    Err(why) => {
+                        log::warn!(event = "ha_board_call"; "tile: refused: {why}");
+                        if tx
+                            .send(HubMsg::Called {
+                                id,
+                                ok: false,
+                                error: Some(why),
+                            })
+                            .is_err()
+                        {
+                            ws.close();
+                            return Ok(());
+                        }
+                    }
+                },
                 Ok(HubCmd::SetLists(l)) => {
                     if *chosen != l {
                         *chosen = l;
@@ -618,6 +772,32 @@ fn session(
                     continue;
                 }
                 let id = v.get("id").and_then(Value::as_u64);
+                if v.get("type").and_then(Value::as_str) == Some("result")
+                    && let Some(screen_id) = id.and_then(|i| calls.remove(&i))
+                {
+                    let ok = v.get("success").and_then(Value::as_bool) == Some(true);
+                    let error = (!ok).then(|| {
+                        v.pointer("/error/message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("refused")
+                            .to_string()
+                    });
+                    if let Some(e) = &error {
+                        log::warn!(event = "ha_board_call"; "tile: Home Assistant refused the call: {e}");
+                    }
+                    if tx
+                        .send(HubMsg::Called {
+                            id: screen_id,
+                            ok,
+                            error,
+                        })
+                        .is_err()
+                    {
+                        ws.close();
+                        return Ok(());
+                    }
+                    continue;
+                }
                 let is_event = v.get("type").and_then(Value::as_str) == Some("event");
                 let failed = v.get("type").and_then(Value::as_str) == Some("result")
                     && v.get("success").and_then(Value::as_bool) == Some(false);
@@ -717,8 +897,10 @@ fn session(
 const CATALOG_EVERY: Duration = Duration::from_secs(6 * 3600);
 const CATALOG_ASKED: Duration = Duration::from_secs(5 * 60);
 const CATALOG_BLOCKED: Duration = Duration::from_secs(6 * 3600);
-/// The widget's data goes to the screen at most this often.
+/// The widget's data goes to the screen at most this often; the tiles' states (a tap waits for
+/// its answer) at most this often.
 const WIDGETS_EVERY: Duration = Duration::from_millis(1500);
+pub const TILES_EVERY: Duration = Duration::from_millis(300);
 
 /// A message's `id` without reading the rest of it as JSON values.
 fn message_id(text: &str) -> Option<u64> {
@@ -745,6 +927,10 @@ struct WidgetSide {
     /// Data waiting for [`WIDGETS_EVERY`], and when the last went.
     pending: Option<super::widgets::WidgetsData>,
     last_sent: Option<Instant>,
+    /// The tiles' states told, waiting for [`TILES_EVERY`], when the last went.
+    tiles_told: Option<super::widgets::States>,
+    tiles_pending: Option<super::widgets::States>,
+    tiles_sent: Option<Instant>,
     /// Curves asked (message id → entity, when) and when each sensor's was asked last.
     curve_pending: std::collections::HashMap<u64, (String, Instant)>,
     curve_asked: std::collections::HashMap<String, Instant>,
@@ -773,6 +959,8 @@ impl WidgetSide {
         self.states = Default::default();
         self.told = None;
         self.pending = None;
+        self.tiles_told = None;
+        self.tiles_pending = None;
         self.curve_pending.clear();
     }
 
@@ -823,7 +1011,7 @@ impl WidgetSide {
             return None;
         }
         let catalog = self.catalog.as_ref()?;
-        let entity = want.sensors.iter().find(|s| {
+        let entity = want.sensors.iter().chain(&want.tile_curves).find(|s| {
             !self.no_curve.contains_key(*s)
                 && self
                     .curve_asked
@@ -887,10 +1075,34 @@ impl WidgetSide {
         } else {
             self.pending = None;
         }
+        let tiles = super::widgets::States {
+            by_id: want
+                .tiles
+                .iter()
+                .filter_map(|id| Some((id.clone(), self.states.by_id.get(id)?.clone())))
+                .collect(),
+        };
+        if self.tiles_told.as_ref() != Some(&tiles)
+            && !(want.tiles.is_empty() && self.tiles_told.is_none())
+        {
+            self.tiles_pending = Some(tiles);
+        } else {
+            self.tiles_pending = None;
+        }
     }
 
     /// Sends what waits, at most every [`WIDGETS_EVERY`]. False: the screen is gone.
     fn flush(&mut self, tx: &Sender<HubMsg>) -> bool {
+        if self.tiles_pending.is_some()
+            && self.tiles_sent.is_none_or(|t| t.elapsed() >= TILES_EVERY)
+        {
+            let tiles = self.tiles_pending.take().unwrap_or_default();
+            self.tiles_told = Some(tiles.clone());
+            self.tiles_sent = Some(Instant::now());
+            if tx.send(HubMsg::Tiles(tiles)).is_err() {
+                return false;
+            }
+        }
         if self.pending.is_none() || self.last_sent.is_some_and(|t| t.elapsed() < WIDGETS_EVERY) {
             return true;
         }
@@ -914,6 +1126,15 @@ mod tests {
             match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
                 HubMsg::Link { .. } => {}
                 m => return m,
+            }
+        }
+    }
+
+    /// The first message `f` takes, the others (and the link's) left out.
+    fn wait<T>(rx: &Receiver<HubMsg>, f: impl Fn(HubMsg) -> Option<T>) -> T {
+        loop {
+            if let Some(t) = f(next(rx)) {
+                return t;
             }
         }
     }
@@ -1342,6 +1563,263 @@ mod tests {
             }
             m => panic!("{m:?}"),
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn board_want() -> super::super::widgets::Want {
+        super::super::widgets::Want {
+            tiles: vec![
+                "light.living_room".into(),
+                "cover.living_room".into(),
+                "cover.garage".into(),
+                "script.good_night".into(),
+                "lock.front".into(),
+            ],
+            advanced: vec![("script.good_night".into(), "script.turn_off".into())],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_tiles_call_only_from_the_closed_list() {
+        use super::super::widgets::{State, States};
+        let w = board_want();
+        let mut s = States::default();
+        s.by_id.insert(
+            "cover.garage".into(),
+            State {
+                device_class: "garage".into(),
+                ..Default::default()
+            },
+        );
+        let obj = json!({});
+        let ok = |d: &str, v: &str, e: &str| check_call(&w, &s, d, v, e, &obj);
+        assert_eq!(ok("homeassistant", "toggle", "light.living_room"), Ok(()));
+        assert_eq!(ok("light", "turn_on", "light.living_room"), Ok(()));
+        assert_eq!(
+            ok("cover", "set_cover_position", "cover.living_room"),
+            Ok(())
+        );
+        assert_eq!(
+            ok("script", "turn_off", "script.good_night"),
+            Ok(()),
+            "its Advanced service"
+        );
+        assert!(
+            ok("script", "turn_off", "light.living_room").is_err(),
+            "not this tile's"
+        );
+        assert!(
+            ok("light", "turn_off", "light.living_room").is_err(),
+            "not in the list"
+        );
+        assert!(
+            ok("homeassistant", "toggle", "light.kitchen").is_err(),
+            "not on the board"
+        );
+        assert!(
+            ok("cover", "toggle", "cover.garage").is_err(),
+            "a garage door, by its class"
+        );
+        assert!(ok("lock", "unlock", "lock.front").is_err());
+        assert!(ok("homeassistant", "toggle", "lock.front").is_err());
+        assert!(check_call(&w, &s, "light", "turn_on", "light.living_room", &json!([1])).is_err());
+        assert_eq!(
+            call_message(
+                5,
+                "light",
+                "turn_on",
+                "light.living_room",
+                &json!({"brightness_pct": 40})
+            ),
+            json!({"id": 5, "type": "call_service", "domain": "light", "service": "turn_on",
+                   "service_data": {"brightness_pct": 40},
+                   "target": {"entity_id": "light.living_room"}})
+        );
+    }
+
+    #[test]
+    fn a_call_while_offline_fails_at_once_and_the_rest_waits() {
+        let (cmd_tx, cmd_rx) = channel();
+        let (tx, rx) = channel();
+        cmd_tx.send(HubCmd::Quiet(true)).unwrap();
+        cmd_tx
+            .send(HubCmd::Call {
+                id: 3,
+                domain: "homeassistant".into(),
+                service: "toggle".into(),
+                entity_id: "light.a".into(),
+                data: json!({}),
+            })
+            .unwrap();
+        cmd_tx.send(HubCmd::Catalog).unwrap();
+        let mut backlog = VecDeque::new();
+        assert!(drain_offline(&cmd_rx, &mut backlog, &tx));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(HubMsg::Called {
+                id: 3,
+                ok: false,
+                ..
+            })
+        ));
+        assert_eq!(backlog, [HubCmd::Quiet(true), HubCmd::Catalog]);
+        drop(cmd_tx);
+        assert!(
+            !drain_offline(&cmd_rx, &mut backlog, &tx),
+            "the screen is gone"
+        );
+    }
+
+    /// The fake Home Assistant's side up to the first subscriptions (render_template, the
+    /// card and screen events).
+    fn accept_ha(l: &TcpListener) -> (TcpStream, Vec<u8>) {
+        let (mut s, _) = l.accept().unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut buf = Vec::new();
+        while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            let mut c = [0u8; 1024];
+            let n = s.read(&mut c).unwrap();
+            buf.extend_from_slice(&c[..n]);
+        }
+        s.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+            .unwrap();
+        let mut buf = Vec::new();
+        send(&mut s, &json!({"type": "auth_required"}));
+        assert_eq!(read_frame(&mut s, &mut buf)["access_token"], "tok");
+        send(&mut s, &json!({"type": "auth_ok"}));
+        for _ in 0..4 {
+            read_frame(&mut s, &mut buf);
+        }
+        (s, buf)
+    }
+
+    #[test]
+    fn tiles_are_followed_and_called_over_a_connection() {
+        let dir =
+            std::env::temp_dir().join(format!("home-companion-hub-tiles-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("ha-token"), "tok\n").unwrap();
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        let auth = Arc::new(auth::Auth::new(&url, &dir.join("ha-token"), &dir));
+        let cfg = HubConfig {
+            url,
+            auth,
+            device: "Alfred".into(),
+            lists: vec![],
+        };
+        let (rx, tx, _) = spawn(cfg, no_stop).unwrap();
+        // A call before the board is known (or the link is up): refused, never sent.
+        tx.send(HubCmd::Call {
+            id: 1,
+            domain: "homeassistant".into(),
+            service: "toggle".into(),
+            entity_id: "light.living_room".into(),
+            data: json!({}),
+        })
+        .unwrap();
+        let (mut s, mut buf) = accept_ha(&l);
+        assert!(matches!(
+            wait(&rx, |m| matches!(m, HubMsg::Called { .. }).then_some(m)),
+            HubMsg::Called {
+                id: 1,
+                ok: false,
+                error: Some(_)
+            }
+        ));
+        let want = super::super::widgets::Want {
+            tiles: vec!["light.living_room".into(), "cover.living_room".into()],
+            ..Default::default()
+        };
+        tx.send(HubCmd::SetWidgets(want)).unwrap();
+        // The catalogue first, then one subscription with the tiles' entities.
+        let get = loop {
+            let m = read_frame(&mut s, &mut buf);
+            if m["type"] == "get_states" {
+                break m;
+            }
+        };
+        send(
+            &mut s,
+            &json!({"id": get["id"], "type": "result", "success": true, "result": [
+                {"entity_id": "light.living_room", "state": "off",
+                 "attributes": {"friendly_name": "Living room"}}]}),
+        );
+        let sub = read_frame(&mut s, &mut buf);
+        assert_eq!(sub["type"], "subscribe_entities");
+        assert_eq!(
+            sub["entity_ids"],
+            json!(["cover.living_room", "light.living_room"])
+        );
+        send(
+            &mut s,
+            &json!({"id": sub["id"], "type": "event", "event": {"a": {
+                "light.living_room": {"s": "off", "a": {"friendly_name": "Living room"}},
+                "cover.living_room": {"s": "open", "a": {"device_class": "shutter",
+                                                         "current_position": 100}}}}}),
+        );
+        // (First the empty states of the new subscription, then the event's, 300 ms later.)
+        let tiles = wait(&rx, |m| match m {
+            HubMsg::Tiles(t) if !t.by_id.is_empty() => Some(t),
+            _ => None,
+        });
+        assert_eq!(tiles.by_id["cover.living_room"].position, Some(100.0));
+        // A tap: call_service, Home Assistant says yes; a refused one says why.
+        for (id, ok) in [(7u64, true), (8, false)] {
+            tx.send(HubCmd::Call {
+                id,
+                domain: "light".into(),
+                service: "turn_on".into(),
+                entity_id: "light.living_room".into(),
+                data: json!({"brightness_pct": 40}),
+            })
+            .unwrap();
+            let call = read_frame(&mut s, &mut buf);
+            assert_eq!(call["type"], "call_service");
+            assert_eq!(call["service_data"], json!({"brightness_pct": 40}));
+            assert_eq!(call["target"]["entity_id"], "light.living_room");
+            let answer = if ok {
+                json!({"id": call["id"], "type": "result", "success": true, "result": {}})
+            } else {
+                json!({"id": call["id"], "type": "result", "success": false,
+                       "error": {"code": "not_found", "message": "Service not found"}})
+            };
+            send(&mut s, &answer);
+            let got = wait(&rx, |m| matches!(m, HubMsg::Called { .. }).then_some(m));
+            let error = (!ok).then(|| "Service not found".to_string());
+            assert_eq!(got, HubMsg::Called { id, ok, error });
+        }
+        // Not on the closed list: refused here, never sent.
+        tx.send(HubCmd::Call {
+            id: 9,
+            domain: "light".into(),
+            service: "turn_off".into(),
+            entity_id: "light.living_room".into(),
+            data: json!({}),
+        })
+        .unwrap();
+        assert!(matches!(
+            wait(&rx, |m| matches!(m, HubMsg::Called { .. }).then_some(m)),
+            HubMsg::Called {
+                id: 9,
+                ok: false,
+                ..
+            }
+        ));
+        // The new state comes within TILES_EVERY.
+        send(
+            &mut s,
+            &json!({"id": sub["id"], "type": "event", "event": {"c": {
+                "light.living_room": {"+": {"s": "on", "a": {"brightness": 102}}}}}}),
+        );
+        let at = Instant::now();
+        let t = wait(&rx, |m| match m {
+            HubMsg::Tiles(t) => Some(t),
+            _ => None,
+        });
+        assert_eq!(t.by_id["light.living_room"].brightness, Some(102.0));
+        assert!(at.elapsed() < Duration::from_secs(1));
         let _ = std::fs::remove_dir_all(dir);
     }
 

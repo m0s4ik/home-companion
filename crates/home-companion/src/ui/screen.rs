@@ -8108,6 +8108,8 @@ impl<S: Screen> Ui<S> {
                 self.render_shopping();
                 self.refresh_home();
             }
+            // The board's tiles: drawn in the screen phase (ui/board.rs).
+            HubMsg::Tiles(_) | HubMsg::Called { .. } => {}
         }
     }
 

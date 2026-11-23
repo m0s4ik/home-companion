@@ -508,6 +508,17 @@ impl Call {
             data,
         }
     }
+
+    /// The hub's command for this call.
+    pub fn into_cmd(self, id: u64) -> crate::ha::hub::HubCmd {
+        crate::ha::hub::HubCmd::Call {
+            id,
+            domain: self.domain,
+            service: self.service,
+            entity_id: self.entity_id,
+            data: self.data,
+        }
+    }
 }
 
 /// The services a tile may call without "Advanced": the domain's actions and the levels.

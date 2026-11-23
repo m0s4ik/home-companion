@@ -320,6 +320,12 @@ fn what_a_tap_does_by_domain() {
     assert_eq!(c.data, json!({"a": 1}));
     assert!(!allowed("script", "turn_off"));
     assert!(!allowed("lock", "unlock"));
+    match c.into_cmd(7) {
+        crate::ha::hub::HubCmd::Call { id, entity_id, .. } => {
+            assert_eq!((id, entity_id.as_str()), (7, "script.a"))
+        }
+        m => panic!("{m:?}"),
+    }
 }
 
 #[test]
