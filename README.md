@@ -86,7 +86,8 @@ Where the data comes from, and what leaves your home network:
 Settings → Access from the browser turns on a page for a phone or a computer on the home network: its address and a
 QR code are on that screen, and every new device must be allowed there first, after comparing a code (up to five;
 each can be revoked). **Home** draws the device's screen with the widget in place, the rotation as a strip to drag
-into order, and each widget's editor: its markets, cities or sensors, its name, on the home or not. **Shopping**
+into order, and each widget's editor: its markets, cities or sensors, its name, on the home or not. **Board** sets the
+board's pages and custom widgets (above). **Shopping**
 ticks and deletes items of Home Assistant's lists; **Settings** has the device's settings. In English, Italian,
 German and Dutch.
 
@@ -219,6 +220,32 @@ the time of the last data.
 <img src="docs/images/home-assistant.png" width="400" alt="Home Assistant's dashboard on the device: weather, lights, a cover, a thermostat, with the gold home button">
 </p>
 <p align="center"><sub>A test Home Assistant with its demo devices.</sub></p>
+
+### 🎚️ The board: your Home Assistant tiles
+
+A swipe in from the right edge of the home brings in the **board**: full-screen pages of Home Assistant tiles drawn by
+the device itself (no browser), 6 × 4 cells under Alfred's portrait. A tile is 1 × 1, 2 × 1, 2 × 2 or 4 × 1:
+**buttons** do what the device's kind suggests (a light or a plug toggles, a scene runs, a shutter opens or closes),
+**values** show a sensor with its last 24 hours, **sliders** set a brightness, a volume, a shutter's position. Shutters
+and valves ask first (Ask for confirmation, on by default, can be switched off per tile); locks, alarms, garage doors
+and gates are never offered. A tile waits for Home Assistant's real state after a tap, and turns red if the command
+fails. Several pages follow the finger across; back home with Alfred's portrait, the home button (Home Assistant's
+view's, at the same place) or a swipe to the right. The same tiles also make a **custom widget** that takes its turn
+on the home.
+
+<p align="center">
+<img src="docs/images/board.png" width="400" alt="The board on the device: lights, a fan, a shutter, a scene, a temperature with its day's curve, the power drawn and a light's slider, under Alfred's portrait">
+<img src="docs/images/board-confirm.png" width="400" alt="A tap on a shutter: Close Shutter? with No and Yes over the board">
+</p>
+<p align="center">
+<img src="docs/images/widget-board.png" width="400" alt="A custom widget on the home: four buttons, a temperature and a volume slider">
+<img src="docs/images/panel-board.png" width="400" alt="The board in the browser panel: the page's grid as on the device and the chosen tile's settings beside it">
+</p>
+<p align="center"><sub>Sample devices.</sub></p>
+
+The tiles are chosen in the browser panel's **Board**: the grid as on the device, a tap on an empty place searches
+Home Assistant's devices and proposes the kind, icon, name and confirmation; drag to move, pull a corner to resize.
+Every change shows on the device at once.
 
 ### 🎵 AirPlay: music and screen mirroring
 
@@ -495,7 +522,7 @@ To change the Wi-Fi later: `nmcli device wifi connect "<ssid>" password "<passwo
 Italian, English, Dutch and German, complete: the screen (`locales/`), the reflexes' grammar
 (`characters/alfred/grammar/`) and the speech model the installer downloads. With any other language set in Home
 Assistant, the device still works (Home Assistant answers in its language) without the local reflexes. The German
-and Dutch texts of 0.4's new parts (the widgets, the browser panel, the poses) are machine translations for now:
+and Dutch texts of 0.4's new parts (the widgets, the browser panel, the poses, the board) are machine translations for now:
 corrections welcome.
 
 Adding a language: a `locales/<lang>.toml`, a `characters/alfred/grammar/<lang>.toml`, the number words in
