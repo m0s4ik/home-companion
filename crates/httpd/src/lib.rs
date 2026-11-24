@@ -140,7 +140,14 @@ impl Read for Timed<'_> {
             return Err(io::Error::new(io::ErrorKind::TimedOut, "request too slow"));
         }
         self.stream.set_read_timeout(Some(left))?;
-        (&mut &*self.stream).read(out)
+        // The socket's own timeout says WouldBlock on Linux (EAGAIN), TimedOut elsewhere: both
+        // are the deadline.
+        (&mut &*self.stream).read(out).map_err(|e| match e.kind() {
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
+                io::Error::new(io::ErrorKind::TimedOut, "request too slow")
+            }
+            _ => e,
+        })
     }
 }
 
