@@ -1099,11 +1099,99 @@ export component CompanionWindow inherits Window {
     // A touch that started on the home's right edge, when it is over (for the log): "board"
     // (it opened), "short", "tap"; how far it went.
     callback board-edge(string, length);
-    // How far the board's page has come in from the right (0 away, 1 in place).
-    property <float> board-in: root.page == "board" ? 1 : 0;
-    animate board-in {
-        duration: 180ms;
-        easing: ease-out;
+    // The neighbour pages' tiles (none: empty), drawn beside the page while a finger drags it.
+    in property <[BoardTileData]> board-prev-tiles: [];
+    in property <[BoardTileData]> board-next-tiles: [];
+    // The answer is too long for the conversation bar: the board steps aside for Alfred.
+    in property <bool> answer-long: false;
+    // A finger touched the home's right edge: Rust draws the board's page as it is now (it is
+    // not redrawn while not seen), before it comes in under the finger.
+    callback board-peek();
+
+    // The board is full screen (Home Assistant's view's way): it comes in from the right edge
+    // following the finger, the home stepping back under it, and goes out the same way.
+    // A finger moves it (no animation, its own place) / it was just put in place (none either).
+    in-out property <bool> board-finger: false;
+    property <bool> board-snap: false;
+    // How far a finger pulled it in from the home's edge; how far a swipe to the right on its
+    // first page took it out again; where its pages are across (the finger's, or the next page's
+    // place on the way to it).
+    in-out property <length> board-pull: 0;
+    in-out property <length> board-back: 0;
+    in-out property <length> board-slide: 0;
+    // When the finger's drag started (a fast flick counts as a long drag).
+    property <duration> board-drag-at: 0ms;
+    // A page change on its way (+1, -1): the pages slide, then the next one is drawn in place.
+    property <int> board-turn: 0;
+    // On screen: not while a timer rings, a reminder or the start-up take the screen, nor while
+    // an answer too long for the bar is spoken (Alfred's layout takes it, the board comes back).
+    property <bool> board-on: root.page == "board" && !root.ringing && !root.starting && !root.noticing
+        && !(root.answer-long && root.state == "speaking");
+    // Its left edge (0 in place, the screen's width away) and how much of the home it covers.
+    property <length> board-x: root.board-on ? root.board-back : root.width - root.board-pull;
+    animate board-x {
+        duration: root.board-finger ? 0ms : 400ms;
+        easing: cubic-bezier(0.05, 0.7, 0.1, 1.0);
+    }
+    property <float> board-cover: clamp(1 - root.board-x / root.width, 0, 1);
+    // The pages' offset: the finger's, then animated to the next page or back to 0.
+    property <length> board-shift: root.board-slide;
+    animate board-shift {
+        duration: root.board-finger || root.board-snap ? 0ms : 260ms;
+        easing: cubic-bezier(0.2, 0.8, 0.2, 1.0);
+    }
+    // Far enough to change: a quarter of the screen, or a fast flick (80 px in 250 ms).
+    pure function board-far(dx: length) -> bool {
+        abs(dx) > root.width / 4 || (abs(dx) > 80px && animation-tick() - root.board-drag-at < 250ms)
+    }
+    // A finger across the board's page: on the first page to the right it takes the page out
+    // towards the home; otherwise the pages follow it (a quarter of the way past the last).
+    function board-drag(dx: length) {
+        if (root.board-turn != 0) {
+            return;
+        }
+        if (!root.board-finger) {
+            root.board-drag-at = animation-tick();
+        }
+        root.board-finger = true;
+        root.board-snap = false;
+        root.board-back = root.board-index == 0 ? max(0, dx) : 0;
+        root.board-slide = root.board-index == 0 && dx > 0 ? 0
+            : dx < 0 && root.board-index >= root.board-count - 1 ? dx / 4 : dx;
+    }
+    function board-drop(dx: length) {
+        if (!root.board-finger) {
+            return;
+        }
+        root.board-finger = false;
+        root.board-snap = false;
+        root.board-back = 0;
+        if (dx > 0 && root.board-index == 0) {
+            root.board-slide = 0;
+            if (root.board-far(dx)) {
+                Feedback.back();
+                root.page = "home";
+            }
+        } else if (root.board-far(dx) && dx < 0 && root.board-index < root.board-count - 1) {
+            root.board-slide = -root.width;
+            root.board-turn = 1;
+        } else if (root.board-far(dx) && dx > 0 && root.board-index > 0) {
+            root.board-slide = root.width;
+            root.board-turn = -1;
+        } else {
+            root.board-slide = 0;
+        }
+    }
+    board-turner := Timer {
+        interval: 260ms;
+        running: root.board-turn != 0;
+        triggered => {
+            // The next page drawn in place of the slid one, at once.
+            root.board-snap = true;
+            root.board-swiped(root.board-turn);
+            root.board-slide = 0;
+            root.board-turn = 0;
+        }
     }
 
     // The done pop-up goes on from the question's window (its size and place, no new window).
@@ -1295,7 +1383,7 @@ export component CompanionWindow inherits Window {
     property <length> mirror-band: (root.width - root.mirror-w) / 2;
     property <bool> mirror-sides: root.mirror-band >= 300px;
     // How much of Alfred's own screen is covered (it steps back under Casa or the mirror).
-    property <float> covered: max(root.casa-cover, root.mirror-t);
+    property <float> covered: max(root.casa-cover, root.mirror-t, root.board-cover);
     changed state => {
         root.dialog = "";
         root.state-changed(root.state);
@@ -1322,7 +1410,7 @@ export component CompanionWindow inherits Window {
     out property <length> character-cx: Grid.stage-width / 2;
     // Where the pop-ups over everything are centred: on the desk column while the character is on
     // the stage (they never cover it), on the screen over a full view (Home Assistant, mirroring).
-    property <length> dialog-cx: CasaBridge.visible || root.mirror-t > 0.001 ? root.width / 2 : Grid.col-cx;
+    property <length> dialog-cx: CasaBridge.visible || root.mirror-t > 0.001 || root.board-cover > 0.5 ? root.width / 2 : Grid.col-cx;
     out property <length> character-top: 30px;
     out property <length> character-height: 740px;
     // The action band's slots (x of each 160 px wide slot).
@@ -1867,7 +1955,7 @@ export component CompanionWindow inherits Window {
 
         // The board is a swipe in from the right edge away: a thin handle says so when a page has
         // tiles. The strip (40 px, under the control center's pull at the top) is right of the
-        // desk column, where nothing else takes a touch; it opens the board when dragged 120 px.
+        // desk column, where nothing else takes a touch; the board follows the finger in from it.
         if root.board-handle: Rectangle {
             x: 1262px;
             y: 376px;
@@ -1876,15 +1964,32 @@ export component CompanionWindow inherits Window {
             border-radius: 2px;
             background: #3a3832;
         }
+        // The board comes in under the finger; let go a quarter of the way in (or flicked), it
+        // goes on to its place, else back.
         TouchArea {
             x: root.width - 40px;
             y: 48px;
             width: 40px;
             height: root.height - 48px;
             property <length> pulled: self.pressed-x - self.mouse-x;
+            moved => {
+                if (self.pressed && (root.board-finger || self.pulled > 8px)) {
+                    if (!root.board-finger) {
+                        root.board-peek();
+                        root.board-drag-at = animation-tick();
+                    }
+                    root.board-finger = true;
+                    root.board-snap = false;
+                    root.board-pull = clamp(self.pulled, 0, root.width);
+                }
+            }
             pointer-event(e) => {
-                if (e.kind == PointerEventKind.up) {
-                    if (self.pulled > 120px) {
+                if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
+                    let open = e.kind == PointerEventKind.up && root.board-finger && root.board-far(self.pulled)
+                        && self.pulled > 0;
+                    root.board-finger = false;
+                    root.board-pull = 0;
+                    if (open) {
                         Feedback.tap();
                         root.page = "board";
                         root.board-edge("board", self.pulled);
@@ -3289,72 +3394,6 @@ export component CompanionWindow inherits Window {
     // ---- The markets or the sensors chosen from the browser, one card each: name, value, the
     // change, the day's curve (520 x 96), its low and high; the sources' credit at the end.
     // Read only: they are chosen from the browser.
-    // ---- The board: the page's tiles on a 4 x 4 grid of the desk (x 424, y 112; cells of
-    // 193 x 157, 12 apart), its name and the time in the header, the pages' dots at the bottom.
-    // It comes in from the right (180 ms) and leaves by a swipe to the right on its first page,
-    // by the chevron, or after a minute alone like every page.
-    if root.desk && root.desk-page == "board": Rectangle {
-        x: round((1 - root.board-in) * Grid.col-width / 1px) * 1px;
-        PageHeader {
-            x: Grid.col-x;
-            y: Grid.header-y;
-            title: root.board-title;
-            clock: root.clock;
-            back => {
-                root.page = "home";
-            }
-        }
-        BoardGrid {
-            x: Grid.col-x;
-            y: Grid.page-y;
-            tiles: root.board-tiles;
-            columns: 4;
-            // Nothing on it yet: three rows of places, the fourth says where tiles come from.
-            rows: root.board-empty ? 3 : 4;
-            empty-cells: root.board-empty;
-            tapped(id) => {
-                root.board-tapped("page", id);
-            }
-            level-changed(id, v, done) => {
-                root.board-level("page", id, v, done);
-            }
-            swiped(d) => {
-                if (d < 0 && root.board-index == 0) {
-                    Feedback.back();
-                    root.page = "home";
-                } else {
-                    root.board-swiped(d);
-                }
-            }
-        }
-        if root.board-count > 1: Rectangle {
-            x: Grid.col-x;
-            y: 784px;
-            width: Grid.col-width;
-            height: 10px;
-            for i in root.board-count: Rectangle {
-                x: (parent.width - root.board-count * 16px + 10px) / 2 + i * 16px;
-                y: 2px;
-                width: 6px;
-                height: 6px;
-                border-radius: 3px;
-                background: i == root.board-index ? Theme.accent : Theme.line;
-            }
-        }
-        if root.board-empty && root.board-hint != "": Text {
-            x: Grid.col-x;
-            y: Grid.page-y + 3 * (157px + 12px);
-            width: Grid.col-width;
-            height: 157px;
-            text: root.board-hint;
-            font-size: 24px;
-            color: Theme.text-3;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-            wrap: word-wrap;
-        }
-    }
-
     if root.desk && root.desk-page == "trends": Rectangle {
         PageHeader {
             x: Grid.col-x;
@@ -5278,10 +5317,186 @@ export component CompanionWindow inherits Window {
     }
 
     // The veil over the stepped-back home (one flat rectangle; only while the view is moving).
-    if (CasaBridge.visible || root.mirror-t > 0) && root.covered > 0.001 && root.covered < 0.999: Rectangle {
+    if (CasaBridge.visible || root.mirror-t > 0 || root.board-cover > 0) && root.covered > 0.001 && root.covered < 0.999: Rectangle {
         width: root.width;
         height: root.height;
         background: #000000.with-alpha(0.35 * root.covered);
+    }
+
+    // ---- The board («Plancia», ui/board.rs): Home Assistant's tiles over the whole screen, 6 x 4
+    // cells of 195 x 157, 12 apart (x 25, y 96), under a header with Alfred's face (ringed in the
+    // state's colour while he listens, thinks or speaks; the words come in the bar at the top as
+    // over Home Assistant's view), the page's name and the time; the pages' dots at the bottom.
+    // It comes in from the right edge under the finger and leaves to the right from its first
+    // page, by a tap on the face, or after a minute alone like every page; the pages follow the
+    // finger across. Only its x moves (nothing animates at rest).
+    if root.board-x < root.width - 0.5px: Rectangle {
+        x: round(root.board-x / 1px) * 1px;
+        width: root.width;
+        height: root.height;
+        background: Theme.bg;
+        clip: true;
+        // Whatever no tile takes (the header, the margins): a drag across, as on the grid.
+        TouchArea {
+            property <bool> dragging: false;
+            // In the screen's coordinates: the page moves under the finger.
+            property <length> down-at: 0;
+            property <length> moved-by: self.absolute-position.x + self.mouse-x - self.down-at;
+            moved => {
+                if (self.pressed && (self.dragging || abs(self.moved-by) > 12px)) {
+                    self.dragging = true;
+                    root.board-drag(self.moved-by);
+                }
+            }
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) {
+                    self.dragging = false;
+                    self.down-at = self.absolute-position.x + self.pressed-x;
+                } else if (self.dragging && (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel)) {
+                    self.dragging = false;
+                    root.board-drop(e.kind == PointerEventKind.up ? self.moved-by : 0);
+                }
+            }
+        }
+        // The header: the face (a tap: home), the page's name, the Wi-Fi and the time.
+        board-face := Rectangle {
+            x: 24px;
+            y: 20px;
+            width: 56px;
+            height: 56px;
+            border-radius: 28px;
+            background: Theme.surface;
+            clip: true;
+            Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.face;
+                image-fit: cover;
+            }
+        }
+        if root.conversation: Rectangle {
+            x: board-face.x - 5px;
+            y: board-face.y - 5px;
+            width: board-face.width + 10px;
+            height: board-face.height + 10px;
+            border-radius: self.width / 2;
+            border-width: 3px;
+            border-color: root.state-color;
+        }
+        Text {
+            x: 100px;
+            y: 20px;
+            width: 900px;
+            height: 56px;
+            text: root.board-title;
+            // Under the conversation's bar while Alfred talks.
+            visible: !root.conversation;
+            font-size: 34px;
+            font-weight: 300;
+            color: Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        TouchArea {
+            x: 8px;
+            y: 8px;
+            width: 88px;
+            height: 80px;
+            clicked => {
+                Feedback.back();
+                root.page = "home";
+            }
+        }
+        if Status.wifi-level >= 0: Icon {
+            x: board-clock.x - 12px - self.width;
+            y: 34px;
+            width: 28px;
+            height: 28px;
+            source: Status.wifi-icon(Status.wifi-level, false);
+            color: Status.wifi-level == 0 ? Theme.danger : Theme.text-2;
+        }
+        board-clock := Text {
+            x: 1255px - self.width;
+            y: 20px;
+            width: self.preferred-width;
+            height: 56px;
+            text: root.clock;
+            font-family: "Inter Tnum";
+            font-size: 28px;
+            color: Theme.text-2;
+            vertical-alignment: center;
+        }
+        // The pages: the one shown where the finger has it, its neighbours a screen's width
+        // beside it (drawn only while they come in).
+        Rectangle {
+            x: round(root.board-shift / 1px) * 1px;
+            y: 96px;
+            width: root.width;
+            height: 664px;
+            BoardGrid {
+                x: 25px;
+                y: 0;
+                tiles: root.board-tiles;
+                columns: 6;
+                cell-width: 195px;
+                // Nothing on it yet: three rows of places, the fourth says where tiles come from.
+                rows: root.board-empty ? 3 : 4;
+                empty-cells: root.board-empty;
+                tapped(id) => {
+                    root.board-tapped("page", id);
+                }
+                level-changed(id, v, done) => {
+                    root.board-level("page", id, v, done);
+                }
+                slide(dx) => {
+                    root.board-drag(dx);
+                }
+                slide-end(dx) => {
+                    root.board-drop(dx);
+                }
+            }
+            if root.board-empty && root.board-hint != "": Text {
+                x: 25px;
+                y: 3 * (157px + 12px);
+                width: 1230px;
+                height: 157px;
+                text: root.board-hint;
+                font-size: 24px;
+                color: Theme.text-3;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+            BoardGrid {
+                x: 25px - root.width;
+                y: 0;
+                visible: root.board-shift > 0.5px && root.board-index > 0;
+                tiles: root.board-prev-tiles;
+                columns: 6;
+                cell-width: 195px;
+            }
+            BoardGrid {
+                x: 25px + root.width;
+                y: 0;
+                visible: root.board-shift < -0.5px && root.board-index < root.board-count - 1;
+                tiles: root.board-next-tiles;
+                columns: 6;
+                cell-width: 195px;
+            }
+        }
+        if root.board-count > 1: Rectangle {
+            y: 776px;
+            width: root.width;
+            height: 10px;
+            for i in root.board-count: Rectangle {
+                x: (parent.width - root.board-count * 16px + 10px) / 2 + i * 16px;
+                y: 2px;
+                width: 6px;
+                height: 6px;
+                border-radius: 3px;
+                background: i == root.board-index ? Theme.accent : Theme.line;
+            }
+        }
     }
 
     // ---- Screen mirroring: the sender's screen centred on the character's background, as large
@@ -5649,10 +5864,13 @@ export component CompanionWindow inherits Window {
     // answer goes to Alfred's layout and comes back (Rust closes and reopens the view).
     // It slides down from the top edge when the conversation starts and back up when it ends
     // (translate only); out of the way above the screen otherwise.
-    if CasaBridge.visible || (root.mirror-t > 0.999 && !root.mirror-sides): Rectangle {
+    if CasaBridge.visible || (root.mirror-t > 0.999 && !root.mirror-sides) || root.board-cover > 0.999: conv-bar := Rectangle {
         property <length> bar-height: clamp(bar-text.preferred-height + 32px, 80px, 128px);
-        x: (root.width - self.width) / 2;
-        y: root.conversation ? 16px : -self.height - 8px;
+        // Over the board: next to the face in its header (ringed in the state's colour), over
+        // the page's name; without a face of its own.
+        property <bool> on-board: root.board-cover > 0.999 && !CasaBridge.visible && root.mirror-t < 0.001;
+        x: self.on-board ? 96px : (root.width - self.width) / 2;
+        y: root.conversation ? (self.on-board ? 8px : 16px) : -self.height - 8px;
         animate y {
             duration: 180ms;
             easing: ease-out;
@@ -5664,7 +5882,7 @@ export component CompanionWindow inherits Window {
         border-width: 2px;
         border-color: root.state-color.with-alpha(0.6);
         TouchArea { }
-        Rectangle {
+        if !conv-bar.on-board: Rectangle {
             x: 12px;
             y: (parent.height - self.height) / 2;
             width: 56px;
@@ -5680,9 +5898,9 @@ export component CompanionWindow inherits Window {
             }
         }
         bar-text := Text {
-            x: 84px;
+            x: conv-bar.on-board ? 28px : 84px;
             y: (parent.height - min(self.preferred-height, 68px)) / 2;
-            width: parent.width - 84px - 200px;
+            width: parent.width - self.x - 200px;
             height: min(self.preferred-height, 68px);
             text: root.state == "speaking" ? root.answer
                 : root.state == "listening" ? root.phrase-listening
@@ -5742,8 +5960,8 @@ export component CompanionWindow inherits Window {
     // (On the home it is the first card of the context band instead: cards.rs; on the other
     // desk pages none, it would cover them.)
     if root.done-shown && !root.done-popup && !root.night-home && !root.starting && !root.ringing
-        && (CasaBridge.visible || root.mirror-t > 0.001 || root.conversation): DoneCard {
-        property <bool> full: CasaBridge.visible || (root.mirror-t > 0.999 && !root.mirror-sides);
+        && (CasaBridge.visible || root.mirror-t > 0.001 || root.board-cover > 0.999 || root.conversation): DoneCard {
+        property <bool> full: CasaBridge.visible || (root.mirror-t > 0.999 && !root.mirror-sides) || root.board-cover > 0.999;
         x: self.full ? (root.width - self.width) / 2 : Grid.col-x;
         // Over a full view: top centre (bottom centre while the conversation bar is at the top).
         y: self.full ? (root.conversation ? root.height - 24px - self.height : 24px)

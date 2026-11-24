@@ -522,6 +522,14 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
         empty: bool,
         hint: &str,
     );
+    /// The tiles of the pages before and after the board's page (empty: none), drawn beside
+    /// it while a finger drags it across.
+    fn set_board_sides(&self, prev: &[board::draw::TileDraw], next: &[board::draw::TileDraw]);
+    /// Demo frames (`--state board-swipe`, `board-opening`): the board held where a finger
+    /// would have it, pulled in from the home's edge by `pull` px, its pages moved by `slide`.
+    fn set_board_held(&self, pull: f32, slide: f32);
+    /// A finger started pulling the board in from the home's right edge.
+    fn on_board_peek(&self, f: impl Fn() + 'static);
     /// The thin handle on the home's right edge (a page has tiles).
     fn set_board_handle(&self, on: bool);
     /// The custom widget's tiles.
@@ -1166,6 +1174,11 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_heard(self, s.into())
             }
             fn set_answer(&self, s: &str) {
+                // Too long for the conversation bar over a full-screen page (the board).
+                $m::CompanionWindow::set_answer_long(
+                    self,
+                    s.chars().count() > crate::ui::screen::BAR_ANSWER,
+                );
                 $m::CompanionWindow::set_answer(self, s.into())
             }
             fn set_wave(&self, bars: &[f32]) {
@@ -1916,6 +1929,24 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_board_count(self, count as i32);
                 $m::CompanionWindow::set_board_empty(self, empty);
                 $m::CompanionWindow::set_board_hint(self, hint.into());
+            }
+            fn set_board_sides(
+                &self,
+                prev: &[board::draw::TileDraw],
+                next: &[board::draw::TileDraw],
+            ) {
+                let prev: Vec<$m::BoardTileData> = board_tiles(prev);
+                let next: Vec<$m::BoardTileData> = board_tiles(next);
+                $m::CompanionWindow::set_board_prev_tiles(self, model!(prev));
+                $m::CompanionWindow::set_board_next_tiles(self, model!(next));
+            }
+            fn set_board_held(&self, pull: f32, slide: f32) {
+                $m::CompanionWindow::set_board_finger(self, true);
+                $m::CompanionWindow::set_board_pull(self, pull);
+                $m::CompanionWindow::set_board_slide(self, slide);
+            }
+            fn on_board_peek(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_board_peek(self, f)
             }
             fn set_board_handle(&self, on: bool) {
                 $m::CompanionWindow::set_board_handle(self, on)

@@ -616,13 +616,14 @@ pub struct Demo {
     /// page, its access dialog, the home's card after too many requests; `settings-panel-remote`
     /// (4), `remote-sign` (5): the remote screen's switch on, its sign.
     pub panel: u8,
-    /// `--state board` (1), `board-confirm` (2), `board-empty` (3), `widget-custom*` (4): the
-    /// board on sample data (board_ui::demo_board).
+    /// `--state board` (1), `board-confirm` (2), `board-empty` (3), `widget-custom*` (4),
+    /// `board-talk` (5), `board-swipe` (6), `board-opening` (7): the board on sample data
+    /// (board_ui::demo_board).
     pub board: u8,
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 115] = [
+pub const DEMO_STATES: [&str; 118] = [
     "home",
     "cards",
     "cards-setup",
@@ -736,6 +737,9 @@ pub const DEMO_STATES: [&str; 115] = [
     "board",
     "board-confirm",
     "board-empty",
+    "board-talk",
+    "board-swipe",
+    "board-opening",
     "widget-custom",
     "widget-custom-line",
 ];
@@ -1045,13 +1049,25 @@ impl Demo {
                 frame: Some(("muted_in", 50)),
                 ..home.clone()
             },
-            "board" | "board-confirm" | "board-empty" => Demo {
+            "board" | "board-confirm" | "board-empty" | "board-swipe" => Demo {
                 board: match s {
                     "board" => 1,
                     "board-confirm" => 2,
+                    "board-swipe" => 6,
                     _ => 3,
                 },
                 ..page("board")
+            },
+            // Not golden ones: a conversation over the board (the face's ring, the bar); a
+            // finger half way across to the next page; one pulling it in from the home's edge.
+            "board-talk" => Demo {
+                phase: Phase::Listening,
+                board: 5,
+                ..page("board")
+            },
+            "board-opening" => Demo {
+                board: 7,
+                ..home.clone()
             },
             "widget-custom" | "widget-custom-line" => Demo {
                 widget: Some(WidgetKind::Custom),
@@ -9006,7 +9022,7 @@ impl<S: Screen> Ui<S> {
 }
 
 /// An answer longer than this leaves the bar over Home Assistant's view for Alfred's layout.
-const BAR_ANSWER: usize = 70;
+pub(crate) const BAR_ANSWER: usize = 70;
 /// Who answers (one brain for now: Home Assistant's Assist pipeline).
 const BRAIN: &str = "Home Assistant";
 /// "Now" in demo mode: 2026-11-03 14:25 UTC (tools/shoot-golden.sh runs with TZ=UTC).
@@ -9530,6 +9546,128 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The board follows the finger: pulled in from the home's edge, across its pages and out
+    /// to the right from its first page. Let go short of a quarter of the screen (slowly), it
+    /// springs back; past it, it goes on. A drag that starts on a tile never taps it.
+    #[test]
+    fn the_board_follows_the_finger() {
+        use super::super::webview::CasaScreen as _;
+        use slint::LogicalPosition;
+        use slint::Model;
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let (ui, dir) = headless_ui("board-drag");
+        let w = &ui.screen;
+        let (hub, cmds) = std::sync::mpsc::channel();
+        *ui.hub_tx.borrow_mut() = Some(hub);
+        ui.show_demo_board(1);
+        w.casa_set_edge("bottom");
+        let button = PointerEventButton::Left;
+        let tick = |ms: u64| {
+            std::thread::sleep(Duration::from_millis(ms));
+            slint::platform::update_timers_and_animations();
+        };
+        let at = |p: (f32, f32)| LogicalPosition::new(p.0, p.1);
+        // Down, eight moves, `hold` ms still, then up (a slow drag is no flick).
+        let press = |from: (f32, f32), to: (f32, f32)| {
+            w.window()
+                .dispatch_event(WindowEvent::PointerMoved { position: at(from) });
+            w.window().dispatch_event(WindowEvent::PointerPressed {
+                position: at(from),
+                button,
+            });
+            for i in 1..=8 {
+                let f = i as f32 / 8.0;
+                let p = (from.0 + (to.0 - from.0) * f, from.1 + (to.1 - from.1) * f);
+                w.window()
+                    .dispatch_event(WindowEvent::PointerMoved { position: at(p) });
+            }
+        };
+        let lift = |to: (f32, f32)| {
+            w.window().dispatch_event(WindowEvent::PointerReleased {
+                position: at(to),
+                button,
+            });
+        };
+        let slow = |from: (f32, f32), to: (f32, f32)| {
+            press(from, to);
+            tick(300);
+            lift(to);
+        };
+        let calls = || {
+            cmds.try_iter()
+                .filter(|c| matches!(c, HubCmd::Call { .. }))
+                .count()
+        };
+        w.set_page("home".into());
+        tick(450);
+        // From the home's edge: under the finger while it moves.
+        press((1265.0, 400.0), (1065.0, 400.0));
+        assert!(w.get_board_finger());
+        assert_eq!(w.get_board_pull(), 200.0);
+        assert_eq!(w.get_page(), "home");
+        tick(300);
+        lift((1065.0, 400.0));
+        assert_eq!(w.get_page(), "home", "200 px, slowly: back");
+        assert!(!w.get_board_finger());
+        assert_eq!(w.get_board_pull(), 0.0);
+        tick(450);
+        slow((1265.0, 400.0), (865.0, 400.0));
+        assert_eq!(w.get_page(), "board", "400 px: in");
+        tick(450);
+        let _ = calls();
+        // Across the pages, starting on a tile (the floor lamp).
+        press((220.0, 340.0), (20.0, 340.0));
+        assert_eq!(w.get_board_slide(), -200.0, "the pages follow the finger");
+        tick(300);
+        lift((20.0, 340.0));
+        assert_eq!(w.get_board_slide(), 0.0, "200 px, slowly: back");
+        tick(450);
+        assert_eq!(
+            (w.get_board_index(), w.get_board_title().as_str()),
+            (0, "Living room")
+        );
+        slow((620.0, 340.0), (220.0, 340.0));
+        assert_eq!(w.get_board_slide(), -1280.0, "on its way to the next page");
+        tick(300);
+        assert_eq!(w.get_board_slide(), 0.0);
+        assert_eq!(
+            (w.get_board_index(), w.get_board_title().as_str()),
+            (1, "Night")
+        );
+        assert_eq!(
+            w.get_board_prev_tiles().row_count(),
+            15,
+            "the first page beside it"
+        );
+        assert_eq!(w.get_board_next_tiles().row_count(), 0);
+        assert_eq!(calls(), 0, "no tile tapped by a drag");
+        // Past the last page: it only gives a little.
+        press((620.0, 500.0), (220.0, 500.0));
+        assert_eq!(w.get_board_slide(), -100.0);
+        lift((220.0, 500.0));
+        tick(450);
+        assert_eq!(w.get_board_index(), 1);
+        // Back to the first, then out to the right: a short one stays, a long one goes home.
+        slow((220.0, 500.0), (620.0, 500.0));
+        tick(450);
+        assert_eq!(w.get_board_index(), 0);
+        press((220.0, 500.0), (420.0, 500.0));
+        assert_eq!(
+            w.get_board_back(),
+            200.0,
+            "the page goes out with the finger"
+        );
+        assert_eq!(w.get_board_slide(), 0.0);
+        tick(300);
+        lift((420.0, 500.0));
+        assert_eq!(w.get_page(), "board", "200 px, slowly: back in");
+        assert_eq!(w.get_board_back(), 0.0);
+        tick(450);
+        slow((220.0, 500.0), (620.0, 500.0));
+        assert_eq!(w.get_page(), "home", "400 px: home");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A headless Ui on its own state directory, Home Assistant not linked, no first start.
     /// The board on a real (headless) screen: replaced and saved, followed by the hub, a tap
     /// sent at once and waiting for its state, a failure shown, a shutter asking first, a
@@ -9559,7 +9697,11 @@ mod tests {
         assert!(want.tiles.contains(&"cover.living_room".to_string()));
         assert_eq!(
             want.tile_curves,
-            ["sensor.outdoor_temperature", "sensor.power"]
+            [
+                "sensor.outdoor_temperature",
+                "sensor.power",
+                "sensor.indoor_humidity"
+            ]
         );
         ui.apply_hub(HubMsg::Tiles(states));
         w.set_page("board".into());
@@ -9567,7 +9709,7 @@ mod tests {
         assert_eq!(w.get_board_title(), "Living room");
         assert_eq!((w.get_board_index(), w.get_board_count()), (0, 2));
         let tile = |i: usize| w.get_board_tiles().row_data(i).unwrap();
-        assert_eq!(w.get_board_tiles().row_count(), 9);
+        assert_eq!(w.get_board_tiles().row_count(), 15);
         assert_eq!(
             (tile(1).name.as_str(), tile(1).state.as_str()),
             ("Floor lamp", "on")
@@ -9691,9 +9833,9 @@ mod tests {
                 button,
             });
         };
-        // The board's page slides in (180 ms): let it come to its place.
+        // The board's page slides in (400 ms): let it come to its place.
         let settle = || {
-            std::thread::sleep(Duration::from_millis(250));
+            std::thread::sleep(Duration::from_millis(450));
             slint::platform::update_timers_and_animations();
         };
         let calls = || {
@@ -9714,16 +9856,18 @@ mod tests {
                 // A swipe in from the right edge, even one starting on its outer half.
                 for x in [1260.0, 1275.0] {
                     w.set_page("home".into());
+                    settle();
                     drag((x, 400.0), (1000.0, 400.0));
                     assert_eq!(w.get_page(), "board", "{case}, from {x}");
                 }
                 settle();
                 let _ = calls();
                 // A tap on a tile (the floor lamp).
-                drag((520.0, 360.0), (520.0, 360.0));
+                drag((120.0, 340.0), (120.0, 340.0));
                 assert_eq!(calls(), ["light.floor_lamp"], "{case}: tap");
-                // A drag along a level's bar (the living room's lights, the whole first row).
-                drag((700.0, 230.0), (1000.0, 230.0));
+                // A drag along a level's bar (the living room's lights, four cells of the
+                // first row).
+                drag((300.0, 200.0), (700.0, 200.0));
                 assert!(
                     calls().iter().any(|e| e == "light.living_room"),
                     "{case}: level"

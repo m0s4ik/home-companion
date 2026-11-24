@@ -153,6 +153,13 @@ impl<S: Screen> Ui<S> {
                 ui.board_swipe(dir);
             }
         });
+        let ui = Rc::downgrade(self);
+        self.screen.on_board_peek(move || {
+            if let Some(ui) = ui.upgrade() {
+                // Its page as it is now: it comes in under the finger before it is "seen".
+                ui.render_board_page();
+            }
+        });
         self.screen.on_board_edge(move |outcome, pulled| {
             log::info!(event = "edge_swipe", outcome = outcome.as_str(), max_in = pulled as f64,
                 edge = "right", target = "board";
@@ -162,6 +169,8 @@ impl<S: Screen> Ui<S> {
 
     /// The board at the start (`board.json`; the demos set their own).
     pub(super) fn load_board(&self) {
+        // The face in the board's header.
+        self.screen.set_face(self.face());
         let b = match (&self.settings, &self.opts.demo) {
             (Some(s), None) => s.board(),
             _ => Board::default(),
@@ -325,12 +334,26 @@ impl<S: Screen> Ui<S> {
                 true,
                 l.text("board_empty"),
             );
+            self.screen.set_board_sides(&[], &[]);
             return;
         };
         let c = &t.board.pages[i];
         let curves = self.ha_curves.borrow();
-        let v = views(&t, c, &curves, &w, Instant::now());
+        let now = Instant::now();
+        let v = views(&t, c, &curves, &w, now);
         let tiles = draw::draws(&v, draw::PAGE, &t.icons, false);
+        // The neighbours, drawn beside it while a finger drags it across.
+        let side = |n: Option<usize>| match n.and_then(|n| pages.get(n)) {
+            Some(&j) => draw::draws(
+                &views(&t, &t.board.pages[j], &curves, &w, now),
+                draw::PAGE,
+                &t.icons,
+                false,
+            ),
+            None => Vec::new(),
+        };
+        self.screen
+            .set_board_sides(&side(t.page.checked_sub(1)), &side(Some(t.page + 1)));
         let title = if c.name.is_empty() {
             l.text("board_title")
         } else {
@@ -675,12 +698,16 @@ impl<S: Screen> Ui<S> {
         if which == 0 {
             return;
         }
+        self.screen.set_face(self.face());
         let (b, states, curves) = demo_board(which == 3);
         self.ha_curves.borrow_mut().extend(curves);
         self.tile_board.borrow_mut().states = states;
         self.apply_board(b);
-        if which == 2 {
-            self.board_tap(Place::Page(0), 6);
+        match which {
+            2 => self.board_tap(Place::Page(0), 6),
+            6 => self.screen.set_board_held(0.0, -420.0),
+            7 => self.screen.set_board_held(520.0, 0.0),
+            _ => {}
         }
     }
 }
@@ -776,21 +803,67 @@ pub(super) fn demo_board(
             ),
             tile(3, 2, 1, 1, Button, "media_player.tv", "TV", "television"),
             tile(2, 3, 2, 1, Sensor, "sensor.power", "Power", ""),
+            tile(
+                4,
+                0,
+                2,
+                1,
+                Sensor,
+                "sensor.indoor_humidity",
+                "Humidity",
+                "water-percent",
+            ),
+            tile(
+                4,
+                1,
+                1,
+                1,
+                Button,
+                "switch.coffee",
+                "Coffee",
+                "coffee-maker",
+            ),
+            tile(5, 1, 1, 1, Button, "fan.bedroom", "Fan", "fan"),
+            tile(4, 2, 2, 1, Level, "light.kitchen", "Kitchen", "lightbulb"),
+            tile(4, 3, 1, 1, Button, "switch.plug", "Plug", "power-socket-eu"),
+            tile(
+                5,
+                3,
+                1,
+                1,
+                Sensor,
+                "sensor.phone_battery",
+                "Phone",
+                "battery",
+            ),
         ],
     };
     let second = Canvas {
         id: "p2".into(),
         name: "Night".into(),
-        tiles: vec![tile(
-            0,
-            0,
-            1,
-            1,
-            Button,
-            "scene.good_night",
-            "Good night",
-            "weather-night",
-        )],
+        tiles: vec![
+            tile(
+                0,
+                0,
+                1,
+                1,
+                Button,
+                "scene.good_night",
+                "Good night",
+                "weather-night",
+            ),
+            tile(1, 0, 1, 1, Button, "light.bedroom", "Bedroom", "lightbulb"),
+            tile(
+                2,
+                0,
+                2,
+                1,
+                Button,
+                "cover.bedroom",
+                "Bedroom blinds",
+                "blinds",
+            ),
+        ],
     };
     let widget = Canvas {
         id: "w1".into(),
@@ -906,6 +979,41 @@ pub(super) fn demo_board(
                 device_class: "tv".into(),
                 volume: Some(0.35),
                 ..st("off")
+            },
+        ),
+        (
+            "sensor.indoor_humidity",
+            State {
+                unit: "%".into(),
+                device_class: "humidity".into(),
+                ..st("48")
+            },
+        ),
+        ("switch.coffee", st("off")),
+        ("fan.bedroom", st("on")),
+        (
+            "light.kitchen",
+            State {
+                brightness: Some(102.0),
+                ..st("on")
+            },
+        ),
+        ("switch.plug", st("off")),
+        (
+            "sensor.phone_battery",
+            State {
+                unit: "%".into(),
+                device_class: "battery".into(),
+                ..st("82")
+            },
+        ),
+        ("light.bedroom", st("off")),
+        (
+            "cover.bedroom",
+            State {
+                device_class: "blind".into(),
+                position: Some(0.0),
+                ..st("closed")
             },
         ),
         (

@@ -1645,7 +1645,7 @@ export component LevelBar inherits Rectangle {
 }
 
 // --- The board (ui/board.rs, ui/board/draw.rs): tiles of Home Assistant's entities on a grid of
-// cells, on the board's pages (4 x 4 cells of 193 x 157) and in the custom widget (4 x 2 of
+// cells, on the board's pages (6 x 4 cells of 195 x 157) and in the custom widget (4 x 2 of
 // 193 x 130; one line of 193 x 88). Every value is data from Rust, icons included (MDI path
 // data, drawn with a Path in a 24 x 24 box). Nothing moves at rest: a tile redraws when its data
 // changes; after a tap its icon dims once (180 ms) while it waits for Home Assistant.
@@ -1699,6 +1699,10 @@ export component BoardTile inherits Rectangle {
     callback level-changed(int, bool);
     // A swipe across the tile (+1 to the next page, -1 back).
     callback swiped(int);
+    // A finger moving across the tile (the board's page follows it): how far from where it
+    // went down; and when it lifts (or the touch is taken away), how far it went.
+    callback slide(length);
+    callback slide-end(length);
     property <bool> on: root.tile.state == "on";
     property <bool> pending: root.tile.state == "pending";
     property <bool> gone: root.tile.state == "unavailable";
@@ -1720,7 +1724,7 @@ export component BoardTile inherits Rectangle {
     property <int> drag: -1;
     property <int> shown-level: root.drag >= 0 ? root.drag : root.tile.level;
     border-radius: root.line ? Grid.card-radius : Grid.tile-radius;
-    background: touch.pressed && root.tile.tappable && !root.level ? Theme.surface-2
+    background: touch.pressed && !touch.dragging && root.tile.tappable && !root.level ? Theme.surface-2
         : root.gold ? Theme.accent-deep : Theme.surface;
     border-width: 1px;
     border-color: root.failed ? Theme.danger : root.gold ? Theme.accent.with-alpha(0.35) : Theme.line;
@@ -1729,11 +1733,30 @@ export component BoardTile inherits Rectangle {
     // The whole tile: a tap does its action; a swipe across is the page's (or the widget's turn).
     touch := TouchArea {
         enabled: !root.level || root.line;
+        // Across, 12 px or more: a drag of the page, no tap any more.
+        property <bool> dragging: false;
+        // In the screen's coordinates: the page moves under the finger.
+        property <length> down-at: 0;
+        property <length> moved-by: self.absolute-position.x + self.mouse-x - self.down-at;
+        moved => {
+            if (self.pressed && (self.dragging || abs(self.moved-by) > 12px)) {
+                self.dragging = true;
+                root.slide(self.moved-by);
+            }
+        }
         pointer-event(e) => {
+            let slid = self.dragging;
+            if (e.kind == PointerEventKind.down) {
+                self.dragging = false;
+                self.down-at = self.absolute-position.x + self.pressed-x;
+            } else if (self.dragging && (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel)) {
+                self.dragging = false;
+                root.slide-end(e.kind == PointerEventKind.up ? self.moved-by : 0);
+            }
             if (e.kind == PointerEventKind.up && self.has-hover) {
-                if (abs(self.mouse-x - self.pressed-x) > 48px) {
-                    root.swiped(self.mouse-x < self.pressed-x ? 1 : -1);
-                } else if (abs(self.mouse-y - self.pressed-y) < 48px && root.tile.tappable) {
+                if (slid && abs(self.moved-by) > 48px) {
+                    root.swiped(self.moved-by < 0 ? 1 : -1);
+                } else if (!slid && abs(self.mouse-y - self.pressed-y) < 48px && root.tile.tappable) {
                     Feedback.tap();
                     root.tapped();
                 }
@@ -2070,12 +2093,32 @@ export component BoardGrid inherits Rectangle {
     callback tapped(int);
     callback level-changed(int, int, bool);
     callback swiped(int);
+    // A finger moving across the grid or a tile, and its lift (BoardTile's slide, slide-end).
+    callback slide(length);
+    callback slide-end(length);
     width: root.columns * root.cell-width + (root.columns - 1) * root.gap;
     height: root.rows * root.cell-height + (root.rows - 1) * root.gap;
     TouchArea {
+        property <bool> dragging: false;
+        // In the screen's coordinates: the page moves under the finger.
+        property <length> down-at: 0;
+        property <length> moved-by: self.absolute-position.x + self.mouse-x - self.down-at;
+        moved => {
+            if (self.pressed && (self.dragging || abs(self.moved-by) > 12px)) {
+                self.dragging = true;
+                root.slide(self.moved-by);
+            }
+        }
         pointer-event(e) => {
-            if (e.kind == PointerEventKind.up && abs(self.mouse-x - self.pressed-x) > 48px) {
-                root.swiped(self.mouse-x < self.pressed-x ? 1 : -1);
+            if (e.kind == PointerEventKind.down) {
+                self.dragging = false;
+                self.down-at = self.absolute-position.x + self.pressed-x;
+            } else if (self.dragging && (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel)) {
+                self.dragging = false;
+                root.slide-end(e.kind == PointerEventKind.up ? self.moved-by : 0);
+            }
+            if (e.kind == PointerEventKind.up && abs(self.moved-by) > 48px) {
+                root.swiped(self.moved-by < 0 ? 1 : -1);
             }
         }
     }
@@ -2114,6 +2157,12 @@ export component BoardGrid inherits Rectangle {
         }
         swiped(d) => {
             root.swiped(d);
+        }
+        slide(dx) => {
+            root.slide(dx);
+        }
+        slide-end(dx) => {
+            root.slide-end(dx);
         }
     }
 }
