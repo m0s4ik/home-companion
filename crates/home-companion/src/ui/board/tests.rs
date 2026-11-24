@@ -500,9 +500,8 @@ fn state_words_in_the_screen_language() {
     let it = BoardWords::from_locale(&locale("it"));
     assert_eq!(it.on, "Acceso");
     assert_eq!(it.decimal, ',');
-    // A language without the board's words yet: English, key by key.
     let de = BoardWords::from_locale(&locale("de"));
-    assert_eq!(de.on, "On");
+    assert_eq!(de.on, "An");
     let w = words();
     assert_eq!(state_words("light", "", "on", &w), "On");
     assert_eq!(state_words("cover", "", "closing", &w), "Closing");
