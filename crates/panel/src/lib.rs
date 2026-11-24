@@ -123,6 +123,21 @@ pub const STATIC: &[(&str, &str, &[u8])] = &[
     ),
 ];
 
+/// Third-party files of the pages (web/vendor/README.md: the version and the hashes), loaded by
+/// the board's editor only when it opens. Their paths carry the version: kept a day.
+pub const VENDOR: &[(&str, &str, &[u8])] = &[
+    (
+        "/vendor/gridstack-14.1.0.js",
+        "text/javascript; charset=utf-8",
+        include_bytes!("../web/vendor/gridstack-all.js"),
+    ),
+    (
+        "/vendor/gridstack-14.1.0.css",
+        "text/css; charset=utf-8",
+        include_bytes!("../web/vendor/gridstack.min.css"),
+    ),
+];
+
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
                    font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; \
                    frame-ancestors 'none'";
@@ -299,11 +314,14 @@ fn secure(r: Response) -> Response {
             && (v.starts_with("font/") || v.starts_with("image/"))
             && v != "image/jpeg"
     });
-    let cache = if fixed {
+    let vendor = r.headers.iter().any(|(n, v)| n == "X-Vendor" && v == "1");
+    let cache = if fixed || vendor {
         "public, max-age=86400"
     } else {
         "no-store"
     };
+    let mut r = r;
+    r.headers.retain(|(n, _)| n != "X-Vendor");
     r.header("Content-Security-Policy", CSP)
         .header("X-Content-Type-Options", "nosniff")
         .header("X-Frame-Options", "DENY")
@@ -487,6 +505,14 @@ impl<B: Body> Panel<B> {
             (false, p) if STATIC.iter().any(|(path, _, _)| *path == p) => {
                 match STATIC.iter().find(|(path, _, _)| *path == p) {
                     Some((_, ct, bytes)) => Response::new(200).body(ct, *bytes),
+                    None => error(404, "not_found"),
+                }
+            }
+            (false, p) if VENDOR.iter().any(|(path, _, _)| *path == p) => {
+                match VENDOR.iter().find(|(path, _, _)| *path == p) {
+                    Some((_, ct, bytes)) => {
+                        Response::new(200).body(ct, *bytes).header("X-Vendor", "1")
+                    }
                     None => error(404, "not_found"),
                 }
             }

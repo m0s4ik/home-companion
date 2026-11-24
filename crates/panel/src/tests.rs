@@ -144,6 +144,26 @@ fn pages_and_their_headers() {
         );
     }
     assert!(INDEX.contains("/art/favicon-32.png") && INDEX.contains("/art/apple-touch-icon.png"));
+    // The vendored grid: its pinned version in the path, kept a day, the same headers; the
+    // page loads it only from its own origin (the CSP's script-src 'self').
+    for (path, ct, bytes) in VENDOR {
+        let r = p.route(&req("GET", path, &[], ""), lan(), Instant::now());
+        assert_eq!((r.status, r.body.len()), (200, bytes.len()), "{path}");
+        assert_eq!(header(&r, "content-type"), Some(*ct));
+        assert_eq!(header(&r, "cache-control"), Some("public, max-age=86400"));
+        assert_eq!(header(&r, "x-content-type-options"), Some("nosniff"));
+        assert!(header(&r, "x-vendor").is_none());
+        assert!(
+            header(&r, "content-security-policy")
+                .unwrap()
+                .contains("script-src 'self'")
+        );
+        assert!(
+            JS.contains(&format!("'{path}'")),
+            "{path} is the one the page asks for"
+        );
+    }
+    assert!(!CSP.contains("unsafe"));
     // (a fresh panel: twenty requests a second from one address)
     let p = panel();
     assert_eq!(status(&p, &req("GET", "/inter-700.ttf", &[], "")), 404);
@@ -454,10 +474,11 @@ fn over_sockets_and_idle() {
 #[test]
 fn pages_are_light() {
     // About 105 KB with the widget's cards and the device's home screen drawn here (panel v6:
-    // the device's frame, the turn's strip, the remote screen's states); the fonts and
-    // pictures apart.
+    // the device's frame, the turn's strip, the remote screen's states), about 155 with the
+    // board's editor; the fonts, the pictures and the vendored grid (loaded by the board's
+    // section only) apart.
     let total = INDEX.len() + CSS.len() + JS.len();
-    assert!(total < 112 * 1024, "{total} bytes");
+    assert!(total < 160 * 1024, "{total} bytes");
     // No style or script in the page itself, none set from the script as an attribute.
     assert!(!JS.contains("setAttribute('style'") && !JS.contains(".style."));
     assert!(

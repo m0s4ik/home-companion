@@ -81,7 +81,8 @@ const IC = {
   trash: 'M5 7h14 M10 7V5h4v2 M7 7l1 13h8l1-13 M10 11v6 M14 11v6', plus: 'M12 5v14 M5 12h14',
   search: 'M11 4a7 7 0 100 14 7 7 0 000-14z M16 16l4 4', pencil: 'M4 20l1-4L16 5l3 3L8 19z', left: 'M14 6l-6 6 6 6', right: 'M10 6l6 6-6 6',
   bars: 'M5 9h14 M5 15h14', ok: 'M5 12l5 5 9-10', screen: 'M3 5h18v11H3z M9 20h6 M12 16v4',
-  grid: 'M4 4h7v7H4z M13 4h7v4h-7z M13 10h7v10h-7z M4 13h7v7H4z', sliders: 'M4 7h10 M18 7h2 M4 17h2 M10 17h10 M16 9a2 2 0 100-4 2 2 0 000 4z M8 19a2 2 0 100-4 2 2 0 000 4z',
+  grid: 'M4 4h7v7H4z M13 4h7v4h-7z M13 10h7v10h-7z M4 13h7v7H4z', board: 'M4 4h7v7H4z M13 4h7v7h-7z M4 13h7v7H4z M13 13h7v7h-7z', close: 'M6 6l12 12 M18 6L6 18',
+  custom: 'M4 7h7v10H4z M13 7h7v4h-7z M13 13h7v4h-7z', sliders: 'M4 7h10 M18 7h2 M4 17h2 M10 17h10 M16 9a2 2 0 100-4 2 2 0 000 4z M8 19a2 2 0 100-4 2 2 0 000 4z',
   house: 'M4 11l8-7 8 7 M6 9.5V20h12V9.5', stop: 'M7 7h10v10H7z', lock: 'M7 11h10v9H7z M9 11V8a3 3 0 016 0v3',
   sun: 'M12 8a4 4 0 100 8 4 4 0 000-8z M12 2v2 M12 20v2 M4.9 4.9l1.4 1.4 M17.7 17.7l1.4 1.4 M2 12h2 M20 12h2 M4.9 19.1l1.4-1.4 M17.7 6.3l1.4-1.4',
   cloud: 'M7 18h10a3.5 3.5 0 000-7 5 5 0 00-9.6-1A4 4 0 007 18z', rain: 'M7 15h10a3.5 3.5 0 000-7 5 5 0 00-9.6-1A4 4 0 007 15z M9 18l-1 2 M13 18l-1 2 M17 18l-1 2',
@@ -247,7 +248,7 @@ async function ask() {
 
 // ---- What the body said, kept while the page is open.
 
-const D = { schema: null, values: {}, widgets: null, shopping: null, notes: null, devices: null, samples: null, screen: null };
+const D = { schema: null, values: {}, widgets: null, shopping: null, notes: null, devices: null, samples: null, screen: null, board: null };
 // What only this page remembers: a list being reordered, the window of rows each preview shows.
 const S = { sorting: {}, win: {}, only: {} };
 
@@ -564,7 +565,7 @@ setInterval(() => { for (const c of document.querySelectorAll('.scr .clock')) c.
 
 // ---- The page drawn from the address.
 
-const SECTIONS = [['home', 'panel_tab_home', 'grid'], ['schermo', 'panel_tab_screen', 'screen'],
+const SECTIONS = [['home', 'panel_tab_home', 'grid'], ['plancia', 'panel_tab_board', 'board'], ['schermo', 'panel_tab_screen', 'screen'],
   ['spesa', 'panel_tab_shopping', 'shopping'], ['impostazioni', 'panel_tab_settings', 'sliders']];
 const GROUPS = ['screen', 'voice', 'lists'];
 // The addresses of the panel before v6.
@@ -599,6 +600,7 @@ function render(keep) {
   if (r.p === 'schermo') body = screenPage();
   else if (r.p === 'spesa') body = shopping();
   else if (r.p === 'impostazioni') body = settingsPage();
+  else if (r.p === 'plancia') body = boardPage(r);
   else body = homePage(r);
   if (r.p !== 'schermo') screenLeave();
   drawNav(r);
@@ -1333,6 +1335,13 @@ function pageBlock(p) {
 }
 
 const EDIT = {
+  // A custom widget: its tiles are the board's.
+  custom: (c, p) => {
+    const cv = canvases().find(x => x.page === p.id);
+    const l = el('p', 'lead');
+    l.append(document.createTextNode(t('panel_board_edit_in') + ' '), link('inl', 'plancia' + (cv ? '/' + cv.id : ''), t('panel_tab_board')), document.createTextNode('.'));
+    c.append(l);
+  },
   next: c => multiBlock(c, 'calendars'),
   shopping: c => {
     const more = el('p', 'fine');
@@ -1985,6 +1994,734 @@ function screenPage() {
   return frag(pagehead(t('panel_tab_screen'), t('panel_screen_sub')), R.box, facts);
 }
 
+// ---- Board («Plancia»): pages of tiles (4 x 4) and custom widgets (4 x 2) of Home Assistant's
+// entities (crates/home-companion/src/ui/board.rs, panel/board_ops.rs). The canvases on top, the
+// grid as on the device with the tiles the body draws (their state refreshed every 5 s), the
+// chosen tile's form beside it (under it on a phone). Every change is saved at once as the whole
+// canvas; the body keeps what is allowed and says what it left out. Drag and resize with
+// gridstack.js (web/vendor, loaded when the section opens), snapped to the sizes a tile may
+// have; without a pointer: the size buttons and Move (then a place).
+
+const BD = { sel: -1, adding: null, moving: false, replacing: false, adv: false, grid: null, gs: null, busy: false,
+  find: { q: '', hits: null, last: 0, timer: 0, seq: 0 }, icons: { open: false, q: '', hits: null, all: true, timer: 0, seq: 0 } };
+
+function loadGridstack() {
+  if (BD.gs) return BD.gs;
+  // After the fonts: the panel takes four connections from one address at once.
+  BD.gs = document.fonts.ready.then(() => new Promise((ok, no) => {
+    const l = el('link');
+    l.rel = 'stylesheet';
+    l.href = '/vendor/gridstack-14.1.0.css';
+    document.head.append(l);
+    const s = el('script');
+    s.src = '/vendor/gridstack-14.1.0.js';
+    s.addEventListener('load', () => ok(window.GridStack));
+    s.addEventListener('error', () => { BD.gs = null; no(new Error('gridstack')); });
+    document.head.append(s);
+  }));
+  return BD.gs;
+}
+
+function canvases() { return (D.board && D.board.canvases) || []; }
+function canvasOf(id) { return canvases().find(c => c.id === id); }
+function rowsOf(c) { return c.type === 'widget' ? D.board.grids.widget[1] : D.board.grids.page[1]; }
+function spanKey(s) { return s[0] + '×' + s[1]; }
+function rawTiles(c) { return c.tiles.map(x => Object.assign({}, x.tile)); }
+
+// The tile fits at (x, y) as w × h: inside, over no other tile (`skip`: the tile itself).
+function fits(tiles, skip, x, y, w, h, rows) {
+  if (x < 0 || y < 0 || x + w > 4 || y + h > rows) return false;
+  return tiles.every((o, i) => i === skip || x >= o.x + o.w || o.x >= x + w || y >= o.y + o.h || o.y >= y + h);
+}
+
+// The first place a w × h tile fits, from (x, y) on then from the start.
+function placeFor(tiles, skip, w, h, rows, x, y) {
+  if (fits(tiles, skip, x, y, w, h, rows)) return { x, y };
+  for (let yy = 0; yy < rows; yy++) for (let xx = 0; xx < 4; xx++) if (fits(tiles, skip, xx, yy, w, h, rows)) return { x: xx, y: yy };
+  return null;
+}
+
+// Saves a canvas's tiles; the body's answer is drawn. `sel`: the tile chosen afterwards.
+async function boardSave(c, tiles, opt) {
+  const o = opt || {};
+  BD.busy = true;
+  const r = await api('/api/board/set', { canvas: { id: c.id, tiles } });
+  BD.busy = false;
+  if (!r.ok) { toast(errorText(r.error), true); render(true); return false; }
+  D.board = r;
+  if (o.sel !== undefined) BD.sel = o.sel;
+  const nc = canvasOf(c.id);
+  if (nc && BD.sel >= nc.tiles.length) BD.sel = -1;
+  if (r.dropped && r.dropped.length) toast(t('panel_board_dropped'), { bad: true, undo: boardUndo });
+  else toast(o.text || t('panel_saved'), { undo: boardUndo });
+  render(true);
+  return true;
+}
+
+async function boardUndo() {
+  const r = await api('/api/board/undo', {});
+  if (!r.ok) { toast(errorText(r.error), true); return; }
+  D.board = r;
+  BD.sel = -1;
+  if (!canvasOf(route().k) && canvases()[0]) go('plancia/' + canvases()[0].id); else render(true);
+}
+
+// A canvas's op (add, remove, name, order): the answer drawn.
+async function boardOp(path, body, then) {
+  const r = await api('/api/board/' + path, body);
+  if (!r.ok) { toast(errorText(r.error), true); return null; }
+  D.board = r;
+  if (then) then(r); else render(true);
+  return r;
+}
+
+// An MDI icon as the screen draws it (filled, 24 × 24).
+function mdi(d, cls) {
+  const s = svg(d, cls || 'mdi');
+  return s;
+}
+
+// A tile as the device draws it, from the body's model (`draw`).
+function tileFace(x) {
+  const d = x.draw;
+  const t0 = x.tile;
+  const f = el('div', 'bt k-' + t0.kind + ' s-' + d.state + ' w' + t0.w + ' h' + t0.h);
+  const icon = mdi(d.path, 'mdi bi');
+  const nm = el('span', 'bn', d.name);
+  const st = el('span', 'bs', d.status);
+  if (t0.kind === 'sensor') {
+    const top = el('div', 'btop');
+    top.append(icon, el('span', 'bn', d.name));
+    f.append(top, el('span', 'bv', d.value || d.status));
+    if (d.curve) {
+      const box = t0.w === 4 ? [440, 44] : t0.h === 2 ? [D.board.cells.page.width * 2 + D.board.cells.page.gap - 40, 84] : [150, 44];
+      const c = document.createElementNS(NS, 'svg');
+      c.setAttribute('viewBox', '0 0 ' + box[0] + ' ' + box[1]);
+      c.setAttribute('class', 'bc');
+      c.setAttribute('aria-hidden', 'true');
+      c.setAttribute('preserveAspectRatio', 'none');
+      const p = document.createElementNS(NS, 'path');
+      p.setAttribute('d', d.curve);
+      c.append(p);
+      f.append(c);
+    }
+    if (d.range) f.append(el('span', 'br', d.range));
+  } else if (t0.kind === 'level') {
+    const top = el('div', 'btop');
+    top.append(nm, el('span', 'bs', d.status));
+    const bar = el('div', 'bl');
+    const fill = el('i', 'lv' + Math.round(Math.max(0, d.level) / 5));
+    bar.append(fill, icon, el('span', 'bv', d.value));
+    f.append(top, bar);
+  } else {
+    const words = el('div', 'bw');
+    words.append(nm);
+    if (d.status) words.append(st);
+    f.append(icon, words);
+  }
+  if (d.confirm && t0.kind !== 'sensor') {
+    const q = el('i', 'bq');
+    q.title = t('panel_board_confirm');
+    f.append(q);
+  }
+  return f;
+}
+
+// The page.
+function boardPage(r) {
+  const head = pagehead(t('panel_tab_board'), t('panel_board_sub'));
+  if (!D.board || !D.board.ok) return frag(head, el('p', 'lead', t('panel_error')));
+  const all = canvases();
+  const c = canvasOf(r.k) || all[0];
+  if (c && c.id !== r.k) history.replaceState(null, '', '#plancia/' + c.id);
+  if (!c || c.id !== BD.cv) { BD.sel = -1; BD.adding = null; BD.moving = false; BD.replacing = false; BD.icons.open = false; }
+  BD.cv = c ? c.id : '';
+  const box = el('div', 'board');
+  box.append(canvasRow(c));
+  if (!c) {
+    const e = el('div', 'bempty');
+    e.append(art('idle'), el('p', 'lead', t('panel_board_empty')));
+    box.append(e);
+    return frag(head, box);
+  }
+  const lay = el('div', 'blay');
+  const stage = el('div', 'bstage');
+  stage.append(gridFrame(c), canvasBar(c));
+  const ed = el('aside', 'editor bform');
+  ed.setAttribute('aria-label', t('panel_board_tile'));
+  tileForm(ed, c);
+  lay.append(stage, ed);
+  box.append(lay);
+  if (!D.board.ha) box.append(el('p', 'fine', t('panel_no_ha')));
+  requestAnimationFrame(() => mountGrid(c));
+  return frag(head, box);
+}
+
+// The canvases: pages, then widgets, each with «+».
+function canvasRow(cur) {
+  const row = el('div', 'cvrow');
+  row.setAttribute('role', 'group');
+  row.setAttribute('aria-label', t('panel_tab_board'));
+  const lim = D.board.limits;
+  for (const [type, word, add, max] of [['page', 'panel_board_pages', 'panel_board_add_page', lim.pages],
+    ['widget', 'panel_board_widgets', 'panel_board_add_widget', lim.widgets]]) {
+    const g = el('div', 'cvg');
+    g.append(el('span', 'lab', t(word)));
+    const list = canvases().filter(c => c.type === type);
+    for (const c of list) {
+      const a = link('cvpill', 'plancia/' + c.id, c.label);
+      if (cur && c.id === cur.id) a.setAttribute('aria-current', 'page');
+      a.append(el('span', 'num cnt', String(c.tiles.length)));
+      g.append(a);
+    }
+    if (list.length < max) {
+      const b = button('cvpill add', t(add), async ev => {
+        ev.currentTarget.disabled = true;
+        await boardOp(type + '/add', { name: '' }, r => { BD.sel = -1; go('plancia/' + r.added); });
+      }, 'plus');
+      b.id = 'add-' + type;
+      g.append(b);
+    }
+    row.append(g);
+  }
+  return row;
+}
+
+// The grid: the device's cells (each empty one a «+»), the tiles over them.
+function gridFrame(c) {
+  const rows = rowsOf(c);
+  const frame = el('div', 'bframe ' + (c.type === 'widget' ? 'r2' : 'r4') + (BD.moving ? ' moving' : ''));
+  const cells = el('div', 'bcells');
+  const taken = new Set();
+  c.tiles.forEach(x => { for (let yy = x.tile.y; yy < x.tile.y + x.tile.h; yy++) for (let xx = x.tile.x; xx < x.tile.x + x.tile.w; xx++) taken.add(yy * 4 + xx); });
+  const full = c.tiles.length >= (c.type === 'widget' ? D.board.limits.widget_tiles : D.board.limits.page_tiles);
+  for (let yy = 0; yy < rows; yy++) {
+    for (let xx = 0; xx < 4; xx++) {
+      const b = el('button', 'bcell');
+      b.type = 'button';
+      b.id = 'cell-' + xx + '-' + yy;
+      const self = BD.moving && BD.sel >= 0 && (() => { const s = c.tiles[BD.sel].tile; return xx >= s.x && xx < s.x + s.w && yy >= s.y && yy < s.y + s.h; })();
+      if ((taken.has(yy * 4 + xx) && !self) || (full && !BD.moving)) { b.classList.add('taken'); b.tabIndex = -1; b.setAttribute('aria-hidden', 'true'); }
+      const here = BD.adding && BD.adding.x === xx && BD.adding.y === yy;
+      if (here) b.setAttribute('aria-pressed', 'true');
+      b.setAttribute('aria-label', t(BD.moving ? 'panel_board_move_here' : 'panel_board_cell_add', { r: yy + 1, c: xx + 1 }));
+      b.append(ico('plus'));
+      b.addEventListener('click', () => cellTapped(c, xx, yy));
+      cells.append(b);
+    }
+  }
+  const g = el('div', 'grid-stack');
+  g.id = 'bgrid';
+  c.tiles.forEach((x, i) => {
+    const it = el('div', 'grid-stack-item');
+    const tl = x.tile;
+    for (const [k, v] of [['gs-x', tl.x], ['gs-y', tl.y], ['gs-w', tl.w], ['gs-h', tl.h], ['gs-id', i]]) it.setAttribute(k, String(v));
+    const spans = (x.allowed[tl.kind] || [[tl.w, tl.h]]);
+    it.setAttribute('gs-min-w', String(Math.min(...spans.map(s => s[0]))));
+    it.setAttribute('gs-max-w', String(Math.max(...spans.map(s => s[0]))));
+    it.setAttribute('gs-min-h', String(Math.min(...spans.map(s => s[1]))));
+    it.setAttribute('gs-max-h', String(Math.min(rows, Math.max(...spans.map(s => s[1])))));
+    const content = el('div', 'grid-stack-item-content');
+    content.id = 'bt-' + i;
+    content.tabIndex = 0;
+    content.setAttribute('role', 'button');
+    content.setAttribute('aria-pressed', String(i === BD.sel));
+    content.setAttribute('aria-label', t('panel_board_tile_of', { name: x.draw.name, w: tl.w, h: tl.h, r: tl.y + 1, c: tl.x + 1 }));
+    content.append(tileFace(x));
+    const pick = () => {
+      if (BD.dragged) return;
+      if (BD.moving) { cellTapped(c, tl.x, tl.y); return; }
+      BD.sel = i; BD.adding = null; BD.replacing = false; BD.icons.open = false;
+      render(true);
+      const f = document.getElementById('bt-' + i);
+      if (f) f.focus({ preventScroll: true });
+      // A phone: the form is under the grid.
+      if (matchMedia('(max-width: 760px)').matches) { const ed = document.querySelector('.bform'); if (ed) ed.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
+    };
+    content.addEventListener('click', pick);
+    content.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } });
+    it.append(content);
+    g.append(it);
+  });
+  frame.append(cells, g);
+  return frame;
+}
+
+// The grid comes alive (gridstack) once it is on the page; without the script it stays as
+// drawn, and the size buttons and Move still work.
+async function mountGrid(c) {
+  let GS;
+  try { GS = await loadGridstack(); } catch (e) { return; }
+  const g = document.getElementById('bgrid');
+  if (!g || !g.isConnected || BD.cv !== c.id) return;
+  if (BD.grid) { try { BD.grid.destroy(false); } catch (e) { /* gone with its page */ } BD.grid = null; }
+  const rows = rowsOf(c);
+  const unit = g.getBoundingClientRect().width / 820;
+  const ch = (c.type === 'widget' ? D.board.cells.widget.height : D.board.cells.page.height) + 12;
+  const grid = GS.init({
+    column: 4, maxRow: rows, minRow: rows, float: true, animate: false,
+    cellHeight: Math.round(ch * unit), margin: Math.max(2, Math.round(6 * unit)),
+    resizable: { handles: 'se' }, draggable: { cancel: 'button, input' },
+    acceptWidgets: false, removable: false,
+  }, g);
+  BD.grid = grid;
+  grid.on('dragstart resizestart', () => { BD.dragged = true; BD.busy = true; });
+  grid.on('dragstop resizestop', (ev, item) => {
+    setTimeout(() => { BD.dragged = false; }, 0);
+    BD.busy = false;
+    gridChanged(c, item);
+  });
+  const fit = () => {
+    if (!g.isConnected) { removeEventListener('resize', fit); return; }
+    const u = g.getBoundingClientRect().width / 820;
+    grid.cellHeight(Math.round(ch * u));
+    grid.margin(Math.max(2, Math.round(6 * u)));
+  };
+  addEventListener('resize', fit);
+}
+
+// After a drag or a resize: each tile snapped to the nearest size its kind may have, then the
+// canvas saved if anything moved.
+function gridChanged(c, item) {
+  const grid = BD.grid;
+  if (!grid) return;
+  const rows = rowsOf(c);
+  const node = item && item.gridstackNode;
+  if (node) {
+    const x = c.tiles[Number(node.id)];
+    const spans = x.allowed[x.tile.kind] || [[x.tile.w, x.tile.h]];
+    if (!spans.some(s => s[0] === node.w && s[1] === node.h)) {
+      const best = spans.slice().sort((a, b) => (Math.abs(a[0] - node.w) * 2 + Math.abs(a[1] - node.h)) - (Math.abs(b[0] - node.w) * 2 + Math.abs(b[1] - node.h)))
+        .find(s => node.x + s[0] <= 4 && node.y + s[1] <= rows);
+      if (best) grid.update(item, { w: best[0], h: best[1] });
+      else grid.update(item, { x: x.tile.x, y: x.tile.y, w: x.tile.w, h: x.tile.h });
+    }
+  }
+  const tiles = rawTiles(c);
+  let moved = false;
+  for (const n of grid.engine.nodes) {
+    const i = Number(n.id);
+    const tl = tiles[i];
+    if (!tl) continue;
+    if (tl.x !== n.x || tl.y !== n.y || tl.w !== n.w || tl.h !== n.h) moved = true;
+    Object.assign(tl, { x: n.x, y: n.y, w: n.w, h: n.h });
+  }
+  const sel = node ? Number(node.id) : BD.sel;
+  if (moved) boardSave(c, tiles, { sel });
+  else { BD.sel = sel; render(true); }
+}
+
+// A place tapped: a tile there (adding), or the chosen tile moved there.
+function cellTapped(c, x, y) {
+  if (BD.moving && BD.sel >= 0) {
+    const tiles = rawTiles(c);
+    const s = tiles[BD.sel];
+    BD.moving = false;
+    if (!fits(tiles, BD.sel, x, y, s.w, s.h, rowsOf(c))) { toast(t('panel_board_no_room'), true); render(true); return; }
+    s.x = x; s.y = y;
+    boardSave(c, tiles, { sel: BD.sel, text: t('panel_board_moved') });
+    return;
+  }
+  BD.adding = { x, y };
+  BD.sel = -1;
+  BD.replacing = false;
+  render(true);
+  const i = document.getElementById('bfind');
+  if (i) i.focus({ preventScroll: true });
+  if (matchMedia('(max-width: 760px)').matches) { const ed = document.querySelector('.bform'); if (ed) ed.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
+}
+
+// Under the grid: the canvas's own name, its order (pages) or its place on the home (widgets),
+// removing it.
+function canvasBar(c) {
+  const bar = el('div', 'cvbar');
+  const id = 'cvname';
+  const i = el('input');
+  i.type = 'text';
+  i.id = id;
+  i.autocomplete = 'off';
+  i.maxLength = c.type === 'widget' ? D.board.limits.widget_name : D.board.limits.name;
+  i.value = c.name || '';
+  i.placeholder = c.label;
+  i.addEventListener('change', () => boardOp(c.type + '/name', { canvas: c.id, name: i.value.trim() }, () => { toast(t('panel_saved')); render(true); }));
+  i.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); i.blur(); } });
+  const nm = el('div', 'cvname');
+  nm.append(label(t(c.type === 'widget' ? 'panel_board_widget_name' : 'panel_board_page_name'), id), i);
+  bar.append(nm);
+  const line = el('p', 'fine');
+  if (c.type === 'widget') {
+    line.append(document.createTextNode(t('panel_board_widget_hint') + ' '));
+    if (c.page) {
+      line.append(document.createTextNode((c.on ? t('panel_on_home') : t('panel_not_on_home')) + ' · '),
+        link('inl', 'home/' + c.page, t('panel_tab_home')));
+    }
+  } else line.textContent = t('panel_board_page_hint');
+  bar.append(line);
+  const acts = el('div', 'cvacts');
+  if (c.type === 'page') {
+    const pagesNow = canvases().filter(x => x.type === 'page').map(x => x.id);
+    const at = pagesNow.indexOf(c.id);
+    if (pagesNow.length > 1) {
+      const mv = d => { const ids = pagesNow.slice(); [ids[at], ids[at + d]] = [ids[at + d], ids[at]]; boardOp('page/order', { order: ids }, () => { toast(t('panel_order_saved')); render(true); }); };
+      const b = button('btn quiet', t('panel_before'), () => mv(-1), 'left');
+      b.disabled = at === 0;
+      const a = el('button', 'btn quiet');
+      a.type = 'button';
+      a.append(document.createTextNode(t('panel_after')), ico('right'));
+      a.disabled = at === pagesNow.length - 1;
+      a.addEventListener('click', () => mv(1));
+      acts.append(b, a);
+    }
+  }
+  acts.append(el('span', 'grow'));
+  const rm = button('btn danger', t(c.type === 'widget' ? 'panel_board_remove_widget' : 'panel_board_remove_page'), async ev => {
+    ev.currentTarget.disabled = true;
+    const r = await api('/api/board/' + c.type + '/remove', { canvas: c.id });
+    if (!r.ok) { toast(errorText(r.error), true); render(true); return; }
+    D.board = r;
+    const next = canvases()[0];
+    go('plancia' + (next ? '/' + next.id : ''));
+    toast(t('panel_removed', { w: c.label }), { undo: boardUndo });
+  }, 'trash');
+  rm.id = 'cvremove';
+  acts.append(rm);
+  bar.append(acts);
+  return bar;
+}
+
+// The form beside the grid: adding (a search), the chosen tile, or how to begin.
+function tileForm(ed, c) {
+  if (BD.adding) { ed.append(addForm(c)); return; }
+  const x = BD.sel >= 0 ? c.tiles[BD.sel] : null;
+  if (!x) {
+    const e = el('div', 'bhint');
+    e.append(el('p', 'lead', t('panel_board_pick')), el('p', 'fine', t('panel_board_never')));
+    ed.append(e);
+    return;
+  }
+  const tl = x.tile;
+  const head = el('div', 'edhead');
+  const ic = el('span', 'ic');
+  ic.append(mdi(x.draw.path));
+  const words = el('div', 'grow');
+  words.append(el('h2', null, x.draw.name), el('p', 'num', tl.entity_id));
+  head.append(ic, words, button('btn quiet', t('panel_board_change'), () => { BD.replacing = !BD.replacing; BD.find.q = ''; BD.find.hits = null; render(true); const i = document.getElementById('bfind'); if (i) i.focus(); }));
+  ed.append(head);
+  if (BD.replacing) { ed.append(searchBlock(c, h => replaceEntity(c, h))); return; }
+  const tiles = () => rawTiles(c);
+  const put = (f, opt) => { const all = tiles(); f(all[BD.sel]); boardSave(c, all, Object.assign({ sel: BD.sel }, opt || {})); };
+
+  // Name.
+  const nid = 'tname';
+  const n = el('input');
+  n.type = 'text';
+  n.id = nid;
+  n.autocomplete = 'off';
+  n.maxLength = D.board.limits.name;
+  n.value = tl.name || '';
+  n.placeholder = x.entity_name || x.draw.name;
+  n.addEventListener('change', () => put(t1 => { t1.name = n.value.trim(); }));
+  n.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); n.blur(); } });
+  ed.append(label(t('panel_board_name'), nid), n);
+
+  // Icon.
+  ed.append(label(t('panel_board_icon')));
+  const ib = el('button', 'iconpick');
+  ib.type = 'button';
+  ib.id = 'ticon';
+  ib.setAttribute('aria-expanded', String(BD.icons.open));
+  ib.append(mdi(x.draw.path), el('span', 'grow', x.draw.icon + (tl.icon ? '' : ' · ' + t('panel_board_icon_default'))), ico('search'));
+  ib.addEventListener('click', () => { BD.icons.open = !BD.icons.open; render(true); const i = document.getElementById('iconq'); if (i) i.focus(); });
+  ed.append(ib);
+  if (BD.icons.open) ed.append(iconPicker(name => put(t1 => { t1.icon = name; }), !!tl.icon));
+
+  // Size and kind.
+  const spans = x.allowed[tl.kind] || [];
+  ed.append(label(t('panel_board_size')));
+  const seg = el('div', 'seg');
+  seg.setAttribute('role', 'group');
+  seg.setAttribute('aria-label', t('panel_board_size'));
+  for (const s of spans) {
+    const b = button(null, spanKey(s), () => {
+      const all = tiles();
+      const p = placeFor(all, BD.sel, s[0], s[1], rowsOf(c), tl.x, tl.y);
+      if (!p) { toast(t('panel_board_no_room'), true); return; }
+      Object.assign(all[BD.sel], { w: s[0], h: s[1], x: p.x, y: p.y });
+      boardSave(c, all, { sel: BD.sel });
+    });
+    b.setAttribute('aria-pressed', String(s[0] === tl.w && s[1] === tl.h));
+    seg.append(b);
+  }
+  ed.append(seg);
+  const kinds = Object.keys(x.allowed);
+  if (kinds.length > 1) {
+    ed.append(label(t('panel_board_kind')));
+    const ks = el('div', 'seg');
+    ks.setAttribute('role', 'group');
+    ks.setAttribute('aria-label', t('panel_board_kind'));
+    for (const k of kinds) {
+      const b = button(null, t('panel_board_kind_' + k), () => {
+        const all = tiles();
+        const me = all[BD.sel];
+        const ok = x.allowed[k];
+        let s = ok.find(s1 => s1[0] === me.w && s1[1] === me.h) ? [me.w, me.h] : null;
+        let p = s ? { x: me.x, y: me.y } : null;
+        for (const s1 of s ? [] : ok) { p = placeFor(all, BD.sel, s1[0], s1[1], rowsOf(c), me.x, me.y); if (p) { s = s1; break; } }
+        if (!s || !p) { toast(t('panel_board_no_room'), true); return; }
+        Object.assign(me, { kind: k, w: s[0], h: s[1], x: p.x, y: p.y });
+        if (k !== 'button') { delete me.service; delete me.service_data; }
+        boardSave(c, all, { sel: BD.sel });
+      });
+      b.setAttribute('aria-pressed', String(k === tl.kind));
+      ks.append(b);
+    }
+    ed.append(ks);
+  }
+
+  // Ask first.
+  if (tl.kind !== 'sensor') {
+    const cl = el('label', 'choice bconfirm');
+    const cb = el('input', 'chk');
+    cb.type = 'checkbox';
+    cb.id = 'tconfirm';
+    cb.checked = tl.confirm === undefined || tl.confirm === null ? x.confirm_default : tl.confirm;
+    cb.addEventListener('change', () => put(t1 => {
+      if (cb.checked === x.confirm_default) delete t1.confirm; else t1.confirm = cb.checked;
+    }));
+    const w2 = el('div', 'txt');
+    w2.append(el('b', null, t('panel_board_confirm')), el('span', null, t(x.confirm_default ? 'panel_board_confirm_hint' : 'panel_board_confirm_off')));
+    cl.append(cb, w2);
+    ed.append(cl);
+  }
+
+  // Advanced: the service and its data by hand (buttons only; the body checks them).
+  if (tl.kind === 'button') {
+    const det = el('details', 'adv');
+    det.open = BD.adv;
+    det.addEventListener('toggle', () => { BD.adv = det.open; });
+    const sm = el('summary');
+    sm.append(el('span', null, t('panel_board_advanced')), el('span', 'fine', t('panel_board_advanced_hint')));
+    det.append(sm);
+    const sv = el('input');
+    sv.type = 'text';
+    sv.id = 'tservice';
+    sv.autocomplete = 'off';
+    sv.spellcheck = false;
+    sv.value = tl.service || '';
+    sv.placeholder = 'light.turn_on';
+    const data = el('textarea');
+    data.id = 'tdata';
+    data.rows = 3;
+    data.spellcheck = false;
+    data.value = tl.service_data ? JSON.stringify(tl.service_data) : '';
+    data.placeholder = '{"brightness_pct": 30}';
+    const bad = el('p', 'fine bad');
+    bad.hidden = true;
+    const apply = button('btn', t('panel_board_apply'), () => {
+      const s = sv.value.trim();
+      let d = null;
+      if (data.value.trim()) {
+        try { d = JSON.parse(data.value); } catch (e) { d = undefined; }
+        if (!d || typeof d !== 'object' || Array.isArray(d)) { bad.textContent = t('panel_board_bad_json'); bad.hidden = false; return; }
+      }
+      if (s && !/^[a-z0-9_]+\.[a-z0-9_]+$/.test(s)) { bad.textContent = t('panel_board_bad_service'); bad.hidden = false; return; }
+      put(t1 => {
+        if (s) { t1.service = s; if (d) t1.service_data = d; else delete t1.service_data; } else { delete t1.service; delete t1.service_data; }
+      });
+    });
+    apply.id = 'tapply';
+    det.append(label(t('panel_board_service'), 'tservice'), sv, label(t('panel_board_data'), 'tdata'), data, bad, apply);
+    ed.append(det);
+  }
+
+  // Move, Delete.
+  const foot = el('div', 'edfoot');
+  const mv = button('btn', BD.moving ? t('panel_cancel') : t('panel_board_move'), () => { BD.moving = !BD.moving; render(true); if (BD.moving) say(t('panel_board_move_hint')); });
+  mv.id = 'tmove';
+  mv.setAttribute('aria-pressed', String(BD.moving));
+  const del = button('btn danger', t('panel_board_delete'), () => {
+    const all = tiles();
+    all.splice(BD.sel, 1);
+    boardSave(c, all, { sel: -1, text: t('panel_removed', { w: x.draw.name }) });
+  }, 'trash');
+  del.id = 'tdelete';
+  foot.append(mv, el('span', 'grow'), del);
+  ed.append(foot);
+  if (BD.moving) ed.append(el('p', 'fine', t('panel_board_move_hint')));
+}
+
+// Adding a tile: where, the search, the hits (a tap places the tile as proposed).
+function addForm(c) {
+  const f = el('div');
+  const head = el('div', 'edhead');
+  const ic = el('span', 'ic');
+  ic.append(ico('plus'));
+  const words = el('div', 'grow');
+  words.append(el('h2', null, t('panel_board_add_title')), el('p', null, t('panel_board_at', { r: BD.adding.y + 1, c: BD.adding.x + 1 })));
+  head.append(ic, words, ibtn('close', t('panel_cancel'), () => { BD.adding = null; render(true); }));
+  f.append(head, searchBlock(c, h => addTile(c, h)), el('p', 'fine', t('panel_board_never')));
+  return f;
+}
+
+function addTile(c, h) {
+  const tiles = rawTiles(c);
+  const rows = rowsOf(c);
+  const spans = h.allowed[h.kind] || [[1, 1]];
+  let p = null;
+  let s = null;
+  for (const s1 of spans) { if (fits(tiles, -1, BD.adding.x, BD.adding.y, s1[0], s1[1], rows)) { s = s1; p = BD.adding; break; } }
+  for (const s1 of s ? [] : spans) { p = placeFor(tiles, -1, s1[0], s1[1], rows, BD.adding.x, BD.adding.y); if (p) { s = s1; break; } }
+  if (!s) { toast(t('panel_board_no_room'), true); return; }
+  tiles.push({ x: p.x, y: p.y, w: s[0], h: s[1], kind: h.kind, entity_id: h.entity_id });
+  BD.adding = null;
+  boardSave(c, tiles, { sel: tiles.length - 1, text: t('panel_added', { w: h.name }) });
+}
+
+function replaceEntity(c, h) {
+  const tiles = rawTiles(c);
+  const me = tiles[BD.sel];
+  const kind = h.allowed[me.kind] ? me.kind : h.kind;
+  const spans = h.allowed[kind];
+  let s = spans.find(s1 => s1[0] === me.w && s1[1] === me.h);
+  let p = s ? { x: me.x, y: me.y } : null;
+  for (const s1 of s ? [] : spans) { p = placeFor(tiles, BD.sel, s1[0], s1[1], rowsOf(c), me.x, me.y); if (p) { s = s1; break; } }
+  if (!s) { toast(t('panel_board_no_room'), true); return; }
+  tiles[BD.sel] = { x: p.x, y: p.y, w: s[0], h: s[1], kind, entity_id: h.entity_id };
+  BD.replacing = false;
+  boardSave(c, tiles, { sel: BD.sel });
+}
+
+// The entities a tile may show: as you type (250 ms after the last key; the body allows a
+// search every 2 s, the first list is free).
+function searchBlock(c, pick) {
+  const st = BD.find;
+  const f = el('div', 'find');
+  const i = el('input');
+  i.type = 'search';
+  i.id = 'bfind';
+  i.maxLength = D.board.limits.query;
+  i.autocomplete = 'off';
+  i.placeholder = t('panel_board_search');
+  i.setAttribute('aria-label', t('panel_board_search'));
+  i.value = st.q;
+  f.append(ico('search'), i);
+  const out = el('ul', 'group hits bhits');
+  out.setAttribute('aria-live', 'polite');
+  const show = () => {
+    out.replaceChildren();
+    if (st.hits === null) { out.append(el('li', 'row empty', t('panel_searching'))); return; }
+    if (typeof st.hits === 'string') { out.append(el('li', 'row empty', st.hits)); return; }
+    if (!st.hits.length) { out.append(el('li', 'row empty', t(D.board.ha ? 'panel_search_none' : 'panel_no_ha'))); return; }
+    const on = new Set(c.tiles.map(x => x.tile.entity_id));
+    for (const h of st.hits) {
+      const li = el('li', 'row');
+      li.tabIndex = 0;
+      li.setAttribute('role', 'button');
+      li.setAttribute('aria-label', t('panel_add') + ': ' + h.name);
+      const nm = el('div', 'txt');
+      nm.append(el('b', null, h.name), el('span', null, h.entity_id + ' · ' + t('panel_board_kind_' + h.kind)));
+      const a = el('span', 'add' + (on.has(h.entity_id) ? ' have' : ''));
+      a.append(ico('plus'), el('span', null, t('panel_add')));
+      li.append(mdi(h.path, 'mdi hi'), nm, a);
+      const go1 = () => { if (!li.dataset.busy) { li.dataset.busy = '1'; pick(h); } };
+      li.addEventListener('click', go1);
+      li.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go1(); } });
+      out.append(li);
+    }
+  };
+  st.show = () => { if (out.isConnected) show(); };
+  const run = async () => {
+    const seq = ++st.seq;
+    const wait = st.q ? st.last + 2100 - Date.now() : 0;
+    if (wait > 0) { st.timer = setTimeout(run, wait); return; }
+    if (st.q) st.last = Date.now();
+    const r = await api('/api/board/search', { q: st.q, kind: '' });
+    if (seq !== st.seq) return;
+    if (!r.ok && r.error === 'search_wait') { st.timer = setTimeout(run, 2100); return; }
+    st.hits = r.ok ? r.hits : errorText(r.error);
+    st.show();
+  };
+  i.addEventListener('input', () => {
+    clearTimeout(st.timer);
+    st.seq++;
+    st.q = i.value.trim();
+    st.hits = null;
+    show();
+    st.timer = setTimeout(run, 250);
+  });
+  i.addEventListener('keydown', e => { if (e.key === 'Escape') { BD.adding = null; BD.replacing = false; render(true); } });
+  show();
+  if (st.hits === null) run();
+  return frag(f, out);
+}
+
+// The icons: a search among the Material Design Icons (the body answers 40 at most).
+function iconPicker(choose, custom) {
+  const st = BD.icons;
+  const box = el('div', 'icons');
+  const f = el('div', 'find');
+  const i = el('input');
+  i.type = 'search';
+  i.id = 'iconq';
+  i.maxLength = 32;
+  i.autocomplete = 'off';
+  i.placeholder = t('panel_board_icons_search');
+  i.setAttribute('aria-label', t('panel_board_icons_search'));
+  i.value = st.q;
+  f.append(ico('search'), i);
+  const out = el('div', 'igrid');
+  out.setAttribute('role', 'group');
+  out.setAttribute('aria-label', t('panel_board_icon'));
+  const note = el('p', 'fine');
+  const show = () => {
+    out.replaceChildren();
+    note.textContent = st.all ? '' : t('panel_board_icons_some');
+    if (st.hits === null) { out.append(el('span', 'fine', t('panel_searching'))); return; }
+    if (typeof st.hits === 'string') { out.append(el('span', 'fine', st.hits)); return; }
+    if (!st.hits.length) { out.append(el('span', 'fine', t('panel_search_none'))); return; }
+    for (const h of st.hits) {
+      const b = el('button', 'ibox');
+      b.type = 'button';
+      b.title = h.name;
+      b.setAttribute('aria-label', h.name);
+      b.append(mdi(h.path));
+      b.addEventListener('click', () => { st.open = false; choose(h.name); });
+      out.append(b);
+    }
+  };
+  st.show = () => { if (out.isConnected) show(); };
+  const run = async () => {
+    const seq = ++st.seq;
+    const r = await api('/api/board/icons', { q: st.q });
+    if (seq !== st.seq) return;
+    if (!r.ok && r.error === 'search_wait') { st.timer = setTimeout(run, 250); return; }
+    st.hits = r.ok ? r.icons : errorText(r.error);
+    st.all = r.ok ? r.all : true;
+    st.show();
+  };
+  i.addEventListener('input', () => {
+    clearTimeout(st.timer);
+    st.q = i.value.trim().toLowerCase();
+    st.timer = setTimeout(run, 250);
+  });
+  i.addEventListener('keydown', e => { if (e.key === 'Escape') { st.open = false; render(true); } });
+  box.append(f, out, note);
+  if (custom) box.append(button('btn quiet', t('panel_board_icon_reset'), () => { st.open = false; choose(''); }));
+  show();
+  if (st.hits === null) run();
+  return box;
+}
+
+// The tiles' states every 5 s while the section is in front (never under a finger or a field).
+setInterval(async () => {
+  if (!inside || document.hidden || route().p !== 'plancia' || !D.board || BD.busy || busyHere()) return;
+  const r = await api('/api/board');
+  if (!r.ok || BD.busy || busyHere() || route().p !== 'plancia') return;
+  const was = JSON.stringify(D.board.canvases);
+  D.board = r;
+  if (JSON.stringify(r.canvases) !== was) render(true);
+}, 5000);
+
 // ---- Start.
 
 async function main() {
@@ -1996,6 +2733,7 @@ async function main() {
   D.values = state.values || {};
   D.widgets = await api('/api/widgets');
   waitData();
+  D.board = await api('/api/board');
   D.shopping = await api('/api/shopping');
   D.notes = await api('/api/notes');
   D.devices = await api('/api/sessions');

@@ -526,7 +526,8 @@ The design: [docs/design.md](docs/design.md) and the screen: [docs/ui.md](docs/u
   (GPL-3.0, patched: `tools/airplay/`), [femtovg](https://github.com/femtovg/femtovg) (MIT/Apache-2.0, patched:
   `third_party/`), [Slint](https://slint.dev) (GPL-3.0), [Vosk](https://alphacephei.com/vosk) (Apache-2.0),
   TensorFlow Lite Micro (Apache-2.0), [Material Design Icons](https://pictogrammers.com/library/mdi/) by
-  Pictogrammers (Apache-2.0: the screen's icons and the board's, `icons/mdi.json` in the bundle).
+  Pictogrammers (Apache-2.0: the screen's icons and the board's, `icons/mdi.json` in the bundle),
+  [gridstack.js](https://gridstackjs.com/) (MIT: the browser panel's board editor, `crates/panel/web/vendor/`).
 - Wake word "Okay Alfred": [Tater Totterson](https://github.com/TaterTotterson/Tater-Wake-Words) (MIT); "stop":
   ESPHome's (Apache-2.0).
 - ⚠️ The stop words **"basta" and "stop_alfred"** were trained here on synthetic speech that includes some

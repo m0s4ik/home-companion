@@ -330,11 +330,19 @@ browser panel. Named "Board" ("Plancia" in Italian).
   error sound, nothing sent); a brain's question that comes while a tile's is open closes the tile's as a No.
   Neither is ever sent to nor answered by the remote screen. Locks, alarms, garage doors and gates are never on the
   board.
-- **The custom widget** (`widgets::Kind::Custom`, "Custom" in Settings → Widgets: one switch for every custom
-  widget): a page of the widget's turn for each of the board's widget canvases that has tiles, **4 x 2 cells of
+- **The custom widgets** (`widgets::Kind::Custom`): each of the board's widget canvases (`w1`…`w4`) is a page of
+  the widget's turn of its own ("custom", "custom-2"…), with its place, its switch and its name (the canvas's) in
+  Settings → Widgets and the browser's Home; added and removed with its canvas in the browser's Board; one without
+  tiles has nothing to show. **4 x 2 cells of
   193 x 130** drawn in the slot itself (no panel around them; 272 px, the dots in the last 16). With one free slot:
   row 0 only, in one 88 px line, each tile its icon (32), name (20 Medium) and value or state (18). Its tiles take
   taps and drags as on the page; a swipe across still turns the widget.
+
+- **The editor** is the browser panel's Board section (`crates/panel/web/panel.js`, ops in
+  `panel/board_ops.rs`): the canvases on top, the grid at the device's proportions with the tiles the body draws
+  (`board.get`: the same model as `BoardTile`), the chosen tile's form beside it (under it on a phone). Drag and
+  resize snap to the sizes a tile may have (gridstack.js, `crates/panel/web/vendor/`); without a pointer, the size
+  buttons and Move. Every change saves the whole canvas; the body keeps what `board::validate` allows.
 
 ## 8. Home Assistant's view
 

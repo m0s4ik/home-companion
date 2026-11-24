@@ -102,6 +102,7 @@ cp LICENSE "$STAGE/LICENSE"
 cp /usr/share/common-licenses/Apache-2.0 "$STAGE/licenses/Apache-2.0.txt"
 cp third_party/femtovg/LICENSE-MIT "$STAGE/licenses/femtovg-LICENSE-MIT"
 cp crates/wakeword/THIRD_PARTY.md "$STAGE/licenses/wakeword-THIRD_PARTY.md"
+cp crates/panel/web/vendor/LICENSE "$STAGE/licenses/gridstack-LICENSE"
 cp third_party/femtovg/femtovg-0.27.0-rotation.patch "$STAGE/source/" 2>/dev/null || cp third_party/femtovg-0.27.0-rotation.patch "$STAGE/source/"
 cp tools/airplay/uxplay-1.73.7-home-companion.patch tools/airplay/build-uxplay.sh "$STAGE/source/"
 {
@@ -122,6 +123,8 @@ cp tools/airplay/uxplay-1.73.7-home-companion.patch tools/airplay/build-uxplay.s
     echo "- opt/icons/mdi.json and the board's built-in icons in opt/home-companion: Material Design Icons 7.4.47"
     echo "  (Pictogrammers, https://pictogrammers.com/library/mdi/), path data from @mdi/js, Apache-2.0"
     echo "  (licenses/Apache-2.0.txt); the screen's other icons are the same set."
+    echo "- gridstack.js 14.1.0 (https://gridstackjs.com/, in opt/home-companion-panel: the browser panel's board"
+    echo "  editor), MIT (licenses/gridstack-LICENSE), unmodified (crates/panel/web/vendor/README.md: the hashes)."
     echo "- opt/home-companion-web links the system's WPE WebKit (LGPL-2.1/BSD) dynamically; nothing of it is in the bundle."
     echo
     echo "## Rust crates compiled into the binaries (name version | licence)"

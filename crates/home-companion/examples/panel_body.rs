@@ -14,6 +14,10 @@
 //! The remote screen is on, its picture a sample home (the golden `widget.png`) with a gold ring
 //! where each touch went; `touch <dir>/screen-off` switches it off as on the device, `touch
 //! <dir>/screen-private` makes the screen show a private page.
+//!
+//! The board (Board / «Plancia») starts with a sample page and a custom widget on invented
+//! entities (`light.floor_lamp`, `cover.living_room`…), kept in `<dir>/board.json`; the floor
+//! lamp switches on and off every 10 s, so that the editor's live state can be seen to follow.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -22,10 +26,12 @@ use std::time::{Duration, Instant};
 use home_companion::feeds::{
     Choice, CityChoice, Found, Hit, QuoteChoice, SearchState, Source, What,
 };
+use home_companion::ha::widgets::{Curve, State, States};
 use home_companion::panel::protocol::{self, PanelHost};
 use home_companion::panel::sessions::{self, Request, Sessions};
 use home_companion::settings::Settings;
 use home_companion::settings_model::{self as model, Change, Host};
+use home_companion::ui::board::{self, Board, BoardWords, Canvas, Tile, TileKind};
 use home_companion::ui::capture::{self, Frame};
 use home_companion::ui::lists::{self, ShopList};
 use home_companion::ui::screen::samples;
@@ -53,6 +59,181 @@ struct Demo {
     picture: Vec<u8>,
     taps: RefCell<Vec<(f32, f32, Instant)>>,
     frame: RefCell<Option<Frame>>,
+    board: RefCell<Board>,
+    icons: RefCell<board::icons::Icons>,
+}
+
+/// The sample states of the catalogue's entities (the floor lamp blinks every 10 s).
+fn sample_states(born: Instant) -> States {
+    let st = |state: &str| State {
+        state: state.into(),
+        ..Default::default()
+    };
+    let lamp_on = (born.elapsed().as_secs() / 10) % 2 == 0;
+    let mut s = States::default();
+    for (id, v) in [
+        (
+            "light.floor_lamp",
+            State {
+                brightness: Some(153.0),
+                ..st(if lamp_on { "on" } else { "off" })
+            },
+        ),
+        ("light.ceiling", st("off")),
+        (
+            "light.living_room",
+            State {
+                brightness: Some(204.0),
+                ..st("on")
+            },
+        ),
+        ("light.led_strip", st("on")),
+        ("switch.coffee_machine", st("off")),
+        (
+            "cover.living_room",
+            State {
+                device_class: "shutter".into(),
+                position: Some(100.0),
+                ..st("open")
+            },
+        ),
+        ("scene.movie", st("2026-11-03T10:00:00+00:00")),
+        ("scene.good_night", st("2026-11-02T22:30:00+00:00")),
+        (
+            "media_player.tv",
+            State {
+                device_class: "tv".into(),
+                volume: Some(0.35),
+                ..st("off")
+            },
+        ),
+        (
+            "media_player.speaker",
+            State {
+                volume: Some(0.2),
+                ..st("playing")
+            },
+        ),
+        (
+            "fan.bedroom",
+            State {
+                percentage: Some(40.0),
+                ..st("on")
+            },
+        ),
+        (
+            "valve.garden_water",
+            State {
+                device_class: "water".into(),
+                ..st("closed")
+            },
+        ),
+        (
+            "binary_sensor.front_door",
+            State {
+                device_class: "door".into(),
+                ..st("off")
+            },
+        ),
+        (
+            "binary_sensor.hall_motion",
+            State {
+                device_class: "motion".into(),
+                ..st("on")
+            },
+        ),
+        (
+            "input_number.target_temperature",
+            State {
+                unit: "°C".into(),
+                min: Some(15.0),
+                max: Some(25.0),
+                step: Some(0.5),
+                ..st("20.5")
+            },
+        ),
+        (
+            "sensor.outdoor_temperature",
+            State {
+                unit: "°C".into(),
+                device_class: "temperature".into(),
+                ..st("12.5")
+            },
+        ),
+        (
+            "sensor.living_room",
+            State {
+                unit: "°C".into(),
+                device_class: "temperature".into(),
+                ..st("21.3")
+            },
+        ),
+        (
+            "sensor.humidity",
+            State {
+                unit: "%".into(),
+                device_class: "humidity".into(),
+                ..st("48")
+            },
+        ),
+        (
+            "sensor.power",
+            State {
+                unit: "W".into(),
+                device_class: "power".into(),
+                ..st("412")
+            },
+        ),
+    ] {
+        s.by_id.insert(id.into(), v);
+    }
+    s
+}
+
+/// The sample board of a first start: a page and a custom widget.
+fn sample_board() -> Board {
+    let tile = |x, y, w, h, kind, id: &str| Tile {
+        x,
+        y,
+        w,
+        h,
+        kind,
+        entity_id: id.into(),
+        name: String::new(),
+        icon: String::new(),
+        confirm: None,
+        service: None,
+        service_data: None,
+    };
+    use TileKind::{Button, Level, Sensor};
+    Board {
+        pages: vec![Canvas {
+            id: "p1".into(),
+            name: "Living room".into(),
+            tiles: vec![
+                tile(0, 0, 4, 1, Level, "light.living_room"),
+                tile(0, 1, 1, 1, Button, "light.floor_lamp"),
+                tile(1, 1, 1, 1, Button, "light.ceiling"),
+                Tile {
+                    icon: "movie-open".into(),
+                    ..tile(2, 1, 1, 1, Button, "scene.movie")
+                },
+                tile(3, 1, 1, 1, Button, "cover.living_room"),
+                tile(0, 2, 2, 2, Sensor, "sensor.outdoor_temperature"),
+                tile(2, 2, 2, 1, Sensor, "sensor.power"),
+            ],
+        }],
+        widgets: vec![Canvas {
+            id: "w1".into(),
+            name: "Lights".into(),
+            tiles: vec![
+                tile(0, 0, 1, 1, Button, "light.floor_lamp"),
+                tile(1, 0, 1, 1, Button, "light.ceiling"),
+                tile(2, 0, 2, 1, Sensor, "sensor.living_room"),
+            ],
+        }],
+        ..Board::default()
+    }
 }
 
 const PIC_W: u32 = 640;
@@ -110,6 +291,57 @@ impl Demo {
         };
         *self.frame.borrow_mut() = Some(f.clone());
         f
+    }
+}
+
+impl Demo {
+    /// The bundle's icons beside the repository's locales (`icons/mdi.json`, written by
+    /// tools/make-board-icons.py); without it the icons' search has the built-in ones only.
+    fn icons_file(&self) -> PathBuf {
+        std::env::var_os("PANEL_DEMO_ICONS")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.dir.join("mdi.json"))
+    }
+
+    /// The custom widgets' pages of the turn, from the board on the sample states.
+    fn custom_pages(&self, l: &locale::Locale) -> Vec<widgets::CustomPage> {
+        let words = BoardWords::from_locale(l);
+        let states = self.board_states();
+        let curves = self.board_curves();
+        self.board
+            .borrow()
+            .widgets
+            .iter()
+            .filter(|c| !c.tiles.is_empty())
+            .filter_map(|c| {
+                let n = board::widget_number(&c.id)?;
+                let v = board::view(
+                    c,
+                    &states,
+                    &curves,
+                    &board::Pending::default(),
+                    &words,
+                    Instant::now(),
+                );
+                let rows = v
+                    .iter()
+                    .map(|t| WidgetRow {
+                        text: t.name.clone(),
+                        right: if t.value.is_empty() {
+                            t.status.clone()
+                        } else {
+                            t.value.clone()
+                        },
+                        ..Default::default()
+                    })
+                    .collect();
+                Some(widgets::CustomPage {
+                    n,
+                    title: Page::new(Kind::Custom, n).label(l.text("widget_custom"), &c.name),
+                    rows,
+                })
+            })
+            .collect()
     }
 }
 
@@ -194,6 +426,69 @@ impl PanelHost for Demo {
         lists::remove(&mut self.lists.borrow_mut(), list, uid);
     }
     fn sessions_changed(&self) {}
+    fn board(&self) -> Board {
+        self.board.borrow().clone()
+    }
+    fn board_replace(&self, b: Board) -> Vec<String> {
+        let (b, why) = board::validate(b, &self.ha_catalog());
+        let names: Vec<&str> = b
+            .pages
+            .iter()
+            .chain(&b.widgets)
+            .flat_map(|c| &c.tiles)
+            .map(|t| t.icon.as_str())
+            .filter(|n| !n.is_empty())
+            .collect();
+        self.icons.borrow_mut().prepare(names);
+        let _ = std::fs::write(self.dir.join("board.json"), board::to_json(&b));
+        *self.board.borrow_mut() = b;
+        why
+    }
+    /// The sample states, named as the catalogue names them (as Home Assistant's do).
+    fn board_states(&self) -> States {
+        let mut s = sample_states(self.born);
+        for e in self.ha_catalog() {
+            if let Some(st) = s.by_id.get_mut(&e.id) {
+                st.name = e.name;
+            }
+        }
+        s
+    }
+    fn board_curves(&self) -> std::collections::HashMap<String, Curve> {
+        let wave = |seed: f32| -> Vec<f32> {
+            (0..32)
+                .map(|i| {
+                    let t = i as f32 / 31.0;
+                    (0.5 + 0.32 * (t * 6.3 + seed).sin()).clamp(0.0, 1.0)
+                })
+                .collect()
+        };
+        [
+            ("sensor.outdoor_temperature", 0.4, 8.1, 14.9),
+            ("sensor.power", 2.2, 120.0, 1450.0),
+            ("sensor.living_room", 1.1, 20.2, 21.8),
+            ("sensor.humidity", 3.0, 41.0, 55.0),
+        ]
+        .into_iter()
+        .map(|(id, seed, low, high)| {
+            (
+                id.to_string(),
+                Curve {
+                    points: wave(seed),
+                    first: low,
+                    low,
+                    high,
+                },
+            )
+        })
+        .collect()
+    }
+    fn board_icons(&self) -> board::icons::Icons {
+        self.icons.borrow().clone()
+    }
+    fn board_icons_file(&self) -> Option<PathBuf> {
+        Some(self.icons_file())
+    }
     fn widget_pages(&self) -> Vec<(Page, bool)> {
         let on = self.settings.widgets().0;
         self.settings
@@ -369,6 +664,28 @@ impl PanelHost for Demo {
             ),
             e("sensor.power", "Power", "W", "power"),
             e("media_player.speaker", "Speaker", "", ""),
+            e("light.floor_lamp", "Floor lamp", "", ""),
+            e("light.ceiling", "Ceiling", "", ""),
+            e("light.living_room", "Living room lights", "", ""),
+            e("light.led_strip", "LED strip", "", ""),
+            e("switch.coffee_machine", "Coffee machine", "", ""),
+            e("cover.living_room", "Living room shutter", "", "shutter"),
+            e("cover.garage", "Garage door", "", "garage"),
+            e("lock.front_door", "Front door lock", "", ""),
+            e("alarm_control_panel.house", "House alarm", "", ""),
+            e("scene.movie", "Movie", "", ""),
+            e("scene.good_night", "Good night", "", ""),
+            e("media_player.tv", "TV", "", "tv"),
+            e("fan.bedroom", "Bedroom fan", "", ""),
+            e("valve.garden_water", "Garden water", "", "water"),
+            e("binary_sensor.front_door", "Front door", "", "door"),
+            e("binary_sensor.hall_motion", "Hall motion", "", "motion"),
+            e(
+                "input_number.target_temperature",
+                "Target temperature",
+                "°C",
+                "",
+            ),
         ]
     }
     fn ha_catalog_refresh(&self) {}
@@ -481,7 +798,9 @@ impl PanelHost for Demo {
             &|id| name_of(id),
             &|k| l.text(k).to_string(),
         );
+        let custom = self.custom_pages(&l);
         let real = Sources {
+            custom: &custom,
             next: &s.next,
             weather: s.weather.clone(),
             weather_hero: Some(s.weather_hero.clone()),
@@ -615,7 +934,15 @@ fn main() {
         picture: picture(),
         taps: RefCell::new(Vec::new()),
         frame: RefCell::new(None),
+        board: RefCell::new(Board::default()),
+        icons: RefCell::new(Default::default()),
     };
+    *demo.icons.borrow_mut() = board::icons::Icons::new(demo.icons_file());
+    // The board as it was left, else the sample one.
+    let b = std::fs::read_to_string(dir.join("board.json"))
+        .map(|t| board::parse(&t).0)
+        .unwrap_or_else(|_| sample_board());
+    demo.board_replace(b);
     // A first start: some markets, cities and sensors chosen (public names), as after a
     // few minutes with the panel.
     if demo.settings.quotes().is_empty() {
