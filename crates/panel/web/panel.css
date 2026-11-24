@@ -30,6 +30,7 @@ a.inl { color: var(--accent); text-decoration: underline; text-underline-offset:
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 [hidden] { display: none !important; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+#live { position: fixed; top: 0; left: 0; }
 svg.i { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 .num { font-variant-numeric: tabular-nums; }
 .grow { flex: 1; min-width: 0; }
@@ -213,7 +214,8 @@ input, textarea { caret-color: var(--accent); }
 .wc.wx .hrs svg { width: 2em; height: 2em; stroke: var(--text); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
 /* ---------- Home: the device, the turn under it, the chosen widget beside it. */
-.home { display: grid; grid-template-columns: minmax(0, 1fr) clamp(340px, 30vw, 420px); gap: clamp(28px, 3vw, 48px); align-items: start; max-width: 1360px; }
+/* As wide as the window: the device grows with it, the widget's column up to 520 px. */
+.home { display: grid; grid-template-columns: minmax(0, 1fr) clamp(340px, 26vw, 520px); gap: clamp(28px, 3vw, 56px); align-items: start; }
 .stagecol { min-width: 0; }
 .preview-note { display: flex; align-items: center; gap: 10px; margin-top: 12px; color: var(--text-3); font-size: var(--fs-cap); min-height: 36px; }
 .preview-note .tag { color: var(--accent); border: 1px solid #4a3a22; border-radius: 999px; padding: 1px 9px; white-space: nowrap; }
@@ -322,11 +324,23 @@ body.out .toast { left: 50%; max-width: calc(100vw - 32px); }
 .cvpill .cnt { color: var(--text-3); font-size: var(--fs-cap); font-weight: 400; }
 .cvpill.add { border-style: dashed; color: var(--accent); padding: 0 14px 0 10px; }
 .cvpill.add svg.i { width: 16px; height: 16px; }
-.blay { display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 28vw, 400px); gap: clamp(24px, 3vw, 44px); align-items: start; max-width: 1360px; }
-/* A page is as wide as the screen: its tile's form goes under it, in two columns when it can. */
-.blay.under { grid-template-columns: minmax(0, 1fr); gap: 28px; }
-.blay.under .bform { position: static; max-width: 760px; }
+/* One screen, no scrolling: the grid as large as the window lets it be (its width from the
+   stage's height too, at the device's proportions), the inspector beside it. */
+.blay { display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 24vw, 420px); gap: clamp(24px, 2.5vw, 40px); align-items: start; }
 .bstage { min-width: 0; }
+@media (min-width: 761px) {
+  main:has(> .board) { height: 100vh; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; padding-top: 24px; padding-bottom: 24px; }
+  main:has(> .board) .pagehead { margin-bottom: 10px; }
+  .board { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .board .cvrow { flex: none; }
+  .board > .fine { flex: none; }
+  .blay { flex: 1; min-height: 0; align-items: stretch; }
+  .bstage { container-type: size; min-height: 0; }
+  /* 22: the frame's padding and border; 1242 × 764 a page with its header, 820 × 284 a widget. */
+  .blay.tall .bframe { width: min(100cqw, calc((100cqh - 22px) * 1242 / 764 + 22px)); margin-inline: auto; }
+  .blay.wide .bframe { width: min(100cqw, calc((100cqh - 22px) * 820 / 284 + 22px)); margin-inline: auto; }
+  .bform { position: static; top: auto; min-height: 0; max-height: 100%; overflow-y: auto; padding: 0 6px 4px 2px; overscroll-behavior: contain; }
+}
 .bempty { display: grid; justify-items: start; gap: 12px; max-width: 520px; }
 .bempty img { height: 150px; }
 .bframe { position: relative; container-type: inline-size; padding: 10px; border-radius: 18px; background: var(--bg); border: 1px solid #1f2026; box-shadow: 0 24px 48px -16px #000c, 0 2px 0 #ffffff08 inset; }
@@ -393,14 +407,25 @@ body.out .toast { left: 50%; max-width: calc(100vw - 32px); }
 .bt .bl .bv { font: 400 calc(var(--u) * 24)/1 InterW, sans-serif; }
 .bt .bq { position: absolute; top: calc(var(--u) * 14); right: calc(var(--u) * 14); width: calc(var(--u) * 12); height: calc(var(--u) * 12); border-radius: 50%; border: 2px solid var(--accent); }
 .bl i.lv0 { width: 0%; } .bl i.lv1 { width: 5%; } .bl i.lv2 { width: 10%; } .bl i.lv3 { width: 15%; } .bl i.lv4 { width: 20%; } .bl i.lv5 { width: 25%; } .bl i.lv6 { width: 30%; } .bl i.lv7 { width: 35%; } .bl i.lv8 { width: 40%; } .bl i.lv9 { width: 45%; } .bl i.lv10 { width: 50%; } .bl i.lv11 { width: 55%; } .bl i.lv12 { width: 60%; } .bl i.lv13 { width: 65%; } .bl i.lv14 { width: 70%; } .bl i.lv15 { width: 75%; } .bl i.lv16 { width: 80%; } .bl i.lv17 { width: 85%; } .bl i.lv18 { width: 90%; } .bl i.lv19 { width: 95%; } .bl i.lv20 { width: 100%; } 
-.cvbar { display: grid; gap: 10px; margin-top: 18px; }
+/* The inspector with no tile chosen: the canvas itself (name, order, removing it), then how to begin. */
+.cvbar { display: grid; gap: 10px; padding-bottom: 18px; border-bottom: 1px solid var(--line-soft); }
 .cvname { display: grid; }
-.cvname .lab { margin: 0 0 6px; }
-.cvname input { width: min(360px, 100%); }
+.cvname .lab { margin: 0 0 8px; }
+.cvname input { width: 100%; }
 .cvbar > .fine { margin: 0; }
-.cvacts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 6px; }
-.bform .bhint { padding-top: 4px; }
-.bform .bhint .fine { margin-top: 14px; }
+.cvacts { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.cvacts .btn.quiet { padding: 0 8px; }
+.cvacts .grow { display: none; }
+.cvacts #cvremove { margin-left: auto; }
+.bform .bhint { padding-top: 18px; color: var(--text-2); }
+.bform .bhint .fine { margin-top: 10px; }
+.bform .lab { margin: 16px 0 6px; }
+.bform .edhead { margin-bottom: 4px; }
+.bform .edhead .ibtn { margin-right: -8px; }
+.bpair { display: flex; flex-wrap: wrap; gap: 0 20px; }
+.bform .bconfirm { margin-top: 18px; }
+.bform .adv { margin-top: 18px; }
+.bform .edfoot { margin-top: 18px; }
 .bform input[type=text], .bform textarea { width: 100%; }
 .bform .edhead .ic svg.mdi { width: 24px; height: 24px; fill: var(--accent); }
 .bform .edhead p { overflow-wrap: anywhere; }

@@ -436,6 +436,7 @@ pub const STRING_KEYS: &[&str] = &[
     "panel_board_tile_of",
     "panel_board_tile",
     "panel_board_pick",
+    "panel_board_done",
     "panel_board_never",
     "panel_board_add_title",
     "panel_board_at",

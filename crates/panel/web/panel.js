@@ -2031,8 +2031,8 @@ function gridUnits(c) {
   const k = c.type === 'widget' ? D.board.cells.widget : D.board.cells.page;
   return colsOf(c) * (k.width + k.gap);
 }
-// The tile's form is under the grid (a phone, or a page as wide as the screen).
-function formUnder() { return matchMedia('(max-width: 760px)').matches || !!document.querySelector('.blay.under'); }
+// The tile's form is under the grid on a phone.
+function formUnder() { return matchMedia('(max-width: 760px)').matches; }
 function spanKey(s) { return s[0] + '×' + s[1]; }
 function rawTiles(c) { return c.tiles.map(x => Object.assign({}, x.tile)); }
 
@@ -2152,9 +2152,11 @@ function boardPage(r) {
     box.append(e);
     return frag(head, box);
   }
-  const lay = el('div', 'blay' + (c.type === 'page' ? ' under' : ''));
+  // One screen: the grid as large as the window lets it be, the inspector beside it (the tile,
+  // or the page itself when no tile is chosen). On a phone the inspector goes under the grid.
+  const lay = el('div', 'blay ' + (c.type === 'widget' ? 'wide' : 'tall'));
   const stage = el('div', 'bstage');
-  stage.append(gridFrame(c), canvasBar(c));
+  stage.append(gridFrame(c));
   const ed = el('aside', 'editor bform');
   ed.setAttribute('aria-label', t('panel_board_tile'));
   tileForm(ed, c);
@@ -2414,8 +2416,9 @@ function tileForm(ed, c) {
   if (BD.adding) { ed.append(addForm(c)); return; }
   const x = BD.sel >= 0 ? c.tiles[BD.sel] : null;
   if (!x) {
+    ed.append(canvasBar(c));
     const e = el('div', 'bhint');
-    e.append(el('p', 'lead', t('panel_board_pick')), el('p', 'fine', t('panel_board_never')));
+    e.append(el('p', null, t('panel_board_pick')), el('p', 'fine', t('panel_board_never')));
     ed.append(e);
     return;
   }
@@ -2425,7 +2428,8 @@ function tileForm(ed, c) {
   ic.append(mdi(x.draw.path));
   const words = el('div', 'grow');
   words.append(el('h2', null, x.draw.name), el('p', 'num', tl.entity_id));
-  head.append(ic, words, button('btn quiet', t('panel_board_change'), () => { BD.replacing = !BD.replacing; BD.find.q = ''; BD.find.hits = null; render(true); const i = document.getElementById('bfind'); if (i) i.focus(); }));
+  head.append(ic, words, button('btn quiet', t('panel_board_change'), () => { BD.replacing = !BD.replacing; BD.find.q = ''; BD.find.hits = null; render(true); const i = document.getElementById('bfind'); if (i) i.focus(); }),
+    ibtn('close', t('panel_board_done'), () => { BD.sel = -1; BD.moving = false; BD.replacing = false; BD.icons.open = false; render(true); }));
   ed.append(head);
   if (BD.replacing) { ed.append(searchBlock(c, h => replaceEntity(c, h))); return; }
   const tiles = () => rawTiles(c);
@@ -2457,7 +2461,10 @@ function tileForm(ed, c) {
 
   // Size and kind.
   const spans = x.allowed[tl.kind] || [];
-  ed.append(label(t('panel_board_size')));
+  // Side by side: the size and the kind (one line, the form fits beside the grid).
+  const pair = el('div', 'bpair');
+  const sz = el('div');
+  sz.append(label(t('panel_board_size')));
   const seg = el('div', 'seg');
   seg.setAttribute('role', 'group');
   seg.setAttribute('aria-label', t('panel_board_size'));
@@ -2472,10 +2479,13 @@ function tileForm(ed, c) {
     b.setAttribute('aria-pressed', String(s[0] === tl.w && s[1] === tl.h));
     seg.append(b);
   }
-  ed.append(seg);
+  sz.append(seg);
+  pair.append(sz);
+  ed.append(pair);
   const kinds = Object.keys(x.allowed);
   if (kinds.length > 1) {
-    ed.append(label(t('panel_board_kind')));
+    const kd = el('div');
+    kd.append(label(t('panel_board_kind')));
     const ks = el('div', 'seg');
     ks.setAttribute('role', 'group');
     ks.setAttribute('aria-label', t('panel_board_kind'));
@@ -2495,7 +2505,8 @@ function tileForm(ed, c) {
       b.setAttribute('aria-pressed', String(k === tl.kind));
       ks.append(b);
     }
-    ed.append(ks);
+    kd.append(ks);
+    pair.append(kd);
   }
 
   // Ask first.
