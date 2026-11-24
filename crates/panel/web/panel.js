@@ -1994,10 +1994,10 @@ function screenPage() {
   return frag(pagehead(t('panel_tab_screen'), t('panel_screen_sub')), R.box, facts);
 }
 
-// ---- Board («Plancia»): pages of tiles (4 x 4) and custom widgets (4 x 2) of Home Assistant's
+// ---- Board («Plancia»): pages of tiles (6 x 4, the whole screen) and custom widgets (4 x 2) of Home Assistant's
 // entities (crates/home-companion/src/ui/board.rs, panel/board_ops.rs). The canvases on top, the
 // grid as on the device with the tiles the body draws (their state refreshed every 5 s), the
-// chosen tile's form beside it (under it on a phone). Every change is saved at once as the whole
+// chosen tile's form beside it (under it on a phone, and under a page: it is as wide as the screen). Every change is saved at once as the whole
 // canvas; the body keeps what is allowed and says what it left out. Drag and resize with
 // gridstack.js (web/vendor, loaded when the section opens), snapped to the sizes a tile may
 // have; without a pointer: the size buttons and Move (then a place).
@@ -2025,19 +2025,27 @@ function loadGridstack() {
 function canvases() { return (D.board && D.board.canvases) || []; }
 function canvasOf(id) { return canvases().find(c => c.id === id); }
 function rowsOf(c) { return c.type === 'widget' ? D.board.grids.widget[1] : D.board.grids.page[1]; }
+function colsOf(c) { return c.type === 'widget' ? D.board.grids.widget[0] : D.board.grids.page[0]; }
+// The grid's width in the device's pixels: its cells and gaps, and half a gap at each side.
+function gridUnits(c) {
+  const k = c.type === 'widget' ? D.board.cells.widget : D.board.cells.page;
+  return colsOf(c) * (k.width + k.gap);
+}
+// The tile's form is under the grid (a phone, or a page as wide as the screen).
+function formUnder() { return matchMedia('(max-width: 760px)').matches || !!document.querySelector('.blay.under'); }
 function spanKey(s) { return s[0] + '×' + s[1]; }
 function rawTiles(c) { return c.tiles.map(x => Object.assign({}, x.tile)); }
 
 // The tile fits at (x, y) as w × h: inside, over no other tile (`skip`: the tile itself).
-function fits(tiles, skip, x, y, w, h, rows) {
-  if (x < 0 || y < 0 || x + w > 4 || y + h > rows) return false;
+function fits(tiles, skip, x, y, w, h, rows, cols) {
+  if (x < 0 || y < 0 || x + w > cols || y + h > rows) return false;
   return tiles.every((o, i) => i === skip || x >= o.x + o.w || o.x >= x + w || y >= o.y + o.h || o.y >= y + h);
 }
 
 // The first place a w × h tile fits, from (x, y) on then from the start.
-function placeFor(tiles, skip, w, h, rows, x, y) {
-  if (fits(tiles, skip, x, y, w, h, rows)) return { x, y };
-  for (let yy = 0; yy < rows; yy++) for (let xx = 0; xx < 4; xx++) if (fits(tiles, skip, xx, yy, w, h, rows)) return { x: xx, y: yy };
+function placeFor(tiles, skip, w, h, rows, cols, x, y) {
+  if (fits(tiles, skip, x, y, w, h, rows, cols)) return { x, y };
+  for (let yy = 0; yy < rows; yy++) for (let xx = 0; xx < cols; xx++) if (fits(tiles, skip, xx, yy, w, h, rows, cols)) return { x: xx, y: yy };
   return null;
 }
 
@@ -2144,7 +2152,7 @@ function boardPage(r) {
     box.append(e);
     return frag(head, box);
   }
-  const lay = el('div', 'blay');
+  const lay = el('div', 'blay' + (c.type === 'page' ? ' under' : ''));
   const stage = el('div', 'bstage');
   stage.append(gridFrame(c), canvasBar(c));
   const ed = el('aside', 'editor bform');
@@ -2187,21 +2195,31 @@ function canvasRow(cur) {
   return row;
 }
 
-// The grid: the device's cells (each empty one a «+»), the tiles over them.
+// The grid: the device's cells (each empty one a «+»), the tiles over them; a page under its
+// header as the device shows it (Alfred's face, the page's name, the time).
 function gridFrame(c) {
   const rows = rowsOf(c);
-  const frame = el('div', 'bframe ' + (c.type === 'widget' ? 'r2' : 'r4') + (BD.moving ? ' moving' : ''));
+  const cols = colsOf(c);
+  // Its columns and width in the device's pixels: classes (panel.css), no style attribute.
+  const frame = el('div', 'bframe ' + (c.type === 'widget' ? 'r2' : 'r4') + ' c' + cols + (BD.moving ? ' moving' : ''));
+  if (c.type === 'page') {
+    const head = el('div', 'bhead');
+    head.setAttribute('aria-hidden', 'true');
+    head.append(art('face'), el('b', null, c.label), el('span', 'num', hm()));
+    frame.append(head);
+  }
+  const body = el('div', 'bbody');
   const cells = el('div', 'bcells');
   const taken = new Set();
-  c.tiles.forEach(x => { for (let yy = x.tile.y; yy < x.tile.y + x.tile.h; yy++) for (let xx = x.tile.x; xx < x.tile.x + x.tile.w; xx++) taken.add(yy * 4 + xx); });
+  c.tiles.forEach(x => { for (let yy = x.tile.y; yy < x.tile.y + x.tile.h; yy++) for (let xx = x.tile.x; xx < x.tile.x + x.tile.w; xx++) taken.add(yy * cols + xx); });
   const full = c.tiles.length >= (c.type === 'widget' ? D.board.limits.widget_tiles : D.board.limits.page_tiles);
   for (let yy = 0; yy < rows; yy++) {
-    for (let xx = 0; xx < 4; xx++) {
+    for (let xx = 0; xx < cols; xx++) {
       const b = el('button', 'bcell');
       b.type = 'button';
       b.id = 'cell-' + xx + '-' + yy;
       const self = BD.moving && BD.sel >= 0 && (() => { const s = c.tiles[BD.sel].tile; return xx >= s.x && xx < s.x + s.w && yy >= s.y && yy < s.y + s.h; })();
-      if ((taken.has(yy * 4 + xx) && !self) || (full && !BD.moving)) { b.classList.add('taken'); b.tabIndex = -1; b.setAttribute('aria-hidden', 'true'); }
+      if ((taken.has(yy * cols + xx) && !self) || (full && !BD.moving)) { b.classList.add('taken'); b.tabIndex = -1; b.setAttribute('aria-hidden', 'true'); }
       const here = BD.adding && BD.adding.x === xx && BD.adding.y === yy;
       if (here) b.setAttribute('aria-pressed', 'true');
       b.setAttribute('aria-label', t(BD.moving ? 'panel_board_move_here' : 'panel_board_cell_add', { r: yy + 1, c: xx + 1 }));
@@ -2235,15 +2253,16 @@ function gridFrame(c) {
       render(true);
       const f = document.getElementById('bt-' + i);
       if (f) f.focus({ preventScroll: true });
-      // A phone: the form is under the grid.
-      if (matchMedia('(max-width: 760px)').matches) { const ed = document.querySelector('.bform'); if (ed) ed.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
+      // The form is under the grid: brought into view.
+      if (formUnder()) { const ed = document.querySelector('.bform'); if (ed) ed.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
     };
     content.addEventListener('click', pick);
     content.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } });
     it.append(content);
     g.append(it);
   });
-  frame.append(cells, g);
+  body.append(cells, g);
+  frame.append(body);
   return frame;
 }
 
@@ -2256,10 +2275,11 @@ async function mountGrid(c) {
   if (!g || !g.isConnected || BD.cv !== c.id) return;
   if (BD.grid) { try { BD.grid.destroy(false); } catch (e) { /* gone with its page */ } BD.grid = null; }
   const rows = rowsOf(c);
-  const unit = g.getBoundingClientRect().width / 820;
+  const gw = gridUnits(c);
+  const unit = g.getBoundingClientRect().width / gw;
   const ch = (c.type === 'widget' ? D.board.cells.widget.height : D.board.cells.page.height) + 12;
   const grid = GS.init({
-    column: 4, maxRow: rows, minRow: rows, float: true, animate: false,
+    column: colsOf(c), maxRow: rows, minRow: rows, float: true, animate: false,
     cellHeight: Math.round(ch * unit), margin: Math.max(2, Math.round(6 * unit)),
     resizable: { handles: 'se' }, draggable: { cancel: 'button, input' },
     acceptWidgets: false, removable: false,
@@ -2273,7 +2293,7 @@ async function mountGrid(c) {
   });
   const fit = () => {
     if (!g.isConnected) { removeEventListener('resize', fit); return; }
-    const u = g.getBoundingClientRect().width / 820;
+    const u = g.getBoundingClientRect().width / gw;
     grid.cellHeight(Math.round(ch * u));
     grid.margin(Math.max(2, Math.round(6 * u)));
   };
@@ -2292,7 +2312,7 @@ function gridChanged(c, item) {
     const spans = x.allowed[x.tile.kind] || [[x.tile.w, x.tile.h]];
     if (!spans.some(s => s[0] === node.w && s[1] === node.h)) {
       const best = spans.slice().sort((a, b) => (Math.abs(a[0] - node.w) * 2 + Math.abs(a[1] - node.h)) - (Math.abs(b[0] - node.w) * 2 + Math.abs(b[1] - node.h)))
-        .find(s => node.x + s[0] <= 4 && node.y + s[1] <= rows);
+        .find(s => node.x + s[0] <= colsOf(c) && node.y + s[1] <= rows);
       if (best) grid.update(item, { w: best[0], h: best[1] });
       else grid.update(item, { x: x.tile.x, y: x.tile.y, w: x.tile.w, h: x.tile.h });
     }
@@ -2317,7 +2337,7 @@ function cellTapped(c, x, y) {
     const tiles = rawTiles(c);
     const s = tiles[BD.sel];
     BD.moving = false;
-    if (!fits(tiles, BD.sel, x, y, s.w, s.h, rowsOf(c))) { toast(t('panel_board_no_room'), true); render(true); return; }
+    if (!fits(tiles, BD.sel, x, y, s.w, s.h, rowsOf(c), colsOf(c))) { toast(t('panel_board_no_room'), true); render(true); return; }
     s.x = x; s.y = y;
     boardSave(c, tiles, { sel: BD.sel, text: t('panel_board_moved') });
     return;
@@ -2328,7 +2348,7 @@ function cellTapped(c, x, y) {
   render(true);
   const i = document.getElementById('bfind');
   if (i) i.focus({ preventScroll: true });
-  if (matchMedia('(max-width: 760px)').matches) { const ed = document.querySelector('.bform'); if (ed) ed.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
+  if (formUnder()) { const ed = document.querySelector('.bform'); if (ed) ed.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
 }
 
 // Under the grid: the canvas's own name, its order (pages) or its place on the home (widgets),
@@ -2444,7 +2464,7 @@ function tileForm(ed, c) {
   for (const s of spans) {
     const b = button(null, spanKey(s), () => {
       const all = tiles();
-      const p = placeFor(all, BD.sel, s[0], s[1], rowsOf(c), tl.x, tl.y);
+      const p = placeFor(all, BD.sel, s[0], s[1], rowsOf(c), colsOf(c), tl.x, tl.y);
       if (!p) { toast(t('panel_board_no_room'), true); return; }
       Object.assign(all[BD.sel], { w: s[0], h: s[1], x: p.x, y: p.y });
       boardSave(c, all, { sel: BD.sel });
@@ -2466,7 +2486,7 @@ function tileForm(ed, c) {
         const ok = x.allowed[k];
         let s = ok.find(s1 => s1[0] === me.w && s1[1] === me.h) ? [me.w, me.h] : null;
         let p = s ? { x: me.x, y: me.y } : null;
-        for (const s1 of s ? [] : ok) { p = placeFor(all, BD.sel, s1[0], s1[1], rowsOf(c), me.x, me.y); if (p) { s = s1; break; } }
+        for (const s1 of s ? [] : ok) { p = placeFor(all, BD.sel, s1[0], s1[1], rowsOf(c), colsOf(c), me.x, me.y); if (p) { s = s1; break; } }
         if (!s || !p) { toast(t('panel_board_no_room'), true); return; }
         Object.assign(me, { kind: k, w: s[0], h: s[1], x: p.x, y: p.y });
         if (k !== 'button') { delete me.service; delete me.service_data; }
@@ -2569,8 +2589,8 @@ function addTile(c, h) {
   const spans = h.allowed[h.kind] || [[1, 1]];
   let p = null;
   let s = null;
-  for (const s1 of spans) { if (fits(tiles, -1, BD.adding.x, BD.adding.y, s1[0], s1[1], rows)) { s = s1; p = BD.adding; break; } }
-  for (const s1 of s ? [] : spans) { p = placeFor(tiles, -1, s1[0], s1[1], rows, BD.adding.x, BD.adding.y); if (p) { s = s1; break; } }
+  for (const s1 of spans) { if (fits(tiles, -1, BD.adding.x, BD.adding.y, s1[0], s1[1], rows, colsOf(c))) { s = s1; p = BD.adding; break; } }
+  for (const s1 of s ? [] : spans) { p = placeFor(tiles, -1, s1[0], s1[1], rows, colsOf(c), BD.adding.x, BD.adding.y); if (p) { s = s1; break; } }
   if (!s) { toast(t('panel_board_no_room'), true); return; }
   tiles.push({ x: p.x, y: p.y, w: s[0], h: s[1], kind: h.kind, entity_id: h.entity_id });
   BD.adding = null;
@@ -2584,7 +2604,7 @@ function replaceEntity(c, h) {
   const spans = h.allowed[kind];
   let s = spans.find(s1 => s1[0] === me.w && s1[1] === me.h);
   let p = s ? { x: me.x, y: me.y } : null;
-  for (const s1 of s ? [] : spans) { p = placeFor(tiles, BD.sel, s1[0], s1[1], rowsOf(c), me.x, me.y); if (p) { s = s1; break; } }
+  for (const s1 of s ? [] : spans) { p = placeFor(tiles, BD.sel, s1[0], s1[1], rowsOf(c), colsOf(c), me.x, me.y); if (p) { s = s1; break; } }
   if (!s) { toast(t('panel_board_no_room'), true); return; }
   tiles[BD.sel] = { x: p.x, y: p.y, w: s[0], h: s[1], kind, entity_id: h.entity_id };
   BD.replacing = false;
