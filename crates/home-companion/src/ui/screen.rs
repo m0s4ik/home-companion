@@ -9823,6 +9823,22 @@ mod tests {
         assert!(ui.remote_accepts(epoch));
         w.set_dialog("".into());
         assert!(ui.remote_accepts(epoch));
+        // The brain's Yes/No question about the house: not sent, not touched (a remote finger
+        // never answers it).
+        ui.house.borrow_mut().confirm(
+            7,
+            "Close the shutter?".into(),
+            Vec::new(),
+            now_unix() as i64 + 30,
+            ui.now(),
+        );
+        ui.render_house();
+        assert!(w.get_ask_shown());
+        assert_eq!(call("screen.frame", json!({}))["hidden"], "confirm");
+        assert!(!ui.remote_accepts(epoch));
+        ui.house.borrow_mut().clear_question();
+        ui.render_house();
+        assert!(ui.remote_accepts(epoch));
         // The memories and the conversations: read only on the device.
         for page in ["memories", "chat"] {
             w.set_page(page.into());
