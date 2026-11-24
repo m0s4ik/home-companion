@@ -9400,6 +9400,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The mirror's swipe home from the home button's edge exists only while mirroring: with the
+    /// edge on the right it was a 36 px strip at x >= 1244 on every page, which took every touch
+    /// there (a swipe from the right edge of any page went home).
+    #[test]
+    fn the_mirrors_edge_swipe_only_while_mirroring() {
+        use super::super::webview::CasaScreen as _;
+        use slint::LogicalPosition;
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let (ui, dir) = headless_ui("mirror-edge");
+        let w = &ui.screen;
+        let button = PointerEventButton::Left;
+        let drag = |from: (f32, f32), to: (f32, f32)| {
+            let at = |p: (f32, f32)| LogicalPosition::new(p.0, p.1);
+            w.window()
+                .dispatch_event(WindowEvent::PointerMoved { position: at(from) });
+            w.window().dispatch_event(WindowEvent::PointerPressed {
+                position: at(from),
+                button,
+            });
+            for i in 1..=8 {
+                let f = i as f32 / 8.0;
+                let p = (from.0 + (to.0 - from.0) * f, from.1 + (to.1 - from.1) * f);
+                w.window()
+                    .dispatch_event(WindowEvent::PointerMoved { position: at(p) });
+            }
+            w.window().dispatch_event(WindowEvent::PointerReleased {
+                position: at(to),
+                button,
+            });
+        };
+        w.casa_set_edge("right");
+        for page in ["more", "settings"] {
+            w.set_page(page.into());
+            drag((1270.0, 400.0), (1000.0, 400.0));
+            assert_eq!(w.get_page(), page, "a swipe from the right edge of {page}");
+        }
+        // The mirror's own swipe in from the home button's edge still goes home.
+        w.set_mirror(true, "Phone", 1280, 800);
+        w.set_page("mirror".into());
+        drag((1270.0, 400.0), (1000.0, 400.0));
+        assert_eq!(w.get_page(), "home", "the mirror's edge swipe");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A headless Ui on its own state directory, Home Assistant not linked, no first start.
     fn headless_ui(name: &str) -> (Rc<Ui<super::super::sw::CompanionWindow>>, PathBuf) {
         let dir =

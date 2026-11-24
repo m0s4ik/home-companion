@@ -5488,8 +5488,10 @@ export component CompanionWindow inherits Window {
         stage-height: root.character-height;
         stage-background: root.character-background;
         // Swipe in from the home button's edge, as over Home Assistant's view (the same edge,
-        // CasaBridge.edge): far enough in, home; the mirroring goes on.
-        mirror-swipe := TouchArea {
+        // CasaBridge.edge): far enough in, home; the mirroring goes on. Only while the mirror is
+        // on screen: CasaScreen is always there, and its strip along that edge would take every
+        // touch there on every page (the board's edge on the home, with the edge on the right).
+        if root.mirroring: TouchArea {
             property <string> e: CasaBridge.edge;
             property <length> d: self.e == "right" ? self.pressed-x - self.mouse-x
                 : self.e == "left" ? self.mouse-x - self.pressed-x
