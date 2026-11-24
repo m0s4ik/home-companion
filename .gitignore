@@ -9,3 +9,4 @@ crates/*/out/
 
 # the board's icons, made by tools/make-board-icons.py (the release bundle carries them)
 /icons/mdi.json
+__pycache__/
