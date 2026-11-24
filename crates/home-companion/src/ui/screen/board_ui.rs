@@ -188,6 +188,10 @@ impl<S: Screen> Ui<S> {
 
     /// A touch on the board (or the board opened): its home button shows, where it rests.
     pub(super) fn board_home_show(&self) {
+        // The demos are the board at rest (nothing would hide it: no clock).
+        if self.opts.demo.is_some() {
+            return;
+        }
         let (x, y) = self.board_home_place().xy();
         self.screen.set_board_home(x, y);
         self.screen.set_board_home_shown(true);

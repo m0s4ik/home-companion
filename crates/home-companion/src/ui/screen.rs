@@ -9727,7 +9727,10 @@ mod tests {
         let (x, y) = Place::default().xy();
         assert_eq!((w.get_board_home_x(), w.get_board_home_y()), (x, y));
         ui.tick_clock();
-        assert!(w.get_board_home_shown(), "still there right after the touch");
+        assert!(
+            w.get_board_home_shown(),
+            "still there right after the touch"
+        );
         ui.desk.borrow_mut().touched = Instant::now().checked_sub(Duration::from_secs(5));
         ui.tick_clock();
         assert!(!w.get_board_home_shown(), "gone after a while");
