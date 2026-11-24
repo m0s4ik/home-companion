@@ -161,7 +161,8 @@ its ring and the gold fill) and No stays a target that wins.
 - **The browser panel** (`crates/panel/web/`, not this screen, same tokens): four sections (Home, Screen,
   Shopping, Settings, with Access as the last group of Settings; a tab bar at the bottom on a phone, a rail on the
   left on a desk). Home draws the device's screen whole with the chosen widget in its slot, the rotation as a
-  numbered strip under it and the chosen widget's editor beside it; Screen is the remote screen (off unless switched
+  numbered strip under it and the chosen widget's editor beside it (on a desk one screen with no scrolling: the
+  device as large as the height left by the strip, the strip's tiles one line each, only the editor scrolls); Screen is the remote screen (off unless switched
   on on the device, one controller at a time, the device's sign with Stop, private pages never sent). The widget's pages are drawn
   by the panel from the body's own page model (`widgets::panel_pages` → `panel/widget_ops.rs` `model`: the same
   words, numbers and cuts as here, with three free slots), in the screen's Inter subsets and with `WidgetPanel`'s

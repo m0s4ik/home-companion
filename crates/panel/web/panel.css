@@ -217,6 +217,29 @@ input, textarea { caret-color: var(--accent); }
 /* As wide as the window: the device grows with it, the widget's column up to 520 px. */
 .home { display: grid; grid-template-columns: minmax(0, 1fr) clamp(340px, 26vw, 520px); gap: clamp(28px, 3vw, 56px); align-items: start; }
 .stagecol { min-width: 0; }
+/* On a desk the Home is one screen, no scrolling: the device as large as the height left by
+   the turn under it lets it be (16:10 and its frame), the widget's editor scrolling by itself. */
+@media (min-width: 761px) {
+  main:has(> .home) { height: 100vh; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; padding-top: 24px; padding-bottom: 20px; }
+  main:has(> .home) .pagehead { margin-bottom: 12px; }
+  .home { flex: 1; min-height: 0; align-items: stretch; }
+  .stagecol { display: flex; flex-direction: column; min-height: 0; }
+  .stagecol > * { flex: none; }
+  .stagecol > .devfit { flex: 1; min-height: 200px; container-type: size; }
+  .devfit .device { width: min(100cqw, calc((100cqh - 22px) * 1.6 + 22px)); margin-inline: auto; }
+  .home .preview-note { margin-top: 8px; min-height: 32px; }
+  .home .turnhead { margin: 10px 0 8px; }
+  .home .strip { padding-bottom: 8px; }
+  /* The turn's tiles on one line each (icon, name; the number in the corner). */
+  .home .strip { display: flex; flex-wrap: wrap; gap: 6px; }
+  .home .strip .tile { min-height: 46px; padding: 0 30px 0 10px; display: flex; align-items: center; gap: 8px; }
+  .home .strip .tile b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
+  .home .strip .tile .n { top: 50%; transform: translateY(-50%); right: 10px; }
+  .home .strip .tile .live { top: 7px; right: 7px; }
+  .home .avail { gap: 6px; }
+  .home .avail .tile.off { min-height: 36px; }
+  .home .editor { position: static; min-height: 0; max-height: 100%; overflow-y: auto; padding: 0 6px 4px 2px; overscroll-behavior: contain; }
+}
 .preview-note { display: flex; align-items: center; gap: 10px; margin-top: 12px; color: var(--text-3); font-size: var(--fs-cap); min-height: 36px; }
 .preview-note .tag { color: var(--accent); border: 1px solid #4a3a22; border-radius: 999px; padding: 1px 9px; white-space: nowrap; }
 .turnhead { display: flex; align-items: center; gap: 12px; margin: 22px 0 10px; flex-wrap: wrap; }

@@ -700,7 +700,10 @@ function homePage(r) {
   const win = Math.min(S.win[k] || 0, Math.max(0, n - 1));
 
   const stage = el('div', 'stagecol');
-  stage.append(deviceFrame(deviceScreen(p, model, win), t('panel_device_preview')).device);
+  // The device in a box as large as the page leaves it (the turn under it stays in view).
+  const fit = el('div', 'devfit');
+  fit.append(deviceFrame(deviceScreen(p, model, win), t('panel_device_preview')).device);
+  stage.append(fit);
   const only = el('div', 'cardonly');
   only.append(drawCard(p.kind, model, win, t('panel_empty_' + p.kind), p.label));
   stage.append(only);
