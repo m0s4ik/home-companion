@@ -296,8 +296,8 @@ browser panel. Named "Board" ("Plancia" in Italian).
 - **The page** (`page == "board"`): the character keeps his stage; the header (chevron, the page's name, the time
   small) and a grid of **4 x 4 cells of 193 x 157 px, 12 apart, at x 424, y 112** (808 x 664, to y 776); the pages'
   dots at y 784 (6 px, 16 apart). Up to six pages; a page without tiles is not shown. With nothing on the board yet:
-  three rows of dashed places with a plus (`#24262d`, the plus `#33353d`) and, in the fourth, "Tiles are added from
-  the browser (Settings > Access from the browser)." in `text-3`.
+  three rows of dashed places with a plus (`#24262d`, the plus `#33353d`) and, in the fourth, "Add tiles from the
+  browser: Settings > Access from the browser." in `text-3`, on one line (keep it short in every language).
 - **Opening and closing**: a swipe in from the home's right edge (a 40 px strip at x ≥ 1240, from y 48 so the
   control centre's pull keeps the top; it opens when dragged 120 px; every touch there is logged as `edge_swipe`
   with its outcome); the page comes in from the right (translate, 180 ms). A thin handle (4 x 48 px, `#3a3832`, at
