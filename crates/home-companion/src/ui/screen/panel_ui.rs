@@ -542,6 +542,25 @@ impl<S: Screen> PanelHost for Ui<S> {
     fn sessions_changed(&self) {
         self.panel.borrow_mut().changed = true;
     }
+    fn board(&self) -> crate::ui::board::Board {
+        self.tile_board.borrow().board.clone()
+    }
+    fn board_replace(&self, b: crate::ui::board::Board) -> Vec<String> {
+        log::info!(event = "board"; "the board changed from the browser");
+        self.replace_board(b)
+    }
+    fn board_states(&self) -> crate::ha::widgets::States {
+        self.tile_board.borrow().states.clone()
+    }
+    fn board_curves(&self) -> std::collections::HashMap<String, crate::ha::widgets::Curve> {
+        self.ha_curves.borrow().clone()
+    }
+    fn board_icons(&self) -> crate::ui::board::icons::Icons {
+        self.tile_board.borrow().icons.clone()
+    }
+    fn board_icons_file(&self) -> Option<std::path::PathBuf> {
+        Some(crate::ui::board::icons::file_beside(&self.opts.locales))
+    }
     fn widget_pages(&self) -> Vec<(crate::ui::widgets::Page, bool)> {
         let on = self.widget_on.borrow();
         self.widget_order

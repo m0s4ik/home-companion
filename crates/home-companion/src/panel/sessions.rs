@@ -272,6 +272,8 @@ pub struct Sessions {
     dirty: bool,
     /// The widget's searches: who made which, how often (widget_ops.rs).
     pub searches: super::widget_ops::SearchBook,
+    /// The board's changes per device (board.undo), its icons' searches.
+    pub board: super::board_ops::BoardBook,
     /// The remote screen's controller (remote.rs).
     pub remote: super::remote::Remote,
 }

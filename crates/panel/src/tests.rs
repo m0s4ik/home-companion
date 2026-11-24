@@ -601,6 +601,69 @@ fn the_widgets_routes() {
     assert_eq!(p.body.asked.lock().unwrap().len(), n);
 }
 
+/// The board's routes: each op with only its own fields, writes only from the same origin, the
+/// board read with the cookie only.
+#[test]
+fn the_board_routes() {
+    let p = panel();
+    let last = |p: &Panel<Fake>| p.body.asked.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(status(&p, &get_with_cookie("/api/board")), 200);
+    assert_eq!(last(&p)["op"], "board.get");
+    assert_eq!(status(&p, &req("GET", "/api/board", &[], "")), 401);
+    let all = r#"{"canvas":{"id":"p1","tiles":[]},"name":"N","order":["p1"],"q":"lamp",
+                  "kind":"button","op":"set","key":"panel","token":"x"}"#;
+    for (path, op, fields) in [
+        ("/api/board/set", "board.set", &["canvas"][..]),
+        ("/api/board/page/add", "board.page.add", &["name"]),
+        ("/api/board/page/remove", "board.page.remove", &["canvas"]),
+        (
+            "/api/board/page/name",
+            "board.page.name",
+            &["canvas", "name"],
+        ),
+        ("/api/board/page/order", "board.page.order", &["order"]),
+        ("/api/board/widget/add", "board.widget.add", &["name"]),
+        (
+            "/api/board/widget/remove",
+            "board.widget.remove",
+            &["canvas"],
+        ),
+        (
+            "/api/board/widget/name",
+            "board.widget.name",
+            &["canvas", "name"],
+        ),
+        ("/api/board/search", "board.search", &["q", "kind"]),
+        ("/api/board/icons", "board.icons", &["q"]),
+        ("/api/board/undo", "board.undo", &[]),
+    ] {
+        assert_eq!(status(&p, &post(path, all, &[])), 200, "{path}");
+        let a = last(&p);
+        assert_eq!(a["op"], op);
+        // The token is the cookie's, never the body's; no field of another op.
+        assert_eq!(a["token"], GOOD);
+        for k in ["key", "canvas", "name", "order", "q", "kind"] {
+            assert_eq!(a.get(k).is_some(), fields.contains(&k), "{path} {k}");
+        }
+    }
+    assert_eq!(status(&p, &post("/api/board/clear", "{}", &[])), 404);
+    assert_eq!(status(&p, &get_with_cookie("/api/board/undo")), 404);
+    // Same origin, JSON, a private address: refused before the body hears of it.
+    let n = p.body.asked.lock().unwrap().len();
+    let r = post("/api/board/set", "{}", &[("Sec-Fetch-Site", "cross-site")]);
+    assert_eq!(status(&p, &r), 403);
+    let mut r = post("/api/board/set", "{}", &[]);
+    r.headers.retain(|(n, _)| n != "Origin");
+    assert_eq!(status(&p, &r), 403);
+    let mut r = post("/api/board/set", "{}", &[]);
+    r.headers[2].1 = "text/plain".into();
+    assert_eq!(status(&p, &r), 415);
+    let public: IpAddr = "203.0.113.9".parse().unwrap();
+    let r = p.route(&post("/api/board/set", "{}", &[]), public, Instant::now());
+    assert_eq!(r.status, 403);
+    assert_eq!(p.body.asked.lock().unwrap().len(), n);
+}
+
 fn get_with_cookie(target: &str) -> Request {
     req(
         "GET",

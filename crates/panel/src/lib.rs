@@ -524,6 +524,7 @@ impl<B: Body> Panel<B> {
             (false, "/api/sessions") => relay(ask("sessions.list", json!({}))),
             (false, "/api/widgets") => relay(ask("widgets.get", json!({}))),
             (false, "/api/notes") => relay(ask("notes.list", json!({}))),
+            (false, "/api/board") => relay(ask("board.get", json!({}))),
             (false, "/api/widgets/samples") => relay(ask("widgets.samples", json!({}))),
             (false, "/api/widgets/showing") => relay(ask("widgets.showing", json!({}))),
             (false, p) if p.starts_with("/api/search/") => {
@@ -611,6 +612,28 @@ impl<B: Body> Panel<B> {
                     _ => return error(404, "not_found"),
                 };
                 relay(ask(op, json!({"id": field("id"), "text": field("text")})))
+            }
+            (true, p) if p.starts_with("/api/board/") => {
+                // Each op with only its own fields.
+                let (op, fields): (&str, &[&str]) = match &p["/api/board/".len()..] {
+                    "set" => ("board.set", &["canvas"]),
+                    "page/add" => ("board.page.add", &["name"]),
+                    "page/remove" => ("board.page.remove", &["canvas"]),
+                    "page/name" => ("board.page.name", &["canvas", "name"]),
+                    "page/order" => ("board.page.order", &["order"]),
+                    "widget/add" => ("board.widget.add", &["name"]),
+                    "widget/remove" => ("board.widget.remove", &["canvas"]),
+                    "widget/name" => ("board.widget.name", &["canvas", "name"]),
+                    "search" => ("board.search", &["q", "kind"]),
+                    "icons" => ("board.icons", &["q"]),
+                    "undo" => ("board.undo", &[]),
+                    _ => return error(404, "not_found"),
+                };
+                let mut extra = serde_json::Map::new();
+                for k in fields {
+                    extra.insert((*k).to_string(), field(k));
+                }
+                relay(ask(op, Value::Object(extra)))
             }
             (true, "/api/sessions/revoke") => {
                 relay(ask("sessions.revoke", json!({"id": field("id")})))

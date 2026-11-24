@@ -6,6 +6,7 @@
 //! asks on ([`socket`]). The panel's process serves the pages and holds no state or secret: every
 //! request comes here, and the screen's thread answers it.
 
+pub mod board_ops;
 pub mod protocol;
 pub mod remote;
 pub mod sessions;

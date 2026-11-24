@@ -108,6 +108,32 @@ pub trait PanelHost: model::Host {
         let _ = (id, lang);
         None
     }
+    /// The board (ui/board.rs) as it is in use.
+    fn board(&self) -> crate::ui::board::Board {
+        crate::ui::board::Board::default()
+    }
+    /// Replaces the board: validated against Home Assistant's catalogue, saved, followed and
+    /// drawn (`Ui::replace_board`); the reasons of what was left out.
+    fn board_replace(&self, b: crate::ui::board::Board) -> Vec<String> {
+        let _ = b;
+        vec!["no board here".into()]
+    }
+    /// The board's entities as the hub last told them, and the wide sensors' days.
+    fn board_states(&self) -> crate::ha::widgets::States {
+        Default::default()
+    }
+    fn board_curves(&self) -> std::collections::HashMap<String, crate::ha::widgets::Curve> {
+        Default::default()
+    }
+    /// The icons in use (built in, and those read from the bundle's file).
+    fn board_icons(&self) -> crate::ui::board::icons::Icons {
+        Default::default()
+    }
+    /// The bundle's icons file (`icons/mdi.json`), for the icons' search (None: the built-in
+    /// ones only).
+    fn board_icons_file(&self) -> Option<std::path::PathBuf> {
+        None
+    }
     /// Settings → Access from the browser → Remote screen is on (on the device only).
     fn remote_enabled(&self) -> bool {
         false
@@ -506,6 +532,25 @@ pub fn handle(
     if op.starts_with("screen.") {
         return screen_op(host, sessions, &me, &my_agent, peer, op, req, now);
     }
+    if super::board_ops::OPS.contains(&op) {
+        let alive: Vec<String> = sessions.list(now).iter().map(|s| s.hash.clone()).collect();
+        sessions.searches.keep_only(&alive);
+        sessions.board.keep_only(&alive);
+        let lang = lang_of(host, req);
+        let who = super::widget_ops::Caller {
+            me: &me,
+            lang: &lang,
+            now,
+        };
+        return super::board_ops::handle(
+            host,
+            &mut sessions.board,
+            &mut sessions.searches,
+            &who,
+            op,
+            req,
+        );
+    }
     if super::widget_ops::OPS.contains(&op) {
         let alive: Vec<String> = sessions.list(now).iter().map(|s| s.hash.clone()).collect();
         sessions.searches.keep_only(&alive);
@@ -755,6 +800,7 @@ mod tests {
         hidden: Cell<Option<&'static str>>,
         touches: RefCell<Vec<crate::panel::remote::Touch>>,
         signs: RefCell<Vec<Option<String>>>,
+        board: RefCell<crate::ui::board::Board>,
     }
 
     impl model::Host for Host {
@@ -807,6 +853,14 @@ mod tests {
             crate::ui::lists::remove(&mut self.lists.borrow_mut(), list, uid);
         }
         fn sessions_changed(&self) {}
+        fn board(&self) -> crate::ui::board::Board {
+            self.board.borrow().clone()
+        }
+        fn board_replace(&self, b: crate::ui::board::Board) -> Vec<String> {
+            let (b, why) = crate::ui::board::validate(b, &self.ha_catalog());
+            *self.board.borrow_mut() = b;
+            why
+        }
         fn remote_enabled(&self) -> bool {
             self.remote_on.get()
         }
@@ -1042,6 +1096,7 @@ mod tests {
             hidden: Cell::new(None),
             touches: RefCell::new(Vec::new()),
             signs: RefCell::new(Vec::new()),
+            board: RefCell::new(Default::default()),
         }
     }
 
@@ -1118,6 +1173,18 @@ mod tests {
         "widgets.samples",
         "widgets.showing",
         "undo",
+        "board.get",
+        "board.set",
+        "board.page.add",
+        "board.page.remove",
+        "board.page.name",
+        "board.page.order",
+        "board.widget.add",
+        "board.widget.remove",
+        "board.widget.name",
+        "board.search",
+        "board.icons",
+        "board.undo",
         "screen.status",
         "screen.start",
         "screen.frame",
@@ -2172,5 +2239,182 @@ mod tests {
             json!({"op": "pair.request", "peer": "192.0.2.30"}),
         );
         assert_eq!(r["ok"], true);
+    }
+
+    /// The board from the browser: pages and widgets added, a tile placed, what the body never
+    /// keeps (a lock, a gate, a never-domain service) dropped with its reason, the preview as
+    /// the screen draws it, the home's turn following the custom widgets, undo once.
+    #[test]
+    fn the_board_from_the_browser() {
+        let h = host("board");
+        let mut s = Sessions::default();
+        let t = pair(&h, &mut s);
+        let mut ask = |op: &str, extra: Value| {
+            let mut r = json!({"op": op, "token": t, "lang": ["en"]});
+            for (k, v) in extra.as_object().unwrap() {
+                r[k] = v.clone();
+            }
+            call(&h, &mut s, r)
+        };
+        let g = ask("board.get", json!({}));
+        assert_eq!(g["canvases"], json!([]));
+        assert_eq!(g["grids"]["page"], json!([4, 4]));
+        let a = ask("board.page.add", json!({"name": "Living room"}));
+        assert_eq!(a["added"], "p1");
+        assert_eq!(a["canvases"][0]["label"], "Living room");
+        // A tile of each: a shutter (asks first by default), a lock and a gate (never), a
+        // light 3x1 (no size), an Advanced service of a never-domain.
+        let tiles = json!([
+            {"x": 0, "y": 0, "w": 1, "h": 1, "kind": "button", "entity_id": "cover.living_room"},
+            {"x": 1, "y": 0, "w": 1, "h": 1, "kind": "button", "entity_id": "lock.front"},
+            {"x": 2, "y": 0, "w": 1, "h": 1, "kind": "button", "entity_id": "cover.garage"},
+            {"x": 0, "y": 1, "w": 3, "h": 1, "kind": "button", "entity_id": "light.lamp"},
+            {"x": 0, "y": 2, "w": 2, "h": 1, "kind": "level", "entity_id": "light.lamp", "icon": "ceiling-light"},
+            {"x": 3, "y": 3, "w": 1, "h": 1, "kind": "button", "entity_id": "scene.movie_night",
+             "service": "lock.unlock", "service_data": {"entity_id": "lock.front"}},
+        ]);
+        let r = ask("board.set", json!({"canvas": {"id": "p1", "tiles": tiles}}));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["undo"], true);
+        let dropped = r["dropped"].as_array().unwrap();
+        assert_eq!(dropped.len(), 4, "{dropped:?}");
+        let kept = &r["canvases"][0]["tiles"];
+        assert_eq!(kept.as_array().unwrap().len(), 2);
+        assert_eq!(kept[0]["tile"]["entity_id"], "cover.living_room");
+        assert_eq!(kept[0]["confirm_default"], true);
+        assert_eq!(kept[0]["draw"]["confirm"], true);
+        assert_eq!(
+            kept[0]["allowed"],
+            json!({"button": [[1, 1], [2, 1], [2, 2], [4, 1]],
+                                              "level": [[2, 1], [4, 1]]})
+        );
+        assert_eq!(kept[1]["draw"]["icon"], "ceiling-light");
+        assert!(kept[1]["draw"]["path"].as_str().unwrap().starts_with('M'));
+        assert_eq!(kept[1]["draw"]["state"], "unavailable", "no state yet");
+        // Out of a canvas's limits, an unknown canvas, a tile that is no tile: refused whole.
+        let many: Vec<Value> = (0..17)
+            .map(|i| {
+                json!({"x": i % 4, "y": i / 4, "w": 1, "h": 1,
+            "kind": "button", "entity_id": format!("light.l{i}")})
+            })
+            .collect();
+        assert_eq!(
+            ask("board.set", json!({"canvas": {"id": "p1", "tiles": many}}))["error"],
+            "list_full"
+        );
+        assert_eq!(
+            ask("board.set", json!({"canvas": {"id": "p9", "tiles": []}}))["error"],
+            "invalid"
+        );
+        assert_eq!(
+            ask(
+                "board.set",
+                json!({"canvas": {"id": "p1", "tiles": [{"x": 0}]}})
+            )["error"],
+            "invalid"
+        );
+        // Undo: as before the last change; once.
+        let u = ask("board.undo", json!({}));
+        assert_eq!(u["canvases"][0]["tiles"], json!([]));
+        assert_eq!(ask("board.undo", json!({}))["error"], "invalid");
+        // Pages: a second one, renamed, reordered, removed.
+        assert_eq!(ask("board.page.add", json!({}))["added"], "p2");
+        ask("board.page.name", json!({"canvas": "p2", "name": "Night"}));
+        let o = ask("board.page.order", json!({"order": ["p2", "p1"]}));
+        assert_eq!(o["canvases"][0]["name"], "Night");
+        assert_eq!(
+            ask("board.page.order", json!({"order": ["p2"]}))["error"],
+            "invalid"
+        );
+        assert_eq!(
+            ask(
+                "board.page.name",
+                json!({"canvas": "p2", "name": "x".repeat(60)})
+            )["error"],
+            "invalid"
+        );
+        let r = ask("board.page.remove", json!({"canvas": "p2"}));
+        assert_eq!(r["canvases"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            ask("board.widget.remove", json!({"canvas": "p1"}))["error"],
+            "invalid"
+        );
+        // A custom widget: a page of the home's turn, on, named with it.
+        let custom2 = crate::ui::widgets::Page::new(crate::ui::widgets::Kind::Custom, 2);
+        let w = ask("board.widget.add", json!({"name": "Lights"}));
+        assert_eq!(w["added"], "w1");
+        let w = ask("board.widget.add", json!({}));
+        assert_eq!(w["added"], "w2");
+        assert_eq!(w["canvases"][2]["page"], "custom-2");
+        assert_eq!(w["canvases"][2]["on"], true);
+        assert!(h.widget_pages().contains(&(custom2, true)));
+        ask(
+            "board.widget.name",
+            json!({"canvas": "w2", "name": "Climate"}),
+        );
+        assert!(
+            h.model
+                .settings
+                .widget_names()
+                .contains(&(custom2, "Climate".into()))
+        );
+        ask("board.widget.remove", json!({"canvas": "w2"}));
+        assert!(!h.widget_pages().iter().any(|(p, _)| *p == custom2));
+        // Undo brings it back, with its page.
+        ask("board.undo", json!({}));
+        assert!(h.widget_pages().contains(&(custom2, true)));
+        for _ in 0..2 {
+            ask("board.widget.add", json!({}));
+        }
+        assert_eq!(ask("board.widget.add", json!({}))["error"], "list_full");
+        // The search offers what a tile may be, never a lock or a gate; typed words count.
+        let all = ask("board.search", json!({"q": ""}));
+        let ids: Vec<&str> = all["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["entity_id"].as_str().unwrap())
+            .collect();
+        assert!(
+            ids.contains(&"light.lamp") && ids.contains(&"cover.living_room"),
+            "{ids:?}"
+        );
+        for never in [
+            "lock.front",
+            "cover.garage",
+            "switch.relay_2",
+            "alarm_control_panel.house",
+            "camera.garden",
+        ] {
+            assert!(!ids.contains(&never), "{never}");
+        }
+        let shutter = ask("board.search", json!({"q": "shutter"}));
+        let hit = &shutter["hits"][0];
+        assert_eq!(
+            (
+                hit["entity_id"].as_str(),
+                hit["kind"].as_str(),
+                hit["confirm"].as_bool()
+            ),
+            (Some("cover.living_room"), Some("button"), Some(true))
+        );
+        assert_eq!(hit["icon"], "window-shutter");
+        assert_eq!(
+            ask("board.search", json!({"q": "lamp"}))["error"],
+            "search_wait"
+        );
+        assert_eq!(ask("board.search", json!({"q": "<x>"}))["error"], "invalid");
+        // The icons: the built-in ones without the bundle's file.
+        let i = ask("board.icons", json!({"q": "lightbulb"}));
+        assert_eq!(i["all"], false);
+        assert_eq!(i["icons"][0]["name"], "lightbulb");
+        assert_eq!(
+            ask("board.icons", json!({"q": "lamp"}))["error"],
+            "search_wait"
+        );
+        assert_eq!(
+            ask("board.icons", json!({"q": "<svg>"}))["error"],
+            "invalid"
+        );
     }
 }

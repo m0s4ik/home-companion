@@ -39,6 +39,11 @@ pub fn builtin(name: &str) -> Option<&'static str> {
         .map(|i| TABLE[i].1)
 }
 
+/// The built-in icons' names (their keys: without hyphens), sorted.
+pub fn builtin_names() -> impl Iterator<Item = &'static str> {
+    TABLE.iter().map(|(k, _)| *k)
+}
+
 /// The icons file beside a `locales/` directory: `<parent>/icons/mdi.json`.
 pub fn file_beside(locales: &Path) -> PathBuf {
     locales
