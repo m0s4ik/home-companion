@@ -264,6 +264,18 @@ impl<S: Screen> Ui<S> {
             .collect()
     }
 
+    /// A custom widget's page named as its canvas on the board (None: another page, or no name).
+    pub(super) fn custom_name(&self, p: widgets::Page) -> Option<String> {
+        if p.kind != WidgetKind::Custom {
+            return None;
+        }
+        let t = self.tile_board.borrow();
+        t.board
+            .widget(p.n)
+            .map(|c| c.name.clone())
+            .filter(|n| !n.is_empty())
+    }
+
     /// The board's page is on screen, the screen on.
     fn board_page_seen(&self) -> bool {
         self.screen.get_page() == "board" && !crate::ui::backlight::screen_off()

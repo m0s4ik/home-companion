@@ -7049,7 +7049,9 @@ impl<S: Screen> Ui<S> {
             .iter()
             .map(|k| widgets::PageSetting {
                 page: *k,
-                label: model::page_label(*k, &names, &|w| l.text(w).to_string()),
+                label: self
+                    .custom_name(*k)
+                    .unwrap_or_else(|| model::page_label(*k, &names, &|w| l.text(w).to_string())),
                 on: on.contains(k),
                 hint: self.widget_hint(*k, &l),
             })

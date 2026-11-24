@@ -341,7 +341,13 @@ fn status(host: &dyn PanelHost, page: Page, word: &dyn Fn(&str) -> String) -> St
 }
 
 /// A page's label in the words of `word`.
+/// A custom widget's page is named as its canvas on the board.
 fn label(host: &dyn PanelHost, p: Page, word: &dyn Fn(&str) -> String) -> String {
+    if p.kind == Kind::Custom
+        && let Some(c) = host.board().widget(p.n).filter(|c| !c.name.is_empty())
+    {
+        return c.name.clone();
+    }
     model::page_label(p, &host.widget_names(), word)
 }
 
