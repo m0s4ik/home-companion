@@ -219,6 +219,7 @@ pub fn samples(l: &Locale) -> Samples {
                 std::time::Instant::now(),
             );
             vec![widgets::CustomPage {
+                n: 1,
                 title: b.widgets[0].name.clone(),
                 rows: super::board_ui::custom_rows(&v),
             }]

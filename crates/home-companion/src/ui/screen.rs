@@ -7190,7 +7190,9 @@ impl<S: Screen> Ui<S> {
                     match p.kind {
                         WidgetKind::Quotes => self.widget_quotes.borrow_mut().remove(p.n),
                         WidgetKind::Cities => self.widget_cities.borrow_mut().remove(p.n),
-                        _ => self.widget_sensors.borrow_mut().remove(p.n),
+                        WidgetKind::Sensors => self.widget_sensors.borrow_mut().remove(p.n),
+                        // A custom widget's tiles are the board's (board.json).
+                        _ => {}
                     }
                     let key = p.key();
                     log::info!(event = "widget_settings", page = key.as_str(); "widget: page {key} removed");

@@ -164,7 +164,22 @@ impl Default for Board {
     }
 }
 
+/// A custom widget's page number from its canvas's id ("w2" → 2): its page of the home's turn
+/// ("custom-2", widgets::Page). Ids that are not `w1`…`w4` have none ([`validate`] gives every
+/// widget one).
+pub fn widget_number(id: &str) -> Option<u8> {
+    let n: u8 = id.strip_prefix('w')?.parse().ok()?;
+    ((1..=MAX_WIDGETS as u8).contains(&n) && id == format!("w{n}")).then_some(n)
+}
+
 impl Board {
+    /// The custom widget of page number `n` (its canvas `w<n>`).
+    pub fn widget(&self, n: u8) -> Option<&Canvas> {
+        self.widgets
+            .iter()
+            .find(|c| widget_number(&c.id) == Some(n))
+    }
+
     fn tiles(&self) -> impl Iterator<Item = &Tile> {
         self.pages
             .iter()
@@ -403,9 +418,13 @@ pub fn validate(b: Board, catalog: &[Entity]) -> (Board, Vec<String>) {
         let mut out = Vec::new();
         for (i, c) in list.into_iter().take(max).enumerate() {
             let mut id = clean_id(&c.id);
-            if id.is_empty() || ids.contains(&id) {
+            // A widget's id is its page's number in the home's turn: `w1`…`w4`.
+            let bad = prefix == 'w' && widget_number(&id).is_none();
+            if id.is_empty() || ids.contains(&id) || bad {
+                // A widget takes the first number free (they are four at most).
+                let from = if prefix == 'w' { 0 } else { i };
                 id = (1..)
-                    .map(|n| format!("{prefix}{}", n + i))
+                    .map(|n| format!("{prefix}{}", n + from))
                     .find(|x| !ids.contains(x))
                     .unwrap_or_default();
             }

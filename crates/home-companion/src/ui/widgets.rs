@@ -64,9 +64,9 @@ pub enum Kind {
     Playing,
     /// Home Assistant: who is home. Off by default (anyone in the room reads it).
     Home,
-    /// The board's custom widgets (ui/board.rs): their tiles drawn in the slot, one page of the
-    /// turn per widget canvas that has tiles. One entry in the order and one switch stand for
-    /// all of them.
+    /// The board's custom widgets (ui/board.rs): their tiles drawn in the slot. Each widget canvas
+    /// is a page of its own ("custom" is the canvas `w1`, "custom-2" `w2`…: [`Page::n`]), with its
+    /// own place in the turn and its own switch; one with no tiles has nothing to show.
     Custom,
 }
 
@@ -130,6 +130,13 @@ impl Kind {
         matches!(self, Kind::Quotes | Kind::Cities | Kind::Sensors)
     }
 
+    /// It can have more than one page in the turn ("custom-2"): the kinds whose list repeats,
+    /// and the custom widgets (one page per widget canvas of the board, added and removed with
+    /// the canvas).
+    pub fn numbered(self) -> bool {
+        self.repeats() || self == Kind::Custom
+    }
+
     /// Its rows can be more than the slots: the page shows a window that moves on each time
     /// the page comes back.
     pub fn windowed(self) -> bool {
@@ -186,7 +193,7 @@ impl Page {
             return Some(kind.into());
         }
         let (k, n) = key.rsplit_once('-')?;
-        let kind = Kind::from_key(k).filter(|k| k.repeats())?;
+        let kind = Kind::from_key(k).filter(|k| k.numbered())?;
         let n: u8 = n.parse().ok().filter(|n| (2..=MAX_SAME).contains(n))?;
         (n.to_string() == key[k.len() + 1..]).then_some(Page { kind, n })
     }
@@ -512,6 +519,8 @@ pub struct Data {
 /// preview and the turn's log.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CustomPage {
+    /// Its page's number ([`Page::n`]: the canvas `w<n>`).
+    pub n: u8,
     pub title: String,
     pub rows: Vec<WidgetRow>,
 }
@@ -533,7 +542,7 @@ pub struct Sources<'a> {
     pub check: &'a [CheckRow],
     pub playing: Option<&'a Playing>,
     pub people: &'a [Person],
-    /// The board's custom widgets that have tiles, in the board's order.
+    /// The board's custom widgets that have tiles (each with its page's number).
     pub custom: &'a [CustomPage],
     /// What each page of the kinds that repeat shows (`quotes`, `cities` and `sensors` hold
     /// every page's items); a page without its picks shows every item of its kind.
@@ -575,11 +584,6 @@ pub fn pages<P: Into<Page> + Copy>(
             continue;
         }
         seen.push(p);
-        if p.kind == Kind::Custom {
-            // One switch, every custom widget with tiles.
-            out.extend((1..=s.custom.len()).filter_map(|n| custom_page(s, n as u8)));
-            continue;
-        }
         out.extend(page(s, p, w, now, local));
     }
     out.truncate(MAX_PAGES);
@@ -637,9 +641,10 @@ fn kind_page(
     }
 }
 
-/// The `n`-th custom widget (1 the first) as a page of the turn.
+/// The custom widget of page `n` (the board's canvas `w<n>`) as a page of the turn, when it has
+/// tiles.
 fn custom_page(s: &Sources, n: u8) -> Option<WidgetView> {
-    let c = s.custom.get(usize::from(n).checked_sub(1)?)?;
+    let c = s.custom.iter().find(|c| c.n == n)?;
     let first = c.rows.first()?.clone();
     Some(WidgetView {
         kind: Kind::Custom,
@@ -1808,6 +1813,48 @@ mod tests {
         assert_eq!(Page::next_free(Kind::Quotes, &full), None);
         assert!(Kind::Quotes.repeats() && Kind::Cities.repeats() && Kind::Sensors.repeats());
         assert!(!Kind::Next.repeats() && !Kind::Weather.repeats() && !Kind::Home.repeats());
+    }
+
+    /// Each custom widget is a page of its own: "custom" the canvas w1, "custom-2" w2; one without
+    /// tiles is not in the turn; their order and switches are the user's.
+    #[test]
+    fn custom_widgets_are_pages_of_their_own() {
+        let c2 = Page::new(Kind::Custom, 2);
+        assert_eq!(Page::from_key("custom-2"), Some(c2));
+        assert_eq!(c2.key(), "custom-2");
+        assert!(Kind::Custom.numbered() && !Kind::Custom.repeats());
+        let row = |t: &str| WidgetRow {
+            text: t.into(),
+            ..Default::default()
+        };
+        let custom = [
+            CustomPage {
+                n: 2,
+                title: "Climate".into(),
+                rows: vec![row("Outdoor")],
+            },
+            CustomPage {
+                n: 1,
+                title: "Lights".into(),
+                rows: vec![row("Lamp")],
+            },
+        ];
+        let s = Sources {
+            custom: &custom,
+            ..Default::default()
+        };
+        let local = |_: i64| (String::new(), 0);
+        let got: Vec<(u8, String)> = pages(&s, &[c2, Kind::Custom.into()], &words(), 0, &local)
+            .into_iter()
+            .map(|v| (v.n, v.title))
+            .collect();
+        assert_eq!(got, [(2, "Climate".into()), (1, "Lights".into())]);
+        let only: Vec<u8> = pages(&s, &[c2], &words(), 0, &local)
+            .iter()
+            .map(|v| v.n)
+            .collect();
+        assert_eq!(only, [2], "the first one off: only the second");
+        assert!(pages(&s, &[Page::new(Kind::Custom, 3)], &words(), 0, &local).is_empty());
     }
 
     #[test]

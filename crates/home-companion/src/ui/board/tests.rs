@@ -206,9 +206,9 @@ fn limits_of_pages_widgets_tiles_and_entities() {
     assert_eq!(kept, MAX_ENTITIES, "the 65th entity and later go");
     // An entity already followed is no new one: the widgets keep theirs.
     assert!(b.widgets.iter().all(|w| w.tiles.len() == 1));
-    // Ids of their own.
+    // Ids of their own: a widget's is its page's number in the turn, w1…w4.
     let ids: HashSet<&str> = b.widgets.iter().map(|w| w.id.as_str()).collect();
-    assert_eq!(ids.len(), MAX_WIDGETS);
+    assert_eq!(ids, HashSet::from(["w1", "w2", "w3", "w4"]));
     assert!(why.iter().any(|w| w.contains("7 pages")));
     assert!(why.iter().any(|w| w.contains("5 widgets")));
     // Seventeen on one page: the last goes.
@@ -817,4 +817,21 @@ fn a_questions_verb_follows_the_state() {
     let bar = tile(Level, "cover.living_room", 0, 0, 2, 1);
     let set = set_level(&bar, Some(&st("open")), 40).unwrap();
     assert_eq!(ask_key(&set, "open"), "board_ask_level");
+}
+
+#[test]
+fn a_widgets_id_is_its_number() {
+    let c = |id: &str| Canvas {
+        id: id.into(),
+        name: String::new(),
+        tiles: vec![],
+    };
+    let (b, _) = validate(
+        board(vec![], vec![c("w4"), c("w3"), c("w2"), c("lights")]),
+        &[],
+    );
+    let ids: Vec<&str> = b.widgets.iter().map(|w| w.id.as_str()).collect();
+    assert_eq!(ids, ["w4", "w3", "w2", "w1"]);
+    assert_eq!(b.widget(1).map(|w| w.id.as_str()), Some("w1"));
+    assert!(b.widget(5).is_none());
 }

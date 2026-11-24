@@ -231,16 +231,18 @@ impl<S: Screen> Ui<S> {
                 if p.kind != WidgetKind::Custom {
                     return None;
                 }
-                t.widgets()
-                    .get(usize::from(p.n).checked_sub(1)?)
-                    .copied()
+                t.board
+                    .widgets
+                    .iter()
+                    .position(|c| board::widget_number(&c.id) == Some(p.n))
                     .map(Place::Widget)
             }
             _ => None,
         }
     }
 
-    /// The custom widgets' pages for the turn.
+    /// The custom widgets' pages for the turn: each widget canvas with tiles, by its page's
+    /// number (`w2` is "custom-2"), named as on the board ("Custom 2" without a name).
     pub(super) fn custom_pages(&self) -> Vec<CustomPage> {
         let t = self.tile_board.borrow();
         let curves = self.ha_curves.borrow();
@@ -249,16 +251,15 @@ impl<S: Screen> Ui<S> {
         let now = Instant::now();
         t.widgets()
             .into_iter()
-            .map(|i| {
+            .filter_map(|i| {
                 let c = &t.board.widgets[i];
-                CustomPage {
-                    title: if c.name.is_empty() {
-                        l.text("widget_custom").to_string()
-                    } else {
-                        c.name.clone()
-                    },
+                let n = board::widget_number(&c.id)?;
+                Some(CustomPage {
+                    n,
+                    title: widgets::Page::new(WidgetKind::Custom, n)
+                        .label(l.text("widget_custom"), &c.name),
                     rows: custom_rows(&views(&t, c, &curves, &w, now)),
-                }
+                })
             })
             .collect()
     }

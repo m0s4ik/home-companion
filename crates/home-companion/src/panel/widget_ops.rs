@@ -189,7 +189,7 @@ impl SearchBook {
         (now.duration_since(when) < UNDO_FOR).then_some((r, at))
     }
 
-    fn allow(&mut self, me: &str, now: Instant) -> Result<(), &'static str> {
+    pub(super) fn allow(&mut self, me: &str, now: Instant) -> Result<(), &'static str> {
         let t = self.times.entry(me.to_string()).or_default();
         t.retain(|x| now.duration_since(*x) < Duration::from_secs(3600));
         if t.last()
@@ -520,7 +520,10 @@ pub fn handle(
             a
         }
         "widgets.remove" => {
-            let Some((p, at, on)) = known_page(host, req).filter(|(p, _, _)| p.n > 1) else {
+            // A custom widget's page goes with its canvas (board.widget.remove).
+            let Some((p, at, on)) =
+                known_page(host, req).filter(|(p, _, _)| p.n > 1 && p.kind.repeats())
+            else {
                 return err("invalid");
             };
             let items = match p.kind {
