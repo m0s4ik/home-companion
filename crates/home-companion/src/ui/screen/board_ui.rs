@@ -28,7 +28,11 @@ use super::{Screen, Ui, WakeSource};
 use crate::core::UiEvent;
 use crate::ha::widgets::States;
 use crate::ui::board::{self, Board, BoardWords, Canvas, Pending, TileView, draw, icons::Icons};
+use crate::ui::webview::controls::Place as Place2;
 use crate::ui::widgets::{self, CustomPage, Kind as WidgetKind, WidgetRow};
+
+/// How long the board's home button stays after the last touch (Home Assistant's view's).
+const BOARD_HOME_HOLD: Duration = Duration::from_secs(4);
 
 /// A level dragged is sent at most this often.
 pub const LEVEL_EVERY: Duration = Duration::from_millis(300);
@@ -160,11 +164,61 @@ impl<S: Screen> Ui<S> {
                 ui.render_board_page();
             }
         });
+        let ui = Rc::downgrade(self);
+        self.screen.on_board_home_moved(move |x, y| {
+            if let Some(ui) = ui.upgrade() {
+                ui.board_home_moved(x, y);
+            }
+        });
         self.screen.on_board_edge(move |outcome, pulled| {
             log::info!(event = "edge_swipe", outcome = outcome.as_str(), max_in = pulled as f64,
                 edge = "right", target = "board";
                 "home: touch from the right edge: {outcome} ({pulled:.0} px)");
         });
+    }
+
+    /// The board's home button where it rests: the place the user gave Home Assistant's view's.
+    fn board_home_place(&self) -> Place2 {
+        self.opts
+            .state_dir
+            .as_deref()
+            .map(crate::ui::webview::saved_place)
+            .unwrap_or_default()
+    }
+
+    /// A touch on the board (or the board opened): its home button shows, where it rests.
+    pub(super) fn board_home_show(&self) {
+        let (x, y) = self.board_home_place().xy();
+        self.screen.set_board_home(x, y);
+        self.screen.set_board_home_shown(true);
+    }
+
+    /// Every second: the home button goes [`BOARD_HOME_HOLD`] after the last touch.
+    pub(super) fn board_home_tick(&self, now: Instant) {
+        if !self.screen.get_board_home_shown() {
+            return;
+        }
+        let touched = self.desk.borrow().touched;
+        if self.screen.get_page() != "board"
+            || touched.is_none_or(|t| now.saturating_duration_since(t) >= BOARD_HOME_HOLD)
+        {
+            self.screen.set_board_home_shown(false);
+        }
+    }
+
+    /// The home button dragged and let go with its top left at (x, y): it rests on the
+    /// nearest edge, saved for Home Assistant's view too.
+    pub(super) fn board_home_moved(&self, x: f32, y: f32) {
+        let p = Place2::snap(x, y);
+        log::info!(
+            event = "board_home_button", edge = p.edge.name(), offset = p.offset as f64;
+            "board: home button moved to the {} edge at {:.0}", p.edge.name(), p.offset
+        );
+        if let Some(dir) = self.opts.state_dir.as_deref() {
+            crate::settings::Settings::in_dir(dir).save_casa_home_button(p.edge.name(), p.offset);
+        }
+        let (bx, by) = p.xy();
+        self.screen.set_board_home(bx, by);
     }
 
     /// The board at the start (`board.json`; the demos set their own).

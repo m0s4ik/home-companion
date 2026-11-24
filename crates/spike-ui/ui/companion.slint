@@ -1109,6 +1109,13 @@ export component CompanionWindow inherits Window {
     // A finger touched the home's right edge: Rust draws the board's page as it is now (it is
     // not redrawn while not seen), before it comes in under the finger.
     callback board-peek();
+    // The way home, as over Home Assistant's view: the same round button at the same place
+    // (top left; Rust keeps it, shared with the view), shown for a few seconds after a touch.
+    // A drag moves it; where it was let go (top left) Rust snaps to the nearest edge.
+    in property <length> board-home-x: 1280px - 16px - 96px;
+    in property <length> board-home-y: 800px - 24px - 96px;
+    in property <bool> board-home-shown: false;
+    callback board-home-moved(length, length);
 
     // The board is full screen (Home Assistant's view's way): it comes in from the right edge
     // following the finger, the home stepping back under it, and goes out the same way.
@@ -5503,6 +5510,76 @@ export component CompanionWindow inherits Window {
                 height: 6px;
                 border-radius: 3px;
                 background: i == root.board-index ? Theme.accent : Theme.line;
+            }
+        }
+        // The home button over the tiles (Home Assistant's: gold ring, deep fill, a white
+        // house). Hidden it takes no touch: the tile under it does.
+        board-home := Rectangle {
+            property <bool> dragging: false;
+            property <length> drag-x: 0;
+            property <length> drag-y: 0;
+            property <length> start-x: 0;
+            property <length> start-y: 0;
+            property <length> down-x: 0;
+            property <length> down-y: 0;
+            x: self.dragging ? self.drag-x : root.board-home-x;
+            y: self.dragging ? self.drag-y : root.board-home-y;
+            width: Grid.primary-size;
+            height: Grid.primary-size;
+            border-radius: self.width / 2;
+            background: home-touch.pressed ? Theme.accent-deep.brighter(0.5) : Theme.accent-deep;
+            border-color: Theme.accent.with-alpha(0.9);
+            border-width: 2px;
+            opacity: root.board-home-shown || home-touch.pressed ? 1 : 0;
+            visible: self.opacity > 0;
+            animate opacity { duration: 200ms; }
+            animate x, y {
+                duration: self.dragging ? 0ms : 160ms;
+                easing: ease-out;
+            }
+            Icon {
+                x: 26px;
+                y: 26px;
+                width: 44px;
+                height: 44px;
+                source: Icons.home-44;
+                color: Theme.text;
+            }
+            home-touch := TouchArea {
+                enabled: root.board-home-shown;
+                // The finger in the screen's coordinates (the button moves under it).
+                property <length> fx: self.absolute-position.x + self.mouse-x;
+                property <length> fy: self.absolute-position.y + self.mouse-y;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        parent.dragging = false;
+                        parent.start-x = parent.x;
+                        parent.start-y = parent.y;
+                        parent.down-x = self.absolute-position.x + self.pressed-x;
+                        parent.down-y = self.absolute-position.y + self.pressed-y;
+                    } else if (e.kind == PointerEventKind.up) {
+                        if (parent.dragging) {
+                            root.board-home-moved(parent.drag-x, parent.drag-y);
+                            parent.dragging = false;
+                        } else {
+                            Feedback.back();
+                            root.page = "home";
+                        }
+                    } else if (e.kind == PointerEventKind.cancel) {
+                        parent.dragging = false;
+                    }
+                }
+                moved => {
+                    if (self.pressed) {
+                        if (!parent.dragging && (abs(self.fx - parent.down-x) > 12px || abs(self.fy - parent.down-y) > 12px)) {
+                            parent.dragging = true;
+                        }
+                        if (parent.dragging) {
+                            parent.drag-x = clamp(parent.start-x + self.fx - parent.down-x, 0, root.width - parent.width);
+                            parent.drag-y = clamp(parent.start-y + self.fy - parent.down-y, 0, root.height - 20px - parent.height);
+                        }
+                    }
+                }
             }
         }
     }

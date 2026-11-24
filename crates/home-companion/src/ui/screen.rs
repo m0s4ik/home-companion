@@ -3669,6 +3669,9 @@ impl<S: Screen> Ui<S> {
         let now = Instant::now();
         if why == WakeSource::Touch {
             self.desk.borrow_mut().touched = Some(now);
+            if self.screen.get_page() == "board" {
+                self.board_home_show();
+            }
         }
         {
             let mut m = self.motion.borrow_mut();
@@ -5275,6 +5278,7 @@ impl<S: Screen> Ui<S> {
         self.refresh_home_pose();
         self.feed_light();
         let now = Instant::now();
+        self.board_home_tick(now);
         if self.desk.borrow_mut().ha_cards.expire(now) {
             self.refresh_home();
         }
@@ -6443,8 +6447,9 @@ impl<S: Screen> Ui<S> {
             self.link.borrow_mut().take();
         }
         if page == "board" {
-            // Its page as it is now (it waited while it was not seen).
+            // Its page as it is now (it waited while it was not seen), and the way home.
             self.render_board(false);
+            self.board_home_show();
         } else if page == "home" {
             self.board_seen_again();
         }
@@ -9705,6 +9710,35 @@ mod tests {
             ui.tick_clock();
             assert_eq!(w.get_page(), after, "{page} left alone");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The board's home button: shown by a touch on the board where Home Assistant's view's
+    /// rests, gone 4 s after the last touch; dragged, it rests on the nearest edge, saved for
+    /// the view too.
+    #[test]
+    fn the_boards_home_button() {
+        use crate::ui::webview::{controls::Place, saved_place};
+        let (ui, dir) = headless_ui("board-home");
+        let w = &ui.screen;
+        w.set_page("board".into());
+        ui.wake(WakeSource::Touch);
+        assert!(w.get_board_home_shown());
+        let (x, y) = Place::default().xy();
+        assert_eq!((w.get_board_home_x(), w.get_board_home_y()), (x, y));
+        ui.tick_clock();
+        assert!(w.get_board_home_shown(), "still there right after the touch");
+        ui.desk.borrow_mut().touched = Instant::now().checked_sub(Duration::from_secs(5));
+        ui.tick_clock();
+        assert!(!w.get_board_home_shown(), "gone after a while");
+        ui.board_home_moved(30.0, 300.0);
+        let p = saved_place(&dir);
+        assert_eq!((p.edge.name(), p.offset), ("left", 300.0));
+        assert_eq!((w.get_board_home_x(), w.get_board_home_y()), p.xy());
+        // A touch on another page does not bring it.
+        w.set_page("more".into());
+        ui.wake(WakeSource::Touch);
+        assert!(!w.get_board_home_shown());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

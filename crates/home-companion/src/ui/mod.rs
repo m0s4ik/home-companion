@@ -372,6 +372,12 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_face(&self, face: Image);
     /// The character's portrait in a round badge (the board's header).
     fn set_portrait(&self, portrait: Image);
+    /// The board's home button: where it rests (top left), whether it is shown; where a drag
+    /// let it go.
+    fn set_board_home(&self, x: f32, y: f32);
+    fn set_board_home_shown(&self, shown: bool);
+    fn get_board_home_shown(&self) -> bool;
+    fn on_board_home_moved(&self, f: impl Fn(f32, f32) + 'static);
     fn on_music_toggle(&self, f: impl Fn() + 'static);
     fn on_music_next(&self, f: impl Fn() + 'static);
     /// "Interrompi" on the mirroring page: the sender's session is closed.
@@ -1485,6 +1491,19 @@ macro_rules! impl_screen {
             }
             fn set_portrait(&self, portrait: Image) {
                 $m::CompanionWindow::set_portrait(self, portrait)
+            }
+            fn set_board_home(&self, x: f32, y: f32) {
+                $m::CompanionWindow::set_board_home_x(self, x);
+                $m::CompanionWindow::set_board_home_y(self, y);
+            }
+            fn set_board_home_shown(&self, shown: bool) {
+                $m::CompanionWindow::set_board_home_shown(self, shown)
+            }
+            fn get_board_home_shown(&self) -> bool {
+                $m::CompanionWindow::get_board_home_shown(self)
+            }
+            fn on_board_home_moved(&self, f: impl Fn(f32, f32) + 'static) {
+                $m::CompanionWindow::on_board_home_moved(self, f)
             }
             fn on_music_toggle(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_music_toggle(self, f)
