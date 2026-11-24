@@ -126,7 +126,7 @@ fn validation_keeps_what_fits_and_says_why_the_rest_goes() {
         tile(Button, "cover.garage", 2, 3, 1, 1), // garage class (catalogue)
         tile(Button, "switch.relay_2", 3, 3, 1, 1), // named "Garage door"
         tile(Button, "scene.movie_night", 2, 3, 2, 1), // 2,3 + 2 = 4: fits
-        tile(Button, "fan.ceiling", 3, 3, 2, 1),  // does not fit
+        tile(Button, "fan.ceiling", 5, 3, 2, 1),  // 5 + 2 > 6: does not fit
     ];
     let catalog = [
         entity("cover.garage", "Garage", "garage"),
@@ -211,14 +211,14 @@ fn limits_of_pages_widgets_tiles_and_entities() {
     assert_eq!(ids, HashSet::from(["w1", "w2", "w3", "w4"]));
     assert!(why.iter().any(|w| w.contains("7 pages")));
     assert!(why.iter().any(|w| w.contains("5 widgets")));
-    // Seventeen on one page: the last goes.
-    let mut many: Vec<Tile> = (0..16)
-        .map(|i| tile(Button, &format!("light.x{i}"), i % 4, i / 4, 1, 1))
+    // Twenty-five on one page (6 x 4 cells): the last goes.
+    let mut many: Vec<Tile> = (0..24)
+        .map(|i| tile(Button, &format!("light.x{i}"), i % 6, i / 6, 1, 1))
         .collect();
     many.push(tile(Button, "light.y", 0, 0, 1, 1));
     let (b, why) = validate(board(vec![page(many)], vec![]), &[]);
-    assert_eq!(b.pages[0].tiles.len(), 16);
-    assert!(why[0].contains("more than 16 tiles"));
+    assert_eq!(b.pages[0].tiles.len(), 24);
+    assert!(why[0].contains("more than 24 tiles"));
 }
 
 #[test]

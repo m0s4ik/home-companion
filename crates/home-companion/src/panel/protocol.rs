@@ -2309,7 +2309,7 @@ mod tests {
         };
         let g = ask("board.get", json!({}));
         assert_eq!(g["canvases"], json!([]));
-        assert_eq!(g["grids"]["page"], json!([4, 4]));
+        assert_eq!(g["grids"]["page"], json!([6, 4]));
         let a = ask("board.page.add", json!({"name": "Living room"}));
         assert_eq!(a["added"], "p1");
         assert_eq!(a["canvases"][0]["label"], "Living room");
@@ -2343,9 +2343,9 @@ mod tests {
         assert!(kept[1]["draw"]["path"].as_str().unwrap().starts_with('M'));
         assert_eq!(kept[1]["draw"]["state"], "unavailable", "no state yet");
         // Out of a canvas's limits, an unknown canvas, a tile that is no tile: refused whole.
-        let many: Vec<Value> = (0..17)
+        let many: Vec<Value> = (0..25)
             .map(|i| {
-                json!({"x": i % 4, "y": i / 4, "w": 1, "h": 1,
+                json!({"x": i % 6, "y": i / 6, "w": 1, "h": 1,
             "kind": "button", "entity_id": format!("light.l{i}")})
             })
             .collect();

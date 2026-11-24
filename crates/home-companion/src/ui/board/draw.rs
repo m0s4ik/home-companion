@@ -17,9 +17,9 @@ pub struct Cells {
     pub gap: f32,
 }
 
-/// The page's cells (4 x 4 at x 424, y 112: 808 x 664).
+/// The page's cells (6 x 4 over the whole screen at x 25, y 96: 1230 x 664).
 pub const PAGE: Cells = Cells {
-    width: 193.0,
+    width: 195.0,
     height: 157.0,
     gap: 12.0,
 };
@@ -171,9 +171,9 @@ mod tests {
 
     #[test]
     fn sizes_of_the_canvases() {
-        assert_eq!(PAGE.size(4, 4), (808.0, 664.0));
+        assert_eq!(PAGE.size(6, 4), (1230.0, 664.0));
         assert_eq!(WIDGET.size(4, 2), (808.0, 272.0));
-        assert_eq!(PAGE.size(2, 2), (398.0, 326.0));
+        assert_eq!(PAGE.size(2, 2), (402.0, 326.0));
         assert_eq!(LINE.size(1, 1), (193.0, 88.0));
     }
 
@@ -188,7 +188,7 @@ mod tests {
         let d = draws(&v, PAGE, &icons, false);
         assert_eq!((d[0].kind, d[0].state, d[0].level), ("sensor", "on", 40));
         assert_eq!(d[0].curve, "M 0.0 42.0 L 150.0 2.0");
-        assert_eq!(d[1].curve, "M 0.0 82.0 L 358.0 2.0");
+        assert_eq!(d[1].curve, "M 0.0 82.0 L 362.0 2.0");
         assert_eq!(d[2].curve, "", "a small sensor has no curve");
         assert_eq!(
             d[0].icon,

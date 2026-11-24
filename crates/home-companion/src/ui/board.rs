@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Andrea Mattera
 
 //! The board: grids of tiles, each a Home Assistant entity (a button, a sensor, a level), on
-//! pages of their own (4 x 4 cells) and in custom widgets of the home (4 x 2 cells). Pure: the
+//! pages of their own (6 x 4 cells) and in custom widgets of the home (4 x 2 cells). Pure: the
 //! file `board.json` (written by the body only, next to settings.toml), its validation, what a
 //! tap does (a closed table from the entity's domain, [`action_for`], [`set_level`]), the
 //! default icons and words, and the model the screen draws ([`view`], [`line`]).
@@ -33,13 +33,13 @@ pub mod icons;
 pub const VERSION: u32 = 1;
 /// Pages at most, tiles on a page at most, custom widgets at most, tiles in a widget at most.
 pub const MAX_PAGES: usize = 6;
-pub const MAX_PAGE_TILES: usize = 16;
+pub const MAX_PAGE_TILES: usize = 24;
 pub const MAX_WIDGETS: usize = 4;
 pub const MAX_WIDGET_TILES: usize = 8;
 /// Entities followed for the whole board at most (one subscription with the widget's).
 pub const MAX_ENTITIES: usize = 64;
 /// A page's grid and a widget's, in cells (columns, rows).
-pub const PAGE_GRID: (u8, u8) = (4, 4);
+pub const PAGE_GRID: (u8, u8) = (6, 4);
 pub const WIDGET_GRID: (u8, u8) = (4, 2);
 /// A canvas's or a tile's name at most, in characters; an icon's name; a canvas's id.
 pub const MAX_NAME: usize = 40;
