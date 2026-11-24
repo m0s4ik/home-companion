@@ -318,7 +318,7 @@ browser panel. Named "Board" ("Plancia" in Italian).
   whole page goes out with the finger towards the home, by the same rule. Only x offsets move (the layer and the
   pages' row, whole pixels): no relayout of the tiles, nothing animated at rest. A drag never taps a tile; a drag
   along a level's bar sets the level. A thin handle (4 x 48 px, `#3a3832`, at x 1262, y 376) shows on the home only
-  while a page has tiles. Back: the face, a swipe to the right on the first page, or a minute alone, as every page.
+  while a page has tiles. Back: the face or a swipe to the right on the first page; never by itself (like Home Assistant's view, it stays open).
 - **A tile** is 1 x 1, 2 x 1, 2 x 2 or 4 x 1 cells (a level 2 x 1 or 4 x 1): `surface`, a 1 px `line` border,
   radius 24, padding 18 x 20 (14 x 18 in the widget's smaller cells). **Button**: the icon (40 px; 36 in the widget)
   at the top left, the name (24 Medium; 22) and the state (20; 18, "On · 60%" for a dimmed light, "Scene" for a

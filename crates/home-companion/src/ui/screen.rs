@@ -3637,6 +3637,29 @@ impl<S: Screen> Ui<S> {
         load_pose(path, crop, c.background).unwrap_or_default()
     }
 
+    /// The character's portrait for a round badge (the board's header): head and shoulders of
+    /// the idle pose, from a little above the head down to the chest, so the circle cuts the
+    /// shoulders as in a photo and not the neck.
+    pub fn portrait(&self) -> Image {
+        let c = &self.character;
+        let (path, _) = c.pose(State::Idle);
+        let m = c.mouth;
+        let side = (m.width() * 3).max(96);
+        let (w, h) = c.pose_size;
+        let cx = (m.x0 + m.x1) / 2;
+        // The mouth sits a little above the middle of the circle.
+        let y_top = m.y0.saturating_sub(side * 2 / 5);
+        let x0 = cx.saturating_sub(side / 2).min(w.saturating_sub(side));
+        let y0 = y_top.min(h.saturating_sub(side));
+        let crop = Crop {
+            x0,
+            y0,
+            x1: (x0 + side).min(w),
+            y1: (y0 + side).min(h),
+        };
+        load_pose(path, crop, c.background).unwrap_or_default()
+    }
+
     /// Something woke the screen up (touch, key, movement, SIGUSR1).
     pub fn wake(&self, why: WakeSource) {
         if self.opts.demo.is_some() {
@@ -5280,7 +5303,8 @@ impl<S: Screen> Ui<S> {
             self.refresh_tiles();
         }
         // A page left alone goes home (not the setup page, not with a question open, not the
-        // music page while there is music: it is what the screen is for then).
+        // music page while there is music, not the board: like Home Assistant's view, it is
+        // what the screen is for then).
         let page = self.screen.get_page();
         let touched = self.desk.borrow().touched;
         let music_on = self.desk.borrow().music.is_some();
@@ -5290,6 +5314,7 @@ impl<S: Screen> Ui<S> {
             && page != "welcome"
             && page != "find-ha"
             && page != super::mirror::PAGE
+            && page != "board"
             && !(page == "update" && self.update_going())
             && self.screen.get_dialog().is_empty()
             && touched.is_none_or(|t| now.duration_since(t) >= PAGE_IDLE)
@@ -9665,6 +9690,21 @@ mod tests {
         tick(450);
         slow((220.0, 500.0), (620.0, 500.0));
         assert_eq!(w.get_page(), "home", "400 px: home");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A page left alone goes home after a minute; the board stays, like Home Assistant's view.
+    #[test]
+    fn the_board_stays_when_left_alone() {
+        let (ui, dir) = headless_ui("board-alone");
+        let w = &ui.screen;
+        let long_ago = Instant::now().checked_sub(PAGE_IDLE + Duration::from_secs(1));
+        for (page, after) in [("more", "home"), ("board", "board")] {
+            w.set_page(page.into());
+            ui.desk.borrow_mut().touched = long_ago;
+            ui.tick_clock();
+            assert_eq!(w.get_page(), after, "{page} left alone");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

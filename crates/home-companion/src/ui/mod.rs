@@ -370,6 +370,8 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn on_mirror_poked(&self, f: impl Fn() + 'static);
     /// The character's face (the conversation bar over the mirrored video).
     fn set_face(&self, face: Image);
+    /// The character's portrait in a round badge (the board's header).
+    fn set_portrait(&self, portrait: Image);
     fn on_music_toggle(&self, f: impl Fn() + 'static);
     fn on_music_next(&self, f: impl Fn() + 'static);
     /// "Interrompi" on the mirroring page: the sender's session is closed.
@@ -1480,6 +1482,9 @@ macro_rules! impl_screen {
             }
             fn set_face(&self, face: Image) {
                 $m::CompanionWindow::set_face(self, face)
+            }
+            fn set_portrait(&self, portrait: Image) {
+                $m::CompanionWindow::set_portrait(self, portrait)
             }
             fn on_music_toggle(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_music_toggle(self, f)

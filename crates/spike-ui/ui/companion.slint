@@ -973,6 +973,8 @@ export component CompanionWindow inherits Window {
     in property <float> mirror-freeze: -1;
     // The character's face (the conversation bar over the mirrored video).
     in property <image> face;
+    // The character's portrait, head and shoulders (the board's header badge).
+    in property <image> portrait;
     // Memories (home-companion-brain): present = its control socket answers (the tile, the row).
     in property <bool> brain-present: false;
     in property <string> memories-status: "";
@@ -5328,7 +5330,7 @@ export component CompanionWindow inherits Window {
     // state's colour while he listens, thinks or speaks; the words come in the bar at the top as
     // over Home Assistant's view), the page's name and the time; the pages' dots at the bottom.
     // It comes in from the right edge under the finger and leaves to the right from its first
-    // page, by a tap on the face, or after a minute alone like every page; the pages follow the
+    // page, or by a tap on the face (never by itself: like Home Assistant's view, it stays); the pages follow the
     // finger across. Only its x moves (nothing animates at rest).
     if root.board-x < root.width - 0.5px: Rectangle {
         x: round(root.board-x / 1px) * 1px;
@@ -5365,13 +5367,19 @@ export component CompanionWindow inherits Window {
             width: 56px;
             height: 56px;
             border-radius: 28px;
-            background: Theme.surface;
+            background: Theme.surface-2;
             clip: true;
             Image {
                 width: parent.width;
                 height: parent.height;
-                source: root.face;
+                source: root.portrait;
                 image-fit: cover;
+            }
+            // A thin edge: a badge, not a head cut out of the dark.
+            Rectangle {
+                border-radius: parent.border-radius;
+                border-width: 1.5px;
+                border-color: Theme.accent.with-alpha(0.45);
             }
         }
         if root.conversation: Rectangle {

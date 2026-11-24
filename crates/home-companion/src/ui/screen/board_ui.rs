@@ -169,8 +169,9 @@ impl<S: Screen> Ui<S> {
 
     /// The board at the start (`board.json`; the demos set their own).
     pub(super) fn load_board(&self) {
-        // The face in the board's header.
+        // The portrait in the board's header.
         self.screen.set_face(self.face());
+        self.screen.set_portrait(self.portrait());
         let b = match (&self.settings, &self.opts.demo) {
             (Some(s), None) => s.board(),
             _ => Board::default(),
@@ -699,6 +700,7 @@ impl<S: Screen> Ui<S> {
             return;
         }
         self.screen.set_face(self.face());
+        self.screen.set_portrait(self.portrait());
         let (b, states, curves) = demo_board(which == 3);
         self.ha_curves.borrow_mut().extend(curves);
         self.tile_board.borrow_mut().states = states;
