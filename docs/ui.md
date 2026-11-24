@@ -293,16 +293,32 @@ Tiles of Home Assistant's entities (`crates/home-companion/src/ui/board.rs`, the
 `BoardTile` draws; `ui/screen/board_ui.rs`, the screen's side), saved in `<state_dir>/board.json` and chosen from the
 browser panel. Named "Board" ("Plancia" in Italian).
 
-- **The page** (`page == "board"`): the character keeps his stage; the header (chevron, the page's name, the time
-  small) and a grid of **4 x 4 cells of 193 x 157 px, 12 apart, at x 424, y 112** (808 x 664, to y 776); the pages'
-  dots at y 784 (6 px, 16 apart). Up to six pages; a page without tiles is not shown. With nothing on the board yet:
-  three rows of dashed places with a plus (`#24262d`, the plus `#33353d`) and, in the fourth, "Add tiles from the
-  browser: Settings > Access from the browser." in `text-3`, on one line (keep it short in every language).
-- **Opening and closing**: a swipe in from the home's right edge (a 40 px strip at x ≥ 1240, from y 48 so the
-  control centre's pull keeps the top; it opens when dragged 120 px; every touch there is logged as `edge_swipe`
-  with its outcome); the page comes in from the right (translate, 180 ms). A thin handle (4 x 48 px, `#3a3832`, at
-  x 1262, y 376) shows on the home only while a page has tiles. Back: the chevron, a swipe to the right on the
-  first page (on the others it is the previous page; to the left the next one), or a minute alone, as every page.
+- **The page** (`page == "board"`) is **full screen**, as Home Assistant's view: the character's stage is not drawn
+  under it (the home steps back as under that view, §8). The header: Alfred's face in a 56 px circle at x 24, y 20
+  (the idle pose's crop around the mouth, `face`; a tap goes home), the page's name (34 Light, `text`) at x 100, the
+  Wi-Fi and the time (28 Tnum, `text-2`) right-aligned at x 1255. A grid of **6 x 4 cells of 195 x 157 px, 12
+  apart, at x 25, y 96** (1230 x 664, to y 760); the pages' dots at y 776 (6 px, 16 apart). Up to six pages of 24
+  tiles; a page without tiles is not shown; pages laid out for the earlier 4 x 4 grid stay as they are. With nothing
+  on the board yet: three rows of dashed places with a plus (`#24262d`, the plus `#33353d`) and, in the fourth,
+  "Add tiles from the browser: Settings > Access from the browser." in `text-3`, on one line (keep it short in every
+  language).
+- **A conversation over it** ("Okay Alfred" with the board open): the face gets a 3 px ring in the state's colour
+  (`state-color`), and the words come in the bar of Home Assistant's view (§8), here at x 96, y 8 beside the face
+  and over the page's name, without a face of its own. An answer too long for the bar (over 70 characters,
+  `answer-long`) takes Alfred's layout while he says it, and the board comes back afterwards; a ringing timer, a due
+  reminder and the start-up do the same. The questions (house, tiles) and the done pop-up come over it, centred on
+  the screen.
+- **Following the finger**: from the home's right edge (a 40 px strip at x ≥ 1240, from y 48 so the control
+  centre's pull keeps the top) the page comes in under the finger as it drags, the home stepping back under it;
+  let go past a quarter of the screen (320 px) or with a flick (80 px in 250 ms) it goes on to its place, else it
+  springs back (400 ms, Home Assistant's view's curve). Every touch there is logged as `edge_swipe` with its outcome.
+  On the page, a drag across (12 px of slop, from a tile, a gap or the header) moves the pages with the finger, the
+  neighbour coming in a screen's width beside it; let go by the same rule it slides on (260 ms) and the next page is
+  drawn in place, else back; past the last page it gives a quarter of the drag. To the right on the first page the
+  whole page goes out with the finger towards the home, by the same rule. Only x offsets move (the layer and the
+  pages' row, whole pixels): no relayout of the tiles, nothing animated at rest. A drag never taps a tile; a drag
+  along a level's bar sets the level. A thin handle (4 x 48 px, `#3a3832`, at x 1262, y 376) shows on the home only
+  while a page has tiles. Back: the face, a swipe to the right on the first page, or a minute alone, as every page.
 - **A tile** is 1 x 1, 2 x 1, 2 x 2 or 4 x 1 cells (a level 2 x 1 or 4 x 1): `surface`, a 1 px `line` border,
   radius 24, padding 18 x 20 (14 x 18 in the widget's smaller cells). **Button**: the icon (40 px; 36 in the widget)
   at the top left, the name (24 Medium; 22) and the state (20; 18, "On · 60%" for a dimmed light, "Scene" for a
@@ -340,7 +356,8 @@ browser panel. Named "Board" ("Plancia" in Italian).
 
 - **The editor** is the browser panel's Board section (`crates/panel/web/panel.js`, ops in
   `panel/board_ops.rs`): the canvases on top, the grid at the device's proportions with the tiles the body draws
-  (`board.get`: the same model as `BoardTile`), the chosen tile's form beside it (under it on a phone). Drag and
+  (`board.get`: the same model as `BoardTile`; a page under its header, 6 columns as on the device), the chosen
+  tile's form beside it for a widget, under the grid for a page (as wide as the screen) and on a phone. Drag and
   resize snap to the sizes a tile may have (gridstack.js, `crates/panel/web/vendor/`); without a pointer, the size
   buttons and Move. Every change saves the whole canvas; the body keeps what `board::validate` allows.
 
