@@ -9656,6 +9656,95 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The board reached with a finger on a real (headless) screen, as on the device: Home
+    /// Assistant's view hidden, its home button on the right edge, the normal and the compact
+    /// home. A swipe in from the home's right edge opens the board; there a tap on a tile, a
+    /// drag on a level's bar and a swipe to the right reach their handlers.
+    #[test]
+    fn the_board_by_touch_from_the_right_edge() {
+        use super::super::webview::CasaScreen as _;
+        use slint::LogicalPosition;
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let (ui, dir) = headless_ui("board-touch");
+        let w = &ui.screen;
+        let (hub, cmds) = std::sync::mpsc::channel();
+        *ui.hub_tx.borrow_mut() = Some(hub);
+        ui.show_demo_board(1);
+        assert!(w.get_board_handle());
+        let button = PointerEventButton::Left;
+        let drag = |from: (f32, f32), to: (f32, f32)| {
+            let at = |p: (f32, f32)| LogicalPosition::new(p.0, p.1);
+            w.window()
+                .dispatch_event(WindowEvent::PointerMoved { position: at(from) });
+            w.window().dispatch_event(WindowEvent::PointerPressed {
+                position: at(from),
+                button,
+            });
+            for i in 1..=8 {
+                let f = i as f32 / 8.0;
+                let p = (from.0 + (to.0 - from.0) * f, from.1 + (to.1 - from.1) * f);
+                w.window()
+                    .dispatch_event(WindowEvent::PointerMoved { position: at(p) });
+            }
+            w.window().dispatch_event(WindowEvent::PointerReleased {
+                position: at(to),
+                button,
+            });
+        };
+        // The board's page slides in (180 ms): let it come to its place.
+        let settle = || {
+            std::thread::sleep(Duration::from_millis(250));
+            slint::platform::update_timers_and_animations();
+        };
+        let calls = || {
+            cmds.try_iter()
+                .filter_map(|c| match c {
+                    HubCmd::Call { entity_id, .. } => Some(entity_id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        for edge in ["bottom", "right"] {
+            w.casa_set_edge(edge);
+            for compact in [false, true] {
+                w.set_home_compact(compact);
+                let case = format!("edge {edge}, compact {compact}");
+                w.set_page("home".into());
+                settle();
+                // A swipe in from the right edge, even one starting on its outer half.
+                for x in [1260.0, 1275.0] {
+                    w.set_page("home".into());
+                    drag((x, 400.0), (1000.0, 400.0));
+                    assert_eq!(w.get_page(), "board", "{case}, from {x}");
+                }
+                settle();
+                let _ = calls();
+                // A tap on a tile (the floor lamp).
+                drag((520.0, 360.0), (520.0, 360.0));
+                assert_eq!(calls(), ["light.floor_lamp"], "{case}: tap");
+                // A drag along a level's bar (the living room's lights, the whole first row).
+                drag((700.0, 230.0), (1000.0, 230.0));
+                assert!(
+                    calls().iter().any(|e| e == "light.living_room"),
+                    "{case}: level"
+                );
+                // A swipe to the right on the first page: back home.
+                drag((500.0, 700.0), (800.0, 700.0));
+                assert_eq!(w.get_page(), "home", "{case}: back");
+                // A tap on the edge strip opens nothing.
+                drag((1260.0, 500.0), (1260.0, 500.0));
+                assert_eq!(w.get_page(), "home", "{case}: tap");
+            }
+        }
+        // The mirror's own swipe in from the home button's edge (here the right one) goes home.
+        w.set_mirror(true, "Phone", 1280, 800);
+        w.set_page("mirror".into());
+        settle();
+        drag((1270.0, 400.0), (1000.0, 400.0));
+        assert_eq!(w.get_page(), "home", "the mirror's edge swipe");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn headless_ui(name: &str) -> (Rc<Ui<super::super::sw::CompanionWindow>>, PathBuf) {
         let dir =
             std::env::temp_dir().join(format!("home-companion-{name}-{}", std::process::id()));
