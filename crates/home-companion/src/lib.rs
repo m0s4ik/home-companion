@@ -8,6 +8,7 @@
 pub mod airplay;
 pub mod alarms;
 pub mod args;
+pub mod audio_down;
 pub mod brain_link;
 pub mod config;
 pub mod conversation;
@@ -114,6 +115,10 @@ pub mod exit {
     /// again (under systemd, `Restart=on-failure` does it and pulls in the units it wants, the
     /// web helper among them; elsewhere the program executes itself).
     pub const RESTART: u8 = 5;
+    /// The audio did not start (the sound card or its DSP not answering). The service reboots
+    /// the device once for it (packaging/home-companion.service, crate::audio_down); after that
+    /// systemd restarts the body as for any other failure.
+    pub const AUDIO: u8 = 6;
 }
 
 /// Loads the wake model named by the configuration and builds the `Info` Home Assistant gets.

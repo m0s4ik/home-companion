@@ -228,6 +228,8 @@ pub enum UiCommand {
     ReflexDone,
     /// "Stop" or "basta" over a due reminder: its OK.
     NoticeStop,
+    /// The audio did not start (crate::audio_down; sent by main, not by the core): home says so.
+    AudioDown,
     /// A conversation started or ended: Home Assistant is told (`home_companion_conversation`).
     Conversation {
         state: &'static str,

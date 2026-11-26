@@ -16,7 +16,9 @@ use std::time::Duration;
 
 use home_companion::args::{self, Command};
 use home_companion::config::{self, Config, Source};
-use home_companion::core::{Core, CoreConfig, CoreEvent, Deps, MicControl, UiEvent};
+use home_companion::core::{
+    Core, CoreConfig, CoreEvent, Deps, MicControl, Phase, UiCommand, UiEvent,
+};
 use home_companion::settings::Settings;
 use home_companion::timers::{Timers, now_unix};
 use home_companion::ui::Screen;
@@ -399,9 +401,48 @@ fn go<S: Screen>(
         Ok(a) => a,
         Err(e) => {
             log::error!(event = "audio_error", error = e.to_string().as_str(); "audio: {e}");
-            return ExitCode::from(exit::SUBSYSTEM);
+            // The service reboots once for this exit (crate::audio_down). Already rebooted for
+            // it: first a minute of the screen saying that the audio is not answering.
+            let state_dir = cfg.state_dir();
+            if opts.demo.is_none() && home_companion::audio_down::rebooted(&state_dir) {
+                log::warn!(
+                    event = "audio_down";
+                    "the audio does not start, also after the reboot for it: showing it on the screen"
+                );
+                let _ = ui_tx.send(UiCommand::View(Phase::Home));
+                let _ = ui_tx.send(UiCommand::AudioDown);
+                let ctx = UiContext {
+                    character,
+                    opts,
+                    core: core_tx.clone(),
+                    commands: ui_rx,
+                    touch,
+                    wake: None,
+                    weather: None,
+                    hub: None,
+                    ha_setup: None,
+                    fps: cfg.ui.fps,
+                    exit_after: Some(home_companion::audio_down::SHOWN_FOR.as_secs_f64()),
+                    screenshot: None,
+                    stop_requested: signals::stop_requested,
+                    web: None,
+                };
+                if let Err(e) = renderer::run(prepared, ctx) {
+                    log::error!("{e}");
+                }
+                // ui_tx lived until here: the screen did not take the closed channel for a
+                // stopped core.
+                drop(ui_tx);
+            }
+            return ExitCode::from(exit::AUDIO);
         }
     };
+    if opts.demo.is_none() {
+        home_companion::audio_down::clear_after(
+            &cfg.state_dir(),
+            home_companion::audio_down::KEEPS_WORKING,
+        );
+    }
     log::info!(
         "audio: {} (output {} Hz)",
         cfg.audio.backend,
