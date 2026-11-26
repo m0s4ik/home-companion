@@ -17,7 +17,7 @@ use std::cell::Cell;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use slint::platform::software_renderer::MinimalSoftwareWindow;
@@ -287,6 +287,18 @@ pub fn prepare_gpu(rotation: u32) -> Result<Prepared<super::gpu::CompanionWindow
     })
 }
 
+/// Applies the core's pending commands; false once the core has stopped (it held the only
+/// sender, so the channel is closed when its thread ends).
+fn drain_commands(commands: &Receiver<UiCommand>, mut apply: impl FnMut(UiCommand)) -> bool {
+    loop {
+        match commands.try_recv() {
+            Ok(cmd) => apply(cmd),
+            Err(TryRecvError::Empty) => return true,
+            Err(TryRecvError::Disconnected) => return false,
+        }
+    }
+}
+
 /// What the UI loop needs besides the screen.
 pub struct UiContext {
     pub character: Rc<character::Character>,
@@ -377,9 +389,7 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
         let arbiter = std::cell::RefCell::new(super::remote_input::Arbiter::default());
         let remote_gap: Cell<Option<Instant>> = Cell::new(None);
         drain.start(TimerMode::Repeated, Duration::from_millis(20), move || {
-            while let Ok(cmd) = commands.try_recv() {
-                ui.apply(cmd);
-            }
+            let core_running = drain_commands(&commands, |cmd| ui.apply(cmd));
             ui.poll_mirror();
             let now = Instant::now();
             let mut outs = Vec::new();
@@ -476,7 +486,12 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
             // panel's requests): the capture knows before the next frame is drawn.
             ui.sync_remote();
             let expired = exit_after.is_some_and(|s| start.elapsed().as_secs_f64() >= s);
-            if (expired || stop()) && !quit.get() {
+            if (expired || stop() || !core_running) && !quit.get() {
+                if !core_running {
+                    // An audio error, for one, stops the core but not the screen: without this
+                    // the process lives on without voice and systemd never restarts it.
+                    log::warn!(event = "core_gone"; "the core stopped: closing the screen too");
+                }
                 if let Some(path) = &screenshot {
                     if let Err(e) = save_png(&ui.screen, path) {
                         log::error!("screenshot {}: {e}", path.display());
@@ -520,4 +535,32 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
     };
     ui.on_exit();
     r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn drain_reports_the_core_running_while_it_holds_the_sender() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(UiCommand::VolumeNow(40)).unwrap();
+        tx.send(UiCommand::VolumeNow(60)).unwrap();
+        let mut got = Vec::new();
+        assert!(drain_commands(&rx, |c| got.push(c)));
+        assert_eq!(got.len(), 2);
+        assert!(drain_commands(&rx, |_| panic!("nothing is pending")));
+    }
+
+    #[test]
+    fn drain_applies_the_last_commands_then_reports_the_core_gone() {
+        // The core's thread ended (an audio error): its sender is dropped.
+        let (tx, rx) = mpsc::channel();
+        tx.send(UiCommand::VolumeNow(40)).unwrap();
+        drop(tx);
+        let mut got = 0;
+        assert!(!drain_commands(&rx, |_| got += 1));
+        assert_eq!(got, 1);
+    }
 }

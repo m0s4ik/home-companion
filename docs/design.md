@@ -268,7 +268,8 @@ The body runs **UxPlay** as a child process (patched, `tools/airplay/`) and stay
 
 - **Not as root**: dedicated users per service (`home-companion`, `home-companion-brain`, `home-companion-web`) with
   only the groups they need, a udev rule for the backlight, real-time priority for the audio thread through
-  systemd (`LimitRTPRIO`), `Restart=on-failure`.
+  systemd (`LimitRTPRIO`), `Restart=on-failure`: when the core stops on an audio error it exits 2, and the screen
+  closes with it (`ui/renderer.rs`), so the whole process ends and systemd starts it again.
 - **Installation**: `packaging/install.sh` from the release bundle; it asks nothing, never lets apt replace the
   image's Mesa, downloads the speech models and keeps a replaced configuration as `*.prev`
   ([packaging/README.md](../packaging/README.md)).
