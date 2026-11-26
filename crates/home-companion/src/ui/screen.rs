@@ -10716,9 +10716,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The OK on one of Home Assistant's cards fires `home_companion_card_ok` with the card's id:
-    /// by day, with do not disturb on and with the night layout; never for a card without an id,
-    /// one that Home Assistant takes away, or a second tap on a card that is gone.
+    /// The audio did not start after the reboot for it (crate::audio_down): home shows its
+    /// status card, one card also over an offline Home Assistant.
     #[test]
     fn audio_down_puts_its_card_on_the_home() {
         let dir =
@@ -10770,6 +10769,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The OK on one of Home Assistant's cards fires `home_companion_card_ok` with the card's id:
+    /// by day, with do not disturb on and with the night layout; never for a card without an id,
+    /// one that Home Assistant takes away, or a second tap on a card that is gone.
     #[test]
     fn card_ok_tells_home_assistant() {
         use crate::ha::events::{CardEvent, HaCard};

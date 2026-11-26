@@ -25,9 +25,10 @@ ExecStart=/opt/home-companion/home-companion --config /etc/home-companion/home-c
 # give the console back to text mode if home-companion died while drawing
 ExecStopPost=-/opt/home-companion/home-companion --reset-console
 # The audio did not start (exit 6, crates/home-companion/src/audio_down.rs): reboot once for it (as root). Not
-# within 5 minutes of booting (the sound card may still be coming up), and not again while the mark is there (the
-# body removes it after 10 minutes of working audio): after that, Restart= as for any failure.
-ExecStopPost=+/bin/sh -c 'm=/var/lib/home-companion/audio-reboot; if [ "$EXIT_STATUS" = 6 ] && [ ! -e "$m" ] && [ "$(cut -d. -f1 /proc/uptime)" -ge 300 ]; then echo "audio did not start: rebooting once for it"; touch "$m" && systemctl --no-block reboot; fi; exit 0'
+# within 5 minutes of booting (the sound card may still be coming up), not again while the mark is there (the
+# body removes it after 10 minutes of working audio), and never while an update runs: the updater is watching
+# the new version and puts the one before back if it does not stay up. Otherwise Restart= as for any failure.
+ExecStopPost=+/bin/sh -c 'm=/var/lib/home-companion/audio-reboot; case "$(systemctl show -p ActiveState --value home-companion-update.service)" in activating|active|deactivating|reloading) exit 0 ;; esac; if [ "$EXIT_STATUS" = 6 ] && [ ! -e "$m" ] && [ "$(cut -d. -f1 /proc/uptime)" -ge 300 ]; then echo "audio did not start: rebooting once for it"; touch "$m" && systemctl --no-block reboot; fi; exit 0'
 # KDSETMODE on /dev/tty0 (graphics mode while drawing) needs CAP_SYS_TTY_CONFIG
 AmbientCapabilities=CAP_SYS_TTY_CONFIG
 CapabilityBoundingSet=CAP_SYS_TTY_CONFIG
