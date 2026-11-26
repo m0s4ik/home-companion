@@ -117,12 +117,14 @@ rect = [203.9, 40.3, 827.1, 986.0]
 # On holiday while Home Assistant cannot be reached: he sips his cocktail in the deck chair. With the
 # microphone switch off: earmuffs on, a small resigned shrug. Wan 2.2 I2V A14B (fal.ai's turbo) from the
 # pose as first and last frame with the source package's style block, seed 42, every second frame
-# (16 fps), the last one dropped; make-animation.py --threshold 12. In a loop while the state lasts.
+# (16 fps), the last one dropped; make-animation.py --threshold 12. While the state lasts: a sip, then
+# 10 s still in the chair (the last frame is the pose), like the idle; in a plain loop he never stopped drinking.
 [animations.offline]
 file = "animations/offline.png"
 size = [687, 868]
 frames = [0, 80]
 fps = 16
+pause = 10
 rect = [141.1, 46.0, 875.4, 973.7]
 
 [animations.muted]

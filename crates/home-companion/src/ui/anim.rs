@@ -79,6 +79,24 @@ impl Timing {
     }
 }
 
+/// The frame of a loop `elapsed` after it started, its pause on the last frame included.
+fn looped_frame(t: &Timing, elapsed: Duration) -> u32 {
+    if t.frames == 0 {
+        return 0;
+    }
+    let pause = t.pause.max(0.0);
+    if pause == 0.0 {
+        return t.at(elapsed) % t.frames;
+    }
+    let length = t.frames as f32 / t.fps;
+    let into = elapsed.as_secs_f32() % (length + pause);
+    if into >= length {
+        t.frames - 1
+    } else {
+        ((into * t.fps) as u32).min(t.frames - 1)
+    }
+}
+
 /// What the screen shows of the character.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Show {
@@ -733,11 +751,13 @@ impl Sequencer {
         }
     }
 
+    /// A loop; with a `pause` (Alfred's sip in the deck chair) the clip plays, then its last
+    /// frame stays that many seconds before the next round.
     fn looped(&self, name: &'static str, now: Instant) -> Show {
         match self.clips.get(name) {
             Some(t) => Show::Frame {
                 clip: name,
-                index: t.at(now.saturating_duration_since(self.since)) % t.frames,
+                index: looped_frame(t, now.saturating_duration_since(self.since)),
             },
             None => Show::Pose,
         }
@@ -1041,6 +1061,26 @@ pub fn static_name(name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_loop_with_a_pause_rests_on_its_last_frame() {
+        let t = Timing {
+            frames: 80,
+            fps: 16.0,
+            pause: 10.0,
+        };
+        let s = Duration::from_secs_f32;
+        assert_eq!(looped_frame(&t, s(0.0)), 0);
+        assert_eq!(looped_frame(&t, s(2.5)), 40);
+        // The clip lasts 5 s, then 10 s on its last frame.
+        assert_eq!(looped_frame(&t, s(5.5)), 79);
+        assert_eq!(looped_frame(&t, s(14.9)), 79);
+        // The next round.
+        assert_eq!(looped_frame(&t, s(15.1)), 1);
+        // Without a pause: a plain loop, as before.
+        let plain = Timing { pause: 0.0, ..t };
+        assert_eq!(looped_frame(&plain, s(5.5)), 8);
+    }
 
     const SETTINGS_CLIPS: [&str; 3] = ["settings_in", "settings_hold", "settings_out"];
 
