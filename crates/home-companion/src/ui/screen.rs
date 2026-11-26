@@ -570,6 +570,8 @@ pub struct Demo {
     pub setup_card: bool,
     /// `--state reminder-due`: a reminder due now, full screen.
     pub notice: bool,
+    /// `--state audio-down`: the audio did not start (crate::audio_down), its card on home.
+    pub audio_down: bool,
     /// `--state control` / `control-music`: the control center pulled down.
     pub control: bool,
     /// `--state mirror-*` / `home-mirroring`: a screen mirrored, its frame's size.
@@ -623,7 +625,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 118] = [
+pub const DEMO_STATES: [&str; 119] = [
     "home",
     "cards",
     "cards-setup",
@@ -633,6 +635,7 @@ pub const DEMO_STATES: [&str; 118] = [
     "speaking",
     "error",
     "offline",
+    "audio-down",
     "ringing",
     "reminder-due",
     "volume",
@@ -767,6 +770,10 @@ impl Demo {
             },
             "reminder-due" => Demo {
                 notice: true,
+                ..home.clone()
+            },
+            "audio-down" => Demo {
+                audio_down: true,
                 ..home.clone()
             },
             "control" => Demo {
@@ -1471,6 +1478,8 @@ pub struct Ui<S: Screen> {
     trimmed: Cell<bool>,
     /// The core knows a reminder is full screen (UiEvent::Notice, for the stop word).
     notice_told: Cell<bool>,
+    /// The audio did not start (crate::audio_down): home says so instead of the offline card.
+    audio_down: Cell<bool>,
     view: Cell<Phase>,
     core: Sender<CoreEvent>,
     motion: RefCell<Motion>,
@@ -2366,6 +2375,7 @@ impl<S: Screen> Ui<S> {
             night_pose: RefCell::new(None),
             trimmed: Cell::new(false),
             notice_told: Cell::new(false),
+            audio_down: Cell::new(false),
             view: Cell::new(Phase::Offline),
             core,
             motion: RefCell::new(motion),
@@ -4254,6 +4264,7 @@ impl<S: Screen> Ui<S> {
     }
 
     fn show_demo(&self, d: Demo) {
+        self.audio_down.set(d.audio_down);
         let l = self.locale.borrow().clone();
         let w = |k: &str| l.text(k).to_string();
         self.screen.set_clock(if d.night {
@@ -5087,6 +5098,10 @@ impl<S: Screen> Ui<S> {
             UiCommand::NoticeStop => {
                 log::info!(event = "reminder_notice"; "reminder: stop word, as its OK");
                 self.notice_done(false);
+            }
+            UiCommand::AudioDown => {
+                self.audio_down.set(true);
+                self.refresh_home();
             }
             UiCommand::MirrorAspect(a) => {
                 self.mirror_aspect.set(Some(a));
@@ -6945,7 +6960,11 @@ impl<S: Screen> Ui<S> {
         };
         let alive = Alive {
             done,
-            status: offline.then(|| (w("offline_title"), w("offline_text"))),
+            status: if self.audio_down.get() {
+                Some((w("audio_down_title"), w("audio_down_text")))
+            } else {
+                offline.then(|| (w("offline_title"), w("offline_text")))
+            },
             setup,
             panel: self.panel_card(),
             ready,
@@ -10700,6 +10719,57 @@ mod tests {
     /// The OK on one of Home Assistant's cards fires `home_companion_card_ok` with the card's id:
     /// by day, with do not disturb on and with the night layout; never for a card without an id,
     /// one that Home Assistant takes away, or a second tap on a card that is gone.
+    #[test]
+    fn audio_down_puts_its_card_on_the_home() {
+        let dir =
+            std::env::temp_dir().join(format!("home-companion-audiodown-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let prepared = super::super::renderer::prepare_fb(
+            super::super::renderer::Kind::Headless,
+            Path::new(""),
+            0,
+        )
+        .unwrap();
+        let character =
+            Rc::new(character::load(&character::repo_characters().join("alfred")).unwrap());
+        let (tx, _events) = std::sync::mpsc::channel();
+        let opts = UiOptions {
+            locales: locale::repo_locales(),
+            language: locale::DEFAULT.into(),
+            sample_weather: false,
+            demo: None,
+            screen: ScreenOptions {
+                animations: false,
+                ..Default::default()
+            },
+            state_dir: Some(dir.clone()),
+            ha_linked: false,
+            ha_host: None,
+            setup_at_start: false,
+            first_start: crate::settings::FirstStart {
+                language: false,
+                home_assistant: false,
+            },
+            link: None,
+            update: None,
+            panel: None,
+        };
+        let ui = Ui::new(prepared.screen, character, opts, tx).unwrap();
+        let status = |ui: &Ui<_>| ui.card_kinds.borrow().contains(&"status");
+        // Home with Home Assistant answering: no status card.
+        ui.apply(UiCommand::View(Phase::Home));
+        assert!(!status(&ui));
+        // What main sends when the audio does not start after the reboot for it.
+        ui.apply(UiCommand::AudioDown);
+        assert!(status(&ui));
+        assert!(ui.audio_down.get());
+        // The card stays over a Home Assistant that is not answering (one card, the audio's).
+        ui.apply(UiCommand::View(Phase::Offline));
+        let kinds = ui.card_kinds.borrow().clone();
+        assert_eq!(kinds.iter().filter(|k| **k == "status").count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn card_ok_tells_home_assistant() {
         use crate::ha::events::{CardEvent, HaCard};

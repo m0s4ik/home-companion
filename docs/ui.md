@@ -183,6 +183,8 @@ its ring and the gold fill) and No stays a target that wins.
   for a ninth tile).
 - **Offline** (Home Assistant not connected): the offline pose, the status card, HA dimmed to 35 %; Talk still works
   for the local reflexes.
+- **Audio down** (`--state audio-down`, the audio did not start also after the reboot for it, `audio_down.rs`):
+  home with a status card «The sound is not answering» in place of the offline one, for a minute before the next try.
 - **Conversation**: the wave (72 bars, the state colour), the phrase 48, the heard sentence while thinking and small
   above the answer while speaking, the answer 34 up to five lines (the whole text is in Conversations). Stop takes
   Talk's place; in **error** ("I didn't understand", "Say it again? Just say «Okay Alfred»") the gold Talk stays, to
