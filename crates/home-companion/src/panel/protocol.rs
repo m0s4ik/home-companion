@@ -277,6 +277,7 @@ pub const STRING_KEYS: &[&str] = &[
     "panel_empty_check",
     "panel_empty_playing",
     "panel_empty_home",
+    "panel_empty_custom",
     "panel_preview_sample",
     "panel_rows_prev",
     "panel_rows_next",
@@ -306,6 +307,7 @@ pub const STRING_KEYS: &[&str] = &[
     "panel_what_check",
     "panel_what_playing",
     "panel_what_home",
+    "panel_what_custom",
     "panel_bought",
     "panel_bought_label",
     "panel_add_to",
@@ -2089,6 +2091,26 @@ mod tests {
                 "{k} missing in it: {v:?} {}",
                 r["lang"]
             );
+        }
+    }
+
+    /// The panel builds `panel_empty_<kind>` and `panel_what_<kind>` from the widget's kind
+    /// (panel.js): every kind has both, sent to the panel and written in en and it.
+    #[test]
+    fn every_widget_kind_has_its_panel_words() {
+        let repo = locale::repo_locales();
+        for code in ["en", "it"] {
+            let l = locale::load(&repo, code).unwrap();
+            for kind in crate::ui::widgets::Kind::ALL {
+                for k in [
+                    format!("panel_empty_{}", kind.key()),
+                    format!("panel_what_{}", kind.key()),
+                ] {
+                    assert!(STRING_KEYS.contains(&k.as_str()), "{k} not sent");
+                    let v = l.text(&k);
+                    assert!(!v.is_empty() && v != k, "{k} missing in {code}");
+                }
+            }
         }
     }
 
