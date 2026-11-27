@@ -1112,6 +1112,11 @@ pub(crate) mod tests {
         // Overdue: within 20 s, never at once for all.
         let first = w.next(100.0).unwrap();
         assert!((100.0..=120.0).contains(&first), "{first}");
+        for (id, due) in [("yahoo:AAPL", 105.0), ("yahoo:^GSPC", 110.0)] {
+            assert!((100.0..=120.0).contains(&w.yahoo[id].due), "{id}");
+            // Which goes first was random: AAPL first, so that its next due is known below.
+            w.yahoo.get_mut(id).unwrap().due = due;
+        }
         assert!(w.step(130.0, 1_795_198_800));
         // Three seconds between two Yahoo requests.
         assert!(!w.step(131.0, 1_795_198_800));
