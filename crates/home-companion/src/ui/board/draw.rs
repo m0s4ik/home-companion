@@ -85,6 +85,7 @@ pub fn state_key(s: TileState) -> &'static str {
         TileState::Pending => "pending",
         TileState::Unavailable => "unavailable",
         TileState::Failed => "failed",
+        TileState::Stale => "stale",
     }
 }
 

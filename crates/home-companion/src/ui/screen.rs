@@ -621,12 +621,17 @@ pub struct Demo {
     pub panel: u8,
     /// `--state board` (1), `board-confirm` (2), `board-empty` (3), `widget-custom*` (4),
     /// `board-talk` (5), `board-swipe` (6), `board-opening` (7): the board on sample data
-    /// (board_ui::demo_board).
+    /// (board_ui::demo_board), `board-away` (8): the board with Home Assistant not reachable.
     pub board: u8,
+    /// `--state card-pose`: Home Assistant's card asks for a pose (the character's own
+    /// "satisfied").
+    pub card_pose: bool,
+    /// `--state settings-conversation`: Settings with conversation mode on.
+    pub conversation_mode: bool,
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 120] = [
+pub const DEMO_STATES: [&str; 123] = [
     "home",
     "cards",
     "cards-setup",
@@ -747,6 +752,9 @@ pub const DEMO_STATES: [&str; 120] = [
     "board-opening",
     "widget-custom",
     "widget-custom-line",
+    "board-away",
+    "card-pose",
+    "settings-conversation",
 ];
 
 impl Demo {
@@ -832,6 +840,15 @@ impl Demo {
             "ha-home" => Demo {
                 v02: "home",
                 ..home.clone()
+            },
+            "card-pose" => Demo {
+                v02: "home",
+                card_pose: true,
+                ..home.clone()
+            },
+            "settings-conversation" => Demo {
+                conversation_mode: true,
+                ..page("settings")
             },
             "ha-next" => Demo {
                 v02: "next",
@@ -1058,11 +1075,12 @@ impl Demo {
                 frame: Some(("muted_in", 50)),
                 ..home.clone()
             },
-            "board" | "board-confirm" | "board-empty" | "board-swipe" => Demo {
+            "board" | "board-confirm" | "board-empty" | "board-swipe" | "board-away" => Demo {
                 board: match s {
                     "board" => 1,
                     "board-confirm" => 2,
                     "board-swipe" => 6,
+                    "board-away" => 8,
                     _ => 3,
                 },
                 ..page("board")
@@ -4113,8 +4131,9 @@ impl<S: Screen> Ui<S> {
                             text: l.sample("ha_card_text").into(),
                             icon: Some("mdi:washing-machine".into()),
                             seconds: None,
-                            // Shown only if a pose "laundry" was downloaded (none in the screenshots).
-                            pose: Some("laundry".into()),
+                            // Shown only if a pose "laundry" was downloaded (none in the
+                            // screenshots); `card-pose`: the character's own "satisfied".
+                            pose: Some(if d.card_pose { "satisfied" } else { "laundry" }.into()),
                             quiet: false,
                         }),
                         Instant::now(),
@@ -4406,6 +4425,9 @@ impl<S: Screen> Ui<S> {
         self.show_demo_v02(&d, &l);
         self.show_demo_board(d.board);
         self.show_demo_widget(&d, &l);
+        if d.conversation_mode {
+            self.screen.set_conversation_mode(true);
+        }
         if d.panel > 0 {
             self.demo_panel(d.panel == 2);
             if d.panel == 3 {
@@ -8214,7 +8236,10 @@ impl<S: Screen> Ui<S> {
                     self.refresh_home();
                 }
             }
-            HubMsg::Link { up, last_seen } => super::webview::set_ha_link(up, last_seen),
+            HubMsg::Link { up, last_seen } => {
+                super::webview::set_ha_link(up, last_seen);
+                self.board_link(up);
+            }
             HubMsg::Screen(true) => self.wake(WakeSource::HomeAssistant),
             HubMsg::Screen(false) => self.screen_off_by("Home Assistant"),
             HubMsg::Entities(e) => {

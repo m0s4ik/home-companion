@@ -475,10 +475,10 @@ fn over_sockets_and_idle() {
 fn pages_are_light() {
     // About 105 KB with the widget's cards and the device's home screen drawn here (panel v6:
     // the device's frame, the turn's strip, the remote screen's states), about 155 with the
-    // board's editor; the fonts, the pictures and the vendored grid (loaded by the board's
-    // section only) apart.
+    // board's editor, about 165 with the custom widget drawn in Home's preview; the fonts, the
+    // pictures and the vendored grid (loaded by the board's section only) apart.
     let total = INDEX.len() + CSS.len() + JS.len();
-    assert!(total < 160 * 1024, "{total} bytes");
+    assert!(total < 170 * 1024, "{total} bytes");
     // No style or script in the page itself, none set from the script as an attribute.
     assert!(!JS.contains("setAttribute('style'") && !JS.contains(".style."));
     assert!(

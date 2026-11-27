@@ -234,12 +234,18 @@ the device itself (no browser), 6 × 4 cells under Alfred's portrait. A tile is 
 **buttons** do what the device's kind suggests (a light or a plug toggles, a scene runs, a shutter opens or closes),
 **values** show a sensor with its last 24 hours, **sliders** set a brightness, a volume, a shutter's position. Shutters
 and valves ask first (Ask for confirmation, on by default, can be switched off per tile); locks, alarms, garage doors
-and gates are never offered. A tile waits for Home Assistant's real state after a tap, and turns red if the command
-fails. Several pages follow the finger across; back home with Alfred's portrait, the home button (Home Assistant's
+and gates are never offered. A tile waits for Home Assistant's real state after a tap (a slider stays where you let
+it go meanwhile), and turns red if the command fails; while Home Assistant is not reachable the tiles are dimmed,
+say so and do nothing. Several pages follow the finger across; back home with Alfred's portrait, the home button (Home Assistant's
 view's, at the same place) or a swipe to the right. The same tiles also make a **custom widget** that takes its turn
-on the home. A button's **Advanced** service (set in the panel's editor) calls only a service of the tile's own
-domain, or `homeassistant.turn_on`, `turn_off`, `toggle`, `update_entity`, always on the tile's entity; a tile whose
-name speaks of a door, gate or lock (a scene or an automation too) is never offered.
+on the home.
+
+A button can call another service than its kind's: **Advanced** in the panel's editor takes a service and its data
+by hand (`cover.set_cover_position` with `{"position": 30}`, `light.turn_on` with a colour). It is limited to a
+service of the tile's own domain, or `homeassistant.turn_on`, `turn_off`, `toggle` and `update_entity`, always on
+the tile's own entity: data that names other entities is refused, and so is a script other than the tile's. A tile
+whose entity's name speaks of a door, a gate or a lock is never offered, scenes and automations included; that is
+the safe side, so an automation called "Light on when the door opens" is left out too.
 
 <p align="center">
 <img src="docs/images/board.png" width="400" alt="The board on the device: lights, a fan, a shutter, a scene, a temperature with its day's curve, the power drawn and a light's slider, under Alfred's portrait">
@@ -506,9 +512,9 @@ v0.5** (v0.3-rc3 or later works), built with `WEB=1` (the Home Assistant view), 
 system image is where the Wi-Fi and your ssh key are set. Then, on the device:
 
 ```sh
-curl -LO https://github.com/m0s4ik/home-companion/releases/download/v0.3.1/home-companion-0.3.1-arm64.tar.gz
-tar xzf home-companion-0.3.1-arm64.tar.gz
-cd home-companion-0.3.1-arm64 && ./install.sh
+curl -LO https://github.com/m0s4ik/home-companion/releases/download/v0.4.0/home-companion-0.4.0-arm64.tar.gz
+tar xzf home-companion-0.4.0-arm64.tar.gz
+cd home-companion-0.4.0-arm64 && ./install.sh
 ```
 
 The installer asks nothing: it checks the system (it never lets apt replace the image's Mesa), installs the
@@ -547,7 +553,7 @@ Cross-compiled from an amd64 Debian 13 with the arm64 multiarch libraries:
 ```sh
 cargo build --release --target aarch64-unknown-linux-gnu -p home-companion --no-default-features --features fbdev,gpu
 cargo run -p home-companion -- --simulator          # the screen in a window on a laptop
-tools/release/build-bundle.sh 0.3.1                 # the release bundle
+tools/release/build-bundle.sh 0.4.0                 # the release bundle
 ```
 
 Contributing, with or without a coding assistant: [AGENTS.md](AGENTS.md).

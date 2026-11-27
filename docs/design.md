@@ -111,6 +111,17 @@ other covers and valves only after a spoken yes the satellite heard).
 **Cancelling**: a Home Assistant pipeline that already understood a command cannot be cancelled from the satellite;
 only the spoken answer can be dropped. That is why reflexes are decided before the audio is sent (section 5).
 
+### Conversation mode
+
+Off by default (Settings → Conversation mode, also on the browser panel). After a question of Alfred's the body
+always listens again; with conversation mode on it also does after any other answer of Home Assistant it speaks
+(never after a reflex), for `[conversation] follow_up_seconds` (6 s) and without the wake word (`core.rs`,
+`AfterAnswer`). A window nobody speaks in closes without a sound; noise Home Assistant finds no words in closes it the
+same way. "Times in a row" (1-10, 3 at first) bounds how many windows follow one another, a question of Alfred's
+among them, before the wake word is needed again: the count starts over only with the wake word or a touch, so a
+television cannot keep it going. No window opens over a ringing timer, a reminder on the screen, playing music or
+with the microphone off.
+
 ## 4. Characters
 
 ```
@@ -250,6 +261,38 @@ models, training the stop words).
   body's ports to the local network only.
 - **WebSocket** (`crates/home-companion/src/ha/ws.rs`, a minimal client over plain TCP, no TLS): the weather of the
   home screen (`[weather] entity`, shown only with real data), the shopping list (`[lists] shopping`) and the setup.
+  One connection (`ha/hub.rs`) follows what the screen shows: the widget's sensors, the board's tiles (their states
+  and the calls of a tap, through `safety`'s gates again before they are sent), Home Assistant's cards. When it is
+  lost the screen says so (the home button's sign, the board's tiles dimmed and not tappable) and it reconnects by
+  itself.
+
+## 8a. Outside services: the widget's feeds
+
+The widget's markets, coins and other cities (`crates/home-companion/src/feeds/`) are the only data the body asks of
+the internet itself, never Home Assistant: Yahoo Finance (unofficial), CoinGecko and Open-Meteo, a constant host per
+source, no key. The body has no TLS of its own: it runs **`curl`** as a child process (`feeds/http.rs`; Debian keeps
+curl and the certificates up to date, as for updates), one request at a time, from one thread started the first time
+something is chosen, only while that page is in the widget's turn, the screen on and not at night. What the user
+typed only travels as a percent-encoded query value, no shell, no redirects. The last data is kept in `feeds.json`
+next to `settings.toml`, so it is on screen at once after a restart; the screen's thread never waits for the network.
+
+## 8b. The browser panel
+
+Settings → Access from the browser turns on a page for a phone or a computer on the home network. Three parts:
+
+- **`home-companion-panel`** (`crates/panel`, its own user, started by systemd's socket on port 8125, plain HTTP on
+  private addresses only): serves the pages (`crates/panel/web/`, no framework; gridstack.js for the board's editor)
+  and keeps nothing and knows no secret. It guards the edges: request size and rate, `Host` (DNS rebinding),
+  `Origin` and `Content-Type` on writes (CSRF), the session only in an `HttpOnly; SameSite=Strict` cookie, a strict
+  Content-Security-Policy. HTTP parsing is the small `crates/httpd` (also used by the QR link's callback and the
+  brain's MCP server).
+- **The body** decides (`crates/home-companion/src/panel/`): every request becomes one line on its Unix socket
+  (`panel.sock`), from a closed list (`protocol.rs`). A new browser is let in only after comparing a code on the
+  device's screen (`sessions.rs`, at most five, each revocable there); what the panel shows (the widget's preview,
+  the board's tiles) is drawn from the body's own models, so the preview is what the device shows.
+- **The remote screen** (`panel/remote.rs`, `ui/remote_input.rs`): off unless switched on on the device; JPEG frames
+  made only while someone watches, taps and drags turned into touches, one controller at a time with a sign and Stop
+  on the device; private pages and confirmations are never sent nor answered from it.
 
 ## 9. AirPlay
 
@@ -266,10 +309,10 @@ The body runs **UxPlay** as a child process (patched, `tools/airplay/`) and stay
 
 ## 10. Running on the device
 
-- **Not as root**: dedicated users per service (`home-companion`, `home-companion-brain`, `home-companion-web`) with
-  only the groups they need, a udev rule for the backlight, real-time priority for the audio thread through
-  systemd (`LimitRTPRIO`), `Restart=on-failure`: when the core stops on an audio error it exits 2, and the screen
-  closes with it (`ui/renderer.rs`), so the whole process ends and systemd starts it again.
+- **Not as root**: dedicated users per service (`home-companion`, `home-companion-brain`, `home-companion-web`,
+  `home-companion-panel`) with only the groups they need, a udev rule for the backlight, real-time priority for the
+  audio thread through systemd (`LimitRTPRIO`), `Restart=on-failure`: when the core stops on an audio error it exits
+  2, and the screen closes with it (`ui/renderer.rs`), so the whole process ends and systemd starts it again.
 - **Audio that does not start** (`audio_down.rs`): the body exits 6, and the service reboots the device for it once
   (`ExecStopPost`, as root; not within 5 minutes of booting, nor while an update runs: its rollback must not be cut). The mark `<state_dir>/audio-reboot` keeps it to one
   reboot until the audio has worked for 10 minutes; while it is there, a start without audio shows a minute of

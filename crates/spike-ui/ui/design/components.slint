@@ -1660,7 +1660,8 @@ export struct BoardTileData {
     h: int,
     // "button", "sensor", "level".
     kind: string,
-    // "off", "on", "pending", "unavailable", "failed".
+    // "off", "on", "pending", "unavailable", "failed", "stale" (Home Assistant not reachable:
+    // the last state known, dimmed).
     state: string,
     // SVG path data in a 24 x 24 box.
     icon: string,
@@ -1707,6 +1708,7 @@ export component BoardTile inherits Rectangle {
     property <bool> pending: root.tile.state == "pending";
     property <bool> gone: root.tile.state == "unavailable";
     property <bool> failed: root.tile.state == "failed";
+    property <bool> stale: root.tile.state == "stale";
     property <bool> level: root.tile.kind == "level";
     property <bool> sensor: root.tile.kind == "sensor";
     // The gold ground of a thing that is on (a level's bar shows it instead).
@@ -1724,6 +1726,8 @@ export component BoardTile inherits Rectangle {
     property <int> drag: -1;
     property <int> shown-level: root.drag >= 0 ? root.drag : root.tile.level;
     border-radius: root.line ? Grid.card-radius : Grid.tile-radius;
+    // Home Assistant away: the whole tile dimmed (what it shows may be old).
+    opacity: root.stale ? 0.45 : 1;
     background: touch.pressed && !touch.dragging && root.tile.tappable && !root.level ? Theme.surface-2
         : root.gold ? Theme.accent-deep : Theme.surface;
     border-width: 1px;
@@ -2043,6 +2047,9 @@ export component BoardTile inherits Rectangle {
                 vertical-alignment: center;
             }
             // The icon's end of the bar: a tap there switches it; anywhere else a drag sets it.
+            // Released, the bar shows Rust's level: the one let go until Home Assistant has it
+            // (board::Pending), so it does not jump back meanwhile. A touch taken away (cancel)
+            // ends the drag where it was sent last.
             bar-touch := TouchArea {
                 enabled: root.tile.tappable;
                 property <int> at: round(clamp(self.mouse-x / self.width, 0, 1) * 100);
@@ -2062,6 +2069,9 @@ export component BoardTile inherits Rectangle {
                             root.level-changed(self.at, true);
                         }
                         self.dragging = false;
+                    } else if (e.kind == PointerEventKind.cancel) {
+                        self.dragging = false;
+                        root.drag = -1;
                     }
                 }
                 moved => {
