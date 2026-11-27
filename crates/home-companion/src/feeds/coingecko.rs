@@ -88,8 +88,17 @@ pub fn parse_markets(
                         .collect()
                 })
                 .unwrap_or_default();
-            // The hourly points of the last day (and the price now, its end).
+            // The hourly points of the last day (and the price now, its end). CoinGecko gives the
+            // curve in US dollars whatever `vs_currency` is: in another currency the curve is
+            // brought to the price's, scaled so that its last point meets the price now.
             let mut day: Vec<f64> = hours[hours.len().saturating_sub(24)..].to_vec();
+            if !currency.eq_ignore_ascii_case("usd") {
+                let last = day.iter().rev().copied().find(|p| p.is_finite());
+                match last {
+                    Some(last) if last > 0.0 => day.iter_mut().for_each(|p| *p *= price / last),
+                    _ => day.clear(),
+                }
+            }
             if !day.is_empty() {
                 day.push(price);
             }
@@ -187,6 +196,12 @@ mod tests {
         assert!(q[0].prev.unwrap() > q[0].price, "it fell that day");
         assert!(q[0].points.len() == 25);
         assert!(q[0].low <= q[0].price && q[0].high > q[0].low);
+        // The curve, in dollars from CoinGecko, is brought to euros: no fall at its end.
+        let n = q[0].points.len();
+        let (before, end) = (q[0].points[n - 2] as f64, q[0].points[n - 1] as f64);
+        assert!((end - q[0].price).abs() < 1.0, "{end}");
+        assert!((before - end).abs() / end < 0.01, "{before} → {end}");
+        assert!(q[0].high < 60_000.0, "{}", q[0].high);
         assert_eq!(q[0].at, 7);
         assert!(q[0].market_open);
     }
