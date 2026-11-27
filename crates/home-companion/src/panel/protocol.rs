@@ -858,9 +858,15 @@ fn screen_op(
             }
         }
         "screen.stop" => {
-            // Also while the screen still asks (Cancel in the browser).
+            // Also while the screen still asks (Cancel in the browser): then as if nobody
+            // answered, so a loop of start and stop cannot keep putting the question up.
             if sessions.remote.owns(me) {
-                remote_stop(host, sessions, End::Browser, now);
+                let why = if sessions.remote.asking().is_some() {
+                    End::Unanswered
+                } else {
+                    End::Browser
+                };
+                remote_stop(host, sessions, why, now);
             }
             ok(json!({}))
         }
@@ -2452,22 +2458,29 @@ mod tests {
         assert_eq!(ask(&mut s, &a, "screen.frame", json!({}))["seq"], 3);
         assert_eq!(ask(&mut s, &a, "screen.input", ev.clone())["ok"], true);
         assert_eq!(ask(&mut s, &a, "screen.stop", json!({}))["ok"], true);
-        // Cancel in the browser while the screen asks: the question goes.
+        // Cancel in the browser while the screen asks: the question goes, and it counts as
+        // unanswered (a loop of start and stop cannot keep asking the room).
         ask(&mut s, &a, "screen.start", json!({}));
         assert!(s.remote.asking().is_some());
+        let asks = h.remote_asks.borrow().len();
         assert_eq!(ask(&mut s, &a, "screen.stop", json!({}))["ok"], true);
         assert!(!s.remote.active());
         assert_eq!(h.signs.borrow().last().unwrap(), &None);
+        assert_eq!(
+            ask(&mut s, &a, "screen.start", json!({}))["error"],
+            "screen_unanswered"
+        );
+        assert_eq!(h.remote_asks.borrow().len(), asks, "no new question");
         // Deny: the browser is told; that device stays out.
-        ask(&mut s, &a, "screen.start", json!({}));
+        ask(&mut s, &b, "screen.start", json!({}));
         remote_answer(&h, &mut s, false, at(0));
         assert!(!s.remote.active());
         assert_eq!(
-            ask(&mut s, &a, "screen.frame", json!({}))["error"],
+            ask(&mut s, &b, "screen.frame", json!({}))["error"],
             "screen_denied"
         );
         assert_eq!(
-            ask(&mut s, &a, "screen.start", json!({}))["error"],
+            ask(&mut s, &b, "screen.start", json!({}))["error"],
             "screen_denied"
         );
         // An answer with nothing asked does nothing.

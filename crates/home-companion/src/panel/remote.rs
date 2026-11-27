@@ -384,6 +384,12 @@ impl Remote {
                 .map(|c| (c, End::Unanswered));
         }
         if now.duration_since(c.seen) >= IDLE {
+            // A browser that asked and went quiet: as if nobody answered (no question loop).
+            if !c.allowed {
+                return self
+                    .stop(End::Unanswered, now)
+                    .map(|c| (c, End::Unanswered));
+            }
             return self.controller.take().map(|c| (c, End::Idle));
         }
         None
@@ -613,6 +619,24 @@ mod tests {
             Ok(Start::Replaced)
         );
         assert!(r.check("a", at(7)).is_ok());
+    }
+
+    #[test]
+    fn a_browser_quiet_while_asked_counts_as_unanswered() {
+        let mut r = Remote::default();
+        let t = Instant::now();
+        let a = Agent::default();
+        r.start("a", &a, "", true, Confirm::Ask, t).unwrap();
+        let (_, why) = r.expire(t + IDLE).unwrap();
+        assert_eq!(why, End::Unanswered);
+        assert_eq!(
+            r.start("a", &a, "", true, Confirm::Ask, t + IDLE),
+            Err(Refusal::Unanswered)
+        );
+        assert_eq!(
+            r.start("a", &a, "", true, Confirm::Ask, t + IDLE + ASK_AGAIN_AFTER),
+            Ok(Start::Ask)
+        );
     }
 
     #[test]
