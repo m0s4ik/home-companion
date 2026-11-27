@@ -55,7 +55,8 @@ and the picture as tall as the figure where the crop's width allows. Names of lo
 It may move: `<name>.toml` is its animation, a table as in character.toml (`file`, `size`, `frames`, `fps`, optional
 `pause`, `rect`) without the `[animations.…]` header, its `file` a sheet in the same directory (`<name>-anim.png`) made
 with [tools/make-animation.py](../tools/make-animation.py) from `<name>.png`. It loops over the pose while the card
-shows (also while an announcement is said over it) and its sheet is decoded when the pose comes and freed when it goes.
+shows (also while an announcement is said over it; with a `pause`, still on its last frame for that many seconds
+between two rounds) and its sheet is decoded when the pose comes and freed when it goes.
 A clip whose last frame is its first loops without a jump.
 
 Rules for the pictures:
@@ -81,8 +82,8 @@ All optional; without one the still pose is shown.
 | `loading` | in a loop while the body starts, until Home Assistant connects | `idle` |
 | `wake` | once when the home screen wakes up (touch, volume key, movement, end of a conversation) | `idle` |
 | `idle` | after `wake`, again and again while the screen is awake, still on its last frame for `pause` seconds in between | `idle` |
-| `listening`, `thinking`, `speaking`, `error` | in a loop while the state lasts (`speaking` also while a timer rings, unless the character has `timer_finished`) | that state's pose |
-| `offline`, `muted` | in a loop while the state lasts | that state's pose |
+| `listening`, `thinking`, `speaking`, `error` | in a loop while the state lasts, still on its last frame for `pause` seconds between two rounds when it has one (`speaking` also while a timer rings, unless the character has `timer_finished`) | that state's pose |
+| `offline`, `muted` | in a loop while the state lasts, still on its last frame for `pause` seconds between two rounds when it has one | that state's pose |
 | `done` | once on the home after a house command went through (if it came during the conversation, when the home comes back, within 15 s); its last frame is the `idle` pose | `idle` |
 | `fall_asleep` | once when the night layout comes (night hours, the home at rest), after the home clip under way | `idle` |
 | `sleeping` | once every `pause` seconds while asleep, the still `sleeping` pose in between (nothing redraws) | `sleeping` |

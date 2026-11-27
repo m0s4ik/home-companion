@@ -50,6 +50,11 @@ path = "/lovelace/0"
 # control centre switches it on and off
 enabled = @AIRPLAY@
 
+# Settings -> Conversation mode (off unless switched on there): how long the microphone stays open
+# after a spoken answer, without the wake word (0 to 30 s; 0 = never)
+# [conversation]
+# follow_up_seconds = 6
+
 [audio.record]
 # Keep the phrases said after the wake word (to tune the wake word and the reflexes)
 enabled = false

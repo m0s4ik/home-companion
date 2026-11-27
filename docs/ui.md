@@ -401,7 +401,7 @@ browser panel. Named "Board" ("Plancia" in Italian).
   │  │           │ Home Assistant (Music, Memories…)│
   │  └─card──▶ the page of that card                └──────────────────────────────┘
   ├─pull from the top──▶ control centre
-  ├─swipe in from the right edge──▶ the board ──back / swipe right / 60 s alone──▶ home
+  ├─swipe in from the right edge──▶ the board ──back / swipe right──▶ home (never alone)
   ├─HA──▶ Home Assistant's view ──swipe in / home button / Vol+ Vol−──▶ Home
   │      (not linked yet: the HA button opens Link Home Assistant, the QR code)
   └─Talk or «Okay Alfred» (anywhere) ──▶ conversation ──▶ back where it started
