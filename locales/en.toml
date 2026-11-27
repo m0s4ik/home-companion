@@ -759,7 +759,7 @@ panel_blocked_title = "Access requests stopped"
 panel_blocked_text = "Too many unanswered: use the QR code in Settings."
 panel_device_detail = "{peer} · {when}"
 panel_screen = "Remote screen"
-panel_screen_hint = "On, the devices allowed here can see this screen from the browser and touch it as with a finger, the Home Assistant view included. While one does, a sign at the top says which; Stop ends it at once and keeps that device out until this switch is turned off and on again. The camera, the photos, the memories, the conversations, the codes that let devices in and most confirmations are never shown. Turn it on only on a home network you trust."
+panel_screen_hint = "On, the devices allowed here can see this screen from the browser and touch it as with a finger. While one does, a sign at the top says which; Stop ends it at once and keeps that device out until this switch is turned off and on again. The camera, the photos, the memories, the conversations, Home Assistant's own view, the codes that let devices in and most confirmations are never shown. Turn it on only on a home network you trust."
 remote_controlled = "Controlled by {who}"
 remote_stop = "Stop"
 # The browser panel's Screen section.
@@ -772,7 +772,7 @@ panel_screen_off = "For safety it is switched on only on {name}: Settings > Acce
 panel_screen_busy = "Try again when it is done."
 panel_screen_stopped = "Someone touched «Stop» on {name}: wait a minute; the device that was in control, until Remote screen is switched off and on again there."
 panel_screen_ended = "The session ended."
-panel_screen_hidden = "The camera, the photos, a code that lets devices in or screen mirroring are not shown here. Touches wait until the page changes."
+panel_screen_hidden = "The camera, the photos, a code that lets devices in, Home Assistant's own view, an update or screen mirroring are not shown here. Touches wait until the page changes."
 panel_screen_unavailable = "{name}'s screen cannot be read on this device."
 panel_screen_home = "Back to the home"
 # The browser panel v6.

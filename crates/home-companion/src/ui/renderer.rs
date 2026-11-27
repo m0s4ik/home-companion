@@ -413,10 +413,13 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
                         || {
                             // Checked now, not when it was sent: the session may have ended
                             // meanwhile or the screen gone private.
-                            remote_rx
-                                .try_recv()
-                                .ok()
-                                .map(|(epoch, ev)| (ev, ui.remote_accepts(epoch)))
+                            // A press that starts on the sign is nobody's: the sign's Stop
+                            // is for the room, and under it may be Home Assistant's view.
+                            remote_rx.try_recv().ok().map(|(epoch, ev)| {
+                                let on_sign =
+                                    ev.kind == TouchKind::Down && ui.remote_sign_hit(ev.x, ev.y);
+                                (ev, ui.remote_accepts(epoch) && !on_sign)
+                            })
                         },
                         now,
                     );

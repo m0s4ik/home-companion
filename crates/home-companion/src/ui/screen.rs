@@ -10401,6 +10401,14 @@ mod tests {
             );
             assert!(!ui.remote_accepts(epoch), "{page}");
         }
+        // Installing an update and Home Assistant's link: in front of the device only.
+        for (page, why) in [("update", "update"), ("ha", "ha_setup")] {
+            w.set_page(page.into());
+            assert_eq!(call("screen.frame", json!({}))["hidden"], why, "{page}");
+            assert!(!ui.remote_accepts(epoch), "{page}");
+        }
+        w.set_page("board".into());
+        assert!(ui.remote_accepts(epoch));
         w.set_page("home".into());
         assert!(ui.remote_accepts(epoch));
         // Ended while the sessions were busy answering: no sign, no frame, then the tick ends it.

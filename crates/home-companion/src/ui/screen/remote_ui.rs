@@ -223,14 +223,12 @@ impl<S: Screen> Ui<S> {
         if self.mirror_shown() {
             return Some("mirror");
         }
-        match self.screen.get_page().as_str() {
-            "camera" | "photo" | "photos" => Some("camera"),
-            // What he remembers and what was said: read only on the device.
-            "memories" | "chat" => Some("private"),
-            "panel" | "setup" => Some("code"),
-            "mirror" => Some("mirror"),
-            _ => None,
+        // Home Assistant's own view: logged in as whoever linked the device, with every
+        // control Home Assistant has (locks and alarms too), outside the device's gates.
+        if crate::ui::webview::visible() {
+            return Some("ha_view");
         }
+        remote_page(&self.screen.get_page())
     }
 
     pub(super) fn remote_frame_now(
@@ -296,4 +294,116 @@ impl<S: Screen> Ui<S> {
 /// or alarm, the result of an update. Everything else is hidden from it.
 pub(crate) fn remote_dialog_allowed(dialog: &str) -> bool {
     matches!(dialog, "" | "new-timer" | "new-alarm" | "update-result")
+}
+
+/// Every page of the screen (companion.slint) and whether the remote screen may see and touch
+/// it: None shown, Some(why) hidden. A page missing here is hidden ([`remote_page`]) and fails
+/// a test, so a page added later is decided, not born visible.
+const REMOTE_PAGES: &[(&str, Option<&str>)] = &[
+    ("home", None),
+    ("altro", None),
+    // The board: its Yes/No questions are never sent nor touched (remote_hidden_now) and a
+    // remote tap is one per round (renderer.rs), so a gated tile still asks the room.
+    ("board", None),
+    ("timers", None),
+    ("reminders", None),
+    ("shopping", None),
+    ("notes", None),
+    ("weather", None),
+    ("city", None),
+    ("trends", None),
+    ("music", None),
+    ("what", None),
+    ("settings", None),
+    ("language", None),
+    ("screen", None),
+    ("widgets", None),
+    ("poses", None),
+    ("usage", None),
+    ("ha-lists", None),
+    ("camera", Some("camera")),
+    ("photo", Some("camera")),
+    ("photos", Some("camera")),
+    // What he remembers and what was said: read only on the device.
+    ("memories", Some("private")),
+    ("chat", Some("private")),
+    // Settings → Access from the browser (the devices, the QR code that lets in, the remote
+    // screen's own switches) and Home Assistant's linking QR code.
+    ("panel", Some("code")),
+    ("setup", Some("code")),
+    // Home Assistant's link (Configure, Repair, Unlink) and its choices: in front of it.
+    ("ha", Some("ha_setup")),
+    ("ha-pick", Some("ha_setup")),
+    // The first start: finding Home Assistant restarts the body with it.
+    ("welcome", Some("setup")),
+    ("find-ha", Some("setup")),
+    // What runs on the device is chosen in front of it.
+    ("update", Some("update")),
+    ("mirror", Some("mirror")),
+];
+
+/// Why `page` must not be sent or touched (None: it may). A page not in [`REMOTE_PAGES`] is
+/// hidden.
+pub(crate) fn remote_page(page: &str) -> Option<&'static str> {
+    match REMOTE_PAGES.iter().find(|(p, _)| *p == page) {
+        Some((_, why)) => *why,
+        None => Some("unclassified"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every page companion.slint draws, by the names it compares the page with.
+    fn slint_pages() -> std::collections::BTreeSet<String> {
+        let src = include_str!("../../../../spike-ui/ui/companion.slint");
+        let mut pages = std::collections::BTreeSet::new();
+        for pat in ["page == \"", "page = \""] {
+            for (i, _) in src.match_indices(pat) {
+                let rest = &src[i + pat.len()..];
+                if let Some(end) = rest.find('"') {
+                    pages.insert(rest[..end].to_string());
+                }
+            }
+        }
+        pages
+    }
+
+    #[test]
+    fn every_page_is_classified_for_the_remote_screen() {
+        let pages = slint_pages();
+        assert!(pages.len() > 20, "{pages:?}");
+        let missing: Vec<_> = pages
+            .iter()
+            .filter(|p| !REMOTE_PAGES.iter().any(|(q, _)| q == p))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "pages not classified in REMOTE_PAGES: {missing:?}"
+        );
+        let stale: Vec<_> = REMOTE_PAGES
+            .iter()
+            .filter(|(p, _)| !pages.contains(*p))
+            .map(|(p, _)| p)
+            .collect();
+        assert!(stale.is_empty(), "no such page any more: {stale:?}");
+    }
+
+    #[test]
+    fn the_pages_shown_and_hidden() {
+        for p in ["home", "board", "settings", "timers"] {
+            assert_eq!(remote_page(p), None, "{p}");
+        }
+        for (p, why) in [
+            ("update", "update"),
+            ("panel", "code"),
+            ("ha", "ha_setup"),
+            ("camera", "camera"),
+            ("chat", "private"),
+            ("a-page-added-later", "unclassified"),
+        ] {
+            assert_eq!(remote_page(p), Some(why), "{p}");
+        }
+    }
 }
