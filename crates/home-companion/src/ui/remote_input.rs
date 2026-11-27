@@ -9,6 +9,7 @@
 //! - a real touch that starts on the sign «Controlled by …» never reaches the screen under it
 //!   (Home Assistant's view included): it ends the session, and the rest of that touch is eaten;
 //! - each source keeps its own pressed state: an Up is dispatched only after that source's Down;
+//!   a remote Down while the remote's press is held is dropped;
 //! - a remote touch is dispatched only if the session that sent it is still on and the screen
 //!   may be touched at that moment ([`Arbiter::remote`]'s `allowed`, checked at dispatch time);
 //! - when the session ends with a remote press held, an Up is made for it ([`Arbiter::idle`]).
@@ -92,17 +93,13 @@ impl Arbiter {
             return if !allowed { self.idle() } else { Vec::new() };
         }
         match ev.kind {
+            // A Down while the remote's press is held: dropped (a browser never sends it). Made
+            // into Up + Down it would be a whole tap, and a batch of them could answer a
+            // question its own first tap opened.
+            TouchKind::Down if self.remote_held.is_some() => Vec::new(),
             TouchKind::Down => {
-                let mut out = Vec::new();
-                if let Some(held) = self.remote_held.take() {
-                    out.push(Out::Touch(TouchEvent {
-                        kind: TouchKind::Up,
-                        ..held
-                    }));
-                }
                 self.remote_held = Some(ev);
-                out.push(Out::Touch(ev));
-                out
+                vec![Out::Touch(ev)]
             }
             TouchKind::Move => match &mut self.remote_held {
                 Some(h) => {
@@ -132,6 +129,29 @@ impl Arbiter {
 
     pub fn remote_held(&self) -> bool {
         self.remote_held.is_some()
+    }
+
+    /// One round of the remote's touches: takes them from `next` (each with its `allowed`,
+    /// as for [`Arbiter::remote`]) until what was taken lifts a press. Returns what to
+    /// dispatch and whether a press was lifted (a tap: the loop then waits before the next
+    /// round). What `next` still holds waits for a later round.
+    pub fn remote_round(
+        &mut self,
+        mut next: impl FnMut() -> Option<(TouchEvent, bool)>,
+        now: Instant,
+    ) -> (Vec<Out>, bool) {
+        let mut outs = Vec::new();
+        while let Some((ev, allowed)) = next() {
+            let got = self.remote(ev, allowed, now);
+            let lifted = got
+                .iter()
+                .any(|o| matches!(o, Out::Touch(e) if e.kind == TouchKind::Up));
+            outs.extend(got);
+            if lifted {
+                return (outs, true);
+            }
+        }
+        (outs, false)
     }
 }
 
@@ -227,6 +247,60 @@ mod tests {
             touches(&a.real(t(TouchKind::Down, 7.0), false, now)),
             [(TouchKind::Down, 7.0)]
         );
+    }
+
+    #[test]
+    fn downs_in_a_row_are_one_press() {
+        let mut a = Arbiter::default();
+        let now = Instant::now();
+        let mut o = Vec::new();
+        for x in [1.0, 2.0, 3.0] {
+            o.extend(a.remote(t(TouchKind::Down, x), true, now));
+        }
+        assert_eq!(touches(&o), [(TouchKind::Down, 1.0)]);
+        // Its own Up lifts it where it was pressed.
+        assert_eq!(
+            touches(&a.remote(t(TouchKind::Up, 1.0), true, now)),
+            [(TouchKind::Up, 1.0)]
+        );
+    }
+
+    #[test]
+    fn a_round_ends_at_the_first_tap() {
+        let mut a = Arbiter::default();
+        let now = Instant::now();
+        // A tile, then twice where «Yes» would appear, in one batch.
+        let mut queue: std::collections::VecDeque<_> = [
+            t(TouchKind::Down, 1.0),
+            t(TouchKind::Up, 1.0),
+            t(TouchKind::Down, 2.0),
+            t(TouchKind::Up, 2.0),
+            t(TouchKind::Down, 2.0),
+            t(TouchKind::Up, 2.0),
+        ]
+        .into();
+        let (o, tapped) = a.remote_round(|| queue.pop_front().map(|e| (e, true)), now);
+        assert!(tapped);
+        assert_eq!(touches(&o), [(TouchKind::Down, 1.0), (TouchKind::Up, 1.0)]);
+        assert_eq!(queue.len(), 4, "the rest waits for a later round");
+        // Downs only: one press, no tap, nothing left behind it.
+        let mut a = Arbiter::default();
+        let mut queue: std::collections::VecDeque<_> = [
+            t(TouchKind::Down, 1.0),
+            t(TouchKind::Down, 2.0),
+            t(TouchKind::Down, 2.0),
+        ]
+        .into();
+        let (o, tapped) = a.remote_round(|| queue.pop_front().map(|e| (e, true)), now);
+        assert!(!tapped);
+        assert_eq!(touches(&o), [(TouchKind::Down, 1.0)]);
+        // A session that ended mid-press: the release made for it ends the round too.
+        let mut queue: std::collections::VecDeque<_> =
+            [t(TouchKind::Move, 4.0), t(TouchKind::Down, 5.0)].into();
+        let (o, tapped) = a.remote_round(|| queue.pop_front().map(|e| (e, false)), now);
+        assert!(tapped);
+        assert_eq!(touches(&o), [(TouchKind::Up, 1.0)]);
+        assert_eq!(queue.len(), 1);
     }
 
     #[test]

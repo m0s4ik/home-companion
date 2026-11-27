@@ -405,16 +405,22 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
                 // the tap opens (a page, a dialog) is on screen and known to `remote_accepts`
                 // before the next remote event is judged, so a batch cannot tap through a
                 // private page that its own first tap opened. The rest waits in the channel.
+                // A round ends at whatever lifts a press, the arbiter's own release included.
                 if remote_gap.get().is_none_or(|t| now >= t) {
-                    while let Ok((epoch, ev)) = remote_rx.try_recv() {
-                        // Checked now, not when it was sent: the session may have ended
-                        // meanwhile or the screen gone private.
-                        let up = ev.kind == TouchKind::Up;
-                        outs.extend(arb.remote(ev, ui.remote_accepts(epoch), now));
-                        if up {
-                            remote_gap.set(Some(now + REMOTE_TAP_GAP));
-                            break;
-                        }
+                    let (got, tapped) = arb.remote_round(
+                        || {
+                            // Checked now, not when it was sent: the session may have ended
+                            // meanwhile or the screen gone private.
+                            remote_rx
+                                .try_recv()
+                                .ok()
+                                .map(|(epoch, ev)| (ev, ui.remote_accepts(epoch)))
+                        },
+                        now,
+                    );
+                    outs.extend(got);
+                    if tapped {
+                        remote_gap.set(Some(now + REMOTE_TAP_GAP));
                     }
                 }
                 if !ui.remote_on_now() {
