@@ -567,7 +567,8 @@ impl<S: Screen> Ui<S> {
             return;
         };
         let class = st.as_ref().map_or("", |s| s.device_class.as_str());
-        if board::needs_confirm(&tile, class) {
+        let ha_name = st.as_ref().map_or("", |s| s.name.as_str());
+        if board::needs_confirm(&tile, class, ha_name) {
             self.board_ask(place, index, call);
         } else {
             self.board_send(call);
@@ -588,7 +589,8 @@ impl<S: Screen> Ui<S> {
             return;
         };
         let class = st.as_ref().map_or("", |s| s.device_class.as_str());
-        if board::needs_confirm(&tile, class) {
+        let ha_name = st.as_ref().map_or("", |s| s.name.as_str());
+        if board::needs_confirm(&tile, class, ha_name) {
             // Asked once, for where the finger lifted; nothing moves while it drags.
             if done {
                 self.board_ask(place, index, call);
@@ -642,6 +644,16 @@ impl<S: Screen> Ui<S> {
             self.send(UiEvent::Failed);
             return;
         }
+        // Bound to what is asked: a Yes later closes what the question said it closes.
+        let call = {
+            let t = self.tile_board.borrow();
+            let state = t
+                .states
+                .by_id
+                .get(&call.entity_id)
+                .map_or("", |s| s.state.as_str());
+            board::bound_to_state(call, state)
+        };
         let ask = {
             let t = self.tile_board.borrow();
             let l = self.locale.borrow();

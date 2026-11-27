@@ -183,13 +183,6 @@ fn canvas_json(
         .enumerate()
         .map(|(i, (t, (v, d)))| {
             let class = class_of(&t.entity_id, host, catalog);
-            let default = board::needs_confirm(
-                &Tile {
-                    confirm: None,
-                    ..t.clone()
-                },
-                &class,
-            );
             let entity_name = catalog
                 .iter()
                 .find(|e| e.id == t.entity_id)
@@ -197,6 +190,14 @@ fn canvas_json(
                 .or_else(|| states.by_id.get(&t.entity_id).map(|s| s.name.clone()))
                 .filter(|n| !n.is_empty())
                 .unwrap_or_default();
+            let default = board::needs_confirm(
+                &Tile {
+                    confirm: None,
+                    ..t.clone()
+                },
+                &class,
+                &entity_name,
+            );
             json!({
                 "index": i,
                 "tile": t,
@@ -639,7 +640,7 @@ pub fn handle(
                         "entity_id": id, "name": f.hit.name, "detail": f.hit.detail,
                         "kind": kind_key(kind), "icon": icon,
                         "path": icons::builtin(icon).unwrap_or(""),
-                        "confirm": board::needs_confirm(&tile, &class),
+                        "confirm": board::needs_confirm(&tile, &class, &f.hit.name),
                         "allowed": allowed_json(&allowed),
                     }));
                 }

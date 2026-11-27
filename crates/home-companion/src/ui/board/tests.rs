@@ -444,17 +444,83 @@ fn on_states_and_confirmations() {
         assert_eq!(is_on(d, s), on, "{d} {s}");
     }
     let mut c = tile(TileKind::Button, "cover.living_room", 0, 0, 1, 1);
-    assert!(needs_confirm(&c, "shutter"));
+    assert!(needs_confirm(&c, "shutter", ""));
     c.confirm = Some(false);
-    assert!(!needs_confirm(&c, "shutter"));
+    assert!(!needs_confirm(&c, "shutter", ""));
     assert!(needs_confirm(
         &tile(TileKind::Button, "valve.water", 0, 0, 1, 1),
+        "",
         ""
     ));
     let mut l = tile(TileKind::Button, "light.a", 0, 0, 1, 1);
-    assert!(!needs_confirm(&l, ""));
+    assert!(!needs_confirm(&l, "", ""));
     l.confirm = Some(true);
-    assert!(needs_confirm(&l, ""));
+    assert!(needs_confirm(&l, "", ""));
+    // A relay Home Assistant calls with a shutter word, on a tile with no name of its own:
+    // asks, as the voice does.
+    let relay = tile(TileKind::Button, "switch.relay_2", 0, 0, 1, 1);
+    assert!(needs_confirm(&relay, "", "Tapparella cucina"));
+    assert!(needs_confirm(&relay, "", "Kitchen shutter"));
+    assert!(!needs_confirm(&relay, "", "Kitchen lamp"));
+}
+
+#[test]
+fn advanced_stays_on_the_tiles_own_entity() {
+    use TileKind::*;
+    assert_eq!(
+        advanced_problem("script.good_night", "script.turn_off"),
+        None
+    );
+    assert_eq!(
+        advanced_problem("script.good_night", "script.good_night"),
+        None
+    );
+    assert_eq!(advanced_problem("light.a", "homeassistant.turn_on"), None);
+    assert_eq!(advanced_problem("light.a", "light.turn_on"), None);
+    // Another domain, another script: refused.
+    assert!(advanced_problem("light.a", "script.open_gate").is_some());
+    assert!(advanced_problem("script.good_night", "script.open_gate").is_some());
+    assert!(advanced_problem("light.a", "notify.notify").is_some());
+    let mut t = tile(Button, "light.a", 0, 0, 1, 1);
+    t.service = Some("script.open_gate".into());
+    assert_eq!(action_for(&t, Some(&st("off"))), None);
+    let (b, why) = validate(board(vec![page(vec![t])], vec![]), &[]);
+    assert!(b.pages[0].tiles.is_empty(), "{why:?}");
+    assert_eq!(why.len(), 1, "{why:?}");
+}
+
+#[test]
+fn a_question_binds_the_action_it_asked() {
+    use TileKind::*;
+    let shutter = tile(Button, "cover.living_room", 0, 0, 1, 1);
+    let asked =
+        |t: &Tile, state: &str| bound_to_state(action_for(t, Some(&st(state))).unwrap(), state);
+    // «Close …?» closes, also if the wall switch closed it meanwhile (no toggle to open).
+    let c = asked(&shutter, "open");
+    assert_eq!(
+        (c.domain.as_str(), c.service.as_str()),
+        ("cover", "close_cover")
+    );
+    assert_eq!(ask_key(&c, "open"), "board_ask_close");
+    assert_eq!(ask_key(&c, "closed"), "board_ask_close");
+    let c = asked(&shutter, "closed");
+    assert_eq!(c.service, "open_cover");
+    assert_eq!(ask_key(&c, "closed"), "board_ask_open");
+    let valve = tile(Button, "valve.garden", 0, 0, 1, 1);
+    assert_eq!(asked(&valve, "opening").service, "close_valve");
+    assert_eq!(asked(&valve, "closed").service, "open_valve");
+    for c in [asked(&shutter, "open"), asked(&valve, "closed")] {
+        assert!(
+            allowed(&c.domain, &c.service),
+            "{c:?} is in the closed list"
+        );
+    }
+    // Anything else is left as it is.
+    let light = tile(Button, "light.lamp", 0, 0, 1, 1);
+    assert_eq!(asked(&light, "on").service, "toggle");
+    let bar = tile(Level, "cover.living_room", 0, 0, 2, 1);
+    let set = set_level(&bar, Some(&st("open")), 40).unwrap();
+    assert_eq!(bound_to_state(set.clone(), "open"), set);
 }
 
 #[test]

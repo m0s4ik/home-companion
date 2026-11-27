@@ -9853,9 +9853,11 @@ mod tests {
         ui.board_answer(true, "screen");
         assert!(!w.get_ask_shown());
         let calls = sent(&cmds);
+        // What was asked ("Close …?"), not a toggle: a Yes after a wall switch closed it
+        // does not open it.
         assert_eq!(
             (calls[0].1.as_str(), calls[0].2.as_str()),
-            ("cover.toggle", "cover.living_room")
+            ("cover.close_cover", "cover.living_room")
         );
         // A level: the first value at once, the next within 300 ms waits, the finger's lift goes.
         ui.board_level(Place::Page(0), 0, 40, false);

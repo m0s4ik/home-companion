@@ -321,6 +321,11 @@ pub fn check_call(
     {
         return Err(format!("{named} is not allowed"));
     }
+    if !crate::ui::board::allowed(domain, service)
+        && let Some(why) = crate::ui::board::advanced_problem(entity_id, &named)
+    {
+        return Err(why);
+    }
     if !data.is_object() {
         return Err("service data is not an object".into());
     }
@@ -1626,6 +1631,23 @@ mod tests {
         );
         assert!(ok("lock", "unlock", "lock.front").is_err());
         assert!(ok("homeassistant", "toggle", "lock.front").is_err());
+        let mut sneaky = board_want();
+        sneaky
+            .advanced
+            .push(("light.living_room".into(), "script.open_gate".into()));
+        assert!(
+            check_call(
+                &sneaky,
+                &s,
+                "script",
+                "open_gate",
+                "light.living_room",
+                &obj
+            )
+            .is_err(),
+            "another script by Advanced: its gate was never looked at"
+        );
+        assert_eq!(ok("cover", "close_cover", "cover.living_room"), Ok(()));
         assert!(check_call(&w, &s, "light", "turn_on", "light.living_room", &json!([1])).is_err());
         for key in crate::ui::board::TARGET_KEYS {
             let redirect = json!({ key: "lock.front", "variables": {} });

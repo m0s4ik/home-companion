@@ -384,6 +384,12 @@ fn tile_problem(t: &Tile, catalog: &[Entity], gates: &safety::SafetyCfg) -> Opti
         if gates.never_domains.iter().any(|n| n == d) {
             return Some(format!("service {s} is never called"));
         }
+        // Only a button keeps it (validate drops the rest's).
+        if t.kind == TileKind::Button
+            && let Some(why) = advanced_problem(&t.entity_id, s)
+        {
+            return Some(why);
+        }
     }
     if t.service_data
         .as_ref()
@@ -571,7 +577,7 @@ impl Call {
 }
 
 /// The services a tile may call without "Advanced": the domain's actions and the levels.
-pub const SERVICES: [&str; 14] = [
+pub const SERVICES: [&str; 18] = [
     "homeassistant.toggle",
     "scene.turn_on",
     "script.turn_on",
@@ -586,6 +592,11 @@ pub const SERVICES: [&str; 14] = [
     "number.set_value",
     "input_number.set_value",
     "fan.set_percentage",
+    // What a cover's or a valve's question binds to ([`bound_to_state`]).
+    "cover.open_cover",
+    "cover.close_cover",
+    "valve.open_valve",
+    "valve.close_valve",
 ];
 
 /// A service of the closed list.
@@ -639,7 +650,7 @@ pub fn action_for(tile: &Tile, st: Option<&State>) -> Option<Call> {
             .clone()
             .filter(Value::is_object)
             .unwrap_or_else(|| Value::Object(Default::default()));
-        if data_targets(&data) {
+        if data_targets(&data) || advanced_problem(&tile.entity_id, s).is_some() {
             return None;
         }
         return Some(Call::new(s, &tile.entity_id, data));
@@ -710,13 +721,60 @@ pub fn is_on(domain: &str, state: &str) -> bool {
 }
 
 /// A yes before the tile's action: the tile's choice, else the gates' default (covers and
-/// valves, and the switches the gates read as a shutter).
-pub fn needs_confirm(tile: &Tile, device_class: &str) -> bool {
+/// valves, and the switches the gates read as a shutter, by the tile's name or Home
+/// Assistant's, `ha_name`, as the voice reads it).
+pub fn needs_confirm(tile: &Tile, device_class: &str, ha_name: &str) -> bool {
     tile.confirm.unwrap_or_else(|| {
         let g = safety::SafetyCfg::default();
         g.confirm_domain(tile.domain())
-            || g.entity_gate(&tile.entity_id, device_class, &tile.name) == safety::Gate::Confirm
+            || g.entity_gate(
+                &tile.entity_id,
+                device_class,
+                &format!("{} {ha_name}", tile.name),
+            ) == safety::Gate::Confirm
     })
+}
+
+/// The call a question binds to: for a cover or a valve the action that was asked ("Close
+/// …?" closes), not a toggle, so a Yes after the state changed (someone used the wall switch
+/// meanwhile) does not do the opposite. `state` is the one the question was asked from, as
+/// [`ask_key`] reads it.
+pub fn bound_to_state(call: Call, state: &str) -> Call {
+    let open = matches!(state, "open" | "opening");
+    let service = match (call.domain.as_str(), call.service.as_str()) {
+        ("cover", "toggle") if open => "close_cover",
+        ("cover", "toggle") => "open_cover",
+        ("valve", "toggle") if open => "close_valve",
+        ("valve", "toggle") => "open_valve",
+        _ => return call,
+    };
+    Call {
+        service: service.into(),
+        ..call
+    }
+}
+
+/// Why a tile's "Advanced" service cannot be (None: it can): only a service of the tile's own
+/// domain or of `homeassistant` (both act on the tile's entity, whose gate was looked at), and
+/// of `script` only turning the tile's script on, off or over: `script.<name>` runs that
+/// script, whatever the target, and its gate was never looked at.
+pub fn advanced_problem(entity_id: &str, service: &str) -> Option<String> {
+    let Some((d, s)) = split_service(service) else {
+        return Some(format!("service {service:?} is not domain.service"));
+    };
+    let own = entity_id.split('.').next().unwrap_or("");
+    if d != own && d != "homeassistant" {
+        return Some(format!(
+            "service {service} is not of the tile's domain ({own})"
+        ));
+    }
+    if d == "script"
+        && !matches!(s, "turn_on" | "turn_off" | "toggle")
+        && format!("script.{s}") != entity_id
+    {
+        return Some(format!("service {service} runs another script"));
+    }
+    None
 }
 
 /// The locale key of a tile's question ("Close {name}?"): what the call does, from the state
@@ -737,6 +795,8 @@ pub fn ask_key(call: &Call, state: &str) -> &'static str {
                 _ => "board_ask_on",
             }
         }
+        (_, "close_cover" | "close_valve") => "board_ask_close",
+        (_, "open_cover" | "open_valve") => "board_ask_open",
         (_, "media_play_pause") if state == "playing" => "board_ask_pause",
         (_, "media_play_pause") => "board_ask_play",
         (_, "turn_on") if call.domain == "light" => "board_ask_on",
@@ -1231,7 +1291,7 @@ pub fn view(
                 level,
                 curve,
                 tappable,
-                confirm: needs_confirm(t, class),
+                confirm: needs_confirm(t, class, st.map_or("", |s| s.name.as_str())),
             }
         })
         .collect()
