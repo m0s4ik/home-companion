@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Andrea Mattera
 
-//! The body's side of the Yes/No question and of the reflex gate, row by row (C01-C26): each
+//! The body's side of the Yes/No question and of the reflex gate, row by row (C01-C27): each
 //! test a sequence seen for real (the model's ways of asking, the answering channels, the
 //! timings), the core in-process against the fake Home Assistant, the brain's events injected
 //! as the screen forwards them, and the brain's port recorded. C24 is in src/ui/house.rs.
@@ -1398,4 +1398,58 @@ fn c26_a_run_quiet_after_its_question_is_over_without_a_wait() {
         .filter(|t| t["id"] == 1)
         .collect();
     assert_eq!(ends, vec![json!({"cmd": "turn.end", "id": 1, "said": ""})]);
+}
+
+/// Home Assistant's run fails at once with `stt-provider-missing` (an integration reloading
+/// after the setup wrote the agent's instructions).
+fn provider_missing() -> Vec<Step> {
+    vec![
+        Step::WaitDetection { timeout_ms: 9000 },
+        Step::SendError {
+            text: "No speech-to-text provider".into(),
+            code: "stt-provider-missing".into(),
+        },
+    ]
+}
+
+#[test]
+fn c27_a_missing_speech_to_text_is_tried_once_more_with_the_same_audio() {
+    let r = run_setup(
+        Setup::new(
+            sc(cat(vec![
+                hello(),
+                provider_missing(),
+                hear("che ore sono", 800),
+                answer("Sono le cinque."),
+                bye(1500),
+            ])),
+            vec![TALK_AT_HOME],
+        )
+        .mic(vec![Utt::says("")]),
+    );
+    assert_clean(&r);
+    assert_eq!(r.outcomes(), vec![pair("talk", "played")]);
+    assert_eq!(r.record.run_pipelines.len(), 2);
+    assert_eq!(r.answers(), vec!["Sono le cinque."]);
+    assert_eq!(r.cues("error"), 0, "{:?}", r.summary.cues);
+}
+
+#[test]
+fn c27_a_missing_speech_to_text_is_tried_only_once() {
+    let r = run_setup(
+        Setup::new(
+            sc(cat(vec![
+                hello(),
+                provider_missing(),
+                provider_missing(),
+                bye(1500),
+            ])),
+            vec![TALK_AT_HOME],
+        )
+        .mic(vec![Utt::says("")]),
+    );
+    assert!(r.record.failures.is_empty(), "{:?}", r.record.failures);
+    assert_eq!(r.record.run_pipelines.len(), 2);
+    assert_eq!(r.cues("error"), 1, "{:?}", r.summary.cues);
+    assert!(r.views.contains(&Phase::Error), "{:?}", r.views);
 }
