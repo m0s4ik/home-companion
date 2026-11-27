@@ -411,7 +411,12 @@ fn go<S: Screen>(
         Ok(a) => a,
         Err(e) => {
             log::error!(event = "audio_error", error = e.to_string().as_str(); "audio: {e}");
-            let code = home_companion::audio_down::exit_for(&e);
+            // Stopped while the start was being tried again: not a failure (exit 6 would reboot).
+            let code =
+                home_companion::audio_down::exit_after_failed_start(&e, signals::stop_requested());
+            if code == exit::OK {
+                return ExitCode::SUCCESS;
+            }
             // The service reboots once for exit 6 (crate::audio_down). Already rebooted for
             // it: first a minute of the screen saying that the audio is not answering.
             let state_dir = cfg.state_dir();

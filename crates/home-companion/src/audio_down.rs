@@ -46,6 +46,17 @@ pub fn exit_for(e: &audio::Error) -> u8 {
     }
 }
 
+/// The exit code once the start gave up: 0 when a stop was requested meanwhile (a `systemctl
+/// stop`, the restart of an install, a shutdown during the retries: never a reboot for that),
+/// else [`exit_for`].
+pub fn exit_after_failed_start(e: &audio::Error, stopped: bool) -> u8 {
+    if stopped {
+        crate::exit::OK
+    } else {
+        exit_for(e)
+    }
+}
+
 /// Calls `start` up to `tries` times, `sleep(wait)` between two, while `stop()` is false. A
 /// configuration the audio cannot do (`Unsupported`, `Feature`) is not tried again.
 pub fn start_with_retries<T>(
@@ -155,6 +166,17 @@ mod tests {
             source: std::io::Error::other("2 channels refused"),
         };
         assert_eq!(exit_for(&no_errno), exit::SUBSYSTEM);
+    }
+
+    #[test]
+    fn a_stop_during_the_tries_is_no_failure() {
+        let e = os(libc::ETIMEDOUT);
+        assert_eq!(exit_after_failed_start(&e, false), crate::exit::AUDIO);
+        assert_eq!(exit_after_failed_start(&e, true), crate::exit::OK);
+        assert_eq!(
+            exit_after_failed_start(&os(libc::ENOENT), true),
+            crate::exit::OK
+        );
     }
 
     #[test]
