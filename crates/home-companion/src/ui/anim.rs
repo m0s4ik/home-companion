@@ -73,27 +73,30 @@ impl Timing {
         Duration::from_secs_f32(self.frames as f32 / self.fps)
     }
 
-    /// The frame `elapsed` after the start (not wrapped).
+    /// The frame `elapsed` after the start (not wrapped). In `f64`: an `f32` of seconds steps
+    /// by 1/16 s after a few days in the same mode.
     fn at(&self, elapsed: Duration) -> u32 {
-        (elapsed.as_secs_f32() * self.fps) as u32
+        (elapsed.as_secs_f64() * self.fps as f64) as u32
     }
 }
 
 /// The frame of a loop `elapsed` after it started, its pause on the last frame included.
+/// Reduced in `f64` and integers: a mode may last for weeks (offline with Home Assistant away).
 fn looped_frame(t: &Timing, elapsed: Duration) -> u32 {
-    if t.frames == 0 {
+    if t.frames == 0 || t.fps <= 0.0 {
         return 0;
     }
-    let pause = t.pause.max(0.0);
+    let fps = t.fps as f64;
+    let pause = t.pause.max(0.0) as f64;
     if pause == 0.0 {
-        return t.at(elapsed) % t.frames;
+        return ((elapsed.as_secs_f64() * fps) as u64 % t.frames as u64) as u32;
     }
-    let length = t.frames as f32 / t.fps;
-    let into = elapsed.as_secs_f32() % (length + pause);
+    let length = t.frames as f64 / fps;
+    let into = elapsed.as_secs_f64() % (length + pause);
     if into >= length {
         t.frames - 1
     } else {
-        ((into * t.fps) as u32).min(t.frames - 1)
+        ((into * fps) as u32).min(t.frames - 1)
     }
 }
 
@@ -1080,6 +1083,23 @@ mod tests {
         // Without a pause: a plain loop, as before.
         let plain = Timing { pause: 0.0, ..t };
         assert_eq!(looped_frame(&plain, s(5.5)), 8);
+    }
+
+    #[test]
+    fn a_loop_keeps_its_frames_after_a_month() {
+        // 2.5625 s into a round, 30 days on: frame 41 (an f32 of seconds gives 40, its step
+        // there is 1/4 s). Both rounds (5 s + 10 s, and 5 s) divide 30 days.
+        let month = Duration::from_secs(30 * 24 * 3600);
+        let into = month + Duration::from_micros(2_562_500);
+        let t = Timing {
+            frames: 80,
+            fps: 16.0,
+            pause: 10.0,
+        };
+        assert_eq!(looped_frame(&t, into), 41);
+        let plain = Timing { pause: 0.0, ..t };
+        assert_eq!(looped_frame(&plain, into), 41);
+        assert_eq!(t.at(Duration::from_micros(2_562_500)), 41);
     }
 
     const SETTINGS_CLIPS: [&str; 3] = ["settings_in", "settings_hold", "settings_out"];
