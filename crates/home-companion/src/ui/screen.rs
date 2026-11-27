@@ -3842,7 +3842,7 @@ impl<S: Screen> Ui<S> {
             } else {
                 levels.level(dim_home, awake)
             };
-            (show, (m.seq.moving(awake), level))
+            (show, (m.seq.moving_now(now, awake), level))
         };
         let (moving, level) = moving;
         if self.opts.demo.is_none() {

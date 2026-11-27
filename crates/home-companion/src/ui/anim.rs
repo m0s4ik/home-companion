@@ -100,6 +100,22 @@ fn looped_frame(t: &Timing, elapsed: Duration) -> u32 {
     }
 }
 
+/// How much of a loop's pause is left `elapsed` after it started (None: it is playing, or it
+/// has no pause).
+fn loop_rest(t: &Timing, elapsed: Duration) -> Option<Duration> {
+    let pause = t.pause.max(0.0) as f64;
+    if t.frames == 0 || t.fps <= 0.0 || pause == 0.0 {
+        return None;
+    }
+    let length = t.frames as f64 / t.fps as f64;
+    let into = elapsed.as_secs_f64() % (length + pause);
+    (into >= length).then(|| Duration::from_secs_f64(length + pause - into))
+}
+
+/// A loop resting in its pause stops the frame timer while more than this is left: the screen's
+/// clock (once a second) starts it again in time for the next round's first frame.
+pub const REST_WAKE: Duration = Duration::from_millis(1250);
+
 /// What the screen shows of the character.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Show {
@@ -754,6 +770,20 @@ impl Sequencer {
         }
     }
 
+    /// [`Self::moving`] at `now`: false also while a loop rests in its pause (its last frame
+    /// stays, nothing to redraw) with more than [`REST_WAKE`] of it left.
+    pub fn moving_now(&self, now: Instant, awake: bool) -> bool {
+        let name = match self.mode {
+            Mode::Loading => "loading",
+            Mode::Loop(name) => name,
+            _ => return self.moving(awake),
+        };
+        let resting = self.clips.get(name).is_some_and(|t| {
+            loop_rest(t, now.saturating_duration_since(self.since)).is_some_and(|r| r > REST_WAKE)
+        });
+        !resting && self.moving(awake)
+    }
+
     /// A loop; with a `pause` (Alfred's sip in the deck chair) the clip plays, then its last
     /// frame stays that many seconds before the next round.
     fn looped(&self, name: &'static str, now: Instant) -> Show {
@@ -1100,6 +1130,44 @@ mod tests {
         let plain = Timing { pause: 0.0, ..t };
         assert_eq!(looped_frame(&plain, into), 41);
         assert_eq!(t.at(Duration::from_micros(2_562_500)), 41);
+    }
+
+    #[test]
+    fn a_loop_resting_in_its_pause_stops_the_frame_timer() {
+        let t0 = Instant::now();
+        let mut s = Sequencer::new(t0);
+        s.add(
+            "offline",
+            Timing {
+                frames: 80,
+                fps: 16.0,
+                pause: 10.0,
+            },
+        );
+        s.set_mode(Mode::Loop("offline"), t0);
+        let at = |secs: f64| t0 + Duration::from_secs_f64(secs);
+        // The clip plays (5 s): frames to draw.
+        assert!(s.moving_now(at(2.0), true));
+        // Resting on its last frame: nothing to draw...
+        assert!(!s.moving_now(at(5.1), true));
+        assert_eq!(s.show(at(5.1), true), frame("offline", 79));
+        assert!(!s.moving_now(at(13.5), true));
+        // ...until the last REST_WAKE of the pause, so the clock's tick (once a second) starts
+        // the timer before the next round's first frame.
+        assert!(s.moving_now(at(14.0), true));
+        assert!(s.moving_now(at(15.1), true));
+        assert_eq!(s.show(at(15.1), true), frame("offline", 1));
+        // A loop without a pause always moves.
+        s.add(
+            "thinking",
+            Timing {
+                frames: 4,
+                fps: 16.0,
+                pause: 0.0,
+            },
+        );
+        s.set_mode(Mode::Loop("thinking"), t0);
+        assert!(s.moving_now(at(100.0), true));
     }
 
     const SETTINGS_CLIPS: [&str; 3] = ["settings_in", "settings_hold", "settings_out"];
