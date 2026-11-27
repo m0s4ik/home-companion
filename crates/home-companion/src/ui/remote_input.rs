@@ -20,6 +20,9 @@ use super::touch::{TouchEvent, TouchKind};
 
 /// The remote waits this long after the real finger lifts.
 pub const REAL_WINS_FOR: Duration = Duration::from_millis(500);
+/// A remote press with nothing from the remote for this long is released where it is: its Up
+/// was lost (a batch the panel refused, the network), and the next click's Down would be dropped.
+pub const REMOTE_LONGEST_PRESS: Duration = Duration::from_secs(10);
 
 /// What the loop does.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -38,6 +41,8 @@ pub struct Arbiter {
     on_sign: bool,
     /// Where the remote's press is, while held.
     remote_held: Option<TouchEvent>,
+    /// The remote's last touch of that press.
+    remote_seen: Option<Instant>,
 }
 
 impl Arbiter {
@@ -99,12 +104,14 @@ impl Arbiter {
             TouchKind::Down if self.remote_held.is_some() => Vec::new(),
             TouchKind::Down => {
                 self.remote_held = Some(ev);
+                self.remote_seen = Some(now);
                 vec![Out::Touch(ev)]
             }
             TouchKind::Move => match &mut self.remote_held {
                 Some(h) => {
                     h.x = ev.x;
                     h.y = ev.y;
+                    self.remote_seen = Some(now);
                     vec![Out::Touch(ev)]
                 }
                 None => Vec::new(),
@@ -124,6 +131,19 @@ impl Arbiter {
                 ..h
             })],
             _ => Vec::new(),
+        }
+    }
+
+    /// A remote press with no touch of the remote for [`REMOTE_LONGEST_PRESS`]: released where
+    /// it is (as [`Arbiter::idle`]).
+    pub fn release_stale(&mut self, now: Instant) -> Vec<Out> {
+        let stale = self
+            .remote_seen
+            .is_some_and(|t| now.saturating_duration_since(t) >= REMOTE_LONGEST_PRESS);
+        if self.remote_held.is_some() && stale {
+            self.idle()
+        } else {
+            Vec::new()
         }
     }
 
@@ -262,6 +282,31 @@ mod tests {
         assert_eq!(
             touches(&a.remote(t(TouchKind::Up, 1.0), true, now)),
             [(TouchKind::Up, 1.0)]
+        );
+    }
+
+    #[test]
+    fn a_lost_up_does_not_eat_the_next_click() {
+        let mut a = Arbiter::default();
+        let now = Instant::now();
+        a.remote(t(TouchKind::Down, 1.0), true, now);
+        // A drag keeps its press however long it lasts, as long as it moves.
+        let later = now + REMOTE_LONGEST_PRESS - Duration::from_secs(1);
+        a.remote(t(TouchKind::Move, 2.0), true, later);
+        assert!(a.release_stale(now + REMOTE_LONGEST_PRESS).is_empty());
+        // Then nothing more from the remote (its Up was lost): released where it was.
+        let stale = later + REMOTE_LONGEST_PRESS;
+        assert_eq!(touches(&a.release_stale(stale)), [(TouchKind::Up, 2.0)]);
+        assert!(!a.remote_held());
+        assert!(a.release_stale(stale).is_empty());
+        // The next click is a whole click.
+        assert_eq!(
+            touches(&a.remote(t(TouchKind::Down, 5.0), true, stale)),
+            [(TouchKind::Down, 5.0)]
+        );
+        assert_eq!(
+            touches(&a.remote(t(TouchKind::Up, 5.0), true, stale)),
+            [(TouchKind::Up, 5.0)]
         );
     }
 
