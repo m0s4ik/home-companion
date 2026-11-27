@@ -374,8 +374,8 @@ body.out .toast { left: 50%; max-width: calc(100vw - 32px); }
 /* A page's header as on the device: the face, the page's name, the time. */
 .bhead { display: flex; align-items: center; gap: calc(var(--u) * 20); height: calc(var(--u) * 88); padding: 0 calc(var(--u) * 6); }
 .bhead img { width: calc(var(--u) * 56); height: calc(var(--u) * 56); border-radius: 50%; background: var(--surface); flex: none; }
-.bhead b { flex: 1; min-width: 0; font-weight: 300; font-size: calc(var(--u) * 34); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.bhead span { font-size: calc(var(--u) * 28); color: var(--text-2); }
+.bhead b { flex: 1; min-width: 0; font-weight: 300; font-size: max(11px, calc(var(--u) * 34)); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bhead span { font-size: max(11px, calc(var(--u) * 28)); color: var(--text-2); }
 .bbody { position: relative; }
 .bcells { position: absolute; inset: 0; display: grid; grid-template-columns: repeat(var(--cols, 4), 1fr); padding: calc(var(--u) * 6); gap: calc(var(--u) * 12); }
 .bframe.r4 .bcells { grid-template-rows: repeat(4, 1fr); }
@@ -396,10 +396,10 @@ body.out .toast { left: 50%; max-width: calc(100vw - 32px); }
 .grid-stack-placeholder > .placeholder-content { background: #d4ab631f; border: 1px dashed var(--accent); border-radius: calc(var(--u) * 20); }
 .bframe .grid-stack-item > .ui-resizable-se { width: 24px; height: 24px; right: 2px; bottom: 2px; background: none; transform: none; cursor: se-resize; }
 .bframe .grid-stack-item > .ui-resizable-se::after { content: ""; position: absolute; right: 5px; bottom: 5px; width: 9px; height: 9px; border-right: 2px solid var(--accent); border-bottom: 2px solid var(--accent); border-radius: 0 0 3px 0; }
-.bt { position: relative; height: 100%; display: flex; flex-direction: column; justify-content: space-between; gap: calc(var(--u) * 6); padding: calc(var(--u) * 18) calc(var(--u) * 20); border-radius: calc(var(--u) * 20); border: 1px solid var(--line); background: var(--surface); color: var(--text); font-family: InterW, system-ui, sans-serif; font-size: calc(var(--u) * 24); line-height: 1.2; overflow: hidden; user-select: none; -webkit-user-select: none; }
+.bt { position: relative; height: 100%; display: flex; flex-direction: column; justify-content: space-between; gap: calc(var(--u) * 6); padding: calc(var(--u) * 18) calc(var(--u) * 20); border-radius: calc(var(--u) * 20); border: 1px solid var(--line); background: var(--surface); color: var(--text); font-family: InterW, system-ui, sans-serif; font-size: max(11px, calc(var(--u) * 24)); line-height: 1.2; overflow: hidden; user-select: none; -webkit-user-select: none; }
 .bt svg.mdi { fill: var(--text-2); width: calc(var(--u) * 40); height: calc(var(--u) * 40); flex: none; }
 .bt .bn { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.bt .bs { display: block; font-size: calc(var(--u) * 20); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bt .bs { display: block; font-size: max(11px, calc(var(--u) * 20)); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bt.s-on { background: var(--accent-deep); border-color: #d4ab6359; }
 .bt.s-on svg.mdi, .bt.s-pending svg.mdi { fill: var(--accent); }
 .bt.s-on .bs { color: var(--accent); }
@@ -411,23 +411,23 @@ body.out .toast { left: 50%; max-width: calc(100vw - 32px); }
 .bt.h2.k-button svg.mdi { width: calc(var(--u) * 96); height: calc(var(--u) * 96); }
 .bt.h2.k-button .bw { max-width: 100%; }
 .bt .btop { display: flex; align-items: center; gap: calc(var(--u) * 10); min-width: 0; }
-.bt.k-sensor .btop { color: var(--text-2); font-size: calc(var(--u) * 22); }
+.bt.k-sensor .btop { color: var(--text-2); font-size: max(11px, calc(var(--u) * 22)); }
 .bt.k-sensor .btop svg.mdi { width: calc(var(--u) * 28); height: calc(var(--u) * 28); }
-.bt.k-sensor.w1 .btop .bn { font-size: calc(var(--u) * 20); }
-.bt .bv { font: 300 calc(var(--u) * 40)/1.1 InterT, InterW, sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: relative; z-index: 1; }
-.bt.k-sensor.w2.h1 .bv, .bt.k-sensor.w4 .bv { font-size: calc(var(--u) * 48); max-width: 55%; }
-.bt.k-sensor.h2 .bv { font-size: calc(var(--u) * 96); }
+.bt.k-sensor.w1 .btop .bn { font-size: max(11px, calc(var(--u) * 20)); }
+.bt .bv { font: 300 max(11px, calc(var(--u) * 40))/1.1 InterT, InterW, sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: relative; z-index: 1; }
+.bt.k-sensor.w2.h1 .bv, .bt.k-sensor.w4 .bv { font-size: max(11px, calc(var(--u) * 48)); max-width: 55%; }
+.bt.k-sensor.h2 .bv { font-size: max(11px, calc(var(--u) * 96)); }
 .bt svg.bc { fill: none; stroke: var(--text-2); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .bt.k-sensor.h1 svg.bc { position: absolute; right: calc(var(--u) * 20); bottom: calc(var(--u) * 22); width: calc(var(--u) * 150); height: calc(var(--u) * 44); }
 .bt.k-sensor.w4.h1 svg.bc { width: calc(var(--u) * 440); }
 .bt.k-sensor.h2 svg.bc { width: 100%; height: calc(var(--u) * 84); stroke: var(--accent); flex: none; }
-.bt .br { font-size: calc(var(--u) * 20); color: var(--text-2); }
+.bt .br { font-size: max(11px, calc(var(--u) * 20)); color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bt.k-level .btop { justify-content: space-between; }
-.bt.k-level .btop .bs { font-size: calc(var(--u) * 20); }
+.bt.k-level .btop .bs { font-size: max(11px, calc(var(--u) * 20)); }
 .bt .bl { position: relative; height: calc(var(--u) * 72); border-radius: 999px; background: var(--surface-2); display: flex; align-items: center; justify-content: space-between; padding: 0 calc(var(--u) * 24); overflow: hidden; }
 .bt .bl i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent-deep); border-radius: 999px; }
 .bt .bl svg.mdi { position: relative; width: calc(var(--u) * 32); height: calc(var(--u) * 32); fill: var(--accent); }
-.bt .bl .bv { font: 400 calc(var(--u) * 24)/1 InterW, sans-serif; }
+.bt .bl .bv { font: 400 max(11px, calc(var(--u) * 24))/1 InterW, sans-serif; }
 .bt .bq { position: absolute; top: calc(var(--u) * 14); right: calc(var(--u) * 14); width: calc(var(--u) * 12); height: calc(var(--u) * 12); border-radius: 50%; border: 2px solid var(--accent); }
 .bl i.lv0 { width: 0%; } .bl i.lv1 { width: 5%; } .bl i.lv2 { width: 10%; } .bl i.lv3 { width: 15%; } .bl i.lv4 { width: 20%; } .bl i.lv5 { width: 25%; } .bl i.lv6 { width: 30%; } .bl i.lv7 { width: 35%; } .bl i.lv8 { width: 40%; } .bl i.lv9 { width: 45%; } .bl i.lv10 { width: 50%; } .bl i.lv11 { width: 55%; } .bl i.lv12 { width: 60%; } .bl i.lv13 { width: 65%; } .bl i.lv14 { width: 70%; } .bl i.lv15 { width: 75%; } .bl i.lv16 { width: 80%; } .bl i.lv17 { width: 85%; } .bl i.lv18 { width: 90%; } .bl i.lv19 { width: 95%; } .bl i.lv20 { width: 100%; } 
 /* The inspector with no tile chosen: the canvas itself (name, order, removing it), then how to begin. */
@@ -527,6 +527,9 @@ body.out .toast { left: 50%; max-width: calc(100vw - 32px); }
   .blay { grid-template-columns: 1fr; gap: 0; }
   .bform { position: static; margin-top: 22px; }
   .bframe { padding: 6px; border-radius: 12px; }
+  /* Text of 11 px at least: tighter tiles; a page's 1 x 1 button shows its state by colour only. */
+  .bt { line-height: 1.1; gap: 0; padding: max(4px, calc(var(--u) * 12)) max(5px, calc(var(--u) * 14)); }
+  .bframe.r4 .bt.w1.h1.k-button .bs { display: none; }
   .cvrow { gap: 10px; flex-direction: column; }
   .cvg { flex-wrap: nowrap; overflow-x: auto; min-width: 0; max-width: 100%; padding: 2px 0; scrollbar-width: none; }
 
