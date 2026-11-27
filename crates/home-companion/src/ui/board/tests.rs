@@ -481,6 +481,23 @@ fn advanced_stays_on_the_tiles_own_entity() {
     assert!(advanced_problem("light.a", "script.open_gate").is_some());
     assert!(advanced_problem("script.good_night", "script.open_gate").is_some());
     assert!(advanced_problem("light.a", "notify.notify").is_some());
+    assert_eq!(
+        advanced_problem("light.a", "homeassistant.update_entity"),
+        None
+    );
+    for s in ["restart", "stop", "reload_all", "reload_config_entry"] {
+        assert!(
+            advanced_problem("light.a", &format!("homeassistant.{s}")).is_some(),
+            "{s}"
+        );
+    }
+    // A scene set or made with other entities: a target of its own.
+    for key in ["entities", "snapshot_entities"] {
+        assert!(
+            data_targets(&json!({ key: {"lock.front": "unlocked"} })),
+            "{key}"
+        );
+    }
     let mut t = tile(Button, "light.a", 0, 0, 1, 1);
     t.service = Some("script.open_gate".into());
     assert_eq!(action_for(&t, Some(&st("off"))), None);

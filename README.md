@@ -231,7 +231,9 @@ and valves ask first (Ask for confirmation, on by default, can be switched off p
 and gates are never offered. A tile waits for Home Assistant's real state after a tap, and turns red if the command
 fails. Several pages follow the finger across; back home with Alfred's portrait, the home button (Home Assistant's
 view's, at the same place) or a swipe to the right. The same tiles also make a **custom widget** that takes its turn
-on the home.
+on the home. A button's **Advanced** service (set in the panel's editor) calls only a service of the tile's own
+domain, or `homeassistant.turn_on`, `turn_off`, `toggle`, `update_entity`, always on the tile's entity; a tile whose
+name speaks of a door, gate or lock (a scene or an automation too) is never offered.
 
 <p align="center">
 <img src="docs/images/board.png" width="400" alt="The board on the device: lights, a fan, a shutter, a scene, a temperature with its day's curve, the power drawn and a light's slider, under Alfred's portrait">

@@ -321,13 +321,16 @@ fn clean_id(s: &str) -> String {
 /// The keys of a service call's data that name a target: Home Assistant merges them with the
 /// call's own target, so an "Advanced" tile's data could act on other entities. A tile's target
 /// is always its own entity: these keys are stripped by [`validate`] and refused by the hub.
-pub const TARGET_KEYS: [&str; 6] = [
+pub const TARGET_KEYS: [&str; 8] = [
     "entity_id",
     "device_id",
     "area_id",
     "floor_id",
     "label_id",
     "target",
+    // scene.apply / scene.create: the entities the scene sets.
+    "entities",
+    "snapshot_entities",
 ];
 
 /// `data` names a target of its own ([`TARGET_KEYS`]).
@@ -772,7 +775,8 @@ pub fn ask_percent(call: &Call, st: Option<&State>) -> Option<f64> {
 }
 
 /// Why a tile's "Advanced" service cannot be (None: it can): only a service of the tile's own
-/// domain or of `homeassistant` (both act on the tile's entity, whose gate was looked at), and
+/// domain or `homeassistant.turn_on/turn_off/toggle/update_entity` (both act on the tile's
+/// entity, whose gate was looked at), and
 /// of `script` only turning the tile's script on, off or over: `script.<name>` runs that
 /// script, whatever the target, and its gate was never looked at.
 pub fn advanced_problem(entity_id: &str, service: &str) -> Option<String> {
@@ -780,7 +784,12 @@ pub fn advanced_problem(entity_id: &str, service: &str) -> Option<String> {
         return Some(format!("service {service:?} is not domain.service"));
     };
     let own = entity_id.split('.').next().unwrap_or("");
-    if d != own && d != "homeassistant" {
+    if d == "homeassistant" {
+        // The ones that act on the tile's entity; never restart, stop, reload…
+        return (!matches!(s, "turn_on" | "turn_off" | "toggle" | "update_entity"))
+            .then(|| format!("service {service} is not one a tile may call"));
+    }
+    if d != own {
         return Some(format!(
             "service {service} is not of the tile's domain ({own})"
         ));
