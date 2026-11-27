@@ -798,7 +798,8 @@ impl<S: Screen> Ui<S> {
 
 impl<S: Screen> Ui<S> {
     /// `--state board` (1), `board-confirm` (2: the shutter's question), `board-empty` (3),
-    /// `widget-custom*` (4): the demo board on its sample states.
+    /// `widget-custom*` (4), `board-away` (8: Home Assistant not reachable): the demo board on
+    /// its sample states.
     pub(super) fn show_demo_board(&self, which: u8) {
         if which == 0 {
             return;
@@ -807,7 +808,11 @@ impl<S: Screen> Ui<S> {
         self.screen.set_portrait(self.portrait());
         let (b, states, curves) = demo_board(which == 3);
         self.ha_curves.borrow_mut().extend(curves);
-        self.tile_board.borrow_mut().states = states;
+        {
+            let mut t = self.tile_board.borrow_mut();
+            t.states = states;
+            t.away = which == 8;
+        }
         self.apply_board(b);
         match which {
             2 => self.board_tap(Place::Page(0), 6),
