@@ -22,7 +22,11 @@ use std::time::Duration;
 pub const MARK: &str = "audio-reboot";
 /// How long the audio must keep working before the mark goes.
 pub const KEEPS_WORKING: Duration = Duration::from_secs(10 * 60);
-/// How long the screen says that the audio is not answering before the body exits.
+/// How long the screen says that the audio is not answering before the body exits. With the
+/// start's tries before it, the body lives longer than the updater watches a new version
+/// (`SETTLE` in packaging/home-companion-update.sh, tested): an update installed while the
+/// audio is down ends `done`, never in a race with `rolled-back`. A rollback would not bring the
+/// audio back, and after the watch the reboot rules apply again as before the update.
 pub const SHOWN_FOR: Duration = Duration::from_secs(60);
 /// Starts of the audio tried before giving up, and the wait between two: a card slow to come
 /// back (after a resume, or a restart of the body) is given ~10 s whatever the uptime.
@@ -249,6 +253,24 @@ mod tests {
         );
         assert!(r.is_err());
         assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn the_audio_down_body_outlives_the_updaters_watch() {
+        // The tries before the screen (their waits only: each failed open takes some time
+        // more) and the screen's minute, against the updater's watch from just after the
+        // restart: one answer, `done`, with a few seconds to spare.
+        let script = include_str!("../../../packaging/home-companion-update.sh");
+        let settle: u64 = script
+            .lines()
+            .find_map(|l| l.strip_prefix("SETTLE="))
+            .and_then(|v| v.trim().parse().ok())
+            .expect("SETTLE= in home-companion-update.sh");
+        let lives = START_RETRY_AFTER * (START_TRIES - 1) + SHOWN_FOR;
+        assert!(
+            lives >= Duration::from_secs(settle + 5),
+            "the audio-down body lives {lives:?}, the watch {settle} s"
+        );
     }
 
     #[test]
