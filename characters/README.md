@@ -28,13 +28,36 @@ and a character without them still works.
 | `speaking` | `poses/speaking.png` | yes | the answer is spoken |
 | `error` | `poses/error.png` | yes | not understood, or the brain failed |
 | `offline` | `poses/offline.png` | no (falls back to `idle`) | no brain is reachable |
-| `muted` | `poses/muted.png` | no (falls back to `idle`) | the microphone switch is off |
+| `muted` | `poses/muted.png` | no (falls back to `idle`) | the microphone switch is off (on the home) |
 | `timer_finished` | `poses/timer_finished.png` | no (falls back to `speaking`) | a timer or alarm is ringing |
 | `sleeping` | `poses/sleeping.png` | no (falls back to `idle`, drawn dimmed) | night mode: the body's night hours, the home at rest. Drawn as it is: make it as dark as it should be at night |
+| `link` | `poses/link.png` | no (falls back to `idle`) | the pages that link Home Assistant (finding it, the QR code): "plug it in" |
+| `working` | `poses/working.png` | no (falls back to `idle`) | something longer under way: an update installs, the Home Assistant setup checks and repairs |
+| `satisfied` | `poses/satisfied.png` | no (falls back to `idle`) | 10 s after such a job went well (after the bow when the setup is done) |
+| `nod` | `poses/nod.png` | no (falls back to `idle`) | 3 s on the home after a reflex was done (a timer set, the volume, …) |
 
 Optional prop: `poses/dnd.png`, drawn on the floor at the figure's right foot while do not disturb is on (the home,
 day and night; at night at 55 %). Any size (shown 150 px wide), RGBA with a transparent background, or RGB on the
 character's background. Without it do not disturb shows only its line over the clock.
+
+Any pose can be asked for by a card of Home Assistant (`pose: <name>` on `home_companion_card`, README, "From your
+automations"): it is shown instead of the home's pose while the card shows, by day only. The name is a pose downloaded
+from Settings → Poses, else one of the character's own poses by its state name (`working`, `muted`, ...), with that
+state's animation if it loops.
+
+Extra poses to download need not be in this repository: a release tagged `poses-…` with
+[tools/make-pose-catalogue.py](../tools/make-pose-catalogue.py)'s files (`poses.json` and the files of each pose)
+offers them in Settings → Poses; they go to `<state_dir>/poses/<character id>/` (on the device
+`/var/lib/home-companion/poses/alfred/`, kept by updates). Such a pose is `<name>.png`, a pose picture like the others:
+the same size, the flat background, drawn with the character's `crop`, the figure's feet on the same line as in `idle`
+and the picture as tall as the figure where the crop's width allows. Names of lowercase letters, digits, `-` and `_`.
+
+It may move: `<name>.toml` is its animation, a table as in character.toml (`file`, `size`, `frames`, `fps`, optional
+`pause`, `rect`) without the `[animations.…]` header, its `file` a sheet in the same directory (`<name>-anim.png`) made
+with [tools/make-animation.py](../tools/make-animation.py) from `<name>.png`. It loops over the pose while the card
+shows (also while an announcement is said over it; with a `pause`, still on its last frame for that many seconds
+between two rounds) and its sheet is decoded when the pose comes and freed when it goes.
+A clip whose last frame is its first loops without a jump.
 
 Rules for the pictures:
 
@@ -59,14 +82,36 @@ All optional; without one the still pose is shown.
 | `loading` | in a loop while the body starts, until Home Assistant connects | `idle` |
 | `wake` | once when the home screen wakes up (touch, volume key, movement, end of a conversation) | `idle` |
 | `idle` | after `wake`, again and again while the screen is awake, still on its last frame for `pause` seconds in between | `idle` |
-| `listening`, `thinking`, `speaking`, `error` | in a loop while the state lasts (`speaking` also while a timer rings, unless the character has `timer_finished`) | that state's pose |
+| `listening`, `thinking`, `speaking`, `error` | in a loop while the state lasts, still on its last frame for `pause` seconds between two rounds when it has one (`speaking` also while a timer rings, unless the character has `timer_finished`) | that state's pose |
+| `offline`, `muted` | in a loop while the state lasts, still on its last frame for `pause` seconds between two rounds when it has one | that state's pose |
 | `done` | once on the home after a house command went through (if it came during the conversation, when the home comes back, within 15 s); its last frame is the `idle` pose | `idle` |
 | `fall_asleep` | once when the night layout comes (night hours, the home at rest), after the home clip under way | `idle` |
 | `sleeping` | once every `pause` seconds while asleep, the still `sleeping` pose in between (nothing redraws) | `sleeping` |
 | `wake_from_sleep` | once when the screen wakes up at night, or the night ends; then the home as by day, without `wake` | `sleeping` |
+| `settings_in` | once when a settings page opens (Settings and the pages under it), after the home clip under way | `idle` |
+| `settings_hold` | once every `pause` seconds while a settings page is open and the screen is awake, still on its last frame in between (nothing redraws) | `settings_in`'s last frame |
+| `settings_out` | once when the settings pages are left for the home, after the settings clip under way; then the home as by day | `settings_hold`'s last frame |
+| `more_in`, `more_hold`, `more_out` | as the settings' ones, for the More page | `idle` |
+| `muted_in` | once when the microphone is switched off (on the home), after the clip under way; then `muted` in a loop. Needs `muted` and `muted_out` too, else the still `muted` pose with its loop as before | `idle` (ends on `muted`'s first frame) |
+| `muted_out` | once when it is switched on again, after the `muted` round under way; then the home as by day. `muted_in` played backwards: switched on while `muted_in` plays, it turns back from the same picture (and the other way round) | `muted`'s last frame |
+| `ha_in`, `ha_hold`, `ha_out` | as the settings' ones, for the Home Assistant page; `ha_hold` with no `pause` is a loop | `idle` |
+| `ha_type_in`, `ha_type`, `ha_type_out` | while a job of the Home Assistant page runs (its check, "Check and repair"): into the keys at once (fading in over the `ha_hold` frame on screen), `ha_type` in a loop, at least one whole round even for a short job, back to `ha_hold` when it ends (`ha_type_out` is `ha_type_in` backwards) | `ha_hold`'s last frame |
+| `link_in`, `link_hold`, `link_out` | the `link` pose of the Home Assistant link pages: in, a loop while they are open, out (needs all three, else the still pose) | `idle` |
+| `satisfied_in`, `satisfied_hold`, `satisfied_out` | the `satisfied` pose after a job went well, the same way (`satisfied_out` is `satisfied_in` backwards) | `idle` |
+| `nod` | once on the home when a reflex was done, idle to idle, after the home clip under way (else the still `nod` pose for 3 s) | `idle` |
 
-`fall_asleep` and `wake_from_sleep` are **transitions**: they start on one pose and end on another (their last frame
-left out, so the next picture follows without a repeat). They are decoration: a conversation cuts them at once.
+`fall_asleep`, `wake_from_sleep`, `settings_in` and `settings_out` are **transitions**: they start on one pose and
+end on another (their last frame left out, so the next picture follows without a repeat). They are decoration: a
+conversation cuts them at once. Opening and leaving the settings pages quickly never cuts a clip in the middle: the
+one under way plays to its end, then the next. The settings sheet is decoded only while a settings page is open (and
+until `settings_out` has played), like the night's only around the night. Without `settings_in` the settings pages
+show the normal pose; without `settings_out` leaving them goes back to it at once. Between the pages and states with
+their own things (settings, More, the Home Assistant page, the microphone off) the clip under way ends, what is held
+and no longer wanted is put away (`_out`), then what is wanted comes out (`_in`): never a cut. The settings',
+the Home Assistant page's, the earmuffs' (`muted_in`/`muted_out`), the link pages' and satisfied's sheets
+are decoded only while needed. A loop that hardly moves (`muted`, `satisfied_hold`) is left at once from any frame;
+a breathing one (`ha_hold`, `ha_type`, `link_hold`) too, the next clip fading in over its frame on screen for 4
+frames; the settings' and More's rounds (a gesture) play to their end.
 
 An animation is a **sheet**: one PNG, 8-bit RGBA, the frames stacked from top to bottom, all the same size.
 **Frame 0 is opaque** (the whole picture); in every following frame a pixel is **opaque where it changes** from

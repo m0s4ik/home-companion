@@ -30,10 +30,18 @@ pub enum State {
     TimerFinished,
     /// Night mode (the body's schedule): asleep. Without its own pose the body dims idle.
     Sleeping,
+    /// The pages that link Home Assistant: "plug it in".
+    Link,
+    /// Something longer under way (an update installs, the setup checks and repairs): at work.
+    Working,
+    /// Such a job went well: satisfied, for a little while.
+    Satisfied,
+    /// A reflex was done: a nod, for a moment.
+    Nod,
 }
 
 impl State {
-    pub const ALL: [State; 9] = [
+    pub const ALL: [State; 13] = [
         State::Idle,
         State::Listening,
         State::Thinking,
@@ -43,6 +51,10 @@ impl State {
         State::Muted,
         State::TimerFinished,
         State::Sleeping,
+        State::Link,
+        State::Working,
+        State::Satisfied,
+        State::Nod,
     ];
 
     pub fn name(self) -> &'static str {
@@ -56,13 +68,23 @@ impl State {
             State::Muted => "muted",
             State::TimerFinished => "timer_finished",
             State::Sleeping => "sleeping",
+            State::Link => "link",
+            State::Working => "working",
+            State::Satisfied => "satisfied",
+            State::Nod => "nod",
         }
     }
 
     /// The pose drawn when this state has none; `None` for the required states.
     pub fn fallback(self) -> Option<State> {
         match self {
-            State::Offline | State::Muted | State::Sleeping => Some(State::Idle),
+            State::Offline
+            | State::Muted
+            | State::Sleeping
+            | State::Link
+            | State::Working
+            | State::Satisfied
+            | State::Nod => Some(State::Idle),
             // The presenting hand: "here it is" (the error pose looked sorry about the eggs).
             State::TimerFinished => Some(State::Speaking),
             _ => None,
@@ -149,7 +171,7 @@ pub struct Character {
 }
 
 /// The animations a character may have (characters/README.md, "Animations").
-pub const ANIMATIONS: [&str; 11] = [
+pub const ANIMATIONS: [&str; 34] = [
     "loading",
     "wake",
     "idle",
@@ -162,6 +184,37 @@ pub const ANIMATIONS: [&str; 11] = [
     "fall_asleep",
     "sleeping",
     "wake_from_sleep",
+    // The settings pages: tools out, held now and then, put away.
+    "settings_in",
+    "settings_hold",
+    "settings_out",
+    // The "More" page: he looks at its tiles, now and then a blink, then ahead again.
+    "more_in",
+    "more_hold",
+    "more_out",
+    // In a loop while Home Assistant cannot be reached, and while the microphone switch is off.
+    "offline",
+    "muted",
+    // The microphone switched off: the earmuffs go on (then the `muted` loop), and come off.
+    "muted_in",
+    "muted_out",
+    // The Home Assistant page: the laptop comes out, is held, typed on while a job runs
+    // (`ha_type_in`, `ha_type`, `ha_type_out`) and goes away.
+    "ha_in",
+    "ha_hold",
+    "ha_type_in",
+    "ha_type",
+    "ha_type_out",
+    "ha_out",
+    // The moment's poses without a cut: the plug of the link pages and a job gone well (in, a
+    // loop while it lasts, out), a reflex's nod (once, idle to idle).
+    "link_in",
+    "link_hold",
+    "link_out",
+    "satisfied_in",
+    "satisfied_hold",
+    "satisfied_out",
+    "nod",
 ];
 
 /// One animation: frames `first..end` of a sheet, shown in `rect` (pose pixels) at `fps`.
@@ -915,6 +968,34 @@ pub fn repo_characters() -> PathBuf {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_moments_poses_fall_back_to_idle() {
+        for s in [State::Link, State::Working, State::Satisfied, State::Nod] {
+            assert_eq!(s.fallback(), Some(State::Idle), "{s}");
+            assert_eq!(State::from_name(s.name()), Some(s));
+        }
+        assert!(ANIMATIONS.contains(&"offline") && ANIMATIONS.contains(&"muted"));
+        for name in [
+            "muted_in",
+            "muted_out",
+            "ha_in",
+            "ha_hold",
+            "ha_type_in",
+            "ha_type",
+            "ha_type_out",
+            "ha_out",
+            "link_in",
+            "link_hold",
+            "link_out",
+            "satisfied_in",
+            "satisfied_hold",
+            "satisfied_out",
+            "nod",
+        ] {
+            assert!(ANIMATIONS.contains(&name), "{name}");
+        }
+    }
+
     /// Every character in the repository follows the format, poses aligned
     /// included (the check for pull requests).
     #[test]
@@ -980,12 +1061,58 @@ mod tests {
         assert!(night.iter().all(|a| a.file == night[0].file));
         assert_eq!(night[1].pause, 60.0);
         assert_eq!(night.map(|a| a.frames()), [80, 64, 80]);
+        // The settings pages: one sheet, the toolbox out, the spanner looked at now and then, put away.
+        let tools =
+            ["settings_in", "settings_hold", "settings_out"].map(|n| c.animation(n).unwrap());
+        assert!(tools.iter().all(|a| a.file == tools[0].file));
+        assert_eq!(
+            tools.map(|a| (a.first, a.end)),
+            [(0, 32), (32, 144), (144, 176)]
+        );
+        assert_eq!(tools[1].pause, 12.0);
+        // The earmuffs: one sheet, on and (the same backwards) off; the `muted` loop between.
+        let ear = ["muted_in", "muted_out"].map(|n| c.animation(n).unwrap());
+        assert_eq!(ear[0].file, ear[1].file);
+        assert_eq!(ear.map(|a| (a.first, a.end)), [(0, 73), (73, 146)]);
+        // The laptop: one sheet, the holding and the typing in a loop (no pause).
+        let ha = [
+            "ha_in",
+            "ha_hold",
+            "ha_type_in",
+            "ha_type",
+            "ha_type_out",
+            "ha_out",
+        ]
+        .map(|n| c.animation(n).unwrap());
+        assert!(ha.iter().all(|a| a.file == ha[0].file && a.pause == 0.0));
+        assert_eq!(
+            ha.map(|a| (a.first, a.end)),
+            [
+                (0, 35),
+                (35, 99),
+                (99, 118),
+                (118, 166),
+                (166, 185),
+                (185, 220)
+            ]
+        );
+        // The moments: link and satisfied in, a loop, out; the nod once.
+        let link = ["link_in", "link_hold", "link_out"].map(|n| c.animation(n).unwrap());
+        assert_eq!(
+            link.map(|a| (a.first, a.end)),
+            [(0, 39), (39, 103), (103, 144)]
+        );
+        let sat =
+            ["satisfied_in", "satisfied_hold", "satisfied_out"].map(|n| c.animation(n).unwrap());
+        assert_eq!(sat.map(|a| (a.first, a.end)), [(0, 20), (20, 52), (52, 71)]);
+        assert_eq!(c.animation("nod").unwrap().frames(), 25);
         assert_eq!(
             c.state_animation(State::TimerFinished).unwrap().name,
             "speaking"
         );
         assert!(c.state_animation(State::Idle).is_none());
-        assert!(c.state_animation(State::Offline).is_none());
+        assert_eq!(c.state_animation(State::Offline).unwrap().name, "offline");
+        assert_eq!(c.state_animation(State::Muted).unwrap().name, "muted");
     }
 
     /// The sheet format: frame 0 complete, then only the changed pixels.

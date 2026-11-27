@@ -14,7 +14,7 @@ WEB_HELPER=<arm64 home-companion-web> tools/release/build-bundle.sh 0.1.0     # 
 ```
 
 [tools/release/build-bundle.sh](../tools/release/build-bundle.sh) cross-builds and strips `home-companion` (`fbdev,gpu`),
-`home-companion-brain` and `home-companion-reflex` (with libvosk 0.3.45 from `crates/spike-native/tools/fetch-vosk.sh`),
+`home-companion-brain`, `home-companion-panel` and `home-companion-reflex` (with libvosk 0.3.45 from `crates/spike-native/tools/fetch-vosk.sh`),
 builds UxPlay with `tools/airplay/build-uxplay.sh` (or takes `UXPLAY=<file>`), and puts them with the character, the
 locales, this directory's units, firewall and udev files, the configuration templates, `install.sh`,
 `tools/slim-vosk-model.py`, [INSTALL.md](INSTALL.md), the licences and `THIRD-PARTY.md` (every Rust crate inside with its
@@ -87,13 +87,14 @@ packages it installed stay.
 | `/etc/home-companion/home-companion.toml` | configuration (`home-companion --print-config` shows every key with its value) |
 | `/var/lib/home-companion/` | state (timers, settings, the QR link's tokens in `ha-auth.json`, AirPlay), created by systemd (`StateDirectory`) |
 | `/etc/systemd/system/home-companion.service` | [home-companion.service](home-companion.service) |
-| `/etc/nftables.d/home-companion.nft` | [home-companion.nft](home-companion.nft): the link, the satellite, the brain and AirPlay, from the LAN only |
+| `/etc/nftables.d/home-companion.nft` | [home-companion.nft](home-companion.nft): the link, the browser panel, the satellite, the brain and AirPlay, from the LAN only |
 | `/etc/udev/rules.d/99-home-companion-backlight.rules` | [99-home-companion-backlight.rules](99-home-companion-backlight.rules): group `video` may write the backlight |
 | `/opt/home-companion/airplay/uxplay` | AirPlay (music and screen mirroring): UxPlay 1.73.7 with our patch, built by `tools/airplay/build-uxplay.sh`; needs the runtime listed under "AirPlay" below and `[airplay] enabled = true` |
 | `/opt/home-companion/home-companion-reflex`, `/opt/home-companion/lib/libvosk.so` | the reflex helper (`cargo build --release --target aarch64-unknown-linux-gnu -p reflex --features vosk --bin home-companion-reflex`) and the prebuilt libvosk 0.3.45 (Apache-2.0, `crates/spike-native/tools/fetch-vosk.sh`; the helper finds it through its rpath `$ORIGIN/lib`, it needs `libatomic1`) |
 | `/opt/home-companion/reflex/<lang>/` | the Vosk model of each language with reflexes: `it` = [vosk-model-small-it-0.22](https://alphacephei.com/vosk/models), `en` = vosk-model-small-en-us-0.15, `nl` = vosk-model-small-nl-0.22, `de` = vosk-model-small-de-0.15, all Apache-2.0, slimmed (`graph/Gr.fst` goes, its word table stays as `graph/words.txt`). A language without a model has no reflexes (one log line); `[reflexes] enabled = false` turns them off |
 | `/opt/home-companion/home-companion-web`, `/etc/systemd/system/home-companion-web.service` | optional, for "Casa": the web helper (`web/home-companion-web`) and [its unit](home-companion-web.service); its profile in `/var/lib/home-companion-web`, cache in `/var/cache/home-companion-web` (`StateDirectory`, `CacheDirectory`) |
 | `/opt/home-companion/home-companion-brain`, `/etc/home-companion/brain.toml`, `/etc/systemd/system/home-companion-brain.service` | the brain (below); memory in `/var/lib/home-companion-brain` |
+| `/opt/home-companion/home-companion-panel`, `/etc/systemd/system/home-companion-panel.{socket,service}` | the browser panel (below), started by systemd on TCP 8125; who is let in: `/var/lib/home-companion/panel-sessions.json` |
 | `/opt/home-companion/home-companion-update.sh`, `/etc/systemd/system/home-companion-update.{path,service}` | updates from the screen (Settings → Info): the body writes a release tag and its SHA-256 to `/var/lib/home-companion/update/request`, the path unit starts [the script](home-companion-update.sh) as root; the repository comes from `[update] repo` in `/etc/home-companion/home-companion.toml` only. What ran before is kept in `/var/lib/home-companion-update/previous` and put back if the new body does not stay up |
 
 ## How it runs
@@ -177,6 +178,49 @@ needed (the body draws and plays). Ports: mDNS (UDP 5353, already open in the sy
 6010-6011 and UDP 6010-6012 ([home-companion.nft](home-companion.nft); `[airplay] port` moves them). The sender's remote (pause, next,
 volume) is DACP, resolved through avahi-daemon's D-Bus API with `busctl` (systemd). State (pairing key, cover art,
 the video socket) is in `/var/lib/home-companion/airplay/`.
+
+## The browser panel (`home-companion-panel`)
+
+Settings → Access from the browser (off until switched on there) lets a phone or a computer on the home network change
+the settings, the widgets (their order, the markets and cities, Home Assistant's sensors, player and people, what
+to check), the notes and the shopping list at `http://<device>:8125/`. Plain HTTP, for the home network only: no
+secret ever passes through it (no Home Assistant token or address, no keys, Wi-Fi, photos, recordings, memories,
+conversations, updates). Each device is allowed on the screen: a request shows a dialog with a 4-digit code the
+browser shows too (Refuse · Allow), or the QR code on that settings page, a one-time ticket good for two minutes, lets in
+the phone that scans it. At most five devices, each for 30 days from its last use; revoked on the same page.
+
+- [home-companion-panel.socket](home-companion-panel.socket): systemd listens on TCP 8125 and starts
+  [home-companion-panel.service](home-companion-panel.service) at the first connection; the process leaves after ten
+  minutes without requests, so nothing runs until a browser connects. The port is also `[panel] port` in
+  home-companion.toml (the address the screen shows): change both.
+- The process (`crates/panel`, `/opt/home-companion/home-companion-panel`) runs as its own user `home-companion-panel`
+  (no home, no state, `MemoryMax=32M`, no access to `/var/lib/home-companion*` or `/etc/home-companion`). It holds
+  nothing: every request goes to the body over `/run/home-companion/panel/panel.sock` (`[panel] socket`; directory 0750 and socket 0660, group
+  `home-companion-panel`, which the body's user is in to hand them to it; the unit shows the panel nothing else of
+  `/run/home-companion`, and only loopback, link-local and private addresses by `IPAddressAllow`); the body answers a closed list of
+  requests and decides who is let in (`<state_dir>/panel-sessions.json`, 0600, only SHA-256 digests of the cookies).
+- The firewall opens TCP 8125 to `$LAN_V4`/`$LAN_V6` ([home-companion.nft](home-companion.nft)); the process refuses
+  other addresses itself, and any `Host` that is not a private address or the device's own name.
+- Trying it without the device: `cargo run -p home-companion --example panel_body -- /tmp/panel-demo` (a body with
+  sample data that allows every request after 4 s) and `cargo run -p panel -- --socket /tmp/panel-demo/panel.sock
+  --listen 127.0.0.1:8125`.
+
+## The widget's data from the internet (optional)
+
+The home's widget can show markets and other cities chosen from the browser panel. Only then the body (its thread
+`feeds`, `crates/home-companion/src/feeds/`) runs `curl` (already a dependency, as for updates): HTTPS only, TLS 1.2+,
+10 s and 512 KiB at most per answer, no redirects, an empty environment but `PATH`, one request at a time, to
+`query1.finance.yahoo.com` (or `query2.` for six hours after it refused us), `api.coingecko.com`,
+`api.open-meteo.com` and `geocoding-api.open-meteo.com` (the panel's city search). Nothing else, nothing before a
+market or a city is chosen, nothing at night or with the screen off; errors back off up to six hours and a server's
+`Retry-After` is honoured. The last data is in `<state_dir>/feeds.json` (0600, written only when it changed). The
+firewall ([home-companion.nft](home-companion.nft)) filters incoming traffic only: no rule is needed.
+
+Going back to 0.3.0 or 0.3.1 (the update's rollback, or by hand): those versions do not know the new keys of
+`[widgets]` in settings.toml, and the first time they save the widget's settings (a switch in Settings → Screen →
+Widgets) they write the section again without them: the markets, the other cities, the coins' currency, the order
+of the pages and Home Assistant's sensors, player and people are lost and must be chosen again after updating.
+`feeds.json` and the brain's notes stay.
 
 ## The brain (`home-companion-brain`, optional)
 

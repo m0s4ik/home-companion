@@ -6,3 +6,7 @@ crates/*/third_party/
 crates/*/models/
 crates/*/out/
 /out/
+
+# the board's icons, made by tools/make-board-icons.py (the release bundle carries them)
+/icons/mdi.json
+__pycache__/

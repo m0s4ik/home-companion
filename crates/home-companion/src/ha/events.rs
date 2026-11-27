@@ -15,6 +15,8 @@
 //!   icon: mdi:washing-machine   # optional
 //!   seconds: 600         # optional: the card goes away by itself
 //!   device: Alfred       # optional: only the device with this name (default: every device)
+//!   pose: working        # optional: a pose of the character (downloaded, or its own by state) while the card shows
+//!   quiet: true          # optional: no sound and no waking the screen (an update of a card already shown)
 //! ```
 //!
 //! `home_companion_card_dismiss` with `id` takes a card away.
@@ -46,6 +48,13 @@ pub struct HaCard {
     pub icon: Option<String>,
     /// The card goes away by itself after this many seconds (None: until touched).
     pub seconds: Option<u64>,
+    /// A pose of the character shown instead of its home pose while the card shows: a
+    /// downloaded one (Settings → Poses) or one of its own by state name (`working`); only
+    /// lowercase letters, digits, `-` and `_`.
+    pub pose: Option<String>,
+    /// No sound and no waking the screen: for a card sent again and again with fresh values (a
+    /// temperature every minute) under the same `id`. The card shows and replaces as any other.
+    pub quiet: bool,
 }
 
 /// What an event asks.
@@ -55,9 +64,26 @@ pub enum CardEvent {
     Dismiss(String),
 }
 
+impl CardEvent {
+    /// Whether it calls for attention when it changes what is shown: a card, unless `quiet`.
+    pub fn chimes(&self) -> bool {
+        matches!(self, CardEvent::Show(c) if !c.quiet)
+    }
+}
+
 /// The card longest and widest the screen takes: longer texts are cut.
 const MAX_TEXT: usize = 280;
 const MAX_TITLE: usize = 60;
+/// A pose's name: maybe a file name, so short and plain.
+const MAX_POSE: usize = 40;
+
+/// A pose's name, safe as a file name: lowercase letters, digits, `-` and `_` only.
+fn pose_name(s: &str) -> Option<String> {
+    (s.len() <= MAX_POSE
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'))
+    .then(|| s.to_string())
+}
 
 fn clipped(s: &str, max: usize) -> String {
     let s = s.trim();
@@ -96,6 +122,8 @@ pub fn parse(msg: &Value, device: &str) -> Option<CardEvent> {
                 .get("seconds")
                 .and_then(Value::as_u64)
                 .filter(|n| *n > 0),
+            pose: s("pose").and_then(pose_name),
+            quiet: data.get("quiet").and_then(Value::as_bool).unwrap_or(false),
         })),
         DISMISS_EVENT => Some(CardEvent::Dismiss(s("id")?.to_string())),
         _ => None,
@@ -176,8 +204,22 @@ mod tests {
                 text: "Done".into(),
                 icon: Some("mdi:washing-machine".into()),
                 seconds: Some(600),
+                pose: None,
+                quiet: false,
             }))
         );
+        assert!(parse(&m, "Alfred").unwrap().chimes());
+        // An update: the same card, quiet.
+        let m = event(
+            CARD_EVENT,
+            json!({"id": "kamado", "text": "T1 182 °C", "quiet": true}),
+        );
+        let quiet = parse(&m, "Alfred").unwrap();
+        assert!(matches!(&quiet, CardEvent::Show(c) if c.quiet));
+        assert!(!quiet.chimes());
+        // Only a true boolean is quiet.
+        let m = event(CARD_EVENT, json!({"text": "x", "quiet": "yes"}));
+        assert!(parse(&m, "Alfred").unwrap().chimes());
         let m = event(DISMISS_EVENT, json!({"id": "washing"}));
         assert_eq!(
             parse(&m, "Alfred"),
@@ -267,6 +309,30 @@ mod tests {
         assert_eq!(handled_by("stopped", 0.0, "Ok"), "home_assistant");
         assert_eq!(handled_by("no speech", 0.0, ""), "none");
         assert_eq!(handled_by("stopped", 0.0, ""), "none");
+    }
+
+    #[test]
+    fn a_pose_is_a_plain_file_name() {
+        let pose = |p: &str| {
+            let m = event(CARD_EVENT, json!({"text": "hi", "pose": p}));
+            let Some(CardEvent::Show(c)) = parse(&m, "Alfred") else {
+                panic!()
+            };
+            c.pose
+        };
+        assert_eq!(pose(" laundry "), Some("laundry".into()));
+        assert_eq!(pose("kamado_2"), Some("kamado_2".into()));
+        assert_eq!(pose("bbq-grill"), Some("bbq-grill".into()));
+        for bad in [
+            "",
+            "../poses/idle",
+            "Laundry",
+            "laundry.png",
+            "a b",
+            &"x".repeat(41),
+        ] {
+            assert_eq!(pose(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

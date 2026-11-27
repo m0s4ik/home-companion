@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 /// The "done" card goes away by itself after this.
 pub const DONE_CARD: Duration = Duration::from_secs(20);
-/// Commands this close to the previous one join its card ("spegni le luci dello studio" runs
+/// Commands this close to the previous one join its card ("spegni le luci del soggiorno" runs
 /// one command per light): one pop-up, one Undo for all of them.
 pub const GROUP: Duration = Duration::from_secs(4);
 /// A group's pop-up lists at most this many lines of names.
@@ -589,7 +589,7 @@ mod tests {
     fn an_undo_pops_up_first_then_the_card_stays() {
         let t0 = Instant::now();
         let mut c = HouseCards::default();
-        c.changed(7, "Luce studio: spenta".into(), true, t0);
+        c.changed(7, "Luce soggiorno: spenta".into(), true, t0);
         assert!(c.popup());
         assert_eq!(c.popup_left(t0), 1.0);
         assert!((c.popup_left(t0 + UNDO_POPUP / 2) - 0.5).abs() < 0.01);
@@ -614,16 +614,16 @@ mod tests {
         let t0 = Instant::now();
         let s = Duration::from_millis(70);
         let mut c = HouseCards::default();
-        assert!(!c.changed(1, "Studio SX: spento".into(), true, t0));
-        assert!(c.changed(2, "Studio centro: spento".into(), true, t0 + s));
-        assert!(c.changed(3, "Libreria: spento".into(), true, t0 + s * 2));
+        assert!(!c.changed(1, "Soggiorno SX: spento".into(), true, t0));
+        assert!(c.changed(2, "Soggiorno centro: spento".into(), true, t0 + s));
+        assert!(c.changed(3, "Piantana: spento".into(), true, t0 + s * 2));
         let d = c.done.clone().unwrap();
         let more = "{name} e altri {n}";
         assert_eq!(
             d.texts(more, "e altri {n}"),
             (
-                "Studio SX e altri 2: spento".to_string(),
-                "Studio SX\nStudio centro\nLibreria".to_string(),
+                "Soggiorno SX e altri 2: spento".to_string(),
+                "Soggiorno SX\nSoggiorno centro\nPiantana".to_string(),
                 "spento".to_string()
             )
         );
@@ -631,7 +631,7 @@ mod tests {
         c.changed(4, "Tenda: aperto".into(), true, t0 + s * 3);
         let t = c.done.as_ref().unwrap().texts(more, "e altri {n}");
         assert_eq!(t.2, "");
-        assert_eq!(t.1, "Studio SX\nStudio centro\ne altri 2");
+        assert_eq!(t.1, "Soggiorno SX\nSoggiorno centro\ne altri 2");
         assert_eq!(c.undo(), Some(vec![1, 2, 3, 4]));
         // Far apart, or one with Undo and one without: two cards (the newer replaces).
         c.changed(5, "a: spento".into(), true, t0);

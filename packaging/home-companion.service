@@ -24,6 +24,10 @@ ExecStartPre=-+/bin/sh -c 'd=$(grep -l "^vcnl4000$" /sys/bus/iio/devices/iio:dev
 ExecStart=/opt/home-companion/home-companion --config /etc/home-companion/home-companion.toml
 # give the console back to text mode if home-companion died while drawing
 ExecStopPost=-/opt/home-companion/home-companion --reset-console
+# The audio did not start (exit 6, crates/home-companion/src/audio_down.rs): reboot once for it (as root). Not
+# within 5 minutes of booting, not again while the mark is there, never while an update runs; the rules are in
+# the script. Its argument is the mark: <[paths] state_dir>/audio-reboot, where the body looks for it.
+ExecStopPost=-+/opt/home-companion/home-companion-audio-reboot.sh /var/lib/home-companion/audio-reboot
 # KDSETMODE on /dev/tty0 (graphics mode while drawing) needs CAP_SYS_TTY_CONFIG
 AmbientCapabilities=CAP_SYS_TTY_CONFIG
 CapabilityBoundingSet=CAP_SYS_TTY_CONFIG

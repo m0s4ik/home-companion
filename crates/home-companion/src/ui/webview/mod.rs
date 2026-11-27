@@ -962,6 +962,8 @@ impl<S: Screen> Casa<S> {
             i.swipe.reset();
             i.target = Target::None;
             i.drag = None;
+            // Where the user left it, on the board too.
+            i.place = saved_place(&self.state_dir);
             i.controls.poke(now);
             i.governor.boost();
             let mut was_paused = false;
@@ -2173,8 +2175,9 @@ impl<S: Screen> Casa<S> {
     }
 }
 
-/// Where the user left the home button (settings.toml), or the default.
-fn saved_place(state_dir: &Path) -> controls::Place {
+/// Where the user left the home button (settings.toml), or the default; the board's home
+/// button rests there too.
+pub(crate) fn saved_place(state_dir: &Path) -> controls::Place {
     crate::settings::Settings::in_dir(state_dir)
         .casa_home_button()
         .and_then(|(edge, offset)| {

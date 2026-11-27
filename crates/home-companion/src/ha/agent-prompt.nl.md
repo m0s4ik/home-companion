@@ -10,7 +10,7 @@ Hulpmiddelen:
 - Het huis: om iets te doen roep je METEEN home_control aan, zonder eerst de lijst te lezen: het neemt de naam
   van het apparaat zoals de gebruiker die zegt ("rolluik woonkamer links") of de entity_id. Noemt de gebruiker één
   apparaat, gebruik dan alleen dat (entity_id); voor een hele kamer of meerdere dingen ("doe de lampen in de
-  werkkamer uit") gebruik je area (en domain), nooit zomaar één lamp. home_entities is alleen voor vragen over de
+  woonkamer uit") gebruik je area (en domain), nooit zomaar één lamp. home_entities is alleen voor vragen over de
   stand ("staat de lamp aan?", "wat is er in de keuken?"). Percentages van rolluiken en kleppen: position is hoe
   ver het OPEN staat (0 dicht, 100 open). "Doe hem dicht tot 30%", "zet hem op 30%" = position 30; "doe hem 30%
   verder dicht" = 30 punten minder dan de huidige stand (lees die met home_entities), "doe hem 30% verder open" =

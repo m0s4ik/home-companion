@@ -26,6 +26,7 @@ use super::house::{self, Dnd, HouseCards};
 use super::light::{Auto, Curve};
 use super::lists::{self, Choice, ShopList};
 use super::next;
+use super::widgets::{self, Band, Kind as WidgetKind, Lists, Page as WidgetPage};
 use super::{
     AlarmLineView, MemoriesView, MemoryLine, MusicView, Screen, SettingsView, TimerLineView,
     UpdateView,
@@ -36,7 +37,15 @@ use crate::core::{CoreEvent, MirrorInfo, Phase, UiCommand, UiEvent};
 use crate::ha::hub::{HubCmd, HubMsg};
 use crate::ha::weather::Weather;
 use crate::history::History;
-use crate::settings::{Settings, WakeSensitivity};
+use crate::settings::{
+    CONVERSATION_MAX_DEFAULT, CONVERSATION_MAX_MAX, CONVERSATION_MAX_MIN, Settings, WakeSensitivity,
+};
+use crate::settings_model::{self as model, Change};
+
+mod board_ui;
+mod panel_ui;
+mod remote_ui;
+pub mod samples;
 use crate::timers::{TimerView, now_unix};
 use serde_json::json;
 
@@ -80,6 +89,81 @@ pub fn load_pose(path: &Path, crop: Crop, bg: Rgb) -> Result<Image, String> {
         }
     }
     Ok(Image::from_rgba8(buf))
+}
+
+/// A pose of the character on the home: one of its own (by state), or one downloaded from
+/// Settings → Poses (by name, src/poses.rs) that a card of Home Assistant asks for.
+#[derive(Clone, Debug, PartialEq)]
+enum Look {
+    Own(State),
+    Downloaded(String),
+}
+
+impl Look {
+    fn name(&self) -> &str {
+        match self {
+            Look::Own(s) => s.name(),
+            Look::Downloaded(n) => n,
+        }
+    }
+}
+
+/// The state of that name (`working`, `muted`), as in character.toml.
+fn state_named(name: &str) -> Option<State> {
+    State::ALL.into_iter().find(|s| s.name() == name)
+}
+
+/// What a card's `pose: <name>` shows: the downloaded pose of that name first, else the
+/// character's own pose of the state of that name (`has_pose`); None: neither, the card shows
+/// alone.
+fn card_look_of(name: &str, downloaded: bool, has_pose: impl Fn(State) -> bool) -> Option<Look> {
+    if downloaded {
+        return Some(Look::Downloaded(name.to_string()));
+    }
+    state_named(name).filter(|s| has_pose(*s)).map(Look::Own)
+}
+
+/// The home's pose: a card's pose in place of the moment's (`moment`), except on the pages with
+/// their own animation ([`paged`]), where only the moment's link and working poses show
+/// (`Ui::home_state`).
+fn home_look_of(card: Option<Look>, paged: bool, moment: State) -> Look {
+    match card {
+        Some(l) if !paged => l,
+        _ => Look::Own(moment),
+    }
+}
+
+/// A downloaded pose's animation table (`<name>.toml`): `file` (in `dir`), `size`, `frames`, `fps`,
+/// `pause` (optional) and `rect`, as an animation of character.toml.
+fn pose_animation(text: &str, dir: &Path) -> Result<Animation, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Raw {
+        file: String,
+        size: [u32; 2],
+        frames: [u32; 2],
+        fps: f32,
+        #[serde(default)]
+        pause: f32,
+        rect: [f32; 4],
+    }
+    let r: Raw = toml::from_str(text).map_err(|e| e.to_string())?;
+    if r.file.contains('/') || r.file.contains("..") {
+        return Err(format!("file = {:?}: a file next to the pose", r.file));
+    }
+    if r.frames[1] <= r.frames[0] || !(r.fps > 0.0 && r.fps <= 60.0) {
+        return Err("frames = [first, end] with end > first, fps 1 to 60".into());
+    }
+    Ok(Animation {
+        name: anim::CARD_POSE.into(),
+        file: dir.join(r.file),
+        size: (r.size[0], r.size[1]),
+        first: r.frames[0],
+        end: r.frames[1],
+        fps: r.fps,
+        pause: r.pause,
+        rect: r.rect,
+    })
 }
 
 /// A whole picture of the character that is not a pose (the do not disturb prop), with the
@@ -400,6 +484,41 @@ pub fn save_png<S: Screen>(app: &S, path: &Path) -> Result<(), String> {
 }
 
 /// Screen state and pose of a phase.
+/// How long a reflex's nod stays on the home.
+const NOD_FOR: Duration = Duration::from_secs(3);
+/// How long the satisfied pose stays after a job went well.
+const SATISFIED_FOR: Duration = Duration::from_secs(10);
+/// The bow after the Home Assistant setup (the `done` clip): the satisfied pose comes after it.
+const BOW: Duration = Duration::from_secs(3);
+
+/// What decides the home's pose besides idle.
+#[derive(Debug, Clone, Copy, Default)]
+struct HomeMoment {
+    mic_off: bool,
+    linking: bool,
+    working: bool,
+    satisfied: bool,
+    nod: bool,
+}
+
+/// The home's pose for the moment, the most lasting first: the microphone off, the link pages,
+/// a job under way, one gone well, a reflex's nod; else idle.
+fn home_state_of(m: HomeMoment) -> State {
+    if m.mic_off {
+        State::Muted
+    } else if m.linking {
+        State::Link
+    } else if m.working {
+        State::Working
+    } else if m.satisfied {
+        State::Satisfied
+    } else if m.nod {
+        State::Nod
+    } else {
+        State::Idle
+    }
+}
+
 fn view(p: Phase) -> (&'static str, State) {
     match p {
         Phase::Home => ("home", State::Idle),
@@ -451,6 +570,8 @@ pub struct Demo {
     pub setup_card: bool,
     /// `--state reminder-due`: a reminder due now, full screen.
     pub notice: bool,
+    /// `--state audio-down`: the audio did not start (crate::audio_down), its card on home.
+    pub audio_down: bool,
     /// `--state control` / `control-music`: the control center pulled down.
     pub control: bool,
     /// `--state mirror-*` / `home-mirroring`: a screen mirrored, its frame's size.
@@ -484,10 +605,33 @@ pub struct Demo {
     pub answer_early: bool,
     /// `--state ha-pick` / `ha-pick-voice`: what the choice page lists ("ai", "voice").
     pub pick: &'static str,
+    /// `--state widget*`: the home's widget on sample data, on this page.
+    pub widget: Option<WidgetKind>,
+    /// `--state widget-medium` / `widget-line`: one card (a timer) or two over it.
+    pub widget_cards: usize,
+    /// `--state widget-weather-tomorrow*`: the same day at 19:10, after sunset (the weather
+    /// widget shows tomorrow).
+    pub evening: bool,
+    /// `--state settings-anim-*`: one frame of an animation (its sheet decoded at once).
+    pub frame: Option<(&'static str, u32)>,
+    /// `--state settings-panel` (1), `panel-ask` (2), `panel-blocked` (3): the browser panel's
+    /// page, its access dialog, the home's card after too many requests; `settings-panel-remote`
+    /// (4), `remote-sign` (5), `remote-ask` (6): the remote screen's switch on, its sign, the
+    /// question at a start.
+    pub panel: u8,
+    /// `--state board` (1), `board-confirm` (2), `board-empty` (3), `widget-custom*` (4),
+    /// `board-talk` (5), `board-swipe` (6), `board-opening` (7): the board on sample data
+    /// (board_ui::demo_board), `board-away` (8): the board with Home Assistant not reachable.
+    pub board: u8,
+    /// `--state card-pose`: Home Assistant's card asks for a pose (the character's own
+    /// "satisfied").
+    pub card_pose: bool,
+    /// `--state settings-conversation`: Settings with conversation mode on.
+    pub conversation_mode: bool,
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 74] = [
+pub const DEMO_STATES: [&str; 123] = [
     "home",
     "cards",
     "cards-setup",
@@ -497,6 +641,7 @@ pub const DEMO_STATES: [&str; 74] = [
     "speaking",
     "error",
     "offline",
+    "audio-down",
     "ringing",
     "reminder-due",
     "volume",
@@ -562,6 +707,54 @@ pub const DEMO_STATES: [&str; 74] = [
     "what",
     "update",
     "update-confirm",
+    "widget",
+    "widget-weather",
+    "widget-weather-compact",
+    "widget-weather-tomorrow",
+    "widget-weather-tomorrow-compact",
+    "widget-weather-line",
+    "widget-weather-medium",
+    "widget-shopping",
+    "widget-medium",
+    "widget-line",
+    "widget-compact",
+    "widget-quotes",
+    "widget-quotes-line",
+    "widget-cities",
+    "trends",
+    "city",
+    "widget-notes",
+    "notes",
+    "widget-sensors",
+    "widget-check",
+    "widget-playing",
+    "widget-home",
+    "trends-sensors",
+    "settings-widgets",
+    "settings-anim-in",
+    "settings-anim-hold",
+    "settings-anim-out",
+    "ha-anim-hold",
+    "ha-anim-type",
+    "muted-anim-in",
+    "settings-panel",
+    "panel-ask",
+    "panel-blocked",
+    "settings-panel-remote",
+    "remote-sign",
+    "remote-ask",
+    "poses",
+    "board",
+    "board-confirm",
+    "board-empty",
+    "board-talk",
+    "board-swipe",
+    "board-opening",
+    "widget-custom",
+    "widget-custom-line",
+    "board-away",
+    "card-pose",
+    "settings-conversation",
 ];
 
 impl Demo {
@@ -587,6 +780,10 @@ impl Demo {
             },
             "reminder-due" => Demo {
                 notice: true,
+                ..home.clone()
+            },
+            "audio-down" => Demo {
+                audio_down: true,
                 ..home.clone()
             },
             "control" => Demo {
@@ -643,6 +840,15 @@ impl Demo {
             "ha-home" => Demo {
                 v02: "home",
                 ..home.clone()
+            },
+            "card-pose" => Demo {
+                v02: "home",
+                card_pose: true,
+                ..home.clone()
+            },
+            "settings-conversation" => Demo {
+                conversation_mode: true,
+                ..page("settings")
             },
             "ha-next" => Demo {
                 v02: "next",
@@ -790,6 +996,46 @@ impl Demo {
                 night: true,
                 ..home.clone()
             },
+            "widget"
+            | "widget-weather"
+            | "widget-weather-compact"
+            | "widget-weather-tomorrow"
+            | "widget-weather-tomorrow-compact"
+            | "widget-weather-line"
+            | "widget-weather-medium"
+            | "widget-shopping"
+            | "widget-medium"
+            | "widget-line"
+            | "widget-compact"
+            | "widget-quotes"
+            | "widget-quotes-line"
+            | "widget-cities"
+            | "widget-notes"
+            | "widget-sensors"
+            | "widget-check"
+            | "widget-playing"
+            | "widget-home" => Demo {
+                widget: Some(match s {
+                    s if s.starts_with("widget-weather") => WidgetKind::Weather,
+                    "widget-shopping" => WidgetKind::Shopping,
+                    "widget-quotes" | "widget-quotes-line" => WidgetKind::Quotes,
+                    "widget-cities" => WidgetKind::Cities,
+                    "widget-notes" => WidgetKind::Notes,
+                    "widget-sensors" => WidgetKind::Sensors,
+                    "widget-check" => WidgetKind::Check,
+                    "widget-playing" => WidgetKind::Playing,
+                    "widget-home" => WidgetKind::Home,
+                    _ => WidgetKind::Next,
+                }),
+                widget_cards: match s {
+                    "widget-medium" | "widget-weather-medium" => 1,
+                    "widget-line" | "widget-quotes-line" | "widget-weather-line" => 2,
+                    _ => 0,
+                },
+                compact: s == "widget-compact" || s.ends_with("-compact"),
+                evening: s.starts_with("widget-weather-tomorrow"),
+                ..home.clone()
+            },
             "starting" => Demo {
                 starting: true,
                 phase: Phase::Offline,
@@ -800,6 +1046,102 @@ impl Demo {
                 page(DEMO_STATES.into_iter().find(|x| *x == s)?)
             }
             "update" => page("update"),
+            "poses" => page("poses"),
+            "settings-widgets" => page("widgets"),
+            // The settings animation, a frame of each part: the toolbox out, the spanner held,
+            // both on their way back (on the home).
+            "settings-anim-in" => Demo {
+                frame: Some(("settings_in", 30)),
+                ..page("settings")
+            },
+            "settings-anim-hold" => Demo {
+                frame: Some(("settings_hold", 32)),
+                ..page("settings")
+            },
+            "settings-anim-out" => Demo {
+                frame: Some(("settings_out", 24)),
+                ..home.clone()
+            },
+            // The laptop on the Home Assistant page (held, typing) and the earmuffs going on.
+            "ha-anim-hold" => Demo {
+                frame: Some(("ha_hold", 20)),
+                ..page("ha")
+            },
+            "ha-anim-type" => Demo {
+                frame: Some(("ha_type", 20)),
+                ..page("ha")
+            },
+            "muted-anim-in" => Demo {
+                frame: Some(("muted_in", 50)),
+                ..home.clone()
+            },
+            "board" | "board-confirm" | "board-empty" | "board-swipe" | "board-away" => Demo {
+                board: match s {
+                    "board" => 1,
+                    "board-confirm" => 2,
+                    "board-swipe" => 6,
+                    "board-away" => 8,
+                    _ => 3,
+                },
+                ..page("board")
+            },
+            // Not golden ones: a conversation over the board (the face's ring, the bar); a
+            // finger half way across to the next page; one pulling it in from the home's edge.
+            "board-talk" => Demo {
+                phase: Phase::Listening,
+                board: 5,
+                ..page("board")
+            },
+            "board-opening" => Demo {
+                board: 7,
+                ..home.clone()
+            },
+            "widget-custom" | "widget-custom-line" => Demo {
+                widget: Some(WidgetKind::Custom),
+                widget_cards: if s == "widget-custom-line" { 2 } else { 0 },
+                board: 4,
+                ..home.clone()
+            },
+            "trends" => Demo {
+                widget: Some(WidgetKind::Quotes),
+                ..page("trends")
+            },
+            "city" => Demo {
+                widget: Some(WidgetKind::Cities),
+                ..page("city")
+            },
+            "notes" => Demo {
+                widget: Some(WidgetKind::Notes),
+                ..page("notes")
+            },
+            "trends-sensors" => Demo {
+                widget: Some(WidgetKind::Sensors),
+                ..page("trends")
+            },
+            "settings-panel" => Demo {
+                panel: 1,
+                ..page("panel")
+            },
+            "panel-ask" => Demo {
+                panel: 2,
+                ..page("settings")
+            },
+            "panel-blocked" => Demo {
+                panel: 3,
+                ..home.clone()
+            },
+            "settings-panel-remote" => Demo {
+                panel: 4,
+                ..page("panel")
+            },
+            "remote-sign" => Demo {
+                panel: 5,
+                ..home.clone()
+            },
+            "remote-ask" => Demo {
+                panel: 6,
+                ..home.clone()
+            },
             "update-confirm" => Demo {
                 dialog: "update",
                 ..page("update")
@@ -875,6 +1217,8 @@ pub const PAGE_IDLE: Duration = Duration::from_secs(60);
 type PhotoRx = std::sync::mpsc::Receiver<Result<SharedPixelBuffer<Rgba8Pixel>, String>>;
 /// The gallery's thumbnails, from their thread.
 type ThumbsRx = std::sync::mpsc::Receiver<Vec<SharedPixelBuffer<Rgba8Pixel>>>;
+/// A shopping item tapped stays ticked this long, and a second tap takes it back.
+pub const SHOP_UNDO: Duration = Duration::from_secs(5);
 /// The camera page goes home after this long without a touch or a photo.
 pub const CAMERA_IDLE: Duration = Duration::from_secs(120);
 /// The countdown before a photo (seconds).
@@ -950,6 +1294,16 @@ pub struct UiOptions {
     pub link: Option<crate::ha::link::LinkSetup>,
     /// Updates (Settings → Info): where from; None: no checking (`--state`, the simulator, tests).
     pub update: Option<crate::update::UpdateCfg>,
+    /// The browser panel's socket and port (None: no socket: `--state`, tests).
+    pub panel: Option<crate::panel::PanelCfg>,
+}
+
+/// A sheet decoded only while it is needed: being decoded, and whether it is wanted (its clips
+/// are dropped when they come after it was no longer needed).
+#[derive(Default)]
+struct Lazy {
+    incoming: Option<Receiver<Clip>>,
+    on: bool,
 }
 
 /// The animation side of the UI.
@@ -957,7 +1311,13 @@ struct Motion {
     seq: Sequencer,
     clips: HashMap<&'static str, Arc<Clip>>,
     incoming: Option<Receiver<Clip>>,
+    /// The sheets of [`LAZY_CLIPS`], in the same order.
+    lazy: [Lazy; 5],
+    /// The sheet of the pose of Home Assistant's cards, being decoded.
+    pose_incoming: Option<Receiver<Clip>>,
     playhead: Option<Playhead>,
+    /// The picture a clip fades in over (`Show::Fade`): what was on screen when it started.
+    fade_from: Option<Vec<u8>>,
     shown: Show,
     awake: Awake,
     backlight: Backlight,
@@ -968,11 +1328,27 @@ struct Motion {
     present_time: Duration,
 }
 
+/// The downloaded poses' pictures read so far, by name (None: not downloaded).
+type PosePictures = HashMap<String, Option<Image>>;
+
+/// Settings → Poses as the downloads' thread told it last.
+#[derive(Debug, Default)]
+struct PoseView {
+    /// The catalogue's poses of the character (None: not read yet), or why it could not be read.
+    catalogue: Option<Result<Vec<crate::poses::Pose>, String>>,
+    /// The pose being downloaded.
+    busy: Option<String>,
+    /// The last failure: (pose, why).
+    failed: Option<(String, String)>,
+}
+
 /// Something removed by touch, kept for [`UNDO`] before it is really gone.
 #[derive(Debug, Clone)]
 enum Undo {
     Timer(String),
     Alarm(u32),
+    /// A note of the board (the brain's id).
+    Note(i64),
 }
 
 /// Freed sheets are many small blocks: glibc keeps them for later unless asked (`malloc_trim`).
@@ -987,6 +1363,50 @@ fn give_back_memory() {
 /// The night's animations: decoded from a little before the night to a little after it, freed
 /// by day (their sheet is the largest).
 const NIGHT_CLIPS: [&str; 3] = ["fall_asleep", "sleeping", "wake_from_sleep"];
+/// The settings pages' animations: decoded while a settings page is open (and until
+/// `settings_out` has played), freed after.
+const SETTINGS_CLIPS: [&str; 3] = ["settings_in", "settings_hold", "settings_out"];
+/// The Home Assistant page's animations (the laptop): the same, with that page.
+const HA_CLIPS: [&str; 6] = [
+    "ha_in",
+    "ha_hold",
+    "ha_type_in",
+    "ha_type",
+    "ha_type_out",
+    "ha_out",
+];
+/// The earmuffs going on and off: the same, while the microphone is off (the `muted` loop is
+/// decoded at start like the other loops).
+const EARMUFF_CLIPS: [&str; 2] = ["muted_in", "muted_out"];
+/// The plug of the link pages: the same, with those pages.
+const LINK_CLIPS: [&str; 3] = ["link_in", "link_hold", "link_out"];
+/// A job gone well: the same, while it lasts (it comes after a bow: the time to decode it).
+const SATISFIED_CLIPS: [&str; 3] = ["satisfied_in", "satisfied_hold", "satisfied_out"];
+/// The sheets decoded only while they are needed ([`Sequencer::uses`]). The nod's (4 MB) is
+/// kept: it comes at once after a reflex, often.
+const LAZY_CLIPS: [&[&str]; 5] = [
+    &SETTINGS_CLIPS,
+    &HA_CLIPS,
+    &EARMUFF_CLIPS,
+    &LINK_CLIPS,
+    &SATISFIED_CLIPS,
+];
+/// The settings pages: Settings and the pages under it.
+const SETTINGS_PAGES: [&str; 7] = [
+    "settings", "language", "screen", "widgets", "panel", "update", "poses",
+];
+/// One of [`LAZY_CLIPS`].
+fn lazy_clip(name: &str) -> bool {
+    LAZY_CLIPS.iter().any(|g| g.contains(&name))
+}
+
+/// A page where the character has its own animation over idle (the settings pages, More, the
+/// Home Assistant page): no card's pose there, and of the moment's only the link and a job
+/// (`Ui::home_state`).
+fn paged(page: &str) -> bool {
+    SETTINGS_PAGES.contains(&page) || matches!(page, "altro" | "ha")
+}
+
 /// How long before and after the night hours its animations are kept.
 const NIGHT_MARGIN_S: i64 = 10 * 60;
 
@@ -1082,6 +1502,8 @@ pub struct Ui<S: Screen> {
     trimmed: Cell<bool>,
     /// The core knows a reminder is full screen (UiEvent::Notice, for the stop word).
     notice_told: Cell<bool>,
+    /// The audio did not start (crate::audio_down): home says so instead of the offline card.
+    audio_down: Cell<bool>,
     view: Cell<Phase>,
     core: Sender<CoreEvent>,
     motion: RefCell<Motion>,
@@ -1133,6 +1555,9 @@ pub struct Ui<S: Screen> {
     /// Watches how an install ends, to say it in a dialog until OK; the end shown (its status
     /// line), so it is said once.
     update_watch: Timer,
+    /// Shopping items tapped and waiting [`SHOP_UNDO`] before they are bought, and their timer.
+    shop_ticks: RefCell<HashMap<String, Instant>>,
+    shop_timer: Timer,
     update_result_shown: RefCell<String>,
     gallery: RefCell<Vec<PathBuf>>,
     thumbs_rx: RefCell<Option<ThumbsRx>>,
@@ -1166,6 +1591,51 @@ pub struct Ui<S: Screen> {
     ha_keep: Cell<Option<Instant>>,
     /// Settings → Screen → "Home compatta" (the clock higher, four cards).
     home_compact: Cell<bool>,
+    /// The home's widget (widgets.rs): its turn, the pages that are on (none: no widget, the
+    /// home as before), the interval of the turn (None: by hand only).
+    widget: RefCell<Band>,
+    widget_on: RefCell<Vec<WidgetPage>>,
+    /// Every page in the turn's order (the ones off keep their place).
+    widget_order: RefCell<Vec<WidgetPage>>,
+    /// The names given to pages from the browser (none: "Markets", "Markets 2").
+    widget_names: RefCell<Vec<(WidgetPage, String)>>,
+    /// The page whose own page a tap on the widget opened (the markets' or the cities' of
+    /// that page).
+    widget_opened: Cell<Option<WidgetPage>>,
+    widget_every: Cell<Option<Duration>>,
+    /// The data of the pages chosen from the browser and of Home Assistant's (feeds/, ha/).
+    widget_data: RefCell<widgets::Data>,
+    /// Home Assistant's side of the widget: what it is asked (settings), the entities it may
+    /// show (the catalogue, for the browser panel's searches), the data it sent.
+    widget_ha: RefCell<crate::ha::widgets::Want>,
+    ha_catalog: RefCell<Vec<crate::ha::widgets::Entity>>,
+    ha_widgets: RefCell<crate::ha::widgets::WidgetsData>,
+    /// What the hub was last told of the night and the screen (its curves wait), and when the
+    /// browser panel last had the catalogue asked again.
+    ha_quiet: Cell<Option<bool>>,
+    pub(super) catalog_asked: Cell<Option<Instant>>,
+    /// The local hour the night's schedule reads instead of the clock (the tests, so that their
+    /// outcome never depends on when they run; None: the clock).
+    hour_for_tests: Cell<Option<u32>>,
+    /// The sensors' last 24 hours, by entity.
+    ha_curves: RefCell<HashMap<String, crate::ha::widgets::Curve>>,
+    /// The board's notes (the brain's `notes` event), oldest first.
+    board: RefCell<Vec<brain_link::Note>>,
+    /// The markets chosen from the browser (settings.toml), in their order, and the coins'
+    /// currency.
+    widget_quotes: RefCell<Lists<crate::feeds::QuoteChoice>>,
+    widget_currency: RefCell<String>,
+    /// The other cities chosen from the browser, and their weather as last fetched.
+    widget_cities: RefCell<Lists<crate::feeds::CityChoice>>,
+    /// Home Assistant's sensors chosen from the browser, page by page (`widget_ha.sensors` is
+    /// all of them, for the hub).
+    widget_sensors: RefCell<Lists<String>>,
+    /// The home's weather is in °F (its last known unit): the other cities follow.
+    fahrenheit: Cell<bool>,
+    city_weather: RefCell<Vec<crate::feeds::openmeteo::CityWeather>>,
+    /// The feeds' thread (feeds/) and the revision of its data last shown.
+    feeds: RefCell<crate::feeds::Feeds>,
+    feeds_rev: Cell<u64>,
     /// The first start's welcome page is still to be answered.
     language_pending: Cell<bool>,
     /// The first start's search for Home Assistant on the network, while it runs.
@@ -1181,7 +1651,168 @@ pub struct Ui<S: Screen> {
     ask_left: Cell<f32>,
     /// Do not disturb (UiCommand::DoNotDisturb).
     dnd: Cell<Dnd>,
+    /// The browser panel (panel_ui.rs): who is let in, and what the screen shows of it. Apart:
+    /// the sessions are borrowed while a request is answered, the rest is drawn meanwhile.
+    panel_sessions: RefCell<crate::panel::sessions::Sessions>,
+    panel: RefCell<panel_ui::PanelUi>,
+    /// The remote screen (remote_ui.rs): the switch, the sign, the capture.
+    remote: RefCell<remote_ui::RemoteUi>,
+    /// Settings applied but not written yet, and the timer that writes them (settings_model).
+    settings_pending: RefCell<Vec<Change>>,
+    settings_timer: Timer,
+    /// The home's pose (a card's, or the moment's besides idle: `link`, `working`, `satisfied`,
+    /// `nod`, `muted`): the one drawn last, a reflex's nod waiting for the home, and until when
+    /// the nod and the satisfied pose last (the satisfied one from when).
+    home_pose: RefCell<Look>,
+    /// The microphone is off, as the core said last (UiCommand::Control): not before it says so.
+    mic_off: Cell<bool>,
+    nod_pending: Cell<bool>,
+    nod_until: Cell<Option<Instant>>,
+    satisfied: Cell<Option<(Instant, Instant)>>,
+    /// The pose a card of Home Assistant asks for (`card_look_of`; None: none, or not one the
+    /// character has), and the downloaded poses' pictures read so far.
+    card_pose: RefCell<(Option<Look>, PosePictures)>,
+    /// An announcement plays (UiCommand::Announcing): a pose stays on while it is said.
+    announcing: Cell<bool>,
+    /// Settings → Poses: the downloads' thread (src/poses.rs), and what it said last.
+    pose_downloads: Option<(
+        Sender<crate::poses::Cmd>,
+        RefCell<Receiver<crate::poses::Msg>>,
+    )>,
+    pose_view: RefCell<PoseView>,
+    /// The board (ui/board.rs): its page, its custom widgets, its calls and question.
+    tile_board: RefCell<board_ui::BoardUi>,
+    /// Puts a tile back when Home Assistant did not answer (runs only while one waits).
+    board_timer: Timer,
+    /// A level dragged faster than it may be sent: the last value, sent when it may.
+    level_timer: Timer,
     this: RefCell<Weak<Self>>,
+}
+
+/// Settings changed within this are written together.
+const SETTINGS_WRITE_AFTER: Duration = Duration::from_secs(1);
+
+impl<S: Screen> Ui<S> {
+    /// The settings changed since the last write, written now.
+    pub fn flush_settings(&self) {
+        let pending = std::mem::take(&mut *self.settings_pending.borrow_mut());
+        if let Some(s) = &self.settings {
+            for c in &pending {
+                model::save(s, c);
+            }
+        }
+        self.settings_timer.stop();
+    }
+
+    /// A value still waiting to be written, for the keys the screen does not hold.
+    fn pending_value(&self, key: &str) -> Option<serde_json::Value> {
+        self.settings_pending
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|c| match (key, c) {
+                ("update_prerelease", Change::UpdatePrerelease(on)) => Some(json!(on)),
+                ("lists", Change::Lists(l)) => Some(json!(l)),
+                ("calendars", Change::Calendars(l)) => Some(json!(l)),
+                _ => None,
+            })
+    }
+}
+
+impl<S: Screen> model::Host for Ui<S> {
+    fn settings(&self) -> Option<&Settings> {
+        self.settings.as_ref()
+    }
+
+    /// What the screen holds now: every change is applied at once and written a second later.
+    fn live(&self, key: &str) -> Option<serde_json::Value> {
+        let (on, start, end) = self.desk.borrow().night;
+        let hub = self.hub_tx.borrow().is_some();
+        Some(match key {
+            "volume" => json!(self.volume.get()),
+            "language" => json!(self.locale.borrow().code),
+            "widgets" => json!(
+                self.widget_on
+                    .borrow()
+                    .iter()
+                    .map(|k| k.key())
+                    .collect::<Vec<_>>()
+            ),
+            "widgets_every" => json!(self.widget_every_secs().to_string()),
+            "widgets_currency" => json!(self.widget_currency.borrow().clone()),
+            "check_openings" => json!(self.widget_ha.borrow().openings),
+            "check_batteries" => json!(self.widget_ha.borrow().batteries),
+            "widget_order" => json!(
+                self.widget_order
+                    .borrow()
+                    .iter()
+                    .map(|k| k.key())
+                    .collect::<Vec<_>>()
+            ),
+            "night_on" => json!(on),
+            "night_start" => json!(start),
+            "night_end" => json!(end),
+            "home_compact" => json!(self.home_compact.get()),
+            "wake_sensitivity" => {
+                json!(WakeSensitivity::from_step(self.screen.get_wake_step()).key())
+            }
+            "keep_conversations" => json!(self.history.borrow().keeps()),
+            "conversation_mode" => json!(self.screen.get_conversation_mode()),
+            "conversation_max" => json!(self.screen.get_conversation_max()),
+            "lists" if hub => json!(self.choice.borrow().lists),
+            "calendars" if hub => json!(self.choice.borrow().calendars),
+            "panel" => json!(self.panel.borrow().on),
+            // Not held by the screen: the file (or a change still to write, below).
+            _ => return self.pending_value(key),
+        })
+    }
+
+    fn save(&self, change: &Change) {
+        if self.settings.is_none() {
+            return;
+        }
+        {
+            let mut p = self.settings_pending.borrow_mut();
+            // The latest of each kind (of each page for a page's list): Night and Widgets
+            // carry their whole section; a page added or removed is never dropped.
+            p.retain(|c| !c.replaced_by(change));
+            p.push(change.clone());
+        }
+        if let Some(me) = self.this.borrow().upgrade() {
+            let w = Rc::downgrade(&me);
+            self.settings_timer
+                .start(TimerMode::SingleShot, SETTINGS_WRITE_AFTER, move || {
+                    if let Some(ui) = w.upgrade() {
+                        ui.flush_settings();
+                    }
+                });
+        } else {
+            self.flush_settings();
+        }
+    }
+
+    fn dynamic_options(&self, key: &str) -> Vec<(String, String)> {
+        match key {
+            "language" => self
+                .character
+                .languages()
+                .map(|code| {
+                    let name = locale::load(&self.opts.locales, code)
+                        .map_or_else(|_| code.to_uppercase(), |l| l.name);
+                    (code.to_string(), name)
+                })
+                .collect(),
+            "lists" => self.choice.borrow().known.todo.clone(),
+            "calendars" => self.choice.borrow().known.calendar.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn apply(&self, change: Change) {
+        self.apply_setting(change);
+        // A change from the panel shows on the open page; the screen's own as well.
+        self.refresh_settings();
+    }
 }
 
 /// Settings → Home Assistant, as the setup thread last told it.
@@ -1291,6 +1922,286 @@ fn short_date(l: &Locale, ts: i64) -> String {
 }
 
 /// "14:02" of a time in seconds since the epoch, and the day it is on (days since the epoch, local).
+/// The markets of the demos: public names, made-up prices, a day's curve each.
+fn demo_quotes() -> Vec<widgets::Trend> {
+    let at = DEMO_NOW as i64 - 300;
+    let q = |name: &str, unit: &str, decimals: u8, prev: f64, value: f64, wave: f64| {
+        let points: Vec<f64> = (0..32)
+            .map(|i| {
+                let t = i as f64 / 31.0;
+                prev + (value - prev) * t + (t * wave).sin() * (value - prev).abs() * 0.6
+            })
+            .collect();
+        let low = points.iter().copied().fold(f64::INFINITY, f64::min);
+        let high = points.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        widgets::Trend {
+            key: format!("yahoo:{name}"),
+            name: name.into(),
+            value,
+            decimals,
+            unit: unit.into(),
+            prev: Some(prev),
+            pct: true,
+            points: widgets::downsample(&points, widgets::CURVE_POINTS),
+            low,
+            high,
+            at,
+            fresh: 1800,
+            max_age: 48 * 3600,
+        }
+    };
+    vec![
+        q("Apple Inc.", "USD", 2, 186.95, 189.20, 7.0),
+        q("S&P 500", "", 2, 5640.10, 5612.42, 5.0),
+        q("Bitcoin", "USD", 0, 63120.0, 64250.0, 9.0),
+        q("EUR/USD", "", 4, 1.0835, 1.0812, 4.0),
+        q("Gold", "USD", 2, 2391.5, 2402.8, 6.0),
+    ]
+}
+
+/// A city's weather as Home Assistant's (`ha::weather::Weather`), so the weather page's code
+/// draws it; and its date today there ("2026-11-03").
+fn city_as_weather(w: &crate::feeds::openmeteo::CityWeather, now: i64) -> (Weather, String) {
+    use crate::ha::weather::{ForecastDay, ForecastHour};
+    let date = |t: i64| {
+        let days = (t + w.utc_offset as i64).div_euclid(86400);
+        let (y, m, d) = civil_from_days(days);
+        format!("{y:04}-{m:02}-{d:02}")
+    };
+    let mut days = w.days.iter().map(|d| ForecastDay {
+        // Noon of that day, so a time zone's midnight never falls on the day before.
+        date: date(d.at + 12 * 3600 - w.utc_offset as i64),
+        condition: d.cond.clone(),
+        high: Some(d.high as f64),
+        low: Some(d.low as f64),
+        ..Default::default()
+    });
+    let today = date(now);
+    let first = days.next();
+    let (today_fc, mut next): (Option<ForecastDay>, Vec<ForecastDay>) = match first {
+        Some(f) if f.date == today => (Some(f), Vec::new()),
+        Some(f) => (None, vec![f]),
+        None => (None, Vec::new()),
+    };
+    next.extend(days);
+    (
+        Weather {
+            condition: w.cond.clone(),
+            temperature: w.temp as f64,
+            unit: w.unit.clone(),
+            today: today_fc,
+            next_days: next,
+            hours: w
+                .hours
+                .iter()
+                .map(|h| ForecastHour {
+                    at: h.at,
+                    condition: h.cond.clone(),
+                    temperature: Some(h.temp as f64),
+                })
+                .collect(),
+            ..Default::default()
+        },
+        today,
+    )
+}
+
+/// The civil date of a day number since 1970-01-01.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    (y, m, d)
+}
+
+/// Home Assistant's side of the demos: invented sensors with their day, an open window and a
+/// low battery, a song, two people.
+fn demo_ha(
+    l: &Locale,
+) -> (
+    crate::ha::widgets::WidgetsData,
+    HashMap<String, crate::ha::widgets::Curve>,
+) {
+    use crate::ha::widgets::{Curve, SensorNow, WidgetsData};
+    let names: Vec<String> = l
+        .sample("ha_sensors")
+        .split('|')
+        .map(String::from)
+        .collect();
+    let name = |i: usize| names.get(i).cloned().unwrap_or_default();
+    let sensor = |i: usize, id: &str, value: f64, decimals: u8, unit: &str| SensorNow {
+        id: id.into(),
+        name: name(i),
+        value,
+        decimals,
+        unit: unit.into(),
+    };
+    let curve = |from: f64, to: f64, wave: f64| {
+        let pts: Vec<f64> = (0..48)
+            .map(|i| {
+                let t = i as f64 / 47.0;
+                from + (to - from) * t + (t * wave).sin() * (to - from).abs().max(0.5) * 0.8
+            })
+            .collect();
+        Curve {
+            points: widgets::downsample(&pts, widgets::CURVE_POINTS),
+            first: from,
+            low: pts.iter().copied().fold(f64::INFINITY, f64::min),
+            high: pts.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        }
+    };
+    let data = WidgetsData {
+        sensors: vec![
+            sensor(0, "sensor.outdoor", 12.5, 1, "°C"),
+            sensor(1, "sensor.living", 21.3, 1, "°C"),
+            sensor(2, "sensor.humidity", 48.0, 0, "%"),
+            sensor(3, "sensor.power", 412.0, 0, "W"),
+        ],
+        check: vec![
+            widgets::CheckRow {
+                name: name(4),
+                battery: None,
+            },
+            widgets::CheckRow {
+                name: name(5),
+                battery: Some(14),
+            },
+        ],
+        playing: Some(widgets::Playing {
+            title: "Clair de lune".into(),
+            artist: "Claude Debussy".into(),
+            player: name(6),
+        }),
+        people: vec![
+            widgets::Person {
+                name: "Ada".into(),
+                place: widgets::Place::Home,
+            },
+            widgets::Person {
+                name: "Bob".into(),
+                place: widgets::Place::Zone(name(7)),
+            },
+        ],
+    };
+    let curves = [
+        ("sensor.outdoor", curve(8.0, 12.5, 4.0)),
+        ("sensor.living", curve(20.1, 21.3, 6.0)),
+        ("sensor.humidity", curve(55.0, 48.0, 3.0)),
+        ("sensor.power", curve(380.0, 412.0, 9.0)),
+    ]
+    .into_iter()
+    .map(|(k, c)| (k.to_string(), c))
+    .collect();
+    (data, curves)
+}
+
+/// The other cities of the demos: public places, made-up weather.
+fn demo_cities() -> (
+    Vec<crate::feeds::CityChoice>,
+    Vec<crate::feeds::openmeteo::CityWeather>,
+) {
+    use crate::feeds::openmeteo::{CityWeather, Day, Hour};
+    let at = DEMO_NOW as i64 - 600;
+    let midnight = DEMO_NOW as i64 - DEMO_NOW as i64 % 86400;
+    let city = |id: u64, name: &str, region: &str, country: &str, lat: f64, lon: f64| {
+        crate::feeds::CityChoice {
+            id,
+            name: name.into(),
+            region: region.into(),
+            country: country.into(),
+            lat,
+            lon,
+        }
+    };
+    let weather = |id: u64, temp: f32, cond: &str, offset: i32, conds: [&str; 5]| CityWeather {
+        id,
+        temp,
+        cond: cond.into(),
+        hours: (0..8)
+            .map(|h| Hour {
+                at: midnight + (14 + h) * 3600,
+                temp: temp + ((h as f32) * 0.7).sin() * 2.0 - h as f32 * 0.3,
+                cond: conds[h as usize % 5].into(),
+            })
+            .collect(),
+        days: (0..5)
+            .map(|d| Day {
+                at: midnight + d * 86400,
+                high: temp + 3.0 - d as f32,
+                low: temp - 5.0 + (d as f32 * 0.5),
+                cond: conds[d as usize].into(),
+            })
+            .collect(),
+        utc_offset: offset,
+        unit: "°C".into(),
+        at,
+    };
+    (
+        vec![
+            city(2950159, "Berlin", "Berlin", "DE", 52.52, 13.41),
+            city(1850147, "Tokyo", "Tokyo", "JP", 35.69, 139.69),
+            city(4250542, "Springfield", "Illinois", "US", 39.8, -89.64),
+        ],
+        vec![
+            weather(
+                2950159,
+                9.0,
+                "rainy",
+                3600,
+                ["rainy", "cloudy", "rainy", "partlycloudy", "cloudy"],
+            ),
+            weather(
+                1850147,
+                12.0,
+                "clear-night",
+                9 * 3600,
+                ["clear-night", "sunny", "sunny", "partlycloudy", "rainy"],
+            ),
+            weather(
+                4250542,
+                17.0,
+                "partlycloudy",
+                -6 * 3600,
+                ["partlycloudy", "sunny", "cloudy", "pouring", "sunny"],
+            ),
+        ],
+    )
+}
+
+/// The words of the widget's pages.
+fn widget_words(l: &Locale) -> widgets::Words<'_> {
+    let ch = |k: &str, d: char| l.text(k).chars().next().unwrap_or(d);
+    widgets::Words {
+        next: l.text("widget_next"),
+        weather: l.text("widget_weather"),
+        shopping: l.text("widget_shopping"),
+        quotes: l.text("widget_quotes"),
+        cities: l.text("widget_cities"),
+        notes: l.text("widget_notes"),
+        sensors: l.text("widget_sensors"),
+        check: l.text("widget_check"),
+        playing: l.text("widget_playing"),
+        home: l.text("widget_home"),
+        today: l.text("calendar_today"),
+        tomorrow: l.text("calendar_tomorrow"),
+        to_buy: l.text("tile_shopping"),
+        data_from: l.text("widget_data_from"),
+        window: l.text("widget_window"),
+        open: l.text("widget_open"),
+        check_line: l.text("widget_check_line"),
+        at_home: l.text("widget_at_home"),
+        away: l.text("widget_away"),
+        decimal: ch("number_decimal", '.'),
+        group: ch("number_group", ','),
+    }
+}
+
 pub(crate) fn local_hm(t: i64) -> (String, i64) {
     // SAFETY: localtime_r only writes into the struct we pass.
     let tm = unsafe {
@@ -1374,10 +2285,11 @@ impl<S: Screen> Ui<S> {
         // The loading animation first, then what the home needs, then the states.
         let mut wanted: Vec<Animation> = Vec::new();
         if animated {
-            // The night's sheet (~19 MB decoded) only around the night: Ui::night_sheets.
+            // The night's sheet (~19 MB decoded) only around the night: Ui::night_sheets; the
+            // settings', the laptop's and the earmuffs' only while needed: Ui::lazy_sheets.
             for name in character::ANIMATIONS
                 .iter()
-                .filter(|n| !NIGHT_CLIPS.contains(n))
+                .filter(|n| !NIGHT_CLIPS.contains(n) && !lazy_clip(n))
             {
                 if let Some(a) = character.animation(name) {
                     wanted.push(a.clone());
@@ -1390,7 +2302,10 @@ impl<S: Screen> Ui<S> {
             clips: HashMap::new(),
             incoming: (!wanted.is_empty())
                 .then(|| anim::load_in_background(wanted, character.background)),
+            lazy: Default::default(),
+            pose_incoming: None,
             playhead: None,
+            fade_from: None,
             shown: Show::Pose,
             awake: Awake::new(opts.screen.awake_seconds),
             backlight: Backlight::open(if demo { "" } else { &opts.screen.backlight }),
@@ -1413,8 +2328,46 @@ impl<S: Screen> Ui<S> {
             Some(d) => d.compact,
             None => settings.as_ref().is_some_and(Settings::home_compact),
         };
+        // The widget's pages and interval (Settings → Screen → Widgets); the demos: all, 20 s.
+        let (widget_on, widget_every) = match (&opts.demo, &settings) {
+            (None, Some(s)) => s.widgets(),
+            _ => (
+                WidgetKind::ALL
+                    .into_iter()
+                    .filter(|k| k.default_on())
+                    .map(WidgetPage::from)
+                    .collect(),
+                widgets::DEFAULT_EVERY.as_secs() as u32,
+            ),
+        };
+        let widget_order = match (&opts.demo, &settings) {
+            (None, Some(s)) => s.widget_order(),
+            _ => WidgetPage::all(),
+        };
+        let (widget_names, widget_sensors) = match (&opts.demo, &settings) {
+            (None, Some(s)) => (s.widget_names(), s.sensors()),
+            _ => (Vec::new(), Lists::default()),
+        };
+        let widget_ha = settings
+            .as_ref()
+            .filter(|_| !demo)
+            .map(Settings::widget_ha)
+            .unwrap_or_default();
+        let (widget_quotes, widget_currency, widget_cities) = match (&opts.demo, &settings) {
+            (None, Some(s)) => (s.quotes(), s.widget_currency(), s.cities()),
+            _ => (Lists::default(), "usd".to_string(), Lists::default()),
+        };
+        // The demos never ask the internet (no cache, nothing chosen).
+        let feeds = crate::feeds::Feeds::new(if demo { None } else { opts.state_dir.clone() });
         let opts_auto = opts.screen.auto.filter(|_| !demo).map(Auto::new);
         let opts_linked = opts.ha_linked;
+        let opts_state_dir = opts.state_dir.clone();
+        let opts_locales = opts.locales.clone();
+        let opts_panel = opts.panel.clone();
+        let panel_on = settings.as_ref().is_some_and(Settings::panel_on);
+        let remote_on = settings.as_ref().is_some_and(Settings::panel_screen);
+        // Asked on the screen first unless switched off there (no settings: asked).
+        let remote_confirm = settings.as_ref().is_none_or(Settings::panel_screen_confirm);
         let opts_first = opts.first_start;
         let has_camera = !demo && super::camera::present();
         // The switch on the Updates page wins over the configuration's `prerelease`.
@@ -1424,6 +2377,19 @@ impl<S: Screen> Ui<S> {
             }
             c
         });
+        // Settings → Poses: from the releases of the updates' repository, into the state.
+        let pose_downloads = opts_update
+            .as_ref()
+            .filter(|c| !demo && crate::update::valid_repo(&c.repo))
+            .zip(opts.state_dir.as_ref())
+            .map(|(c, state)| {
+                let (tx, rx) = crate::poses::spawn(
+                    c.repo.clone(),
+                    character.id.clone(),
+                    crate::poses::dir(state, &character.id),
+                );
+                (tx, RefCell::new(rx))
+            });
         let ui = Rc::new(Ui {
             screen,
             mirror: RefCell::new(None),
@@ -1435,6 +2401,7 @@ impl<S: Screen> Ui<S> {
             night_pose: RefCell::new(None),
             trimmed: Cell::new(false),
             notice_told: Cell::new(false),
+            audio_down: Cell::new(false),
             view: Cell::new(Phase::Offline),
             core,
             motion: RefCell::new(motion),
@@ -1471,6 +2438,8 @@ impl<S: Screen> Ui<S> {
                 .map(|c| crate::update::Checker::spawn(c, env!("CARGO_PKG_VERSION"))),
             update_timer: Timer::default(),
             update_watch: Timer::default(),
+            shop_ticks: RefCell::new(HashMap::new()),
+            shop_timer: Timer::default(),
             update_result_shown: RefCell::new(String::new()),
             gallery: RefCell::new(Vec::new()),
             thumbs_rx: RefCell::new(None),
@@ -1490,6 +2459,33 @@ impl<S: Screen> Ui<S> {
             usage_asked: Cell::new(None),
             ha_keep: Cell::new(None),
             home_compact: Cell::new(compact),
+            widget: RefCell::new(Band::new(Instant::now())),
+            widget_on: RefCell::new(widget_on),
+            widget_order: RefCell::new(widget_order),
+            widget_names: RefCell::new(widget_names),
+            widget_opened: Cell::new(None),
+            widget_sensors: RefCell::new(widget_sensors),
+            widget_data: RefCell::new(widgets::Data::default()),
+            board: RefCell::new(Vec::new()),
+            widget_ha: RefCell::new(widget_ha),
+            ha_catalog: RefCell::new(Vec::new()),
+            ha_widgets: RefCell::new(Default::default()),
+            ha_curves: RefCell::new(HashMap::new()),
+            ha_quiet: Cell::new(None),
+            catalog_asked: Cell::new(None),
+            // The lib's tests live at noon from the start, whatever the clock says (the night's
+            // schedule changes what shows and what may be asked between 23:00 and 07:00).
+            hour_for_tests: Cell::new(if cfg!(test) { Some(12) } else { None }),
+            widget_quotes: RefCell::new(widget_quotes),
+            widget_currency: RefCell::new(widget_currency),
+            widget_cities: RefCell::new(widget_cities),
+            fahrenheit: Cell::new(false),
+            city_weather: RefCell::new(Vec::new()),
+            feeds: RefCell::new(feeds),
+            feeds_rev: Cell::new(0),
+            widget_every: Cell::new(
+                (widget_every > 0).then(|| Duration::from_secs(widget_every as u64)),
+            ),
             language_pending: Cell::new(opts_first.language),
             find: RefCell::new(None),
             restart_timer: Timer::default(),
@@ -1497,9 +2493,36 @@ impl<S: Screen> Ui<S> {
             asking: Cell::new(None),
             ask_left: Cell::new(0.0),
             dnd: Cell::new(Dnd::default()),
+            panel_sessions: panel_ui::load_sessions(opts_state_dir.as_deref()),
+            panel: RefCell::new(panel_ui::PanelUi::new(opts_panel, panel_on)),
+            remote: RefCell::new(remote_ui::RemoteUi {
+                on: remote_on,
+                confirm: remote_confirm,
+                ..Default::default()
+            }),
+            settings_pending: RefCell::new(Vec::new()),
+            settings_timer: Timer::default(),
+            home_pose: RefCell::new(Look::Own(State::Idle)),
+            mic_off: Cell::new(false),
+            nod_pending: Cell::new(false),
+            nod_until: Cell::new(None),
+            satisfied: Cell::new(None),
+            card_pose: RefCell::new((None, HashMap::new())),
+            announcing: Cell::new(false),
+            pose_downloads,
+            pose_view: RefCell::new(PoseView::default()),
+            tile_board: RefCell::new(board_ui::BoardUi {
+                icons: super::board::icons::Icons::new(super::board::icons::file_beside(
+                    &opts_locales,
+                )),
+                ..Default::default()
+            }),
+            board_timer: Timer::default(),
+            level_timer: Timer::default(),
             this: RefCell::new(Weak::new()),
         });
         *ui.this.borrow_mut() = Rc::downgrade(&ui);
+        ui.configure_feeds();
         // How an install ends: a dialog with OK over any page, once (Andrea, 2026-11-16).
         if ui.updater.is_some() && ui.opts.state_dir.is_some() {
             let w = Rc::downgrade(&ui);
@@ -1533,6 +2556,11 @@ impl<S: Screen> Ui<S> {
         }
         ui.set_welcome();
         ui.wire();
+        ui.wire_panel();
+        ui.wire_remote();
+        ui.wire_board();
+        ui.load_board();
+        ui.refresh_remote();
         ui.start_wifi();
         ui.screen.set_error_pose(ui.pose(State::Error));
         ui.screen.set_dnd_prop(load_prop(
@@ -1614,6 +2642,16 @@ impl<S: Screen> Ui<S> {
             .map(Settings::wake_sensitivity)
             .unwrap_or_default();
         self.screen.set_wake_step(sensitivity.step());
+        self.screen.set_conversation_mode(
+            self.settings
+                .as_ref()
+                .is_some_and(Settings::conversation_mode),
+        );
+        self.screen.set_conversation_max(
+            self.settings
+                .as_ref()
+                .map_or(CONVERSATION_MAX_DEFAULT, Settings::conversation_max),
+        );
         let ui = Rc::downgrade(self);
         self.screen.on_state_changed(move |app, s| {
             let Some(ui) = ui.upgrade() else { return };
@@ -1755,6 +2793,18 @@ impl<S: Screen> Ui<S> {
             }
         });
         let ui = Rc::downgrade(self);
+        self.screen.on_pose_toggled(move |name, on| {
+            if let Some(ui) = ui.upgrade() {
+                ui.pose_toggled(&name, on);
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_poses_check(move || {
+            if let Some(ui) = ui.upgrade() {
+                ui.poses_refresh();
+            }
+        });
+        let ui = Rc::downgrade(self);
         self.screen.on_update_check(move || {
             if let Some(ui) = ui.upgrade() {
                 if let Some(u) = &ui.updater {
@@ -1766,14 +2816,7 @@ impl<S: Screen> Ui<S> {
         let ui = Rc::downgrade(self);
         self.screen.on_update_prerelease(move |on| {
             if let Some(ui) = ui.upgrade() {
-                if let Some(s) = &ui.settings {
-                    s.save_update_prerelease(on);
-                }
-                if let Some(u) = &ui.updater {
-                    log::info!(event = "update", prerelease = on; "update: release candidates {}", if on { "offered" } else { "not offered" });
-                    u.set_prerelease(on);
-                }
-                ui.refresh_update();
+                model::commit(&*ui, Change::UpdatePrerelease(on));
             }
         });
         let ui = Rc::downgrade(self);
@@ -1830,6 +2873,11 @@ impl<S: Screen> Ui<S> {
         let ui = Rc::downgrade(self);
         self.screen.on_ask_answered(move |yes| {
             if let Some(ui) = ui.upgrade() {
+                // A tile's question (no brain's open): the body's own answer.
+                if ui.house.borrow().ask.is_none() {
+                    ui.board_answer(yes, "screen");
+                    return;
+                }
                 // The core sends it to the brain; the card stays until the brain closes it.
                 let id = ui.house.borrow_mut().answer(ui.now(), yes);
                 if let Some(id) = id {
@@ -1922,28 +2970,9 @@ impl<S: Screen> Ui<S> {
             let _ = tx.send(CoreEvent::Ui(UiEvent::Screenshot));
         });
         let ui = Rc::downgrade(self);
-        self.screen.on_language_chosen(move |app, code| {
-            let Some(ui) = ui.upgrade() else { return };
-            match set_language(app, &ui.character, &ui.opts.locales, &code) {
-                Ok(l) => {
-                    *ui.locale.borrow_mut() = l;
-                    ui.render_weather();
-                    app.set_clock("");
-                    ui.tick_clock();
-                    ui.refresh_desk();
-                    // The brain's texts ("6 memories", the reminders' tile) are written when its
-                    // answers come: asked again so they come in the new language.
-                    ui.refresh_memories();
-                    ui.show(ui.view.get());
-                    ui.send(UiEvent::Language(code));
-                    if app.get_page() == "welcome" {
-                        ui.language_pending.set(false);
-                        let next = ui.first_page().unwrap_or("home");
-                        app.set_page(next);
-                        ui.on_page(next);
-                    }
-                }
-                Err(e) => log::warn!("language {code}: {e}"),
+        self.screen.on_language_chosen(move |_app, code| {
+            if let Some(ui) = ui.upgrade() {
+                model::commit(&*ui, Change::Language(code.to_string()));
             }
         });
         // Timers and alarms by touch.
@@ -1977,6 +3006,14 @@ impl<S: Screen> Ui<S> {
                 ui.undo_timer.stop();
                 ui.desk.borrow_mut().undo = None;
                 ui.refresh_desk();
+                ui.refresh_notes();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_note_delete(move |id| {
+            if let Some(ui) = ui.upgrade() {
+                log::info!(event = "notes", id = id; "note {id} removed on the screen");
+                ui.remove_later(Undo::Note(id));
             }
         });
         let ui = Rc::downgrade(self);
@@ -2105,43 +3142,80 @@ impl<S: Screen> Ui<S> {
         let ui = Rc::downgrade(self);
         self.screen.on_save_chat_toggled(move |keep| {
             if let Some(ui) = ui.upgrade() {
-                ui.history.borrow_mut().set_keep(keep);
-                if let Some(s) = &ui.settings {
-                    s.save_keep_conversations(keep);
-                }
-                ui.refresh_desk();
+                model::commit(&*ui, Change::KeepConversations(keep));
             }
         });
         let ui = Rc::downgrade(self);
         self.screen.on_wake_step_changed(move |step| {
             if let Some(ui) = ui.upgrade() {
-                let s = WakeSensitivity::from_step(step);
-                ui.screen.set_wake_step(s.step());
-                // The core saves it and has the wake word thread apply it.
-                ui.send(UiEvent::WakeSensitivity(s));
+                model::commit(
+                    &*ui,
+                    Change::WakeSensitivity(WakeSensitivity::from_step(step)),
+                );
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_conversation_mode_changed(move |on| {
+            if let Some(ui) = ui.upgrade() {
+                model::commit(&*ui, Change::ConversationMode(on));
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_conversation_max_changed(move |times| {
+            if let Some(ui) = ui.upgrade() {
+                // The stepper stops at its ends.
+                let times = times.clamp(CONVERSATION_MAX_MIN as i32, CONVERSATION_MAX_MAX as i32);
+                model::commit(&*ui, Change::ConversationMax(times as u32));
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_widget_tapped(move || {
+            if let Some(ui) = ui.upgrade()
+                && let Some(page) = ui.widget.borrow_mut().tap(Instant::now())
+            {
+                // Before the screen opens its page (the markets', the cities'): that page's.
+                ui.widget_opened.set(Some(page));
+                let key = page.key();
+                log::info!(event = "widget", page = key.as_str(), why = "tap"; "widget: {key} opened");
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_widget_toggled(move |key, on| {
+            if let Some(ui) = ui.upgrade() {
+                ui.widget_toggled(&key, on);
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_widget_every_stepped(move |d| {
+            if let Some(ui) = ui.upgrade() {
+                ui.widget_every_stepped(d);
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_city_chosen(move |_| {
+            if let Some(ui) = ui.upgrade() {
+                ui.refresh_city();
+            }
+        });
+        let ui = Rc::downgrade(self);
+        self.screen.on_widget_swiped(move |dir| {
+            if let Some(ui) = ui.upgrade() {
+                let shown = ui.widget.borrow_mut().swipe(dir, Instant::now());
+                if let Some(s) = shown {
+                    ui.show_widget(&s);
+                }
             }
         });
         let ui = Rc::downgrade(self);
         self.screen.on_home_compact_changed(move |on| {
             if let Some(ui) = ui.upgrade() {
-                ui.home_compact.set(on);
-                ui.screen.set_home_compact(on);
-                if let Some(s) = &ui.settings {
-                    s.save_home_compact(on);
-                }
-                log::info!(event = "home_compact", on = on; "home: {}", if on { "compact" } else { "normal" });
-                ui.refresh_desk();
+                model::commit(&*ui, Change::HomeCompact(on));
             }
         });
         let ui = Rc::downgrade(self);
         self.screen.on_night_changed(move |on, start, end| {
             if let Some(ui) = ui.upgrade() {
-                ui.desk.borrow_mut().night = (on, start, end);
-                if let Some(s) = &ui.settings {
-                    s.save_night(on, start, end);
-                }
-                ui.refresh_desk();
-                ui.tick_clock();
+                model::commit(&*ui, Change::Night(on, start, end));
             }
         });
         let ui = Rc::downgrade(self);
@@ -2172,7 +3246,169 @@ impl<S: Screen> Ui<S> {
             app.set_pose(night);
             return;
         }
-        app.set_pose(self.pose(state));
+        // The home's pose (a card's, or the moment's), and a card's while an announcement is
+        // said over it (the probe's temperature over Alfred at the barbecue).
+        let look = if state == State::Idle {
+            Some(self.home_look())
+        } else if state == State::Speaking && self.announcing.get() {
+            self.card_look()
+        } else {
+            None
+        };
+        match look {
+            // A pose with its own clips in and out (the earmuffs, the plug, satisfied) is drawn
+            // by them (they start from idle, their loop holds it): under them, and before
+            // them, the idle pose.
+            Some(Look::Own(s)) if self.moves(s).is_some() => app.set_pose(self.pose(State::Idle)),
+            Some(l) => app.set_pose(self.look_image(&l)),
+            None => app.set_pose(self.pose(state)),
+        }
+    }
+
+    /// The mode of a pose that comes and goes with its own clips: muted (the earmuffs, then the
+    /// `muted` loop), link (the plug) and satisfied, when animations are on and the character
+    /// has all three clips of it. None: the still pose (with its loop, if any) as before.
+    fn moves(&self, s: State) -> Option<Mode> {
+        let (mode, clips) = match s {
+            State::Muted => (Mode::Muted, ["muted_in", "muted", "muted_out"]),
+            State::Link => (Mode::Link, LINK_CLIPS),
+            State::Satisfied => (Mode::Satisfied, SATISFIED_CLIPS),
+            _ => return None,
+        };
+        (self.animated() && clips.iter().all(|n| self.character.animation(n).is_some()))
+            .then_some(mode)
+    }
+
+    /// The character moves (not `--state`, animations on).
+    fn animated(&self) -> bool {
+        self.opts.screen.animations && self.opts.demo.is_none()
+    }
+
+    /// The nod is a clip played once on the home (else the still pose for [`NOD_FOR`]).
+    fn nod_clip(&self) -> bool {
+        self.animated() && self.character.animation("nod").is_some()
+    }
+
+    /// The pose a card of Home Assistant asks for, if the character has it.
+    fn card_look(&self) -> Option<Look> {
+        self.card_pose.borrow().0.clone()
+    }
+
+    /// The home's pose now: a card's (not on the pages with their own animation), else the
+    /// moment's.
+    fn home_look(&self) -> Look {
+        let page = self.screen.get_page();
+        home_look_of(self.card_look(), paged(&page), self.home_state())
+    }
+
+    /// The picture of a pose: the character's own, or a downloaded one (drawn as idle is).
+    fn look_image(&self, l: &Look) -> Image {
+        match l {
+            Look::Own(s) => self.pose(*s),
+            Look::Downloaded(n) => {
+                let picture = self.card_pose.borrow().1.get(n).cloned().flatten();
+                picture.unwrap_or_else(|| self.pose(State::Idle))
+            }
+        }
+    }
+
+    /// How a pose moves on the home: a downloaded one with its own animation if it has one
+    /// (`anim::CARD_POSE`), the character's own as `home_mode`.
+    fn look_mode(&self, l: &Look) -> Mode {
+        match l {
+            Look::Own(s) => self.home_mode(*s),
+            Look::Downloaded(_) => Mode::Loop(anim::CARD_POSE),
+        }
+    }
+
+    /// The home's pose now: idle, or what the moment asks if the character has its pose (else
+    /// idle, as without it).
+    fn home_state(&self) -> State {
+        let now = Instant::now();
+        let page = self.screen.get_page();
+        let s = home_state_of(HomeMoment {
+            mic_off: self.mic_off.get(),
+            linking: matches!(page.as_str(), "setup" | "find-ha"),
+            working: self.update_going() || self.ha_page.borrow().busy,
+            satisfied: self
+                .satisfied
+                .get()
+                .is_some_and(|(from, until)| from <= now && now < until),
+            nod: self.nod_until.get().is_some_and(|t| now < t),
+        });
+        // The pages with their own animation over idle: only a job or the link shows over them;
+        // on the Home Assistant page its job is the laptop's typing (`motion_mode`).
+        let over = match s {
+            State::Link => true,
+            State::Working => page.as_str() != "ha",
+            _ => false,
+        };
+        if self.character.has_pose(s) && (!paged(&page) || over) {
+            s
+        } else {
+            State::Idle
+        }
+    }
+
+    /// How the home moves with its pose: `wake` and `idle` over idle, a pose with its own loop
+    /// as in a conversation (the muted pose, the deck chair of `offline`), the others still (an
+    /// idle clip would draw idle over them). The night's and the settings' clips are not
+    /// decoded by day: their poses stay still here.
+    fn home_mode(&self, s: State) -> Mode {
+        if s == State::Idle {
+            return Mode::Home;
+        }
+        if let Some(mode) = self.moves(s) {
+            return mode;
+        }
+        self.character
+            .state_animation(s)
+            .and_then(|a| anim::static_name(&a.name))
+            .filter(|n| !NIGHT_CLIPS.contains(n) && !lazy_clip(n))
+            .map_or(Mode::Still, Mode::Loop)
+    }
+
+    /// The home's pose again when the moment or a card changed it (once a second, and when
+    /// something that decides it changes).
+    fn refresh_home_pose(&self) {
+        if self.home_look() != *self.home_pose.borrow() {
+            self.show_home_pose();
+        }
+    }
+
+    /// The home's pose drawn again, with its motion (when it changed, or its picture did).
+    fn show_home_pose(&self) {
+        let l = self.home_look();
+        *self.home_pose.borrow_mut() = l.clone();
+        if self.view.get() != Phase::Home
+            || self.motion.borrow().loading_until.is_some()
+            || self.desk.borrow().night_shown
+            || self.opts.demo.is_some()
+        {
+            return;
+        }
+        log::info!(event = "home_pose", pose = l.name(); "home pose: {}", l.name());
+        self.set_pose(&self.screen, State::Idle);
+        let mode = self.motion_mode(Phase::Home, State::Idle, false);
+        self.motion.borrow_mut().seq.set_mode(mode, Instant::now());
+        self.step();
+    }
+
+    /// A reflex was done: the nod, now on the home or when the home comes back.
+    fn nod(&self) {
+        if self.nod_clip() {
+            // The sequencer plays it on the home (now, after the clip under way, or when the
+            // home comes back).
+            self.motion.borrow_mut().seq.once("nod", Instant::now());
+            self.step();
+            return;
+        }
+        if self.view.get() == Phase::Home {
+            self.nod_until.set(Some(Instant::now() + NOD_FOR));
+            self.refresh_home_pose();
+        } else {
+            self.nod_pending.set(true);
+        }
     }
 
     fn pose(&self, state: State) -> Image {
@@ -2234,6 +3470,9 @@ impl<S: Screen> Ui<S> {
         if !p.in_conversation() {
             self.end_exchange();
         }
+        if p == Phase::Home && self.nod_pending.take() {
+            self.nod_until.set(Some(now + NOD_FOR));
+        }
         {
             let mut d = self.desk.borrow_mut();
             if p == Phase::Ringing {
@@ -2259,31 +3498,142 @@ impl<S: Screen> Ui<S> {
         self.set_pose(&self.screen, pose);
         self.refresh_ringing();
         self.refresh_home();
-        let night = self.desk.borrow().night_shown;
-        let mode = if self.opts.demo.is_some() {
-            Mode::Still
-        } else if loading {
-            Mode::Loading
-        } else {
-            match p {
-                Phase::Home if night => Mode::Night,
-                Phase::Home => Mode::Home,
-                Phase::Offline => Mode::Still,
-                _ => self
-                    .character
-                    .state_animation(pose)
-                    .and_then(|a| anim::static_name(&a.name))
-                    .map_or(Mode::Still, Mode::Loop),
-            }
-        };
+        let mode = self.motion_mode(p, pose, loading);
         self.motion.borrow_mut().seq.set_mode(mode, now);
         self.step();
     }
 
+    /// An animation decoded here and now (the demos' fixed frames).
+    fn demo_clip(&self, name: &'static str) {
+        let Some(a) = self.character.animation(name).cloned() else {
+            return;
+        };
+        let t = Instant::now();
+        match character::Sheet::load(&a.file, a.size) {
+            Ok(mut sheet) => {
+                sheet.flatten(self.character.background, PLATE_TOLERANCE);
+                log::info!(
+                    "animation sheet {}: {} frames, {:.1} MB of changes, decoded in {} ms",
+                    a.file.display(),
+                    sheet.frames.len(),
+                    sheet.bytes() as f64 / 1048576.0,
+                    t.elapsed().as_millis()
+                );
+                let mut m = self.motion.borrow_mut();
+                m.seq.add(name, Timing::of(&a));
+                m.clips
+                    .insert(name, Arc::new(Clip::new(a, Arc::new(sheet))));
+            }
+            Err(e) => log::warn!("animation {name}: {e}"),
+        }
+    }
+
+    /// What the character plays in phase `p` (its pose `pose`) with the page on screen.
+    fn motion_mode(&self, p: Phase, pose: State, loading: bool) -> Mode {
+        let night = self.desk.borrow().night_shown;
+        if let Some(d) = &self.opts.demo {
+            return d
+                .frame
+                .map_or(Mode::Still, |(clip, index)| Mode::Frame(clip, index));
+        }
+        if loading {
+            return Mode::Loading;
+        }
+        match p {
+            Phase::Home if night => Mode::Night,
+            Phase::Home => {
+                // The home's pose (a card's, or the moment's: idle on the settings and More
+                // pages unless a job or the link asks), else the page's own animation.
+                let l = self.home_look();
+                *self.home_pose.borrow_mut() = l.clone();
+                let page = self.screen.get_page();
+                match l {
+                    Look::Own(State::Idle) if SETTINGS_PAGES.contains(&page.as_str()) => {
+                        Mode::Settings
+                    }
+                    Look::Own(State::Idle) if page.as_str() == "altro" => Mode::More,
+                    Look::Own(State::Idle) if page.as_str() == "ha" => {
+                        if self.ha_page.borrow().busy {
+                            Mode::HaBusy
+                        } else {
+                            Mode::Ha
+                        }
+                    }
+                    l => self.look_mode(&l),
+                }
+            }
+            // A card's pose stays while an announcement is said over it.
+            Phase::Speaking if self.announcing.get() && self.card_look().is_some() => {
+                self.card_look().map_or(Mode::Still, |l| self.look_mode(&l))
+            }
+            // Its own loop if the character has one (Alfred in the deck chair).
+            Phase::Offline => self
+                .character
+                .animation("offline")
+                .and_then(|a| anim::static_name(&a.name))
+                .map_or(Mode::Still, Mode::Loop),
+            _ => self
+                .character
+                .state_animation(pose)
+                .and_then(|a| anim::static_name(&a.name))
+                .map_or(Mode::Still, Mode::Loop),
+        }
+    }
+
+    /// A page opened: the settings pages have their own animation (and sheet).
+    fn page_motion(&self) {
+        let p = self.view.get();
+        let loading = self.motion.borrow().loading_until.is_some();
+        let mode = self.motion_mode(p, view(p).1, loading);
+        self.motion.borrow_mut().seq.set_mode(mode, Instant::now());
+        self.step();
+    }
+
+    /// Decodes the sheets of [`LAZY_CLIPS`] when the sequencer needs them (a settings page,
+    /// the Home Assistant page, the microphone off), frees them once their last clip has played.
+    fn lazy_sheets(&self) {
+        if self.opts.demo.is_some() || !self.opts.screen.animations {
+            return;
+        }
+        let mut freed = false;
+        let mut m = self.motion.borrow_mut();
+        for (i, clips) in LAZY_CLIPS.into_iter().enumerate() {
+            let want = m.seq.uses(clips);
+            if want && !m.lazy[i].on {
+                let anims: Vec<Animation> = clips
+                    .iter()
+                    .filter_map(|n| self.character.animation(n).cloned())
+                    .collect();
+                if !anims.is_empty() {
+                    log::info!(event = "lazy_sheets", clip = clips[0], on = true; "animations {}…: decoding", clips[0]);
+                    m.lazy[i].on = true;
+                    m.lazy[i].incoming =
+                        Some(anim::load_in_background(anims, self.character.background));
+                }
+            } else if !want && m.lazy[i].on {
+                m.lazy[i] = Lazy::default();
+                for n in clips {
+                    m.clips.remove(n);
+                    m.seq.remove(n);
+                }
+                freed = true;
+                log::info!(event = "lazy_sheets", clip = clips[0], on = false; "animations {}…: freed", clips[0]);
+            }
+        }
+        drop(m);
+        if freed {
+            give_back_memory();
+        }
+    }
+
     /// Seconds since the epoch; fixed in demo mode (the golden screenshots).
     fn now(&self) -> f64 {
-        if self.opts.demo.is_some() {
-            DEMO_NOW
+        if let Some(d) = &self.opts.demo {
+            if d.evening {
+                DEMO_NOW + DEMO_EVENING
+            } else {
+                DEMO_NOW
+            }
         } else {
             now_unix()
         }
@@ -2324,14 +3674,41 @@ impl<S: Screen> Ui<S> {
         load_pose(path, crop, c.background).unwrap_or_default()
     }
 
+    /// The character's portrait for a round badge (the board's header): head and shoulders of
+    /// the idle pose, from a little above the head down to the chest, so the circle cuts the
+    /// shoulders as in a photo and not the neck.
+    pub fn portrait(&self) -> Image {
+        let c = &self.character;
+        let (path, _) = c.pose(State::Idle);
+        let m = c.mouth;
+        let side = (m.width() * 3).max(96);
+        let (w, h) = c.pose_size;
+        let cx = (m.x0 + m.x1) / 2;
+        // The mouth sits a little above the middle of the circle.
+        let y_top = m.y0.saturating_sub(side * 2 / 5);
+        let x0 = cx.saturating_sub(side / 2).min(w.saturating_sub(side));
+        let y0 = y_top.min(h.saturating_sub(side));
+        let crop = Crop {
+            x0,
+            y0,
+            x1: (x0 + side).min(w),
+            y1: (y0 + side).min(h),
+        };
+        load_pose(path, crop, c.background).unwrap_or_default()
+    }
+
     /// Something woke the screen up (touch, key, movement, SIGUSR1).
     pub fn wake(&self, why: WakeSource) {
         if self.opts.demo.is_some() {
             return;
         }
+        self.panel.borrow_mut().keys_asleep = false;
         let now = Instant::now();
         if why == WakeSource::Touch {
             self.desk.borrow_mut().touched = Some(now);
+            if self.screen.get_page() == "board" {
+                self.board_home_show();
+            }
         }
         {
             let mut m = self.motion.borrow_mut();
@@ -2359,20 +3736,61 @@ impl<S: Screen> Ui<S> {
             return;
         }
         log::info!(event = "screen_sleep"; "screen: to sleep (Vol+ and Vol- together)");
+        // Put to sleep on purpose: no access dialog lights it up (the browser waits).
+        self.panel.borrow_mut().keys_asleep = true;
         self.motion.borrow_mut().awake.sleep(Instant::now());
         self.step();
     }
 
     /// New animations, the start-up timeout; then [`Ui::step`]. Called every 20 ms.
     pub fn poll(&self) {
+        self.poll_panel();
         self.poll_link();
         self.poll_find();
         self.poll_brain();
         self.poll_ha();
         self.poll_house();
+        self.poll_poses();
         let mut added = false;
         {
             let mut m = self.motion.borrow_mut();
+            for i in 0..m.lazy.len() {
+                let Some(rx) = &m.lazy[i].incoming else {
+                    continue;
+                };
+                let mut got = Vec::new();
+                loop {
+                    match rx.try_recv() {
+                        Ok(c) => got.push(c),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            m.lazy[i].incoming = None;
+                            break;
+                        }
+                    }
+                }
+                for c in got {
+                    if let Some(name) = anim::static_name(&c.anim.name)
+                        && m.lazy[i].on
+                    {
+                        m.seq.add(name, Timing::of(&c.anim));
+                        m.clips.insert(name, Arc::new(c));
+                        added = true;
+                    }
+                }
+            }
+            if let Some(rx) = &m.pose_incoming {
+                match rx.try_recv() {
+                    Ok(c) => {
+                        m.seq.add(anim::CARD_POSE, Timing::of(&c.anim));
+                        m.clips.insert(anim::CARD_POSE, Arc::new(c));
+                        m.pose_incoming = None;
+                        added = true;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => m.pose_incoming = None,
+                }
+            }
             if let Some(rx) = &m.incoming {
                 let mut got = Vec::new();
                 loop {
@@ -2451,7 +3869,7 @@ impl<S: Screen> Ui<S> {
             } else {
                 levels.level(dim_home, awake)
             };
-            (show, (m.seq.moving(awake), level))
+            (show, (m.seq.moving_now(now, awake), level))
         };
         let (moving, level) = moving;
         if self.opts.demo.is_none() {
@@ -2480,6 +3898,8 @@ impl<S: Screen> Ui<S> {
         } else if !moving && self.frame_timer.running() {
             self.frame_timer.stop();
         }
+        // A sheet decoded when it is needed, freed once its last clip has played.
+        self.lazy_sheets();
     }
 
     /// The backlight towards `level`: a fade (backlight.rs, [`FADE`]), at once to and from 0.
@@ -2569,25 +3989,62 @@ impl<S: Screen> Ui<S> {
         if show == m.shown {
             return;
         }
-        let Show::Frame { clip, index } = show else {
-            m.shown = Show::Pose;
-            self.screen.set_frame(Image::default());
-            return;
+        let (clip, index, step) = match show {
+            Show::Frame { clip, index } => (clip, index, None),
+            Show::Fade { clip, index, step } => (clip, index, Some(step)),
+            Show::Pose => {
+                m.shown = Show::Pose;
+                m.fade_from = None;
+                self.screen.set_frame(Image::default());
+                return;
+            }
         };
         let Some(c) = m.clips.get(clip).cloned() else {
             return;
         };
-        let new_clip = !matches!(m.shown, Show::Frame { clip: was, .. } if was == clip)
-            || m.playhead.is_none();
+        let was = match m.shown {
+            Show::Frame { clip, .. } | Show::Fade { clip, .. } => Some(clip),
+            Show::Pose => None,
+        };
+        let new_clip = was != Some(clip) || m.playhead.is_none();
         if new_clip {
+            // A fade starts from the picture on screen: a frame of the same sheet, same box.
+            let old = m.playhead.take();
+            m.fade_from = match (step, old) {
+                (Some(_), Some(o))
+                    if o.clip.anim.file == c.anim.file
+                        && o.clip.anim.size == c.anim.size
+                        && o.clip.anim.rect == c.anim.rect =>
+                {
+                    Some(o.pixels)
+                }
+                _ => None,
+            };
             m.playhead = Some(Playhead::new(c.clone()));
             let (x, y, w, h) = self.frame_rect(&c.anim);
             self.screen.set_frame_rect(x, y, w, h);
         }
+        if step.is_none() {
+            m.fade_from = None;
+        }
         m.shown = show;
         let p = m.playhead.as_mut().expect("set above");
-        let changed = p.seek(index) || new_clip;
+        let changed = p.seek(index) || new_clip || step.is_some();
         if !changed {
+            return;
+        }
+        if let (Some(step), Some(from)) = (step, m.fade_from.as_ref()) {
+            let w = step.min(anim::FADE_FRAMES) * 256 / (anim::FADE_FRAMES + 1);
+            let blended: Vec<u8> = from
+                .iter()
+                .zip(&p.pixels)
+                .map(|(&a, &b)| ((a as u32 * (256 - w) + b as u32 * w) >> 8) as u8)
+                .collect();
+            let buf =
+                SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&blended, c.width(), c.height());
+            self.screen.set_frame(Image::from_rgba8(buf));
+            m.presented += 1;
+            m.present_time += t.elapsed();
             return;
         }
         // A new image per frame: the software renderer redraws only the frame's box; femtovg
@@ -2612,6 +4069,7 @@ impl<S: Screen> Ui<S> {
 
     /// At exit: full brightness, so whatever uses the screen next is visible.
     pub fn on_exit(&self) {
+        self.flush_settings();
         if self.opts.demo.is_none() {
             let level = self.opts.screen.levels.active;
             self.motion.borrow_mut().backlight.set(level);
@@ -2627,9 +4085,18 @@ impl<S: Screen> Ui<S> {
     fn frame_rect(&self, a: &Animation) -> (f32, f32, f32, f32) {
         let state = match a.name.as_str() {
             // The night clips are aligned on idle too (they start or end there).
-            "loading" | "wake" | "idle" | "fall_asleep" | "sleeping" | "wake_from_sleep" => {
-                State::Idle
-            }
+            "loading" | "wake" | "idle" | "fall_asleep" | "sleeping" | "wake_from_sleep"
+            | "settings_in" | "settings_hold" | "settings_out" => State::Idle,
+            // The earmuffs and the laptop start from idle (same crop as the muted pose).
+            "muted_in" | "muted_out" | "ha_in" | "ha_hold" | "ha_type_in" | "ha_type"
+            | "ha_type_out" | "ha_out" | "link_in" | "link_hold" | "link_out" | "satisfied_in"
+            | "satisfied_hold" | "satisfied_out" | "nod" => State::Idle,
+            // A downloaded pose is drawn as the idle pose is (render_card_pose).
+            anim::CARD_POSE => State::Idle,
+            "muted" => State::Muted,
+            "offline" => State::Offline,
+            // A card's pose on the home with its state's clip (`thinking`): that state's crop.
+            name if self.view.get() == Phase::Home => state_named(name).unwrap_or(State::Idle),
             _ => view(self.view.get()).1,
         };
         let (_, crop) = self.character.pose(state);
@@ -2664,6 +4131,10 @@ impl<S: Screen> Ui<S> {
                             text: l.sample("ha_card_text").into(),
                             icon: Some("mdi:washing-machine".into()),
                             seconds: None,
+                            // Shown only if a pose "laundry" was downloaded (none in the
+                            // screenshots); `card-pose`: the character's own "satisfied".
+                            pose: Some(if d.card_pose { "satisfied" } else { "laundry" }.into()),
+                            quiet: false,
                         }),
                         Instant::now(),
                     );
@@ -2718,11 +4189,119 @@ impl<S: Screen> Ui<S> {
         }
     }
 
+    /// `--state widget*`: today's dentist and dinner, a reminder, tomorrow's holiday and car
+    /// service; the shopping list; the week's weather; no card, a timer, or a timer and a card
+    /// from Home Assistant.
+    fn show_demo_widget(&self, d: &Demo, l: &Locale) {
+        if d.widget.is_none() {
+            return;
+        }
+        let midnight = DEMO_NOW as i64 - DEMO_NOW as i64 % 86400;
+        let mut desk = self.desk.borrow_mut();
+        let mut events = demo_events(l);
+        let ev = |start: i64, title: &str| Upcoming {
+            start,
+            end: start + 3600,
+            all_day: false,
+            title: title.into(),
+            calendar: "calendar.demo0".into(),
+        };
+        events.push(ev(midnight + 19 * 3600 + 1800, l.sample("event_dinner")));
+        events.push(ev(midnight + 86400 + 9 * 3600, l.sample("event_car")));
+        desk.events = events;
+        desk.upcoming = vec![(midnight + 18 * 3600, l.sample("reminder_text").to_string())];
+        let items: Vec<(String, String)> = l
+            .sample("shop_items")
+            .split('|')
+            .enumerate()
+            .map(|(i, t)| (i.to_string(), t.to_string()))
+            .collect();
+        desk.shopping = Some(vec![ShopList {
+            entity: "todo.groceries".into(),
+            name: l
+                .sample("list_names")
+                .split('|')
+                .next()
+                .unwrap_or("")
+                .into(),
+            items,
+        }]);
+        if d.widget == Some(WidgetKind::Quotes) {
+            self.widget_data.borrow_mut().quotes = demo_quotes();
+        }
+        if d.widget == Some(WidgetKind::Notes) {
+            let midnight = DEMO_NOW as i64 - DEMO_NOW as i64 % 86400;
+            *self.board.borrow_mut() = l
+                .sample("notes_board")
+                .split('|')
+                .enumerate()
+                .map(|(i, t)| brain_link::Note {
+                    id: i as i64 + 1,
+                    text: t.into(),
+                    created: midnight - (3 - i as i64) * 86400 + 9 * 3600,
+                })
+                .collect();
+        }
+        if matches!(
+            d.widget,
+            Some(WidgetKind::Sensors | WidgetKind::Check | WidgetKind::Playing | WidgetKind::Home)
+        ) {
+            let (data, curves) = demo_ha(l);
+            *self.ha_widgets.borrow_mut() = data;
+            *self.ha_curves.borrow_mut() = curves;
+            self.widget_on.borrow_mut().push(WidgetKind::Home.into());
+        }
+        if d.widget == Some(WidgetKind::Cities) {
+            let (choices, weather) = demo_cities();
+            *self.widget_cities.borrow_mut() = Lists::one(choices);
+            *self.city_weather.borrow_mut() = weather;
+        }
+        desk.timers.truncate(d.widget_cards.min(1));
+        // The next alarm would be a card too: not in these.
+        desk.alarms.clear();
+        if d.widget_cards > 1 {
+            desk.ha_cards.apply(
+                crate::ha::events::CardEvent::Show(crate::ha::events::HaCard {
+                    id: Some("washing".into()),
+                    title: Some(l.sample("ha_card_title_sample").into()),
+                    text: l.sample("ha_card_text").into(),
+                    icon: Some("mdi:washing-machine".into()),
+                    seconds: None,
+                    pose: None,
+                    quiet: false,
+                }),
+                Instant::now(),
+            );
+        }
+        drop(desk);
+        if d.widget == Some(WidgetKind::Notes) {
+            self.refresh_notes();
+        }
+        if !self.ha_widgets.borrow().sensors.is_empty() {
+            self.apply_ha_widgets();
+        }
+        // The afternoon (or the evening) hour by hour, from the hour going on (14:00), and the
+        // day's sun.
+        let now = self.now() as i64;
+        let hour = now - now % 3600;
+        *self.weather.borrow_mut() = Some(
+            Weather::sample_week(DEMO_DATE)
+                .with_sample_hours(hour)
+                .with_sample_sun(DEMO_NOW as i64 / 86400, now),
+        );
+    }
+
     fn show_demo(&self, d: Demo) {
+        self.audio_down.set(d.audio_down);
         let l = self.locale.borrow().clone();
         let w = |k: &str| l.text(k).to_string();
-        self.screen
-            .set_clock(if d.night { "23:48" } else { "14:25" });
+        self.screen.set_clock(if d.night {
+            "23:48"
+        } else if d.evening {
+            "19:10"
+        } else {
+            "14:25"
+        });
         self.screen.set_date(&l.date(2, 3, 10));
         // Home Assistant unreachable: no weather either.
         self.screen.set_weather(
@@ -2844,6 +4423,21 @@ impl<S: Screen> Ui<S> {
         }
         self.screen.set_music(self.desk.borrow().music.as_ref());
         self.show_demo_v02(&d, &l);
+        self.show_demo_board(d.board);
+        self.show_demo_widget(&d, &l);
+        if d.conversation_mode {
+            self.screen.set_conversation_mode(true);
+        }
+        if d.panel > 0 {
+            self.demo_panel(d.panel == 2);
+            if d.panel == 3 {
+                self.panel.borrow_mut().blocked = true;
+                self.refresh_home();
+            }
+            if d.panel >= 4 {
+                self.demo_remote(d.panel);
+            }
+        }
         if let Some((w, h)) = d.mirror {
             let info = MirrorInfo {
                 source: l.sample("mirror_source").to_string(),
@@ -2892,6 +4486,18 @@ impl<S: Screen> Ui<S> {
         );
         self.screen.set_setup_link(qr_image(&sample), "", false);
         self.refresh_desk();
+        // The widget on the demo's page (as if swiped there).
+        if let Some(kind) = d.widget {
+            for _ in 0..WidgetKind::ALL.len() {
+                if self.widget.borrow().kind() == Some(kind) {
+                    break;
+                }
+                let shown = self.widget.borrow_mut().swipe(1, Instant::now());
+                if let Some(s) = shown {
+                    self.show_widget(&s);
+                }
+            }
+        }
         if d.cards {
             let msgs = vec![(
                 l.sample("message_title").to_string(),
@@ -2914,8 +4520,11 @@ impl<S: Screen> Ui<S> {
             // house-done-card(s): the "done" card first in the band, after its pop-up.
             let done = (d.house == 1 && d.house_card_only).then(|| {
                 let first = if d.house_group {
+                    // The first of the sample lights, in the screen's language.
+                    let lights = l.sample("house_lights");
+                    let first_light = lights.split(", ").next().unwrap_or(lights);
                     l.text("house_and_more")
-                        .replace("{name}", "Studio sinistra")
+                        .replace("{name}", first_light)
                         .replace("{n}", "3")
                 } else {
                     l.sample("house_light").to_string()
@@ -2978,6 +4587,9 @@ impl<S: Screen> Ui<S> {
             self.screen.set_night(true, "07:00", true);
         }
         self.screen.set_still(true);
+        if let Some((clip, _)) = d.frame {
+            self.demo_clip(clip);
+        }
         if d.starting {
             // The start-up screen: as `show` draws it while the loading animation plays.
             self.motion.borrow_mut().loading_until =
@@ -3038,11 +4650,11 @@ impl<S: Screen> Ui<S> {
                     Vec::new()
                 },
             });
-            let items: Vec<(String, String)> = l
+            let items: Vec<(String, String, bool)> = l
                 .sample("shop_items")
                 .split('|')
                 .enumerate()
-                .map(|(i, t)| (i.to_string(), t.to_string()))
+                .map(|(i, t)| (i.to_string(), t.to_string(), false))
                 .collect();
             self.screen.set_shopping(
                 true,
@@ -3050,6 +4662,9 @@ impl<S: Screen> Ui<S> {
                 &l.text("tile_shopping")
                     .replace("{n}", &items.len().to_string()),
             );
+        }
+        if matches!(d.page, "poses" | "settings") {
+            self.render_poses_demo();
         }
         if (d.page == "ha" && d.ha <= 2) || d.page == "ha-pick" {
             use crate::ha::setup::{Level, Row};
@@ -3170,6 +4785,17 @@ impl<S: Screen> Ui<S> {
             }
         }
         self.screen.set_page(d.page);
+        match d.page {
+            "trends" => {
+                if d.widget == Some(WidgetKind::Sensors) {
+                    self.screen.set_trends_kind("sensors");
+                }
+                self.refresh_trends()
+            }
+            "city" => self.refresh_city(),
+            "notes" | "reminders" => self.refresh_notes(),
+            _ => {}
+        }
         if !d.dialog.is_empty() {
             self.screen.set_dialog(d.dialog);
         }
@@ -3473,7 +5099,10 @@ impl<S: Screen> Ui<S> {
                 }
             }
             UiCommand::DoNotDisturb(until) => self.set_dnd(until),
-            UiCommand::Announcing(on) => self.screen.set_announcing(on),
+            UiCommand::Announcing(on) => {
+                self.announcing.set(on);
+                self.screen.set_announcing(on);
+            }
             UiCommand::Conversation {
                 state,
                 trigger,
@@ -3487,17 +5116,23 @@ impl<S: Screen> Ui<S> {
                 }
             }
             UiCommand::Suspending => {
+                self.remote_suspended(true);
                 self.screen.set_settings_open(false);
                 self.motion.borrow_mut().awake.sleep(Instant::now());
                 self.step();
             }
             UiCommand::Resumed => {
+                self.remote_suspended(false);
                 self.wake(WakeSource::Resume);
                 self.screen.window().request_redraw();
             }
             UiCommand::NoticeStop => {
                 log::info!(event = "reminder_notice"; "reminder: stop word, as its OK");
                 self.notice_done(false);
+            }
+            UiCommand::AudioDown => {
+                self.audio_down.set(true);
+                self.refresh_home();
             }
             UiCommand::MirrorAspect(a) => {
                 self.mirror_aspect.set(Some(a));
@@ -3571,8 +5206,11 @@ impl<S: Screen> Ui<S> {
                 let line = self.locale.borrow().text("mic_off_line").to_string();
                 self.screen.set_mic_off(!mic_on, &line);
                 self.refresh_control();
+                self.mic_off.set(!mic_on);
+                self.refresh_home_pose();
             }
             UiCommand::MicSwitch(on) => self.show_mic_switch(on),
+            UiCommand::ReflexDone => self.nod(),
             UiCommand::Usage(v) => self.show_usage(&v),
             UiCommand::Screenshot(path) => {
                 if let Err(e) = save_png(&self.screen, &path) {
@@ -3642,8 +5280,18 @@ impl<S: Screen> Ui<S> {
         if self.opts.demo.is_some() {
             return;
         }
+        // The other cities in the home's unit: the last one known (a weather gone for a while
+        // does not turn them back to °C).
+        if let Some(f) = w.as_ref().map(|w| w.unit.contains('F'))
+            && f != self.fahrenheit.get()
+        {
+            self.fahrenheit.set(f);
+            self.configure_feeds();
+        }
         *self.weather.borrow_mut() = w;
         self.render_weather();
+        // The widget's weather page: new hours show when the page comes back.
+        self.refresh_widget();
     }
 
     fn render_weather(&self) {
@@ -3671,8 +5319,12 @@ impl<S: Screen> Ui<S> {
         if self.opts.demo.is_some() {
             return;
         }
+        self.tick_panel();
+        self.tick_remote();
+        self.refresh_home_pose();
         self.feed_light();
         let now = Instant::now();
+        self.board_home_tick(now);
         if self.desk.borrow_mut().ha_cards.expire(now) {
             self.refresh_home();
         }
@@ -3683,7 +5335,8 @@ impl<S: Screen> Ui<S> {
         }
         let (wday, day, month, hour, minute) = local_now();
         let clock = format!("{hour:02}:{minute:02}");
-        if self.screen.get_clock() != clock {
+        let new_minute = self.screen.get_clock() != clock;
+        if new_minute {
             // Once a minute: the reminders still to come (set by voice through Home Assistant,
             // the brain does not tell), for the home's "next reminder" card.
             if let Some(b) = &self.brain {
@@ -3700,7 +5353,8 @@ impl<S: Screen> Ui<S> {
             self.refresh_tiles();
         }
         // A page left alone goes home (not the setup page, not with a question open, not the
-        // music page while there is music: it is what the screen is for then).
+        // music page while there is music, not the board: like Home Assistant's view, it is
+        // what the screen is for then).
         let page = self.screen.get_page();
         let touched = self.desk.borrow().touched;
         let music_on = self.desk.borrow().music.is_some();
@@ -3710,12 +5364,14 @@ impl<S: Screen> Ui<S> {
             && page != "welcome"
             && page != "find-ha"
             && page != super::mirror::PAGE
+            && page != "board"
             && !(page == "update" && self.update_going())
             && self.screen.get_dialog().is_empty()
             && touched.is_none_or(|t| now.duration_since(t) >= PAGE_IDLE)
         {
             self.screen.set_page("home");
         }
+        self.tick_widget(now, new_minute);
         if self.view.get() == Phase::Ringing {
             self.refresh_ringing();
         }
@@ -3780,7 +5436,9 @@ impl<S: Screen> Ui<S> {
         }
         let (on, start, end) = self.desk.borrow().night;
         let t = now_unix() as i64;
-        let hour = |dt: i64| local_hm(t + dt).0[..2].parse::<u32>().unwrap_or(0);
+        let fixed = self.hour_for_tests.get();
+        let hour =
+            |dt: i64| fixed.unwrap_or_else(|| local_hm(t + dt).0[..2].parse::<u32>().unwrap_or(0));
         let want = [-NIGHT_MARGIN_S, 0, NIGHT_MARGIN_S]
             .iter()
             .any(|dt| is_night(hour(*dt), on, start, end));
@@ -4121,6 +5779,10 @@ impl<S: Screen> Ui<S> {
         }
         let l = self.locale.borrow();
         let current = env!("CARGO_PKG_VERSION");
+        if s.phase == "done" {
+            let now = Instant::now();
+            self.satisfied.set(Some((now, now + SATISFIED_FOR)));
+        }
         let (title, text, ok) = match s.phase.as_str() {
             "done" => (
                 l.text("update_result_done_title").to_string(),
@@ -4145,13 +5807,22 @@ impl<S: Screen> Ui<S> {
         *self.update_result_shown.borrow_mut() = key;
         self.wake(WakeSource::Touch);
         self.screen.show_update_result(&title, &text, ok);
+        // Done: the character's bow and the success sound, as for a house command.
+        if ok {
+            self.motion.borrow_mut().seq.done(Instant::now());
+            self.send(UiEvent::Success);
+        }
     }
 
-    /// OK on how the install ended: not said again.
+    /// OK on how the install ended: not said again, and home.
     fn update_result_seen(&self) {
         let key = self.update_result_shown.borrow().clone();
         if let Some(dir) = self.opts.state_dir.as_deref() {
             let _ = std::fs::write(crate::update::dir(dir).join("seen"), format!("{key}\n"));
+        }
+        if let Some(me) = self.this.borrow().upgrade() {
+            me.screen.set_page("home");
+            me.on_page("home");
         }
     }
 
@@ -4494,7 +6165,10 @@ impl<S: Screen> Ui<S> {
 
     fn update_night(&self, now: Instant) -> bool {
         let (on, start, end) = self.desk.borrow().night;
-        let hour = local_now().3 as u32;
+        let hour = self
+            .hour_for_tests
+            .get()
+            .unwrap_or_else(|| local_now().3 as u32);
         let scheduled = self.opts.demo.is_none() && is_night(hour, on, start, end);
         let night = {
             let mut d = self.desk.borrow_mut();
@@ -4787,6 +6461,10 @@ impl<S: Screen> Ui<S> {
     }
 
     fn on_page(self: &Rc<Self>, page: &str) {
+        // Before anything is drawn: the remote screen's capture learns what may be sent.
+        self.sync_remote();
+        // The link pages have their pose ("plug it in").
+        self.refresh_home_pose();
         if self
             .back_pending
             .take()
@@ -4798,6 +6476,7 @@ impl<S: Screen> Ui<S> {
                 UiEvent::Tap
             });
         }
+        self.page_motion();
         if page == "setup" && self.opts.first_start.home_assistant && self.opts.demo.is_none() {
             // No address to link to yet: find Home Assistant first (Settings → Home Assistant,
             // the HA button, the control center all land here).
@@ -4812,6 +6491,19 @@ impl<S: Screen> Ui<S> {
         } else if self.link.borrow().is_some() {
             // Leaving the page closes the port.
             self.link.borrow_mut().take();
+        }
+        if page == "board" {
+            // Its page as it is now (it waited while it was not seen), and the way home.
+            self.render_board(false);
+            self.board_home_show();
+        } else if page == "home" {
+            self.board_seen_again();
+        }
+        if page == "poses" {
+            self.poses_refresh();
+        } else if page == "settings" {
+            // The row's count of installed poses.
+            self.render_poses();
         }
         if page == "update" {
             self.refresh_update();
@@ -4839,7 +6531,7 @@ impl<S: Screen> Ui<S> {
         match page {
             "chat" => self.refresh_chat(),
             "timers" => self.refresh_timers(),
-            "settings" | "screen" | "language" => self.refresh_settings(),
+            "settings" | "screen" | "widgets" | "panel" | "language" => self.refresh_settings(),
             "altro" => self.refresh_tiles(),
             "memories" => self.refresh_memories(),
             "what" => self.refresh_what(),
@@ -4848,6 +6540,8 @@ impl<S: Screen> Ui<S> {
                 self.tick_usage(true);
             }
             "usage" => self.tick_usage(true),
+            "trends" => self.refresh_trends(),
+            "city" => self.refresh_city(),
             _ => {}
         }
         // The mirroring card is there only while its page is not.
@@ -4897,13 +6591,290 @@ impl<S: Screen> Ui<S> {
             .collect()
     }
 
+    /// The pose of Home Assistant's cards (`pose` of `home_companion_card`, the last card that
+    /// has one): a downloaded pose of that name first, else the character's own of the state of
+    /// that name, instead of the moment's pose while such a card shows (by day; not on the
+    /// settings and More pages). A name it has neither of is as no pose.
+    fn render_card_pose(&self) {
+        let want = self.desk.borrow().ha_cards.pose().map(String::from);
+        let look = want.and_then(|name| {
+            let downloaded = {
+                let mut cp = self.card_pose.borrow_mut();
+                cp.1.entry(name.clone())
+                    .or_insert_with(|| self.load_downloaded(&name))
+                    .is_some()
+            };
+            let look = card_look_of(&name, downloaded, |s| self.character.has_pose(s));
+            if look.is_none() {
+                log::debug!("card pose {name:?}: no such pose");
+            }
+            look
+        });
+        if self.card_pose.borrow().0 == look {
+            return;
+        }
+        if let Some(name) = look.as_ref().map(Look::name) {
+            log::info!(event = "card_pose", pose = name; "card pose: {name}");
+        }
+        self.load_pose_animation(match &look {
+            Some(Look::Downloaded(n)) => Some(n.as_str()),
+            _ => None,
+        });
+        self.card_pose.borrow_mut().0 = look;
+        if self.view.get() == Phase::Home && self.motion.borrow().loading_until.is_none() {
+            if self.opts.demo.is_some() {
+                self.set_pose(&self.screen, State::Idle);
+            } else {
+                self.show_home_pose();
+            }
+        }
+    }
+
+    /// The picture of the downloaded pose `name`, if there is one (drawn with idle's crop: it
+    /// stands where the character does).
+    fn load_downloaded(&self, name: &str) -> Option<Image> {
+        let path = self.downloaded_dir()?.join(format!("{name}.png"));
+        if !path.is_file() {
+            return None;
+        }
+        let (_, crop) = self.character.pose(State::Idle);
+        load_pose(&path, crop, self.character.background)
+            .map_err(|e| log::warn!("card pose {name:?}: {e}"))
+            .ok()
+    }
+
+    /// The animation of a downloaded pose (`<name>.toml` next to its picture, an animation table
+    /// as in character.toml without its name, its `file` in the same directory): the old pose's
+    /// sheet goes, the new one is decoded in the background and loops over the pose once it is
+    /// there.
+    fn load_pose_animation(&self, name: Option<&str>) {
+        let mut m = self.motion.borrow_mut();
+        m.pose_incoming = None;
+        if m.clips.remove(anim::CARD_POSE).is_some() {
+            m.seq.remove(anim::CARD_POSE);
+            if matches!(m.shown, Show::Frame { clip, .. } if clip == anim::CARD_POSE) {
+                m.shown = Show::Pose;
+                m.playhead = None;
+                self.screen.set_frame(Image::default());
+            }
+        }
+        let Some(name) = name else { return };
+        if self.opts.demo.is_some() || !self.opts.screen.animations {
+            return;
+        }
+        let Some(dir) = self.downloaded_dir() else {
+            return;
+        };
+        let path = dir.join(format!("{name}.toml"));
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return; // a still pose
+        };
+        match pose_animation(&text, &dir) {
+            Ok(a) => {
+                log::info!("pose {name:?}: animation {}", a.file.display());
+                m.pose_incoming =
+                    Some(anim::load_in_background(vec![a], self.character.background));
+            }
+            Err(e) => log::warn!("{}: {e} (the pose stays still)", path.display()),
+        }
+    }
+
+    /// Settings → Poses opened, or "Look again": the catalogue is read again.
+    fn poses_refresh(&self) {
+        let Some((tx, _)) = &self.pose_downloads else {
+            self.render_poses();
+            return;
+        };
+        {
+            let mut v = self.pose_view.borrow_mut();
+            v.catalogue = None;
+            v.failed = None;
+        }
+        let _ = tx.send(crate::poses::Cmd::Refresh);
+        self.render_poses();
+    }
+
+    /// A pose's switch: download it (on) or take it away (off).
+    fn pose_toggled(&self, name: &str, on: bool) {
+        let Some((tx, _)) = &self.pose_downloads else {
+            return;
+        };
+        if self.pose_view.borrow().busy.is_some() {
+            return;
+        }
+        {
+            let mut v = self.pose_view.borrow_mut();
+            v.failed = None;
+            // The turning sign at once, before the thread says so.
+            if on {
+                v.busy = Some(name.to_string());
+            }
+        }
+        let _ = tx.send(if on {
+            crate::poses::Cmd::Install(name.to_string())
+        } else {
+            crate::poses::Cmd::Remove(name.to_string())
+        });
+        self.render_poses();
+    }
+
+    /// What the downloads' thread says.
+    fn poll_poses(&self) {
+        let Some((_, rx)) = &self.pose_downloads else {
+            return;
+        };
+        let mut changed = Vec::new();
+        let mut any = false;
+        while let Ok(m) = rx.borrow().try_recv() {
+            any = true;
+            let mut v = self.pose_view.borrow_mut();
+            match m {
+                crate::poses::Msg::Catalogue(c) => v.catalogue = Some(c),
+                crate::poses::Msg::Busy(b) => v.busy = b,
+                crate::poses::Msg::Changed(n) => changed.push(n),
+                crate::poses::Msg::Failed(n, why) => v.failed = Some((n, why)),
+            }
+        }
+        for n in changed {
+            self.pose_files_changed(&n);
+        }
+        if any {
+            self.render_poses();
+        }
+    }
+
+    /// A downloaded pose came or went: read again, and shown again if a card asks for it.
+    fn pose_files_changed(&self, name: &str) {
+        {
+            let mut cp = self.card_pose.borrow_mut();
+            cp.1.remove(name);
+            if cp.0.as_ref().is_some_and(|l| l.name() == name) {
+                // Taken again by render_card_pose (the new picture, or the character's own).
+                cp.0 = None;
+            }
+        }
+        self.render_card_pose();
+    }
+
+    /// Settings → Poses and its row: the catalogue with a switch per pose, what is going on,
+    /// how many are installed.
+    fn render_poses(&self) {
+        if self.opts.demo.is_some() {
+            return self.render_poses_demo();
+        }
+        let l = self.locale.borrow();
+        let lang = l.code.clone();
+        let dir = self.downloaded_dir();
+        let installed = |n: &str| {
+            dir.as_deref()
+                .is_some_and(|d| crate::poses::installed(d, n))
+        };
+        let count = dir
+            .as_deref()
+            .and_then(|d| std::fs::read_dir(d).ok())
+            .map(|it| {
+                it.filter_map(Result::ok)
+                    .filter(|e| {
+                        let n = e.file_name().to_string_lossy().to_string();
+                        n.ends_with(".png") && !n.ends_with("-anim.png")
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        self.screen.set_poses_value(&if count > 0 {
+            l.text("poses_installed").replace("{n}", &count.to_string())
+        } else {
+            String::new()
+        });
+        let v = self.pose_view.borrow();
+        let poses = match &v.catalogue {
+            Some(Ok(s)) => s.as_slice(),
+            _ => &[],
+        };
+        let title = |n: &str| {
+            poses
+                .iter()
+                .find(|s| s.name == n)
+                .map(|s| s.title(&lang))
+                .unwrap_or_else(|| n.to_string())
+        };
+        let mb = |bytes: u64| format!("{:.1} MB", bytes as f64 / 1_048_576.0);
+        let mut rows: Vec<super::PoseRowData> = poses
+            .iter()
+            .map(|s| {
+                (
+                    s.name.clone(),
+                    s.title(&lang),
+                    mb(s.size()),
+                    installed(&s.name),
+                    v.busy.as_deref() == Some(s.name.as_str()),
+                )
+            })
+            .collect();
+        // Installed poses the catalogue no longer lists (renamed, withdrawn): still there to take
+        // away. Only against a catalogue that was read: while looking, every pose is unknown.
+        if let (Some(Ok(_)), Some(d)) = (&v.catalogue, dir.as_deref()) {
+            let known: Vec<&str> = poses.iter().map(|s| s.name.as_str()).collect();
+            for (name, size) in crate::poses::unlisted(d, &known) {
+                let value = l.text("poses_unlisted").replace("{size}", &mb(size));
+                rows.push((name.clone(), name, value, true, false));
+            }
+        }
+        self.screen.set_pose_rows(&rows);
+        self.screen.set_poses_busy(v.busy.is_some());
+        let state = if let Some(b) = &v.busy {
+            l.text("poses_busy").replace("{title}", &title(b))
+        } else if let Some((n, why)) = &v.failed {
+            l.text("poses_failed_one")
+                .replace("{title}", &title(n))
+                .replace("{why}", why)
+        } else {
+            match &v.catalogue {
+                None if self.pose_downloads.is_some() => l.text("poses_loading").to_string(),
+                Some(Err(_)) => l.text("poses_failed").to_string(),
+                Some(Ok(s)) if s.is_empty() => l.text("poses_none").to_string(),
+                None => l.text("poses_none").to_string(),
+                Some(Ok(_)) => String::new(),
+            }
+        };
+        self.screen.set_poses_state(&state);
+    }
+
+    /// `--state poses`: the page on sample data (two of four installed, one downloading).
+    fn render_poses_demo(&self) {
+        let l = self.locale.borrow();
+        let rows: Vec<super::PoseRowData> = [
+            ("laundry", "Laundry", "7.2 MB", true, false),
+            ("barbecue", "Barbecue", "4.1 MB", false, true),
+            ("waste", "Rubbish out", "5.3 MB", true, false),
+            ("vacuum", "Robot vacuum", "4.4 MB", false, false),
+        ]
+        .iter()
+        .map(|(n, t, v, on, busy)| (n.to_string(), t.to_string(), v.to_string(), *on, *busy))
+        .collect();
+        self.screen.set_pose_rows(&rows);
+        self.screen.set_poses_busy(true);
+        self.screen
+            .set_poses_state(&l.text("poses_busy").replace("{title}", "Barbecue"));
+        self.screen
+            .set_poses_value(&l.text("poses_installed").replace("{n}", "2"));
+    }
+
+    /// Where the downloaded poses are (Settings → Poses): `<state_dir>/poses/<character>/`.
+    fn downloaded_dir(&self) -> Option<PathBuf> {
+        let state = self.opts.state_dir.as_ref()?;
+        Some(crate::poses::dir(state, &self.character.id))
+    }
+
     fn refresh_home(&self) {
+        self.render_card_pose();
         if self.opts.demo.as_ref().is_some_and(|d| d.cards) {
             return;
         }
         let l = self.locale.borrow();
         let w = |k: &str| l.text(k).to_string();
         let timers = self.visible_timers();
+        let on = self.widget_on.borrow().clone();
         let d = self.desk.borrow();
         let offline =
             self.view.get() == Phase::Offline && self.motion.borrow().loading_until.is_none();
@@ -5020,8 +6991,13 @@ impl<S: Screen> Ui<S> {
         };
         let alive = Alive {
             done,
-            status: offline.then(|| (w("offline_title"), w("offline_text"))),
+            status: if self.audio_down.get() {
+                Some((w("audio_down_title"), w("audio_down_text")))
+            } else {
+                offline.then(|| (w("offline_title"), w("offline_text")))
+            },
             setup,
+            panel: self.panel_card(),
             ready,
             mirror,
             alarm,
@@ -5046,10 +7022,718 @@ impl<S: Screen> Ui<S> {
                 .last_answer
                 .as_ref()
                 .map(|(a, _)| (w("last_answer"), a.clone())),
+            next_in_widget: on.contains(&WidgetKind::Next.into()),
+            shopping_in_widget: on.contains(&WidgetKind::Shopping.into()),
         };
         let picked = cards::pick_n(&alive, &cw, self.max_cards());
         *self.card_kinds.borrow_mut() = picked.iter().map(|c| c.kind).collect();
         self.screen.set_cards(&picked);
+        drop(d);
+        drop(l);
+        self.refresh_widget();
+    }
+
+    /// The widget's pages from the data as it is now, offered to the turn with the slots the
+    /// cards leave free (the page on screen keeps its data until it comes back: widgets::Band).
+    fn refresh_widget(&self) {
+        let on = self.widget_on.borrow().clone();
+        // Full or one line, never between (widgets::size).
+        let slots = if on.is_empty() {
+            0
+        } else {
+            widgets::size(
+                self.max_cards()
+                    .saturating_sub(self.card_kinds.borrow().len()),
+            )
+        };
+        let l = self.locale.borrow();
+        let d = self.desk.borrow();
+        let now = self.now() as i64;
+        let next = next::merge(&d.upcoming, &d.events, now);
+        let today = if self.opts.demo.is_some() {
+            DEMO_DATE.to_string()
+        } else {
+            crate::ha::local_date()
+        };
+        let (columns, hero) = self
+            .weather
+            .borrow()
+            .as_ref()
+            .map(|w| {
+                (
+                    super::weather::widget_columns(w, &l, &today, now, &|t| local_hm(t).0),
+                    Some(super::weather::hero(w, &l, &today, now, &local_hm)),
+                )
+            })
+            .unwrap_or_default();
+        let words = widget_words(&l);
+        if !self.city_weather.borrow().is_empty() {
+            self.widget_data.borrow_mut().cities = self.city_rows(now);
+        }
+        let picks = self.widget_picks(&l, &|id: &str| id.to_string());
+        let custom = self.custom_pages();
+        let data = self.widget_data.borrow();
+        let sources = widgets::Sources {
+            next: &next,
+            weather: columns,
+            weather_hero: hero,
+            shopping: d.shopping.as_deref(),
+            quotes: &data.quotes,
+            cities: &data.cities,
+            notes: &data.notes,
+            sensors: &data.sensors,
+            check: &data.check,
+            playing: data.playing.as_ref(),
+            people: &data.people,
+            custom: &custom,
+            picks: &picks,
+        };
+        let mut pages = widgets::pages(&sources, &on, &words, now, &local_hm);
+        // The markets in the order chosen, every one of them: one whose price has not come yet
+        // (after a start, the sources answer one at a time) waits with "…" instead of missing.
+        for p in pages.iter_mut().filter(|p| p.kind == WidgetKind::Quotes) {
+            if let Some(pk) = picks.iter().find(|x| x.page == p.page()) {
+                *p = widgets::waiting(p.page(), Some(p.clone()), pk, &words);
+            }
+        }
+        drop(data);
+        drop(d);
+        drop(l);
+        let shown = self.widget.borrow_mut().offer(pages, slots, Instant::now());
+        if let Some(s) = shown {
+            self.show_widget(&s);
+        }
+    }
+
+    /// What each page of the kinds that repeat shows, in `l`'s words: its items (keys and
+    /// names; `sensor_name` names an entity) and its title.
+    pub(super) fn widget_picks(
+        &self,
+        l: &Locale,
+        sensor_name: &dyn Fn(&str) -> String,
+    ) -> Vec<widgets::Picks> {
+        // The demos draw their sample data as it is, chosen by nobody.
+        if self.opts.demo.is_some() {
+            return Vec::new();
+        }
+        widgets::picks_of(
+            &self.widget_order.borrow(),
+            &widgets::AllLists {
+                quotes: &self.widget_quotes.borrow(),
+                cities: &self.widget_cities.borrow(),
+                sensors: &self.widget_sensors.borrow(),
+                names: &self.widget_names.borrow(),
+            },
+            sensor_name,
+            &|k| l.text(k).to_string(),
+        )
+    }
+
+    /// Settings → Screen → Widgets as they are.
+    fn refresh_widget_settings(&self) {
+        let l = self.locale.borrow();
+        let on = self.widget_on.borrow();
+        let summary = if on.is_empty() {
+            l.text("widgets_off").to_string()
+        } else {
+            l.text("widgets_on").replace("{n}", &on.len().to_string())
+        };
+        let names = self.widget_names.borrow();
+        let pages: Vec<widgets::PageSetting> = self
+            .widget_order
+            .borrow()
+            .iter()
+            .map(|k| widgets::PageSetting {
+                page: *k,
+                label: self
+                    .custom_name(*k)
+                    .unwrap_or_else(|| model::page_label(*k, &names, &|w| l.text(w).to_string())),
+                on: on.contains(k),
+                hint: self.widget_hint(*k, &l),
+            })
+            .collect();
+        let every = self.widget_every.get().map_or(0, |d| d.as_secs() as u32);
+        self.screen.set_widget_settings(&pages, every, &summary);
+    }
+
+    /// The line under a page in Settings → Screen → Widgets: what it shows is chosen from the
+    /// browser (and how many are chosen).
+    fn widget_hint(&self, page: WidgetPage, l: &Locale) -> String {
+        let kind = page.kind;
+        let count = match kind {
+            WidgetKind::Quotes | WidgetKind::Cities | WidgetKind::Sensors => {
+                Some(self.widget_chosen(page))
+            }
+            WidgetKind::Check | WidgetKind::Playing | WidgetKind::Home | WidgetKind::Custom => None,
+            WidgetKind::Notes => return l.text("widgets_hint_notes").to_string(),
+            _ => return String::new(),
+        };
+        let browser = l.text("widgets_hint_browser");
+        match count {
+            Some(n) if n > 0 => format!(
+                "{} · {browser}",
+                l.text(&format!("widgets_hint_{}", kind.key()))
+                    .replace("{n}", &n.to_string())
+            ),
+            _ => browser.to_string(),
+        }
+    }
+
+    /// How many items of a page are chosen from the browser (markets, cities, sensors).
+    fn widget_chosen(&self, page: WidgetPage) -> usize {
+        match page.kind {
+            WidgetKind::Quotes => self.widget_quotes.borrow().get(page.n).len(),
+            WidgetKind::Cities => self.widget_cities.borrow().get(page.n).len(),
+            WidgetKind::Sensors => self.widget_sensors.borrow().get(page.n).len(),
+            _ => 0,
+        }
+    }
+
+    /// A switch of Settings → Screen → Widgets: the page joins or leaves the turn (and Next and
+    /// Shopping go back to being cards when theirs is off); saved.
+    fn widget_toggled(&self, key: &str, on: bool) {
+        let Some(kind) = WidgetPage::from_key(key) else {
+            return;
+        };
+        let list: Vec<WidgetPage> = {
+            let now = self.widget_on.borrow();
+            self.widget_order
+                .borrow()
+                .iter()
+                .copied()
+                .filter(|k| if *k == kind { on } else { now.contains(k) })
+                .collect()
+        };
+        log::info!(event = "widget_settings", page = key, on = on; "widget: {key} {}", if on { "on" } else { "off" });
+        model::commit(self, Change::Widgets(list, self.widget_every_secs()));
+    }
+
+    /// "Change every": one step along 20 s, 30 s, 1 min, by hand.
+    fn widget_every_stepped(&self, d: i32) {
+        let now = self.widget_every_secs();
+        let choices = widgets::EVERY_CHOICES;
+        let i = choices.iter().position(|c| *c == now).unwrap_or(0) as i32;
+        let next = choices[(i + d.signum()).clamp(0, choices.len() as i32 - 1) as usize];
+        log::info!(event = "widget_settings", every = next; "widget: every {next} s (0 = by hand)");
+        let on = self.widget_on.borrow().clone();
+        model::commit(self, Change::Widgets(on, next));
+    }
+
+    fn widget_every_secs(&self) -> u32 {
+        self.widget_every.get().map_or(0, |d| d.as_secs() as u32)
+    }
+
+    /// A setting written (settings_model): what it changes, at once, on the screen and in the
+    /// core. The screen's own switches and the browser panel both end here.
+    fn apply_setting(&self, change: Change) {
+        match change {
+            Change::Widgets(on, every) => {
+                *self.widget_on.borrow_mut() = on;
+                self.send_widget_want();
+                self.widget_every
+                    .set((every > 0).then(|| Duration::from_secs(every as u64)));
+                self.refresh_widget_settings();
+                self.refresh_home();
+            }
+            Change::WidgetOrder(order) => {
+                // The pages on follow the new order.
+                let on: Vec<WidgetPage> = {
+                    let now = self.widget_on.borrow();
+                    order.iter().copied().filter(|k| now.contains(k)).collect()
+                };
+                *self.widget_order.borrow_mut() = order;
+                *self.widget_on.borrow_mut() = on;
+                log::info!(event = "widget_settings"; "widget: the pages' order changed");
+                self.refresh_widget_settings();
+                self.refresh_home();
+            }
+            Change::WidgetAdded(p, at, on) => {
+                {
+                    let mut order = self.widget_order.borrow_mut();
+                    if !order.contains(&p) {
+                        let shown = self.widget_on.borrow();
+                        let at = at.unwrap_or_else(|| {
+                            shown
+                                .last()
+                                .and_then(|l| order.iter().position(|x| x == l))
+                                .map_or(0, |i| i + 1)
+                        });
+                        let at = at.min(order.len());
+                        order.insert(at, p);
+                    }
+                    if on {
+                        drop(order);
+                        let order = self.widget_order.borrow();
+                        let mut shown = self.widget_on.borrow_mut();
+                        shown.push(p);
+                        let now: Vec<WidgetPage> = order
+                            .iter()
+                            .copied()
+                            .filter(|x| shown.contains(x))
+                            .collect();
+                        *shown = now;
+                    }
+                }
+                self.clear_page_list(p);
+                let key = p.key();
+                log::info!(event = "widget_settings", page = key.as_str(); "widget: page {key} added");
+                self.refresh_widget_settings();
+                self.refresh_home();
+            }
+            Change::WidgetRemoved(p) => {
+                if p.n > 1 {
+                    self.widget_order.borrow_mut().retain(|x| *x != p);
+                    self.widget_on.borrow_mut().retain(|x| *x != p);
+                    self.widget_names.borrow_mut().retain(|(x, _)| *x != p);
+                    match p.kind {
+                        WidgetKind::Quotes => self.widget_quotes.borrow_mut().remove(p.n),
+                        WidgetKind::Cities => self.widget_cities.borrow_mut().remove(p.n),
+                        WidgetKind::Sensors => self.widget_sensors.borrow_mut().remove(p.n),
+                        // A custom widget's tiles are the board's (board.json).
+                        _ => {}
+                    }
+                    let key = p.key();
+                    log::info!(event = "widget_settings", page = key.as_str(); "widget: page {key} removed");
+                    self.lists_changed();
+                }
+            }
+            Change::WidgetName(p, name) => {
+                let name = crate::settings::clean_page_name(&name);
+                let mut names = self.widget_names.borrow_mut();
+                names.retain(|(x, _)| *x != p);
+                if !name.is_empty() {
+                    names.push((p, name));
+                }
+                drop(names);
+                self.refresh_widget_settings();
+                self.refresh_home();
+            }
+            Change::Sensors(n, ids) => {
+                log::info!(event = "widget_settings", sensors = ids.len(); "widget: {} sensors chosen", ids.len());
+                self.widget_sensors.borrow_mut().set(n, ids);
+                self.lists_changed();
+            }
+            Change::WidgetHa(w) => {
+                log::info!(event = "widget_settings"; "widget: Home Assistant's entities chosen");
+                let sensors = self.widget_sensors.borrow().union(|s| s.clone());
+                *self.widget_ha.borrow_mut() = crate::ha::widgets::Want { sensors, ..w };
+                self.send_widget_want();
+                self.refresh_widget_settings();
+            }
+            Change::WidgetCurrency(c) => {
+                *self.widget_currency.borrow_mut() = c;
+                self.configure_feeds();
+            }
+            Change::Quotes(n, q) => {
+                log::info!(event = "widget_settings", quotes = q.len(); "widget: {} markets chosen", q.len());
+                self.widget_quotes.borrow_mut().set(n, q);
+                self.lists_changed();
+            }
+            Change::Cities(n, c) => {
+                log::info!(event = "widget_settings", cities = c.len(); "widget: {} cities chosen", c.len());
+                self.widget_cities.borrow_mut().set(n, c);
+                self.lists_changed();
+            }
+            Change::Night(on, start, end) => {
+                self.desk.borrow_mut().night = (on, start, end);
+                self.refresh_desk();
+                self.tick_clock();
+            }
+            Change::HomeCompact(on) => {
+                self.home_compact.set(on);
+                self.screen.set_home_compact(on);
+                log::info!(event = "home_compact", on = on; "home: {}", if on { "compact" } else { "normal" });
+                self.refresh_desk();
+            }
+            Change::Language(code) => self.apply_language(&code),
+            Change::Volume(p) => {
+                self.volume.set(p);
+                let r = crate::volume::VolumeRequest::Set(p);
+                let _ = self.core.send(CoreEvent::Volume(r));
+            }
+            Change::WakeSensitivity(s) => {
+                self.screen.set_wake_step(s.step());
+                // The core saves it too and has the wake word thread apply it.
+                self.send(UiEvent::WakeSensitivity(s));
+            }
+            Change::KeepConversations(keep) => {
+                self.history.borrow_mut().set_keep(keep);
+                self.refresh_desk();
+            }
+            Change::ConversationMode(on) => {
+                self.screen.set_conversation_mode(on);
+                // The core opens the windows: from the next answer on.
+                self.send(UiEvent::ConversationMode(on));
+            }
+            Change::ConversationMax(times) => {
+                self.screen.set_conversation_max(times);
+                self.send(UiEvent::ConversationMax(times));
+            }
+            Change::Lists(lists) => {
+                self.choice.borrow_mut().lists = lists.clone();
+                if let Some(tx) = self.hub_tx.borrow().as_ref() {
+                    let _ = tx.send(HubCmd::SetLists(lists));
+                }
+                self.render_choices();
+            }
+            Change::Calendars(calendars) => {
+                self.choice.borrow_mut().calendars = calendars;
+                self.render_choices();
+            }
+            Change::Panel(on) => self.panel_switched(on),
+            Change::PanelScreen(on) => self.remote_switched(on),
+            Change::PanelScreenConfirm(on) => self.remote_confirm_switched(on),
+            Change::UpdatePrerelease(on) => {
+                if let Some(u) = &self.updater {
+                    log::info!(event = "update", prerelease = on; "update: release candidates {}", if on { "offered" } else { "not offered" });
+                    u.set_prerelease(on);
+                }
+                self.refresh_update();
+            }
+        }
+    }
+
+    /// A page's list emptied (a page just added).
+    fn clear_page_list(&self, p: WidgetPage) {
+        match p.kind {
+            WidgetKind::Quotes => self.widget_quotes.borrow_mut().set(p.n, Vec::new()),
+            WidgetKind::Cities => self.widget_cities.borrow_mut().set(p.n, Vec::new()),
+            WidgetKind::Sensors => self.widget_sensors.borrow_mut().set(p.n, Vec::new()),
+            _ => {}
+        }
+    }
+
+    /// A page's list changed (or a page with its list gone): the feeds fetch every page's
+    /// items once, Home Assistant is asked for every page's sensors.
+    fn lists_changed(&self) {
+        let sensors = self.widget_sensors.borrow().union(|s| s.clone());
+        self.widget_ha.borrow_mut().sensors = sensors;
+        self.send_widget_want();
+        self.configure_feeds();
+        self.apply_feeds();
+        self.refresh_widget_settings();
+        self.refresh_home();
+    }
+
+    /// Everything that depends on the language, in `code`'s words; the core told.
+    fn apply_language(&self, code: &str) {
+        let app = &self.screen;
+        match set_language(app, &self.character, &self.opts.locales, code) {
+            Ok(l) => {
+                *self.locale.borrow_mut() = l;
+                self.render_weather();
+                app.set_clock("");
+                self.tick_clock();
+                self.refresh_desk();
+                // The brain's texts ("6 memories", the reminders' tile) are written when its
+                // answers come: asked again so they come in the new language.
+                self.refresh_memories();
+                self.show(self.view.get());
+                self.send(UiEvent::Language(code.to_string()));
+                if app.get_page() == "welcome" {
+                    self.language_pending.set(false);
+                    let next = self.first_page().unwrap_or("home");
+                    app.set_page(next);
+                    if let Some(me) = self.this.borrow().upgrade() {
+                        me.on_page(next);
+                    }
+                }
+            }
+            Err(e) => log::warn!("language {code}: {e}"),
+        }
+    }
+
+    /// The home is not on screen, or not to be looked at: the widget's turn stands still.
+    fn widget_paused(&self) -> bool {
+        let d = self.desk.borrow();
+        self.screen.get_page() != "home"
+            || super::webview::visible()
+            || d.mirror.is_some() && self.screen.get_page() == super::mirror::PAGE
+            || !matches!(self.view.get(), Phase::Home | Phase::Offline)
+            || d.night_shown
+            || d.notice.is_some()
+            || super::backlight::screen_off()
+            || self.screen.get_control_open()
+            || !self.screen.get_dialog().is_empty()
+    }
+
+    /// What the feeds fetch: the choices as they are now.
+    fn configure_feeds(&self) {
+        let config = crate::feeds::FeedsConfig {
+            quotes: self.widget_quotes.borrow().union(|q| q.key()),
+            currency: self.widget_currency.borrow().clone(),
+            cities: self.widget_cities.borrow().union(|c| c.id),
+            fahrenheit: self.fahrenheit.get(),
+        };
+        self.feeds.borrow_mut().configure(config);
+    }
+
+    /// The feeds' second: whether they may ask the internet now (their page on, not the night,
+    /// the screen on), and their new data into the widget (shown when its page comes back).
+    fn tick_feeds(&self) {
+        let (night, off) = (self.desk.borrow().night_now, super::backlight::screen_off());
+        // Home Assistant's curves wait too.
+        if self.ha_quiet.get() != Some(night || off)
+            && let Some(tx) = self.hub_tx.borrow().as_ref()
+        {
+            self.ha_quiet.set(Some(night || off));
+            let _ = tx.send(HubCmd::Quiet(night || off));
+        }
+        let on = |k: WidgetKind| self.widget_on.borrow().iter().any(|p| p.kind == k);
+        let active = crate::feeds::Active {
+            quotes: crate::feeds::plan::active(
+                on(WidgetKind::Quotes),
+                !self.widget_quotes.borrow().is_empty(),
+                night,
+                !off,
+            ),
+            cities: crate::feeds::plan::active(
+                on(WidgetKind::Cities),
+                !self.widget_cities.borrow().is_empty(),
+                night,
+                !off,
+            ),
+        };
+        let rev = {
+            let mut f = self.feeds.borrow_mut();
+            f.set_active(active);
+            f.rev()
+        };
+        if rev != self.feeds_rev.get() {
+            self.feeds_rev.set(rev);
+            self.apply_feeds();
+        }
+    }
+
+    /// The feeds' data in the screen's terms, for the chosen items in their order.
+    fn apply_feeds(&self) {
+        let snap = self.feeds.borrow().snapshot();
+        let quotes: Vec<widgets::Trend> = self
+            .widget_quotes
+            .borrow()
+            .union(|q| q.key())
+            .iter()
+            .filter_map(|c| {
+                let q = snap.quote(&c.key())?;
+                use crate::feeds::{Source, plan};
+                let interval = match (c.source, q.market_open) {
+                    (Source::Coingecko, _) => plan::COINGECKO,
+                    (_, true) => plan::YAHOO_OPEN,
+                    (_, false) => plan::YAHOO_CLOSED,
+                };
+                Some(widgets::Trend {
+                    key: c.key(),
+                    name: c.name.clone(),
+                    value: q.price,
+                    decimals: q.decimals,
+                    unit: q.unit.clone(),
+                    prev: q.prev,
+                    pct: true,
+                    points: q.points.clone(),
+                    low: q.low,
+                    high: q.high,
+                    at: q.at,
+                    fresh: 2 * interval as i64,
+                    max_age: 48 * 3600,
+                })
+            })
+            .collect();
+        self.widget_data.borrow_mut().quotes = quotes;
+        *self.city_weather.borrow_mut() = self
+            .widget_cities
+            .borrow()
+            .union(|c| c.id)
+            .iter()
+            .filter_map(|c| snap.city(c.id).cloned())
+            .collect();
+        self.refresh_widget();
+    }
+
+    /// The board: the widget's page and the notes' page, without the one waiting for Undo.
+    fn refresh_notes(&self) {
+        let hidden = match self.desk.borrow().undo {
+            Some(Undo::Note(id)) => Some(id),
+            _ => None,
+        };
+        let board: Vec<brain_link::Note> = self
+            .board
+            .borrow()
+            .iter()
+            .filter(|n| Some(n.id) != hidden)
+            .cloned()
+            .collect();
+        self.widget_data.borrow_mut().notes = board.iter().map(|n| n.text.clone()).collect();
+        let l = self.locale.borrow();
+        let rows: Vec<(i64, String, String)> = board
+            .iter()
+            .map(|n| (n.id, n.text.clone(), short_date(&l, n.created)))
+            .collect();
+        self.screen.set_notes(
+            &rows,
+            [
+                l.text("widget_notes"),
+                l.text("notes_hint"),
+                l.text("notes_empty"),
+                l.text("reminders"),
+            ],
+        );
+        drop(l);
+        self.refresh_widget();
+    }
+
+    /// The markets' or the sensors' page, as the data is now.
+    fn refresh_trends(&self) {
+        let l = self.locale.borrow();
+        let w = widget_words(&l);
+        let kind = self.screen.get_trends_kind();
+        let quotes = kind != "sensors";
+        let page = self.opened(if quotes {
+            WidgetKind::Quotes
+        } else {
+            WidgetKind::Sensors
+        });
+        let title = model::page_label(page, &self.widget_names.borrow(), &|k| {
+            l.text(k).to_string()
+        });
+        let data = self.widget_data.borrow();
+        let all = if quotes { &data.quotes } else { &data.sensors };
+        // That page's items, in its order.
+        let keys: Vec<String> = if quotes {
+            self.widget_quotes
+                .borrow()
+                .get(page.n)
+                .iter()
+                .map(|q| q.key())
+                .collect()
+        } else {
+            self.widget_sensors.borrow().get(page.n).to_vec()
+        };
+        let items: Vec<widgets::Trend> = keys
+            .iter()
+            .filter_map(|k| all.iter().find(|t| t.key == *k).cloned())
+            .collect();
+        let items = if keys.is_empty() && self.opts.demo.is_some() {
+            all.clone()
+        } else {
+            items
+        };
+        let symbols: Vec<(String, String)> = self
+            .widget_quotes
+            .borrow()
+            .union(|q| q.key())
+            .iter()
+            .map(|c| (c.key(), c.id.to_ascii_uppercase()))
+            .collect();
+        let details = |t: &widgets::Trend| -> String {
+            if quotes {
+                symbols
+                    .iter()
+                    .find(|(k, _)| *k == t.key)
+                    .map(|(_, id)| id.clone())
+                    .unwrap_or_default()
+            } else {
+                t.unit.clone()
+            }
+        };
+        let cards = widgets::trend_cards(
+            &items,
+            &details,
+            &w,
+            l.text("trends_high"),
+            l.text("trends_low"),
+            self.now() as i64,
+            &local_hm,
+        );
+        let footer = if quotes {
+            l.text("trends_credit_markets")
+        } else {
+            ""
+        };
+        self.screen.set_trends(&title, &cards, footer);
+    }
+
+    /// The page of `kind` a tap on the widget opened (else its first).
+    fn opened(&self, kind: WidgetKind) -> WidgetPage {
+        self.widget_opened
+            .get()
+            .filter(|p| p.kind == kind && self.widget_order.borrow().contains(p))
+            .unwrap_or_else(|| kind.into())
+    }
+
+    /// The other cities' page: the one chosen on its chips (the first at first), its weather as
+    /// the home's weather page shows it, in its own time.
+    fn refresh_city(&self) {
+        let l = self.locale.borrow();
+        let page = self.opened(WidgetKind::Cities);
+        let lists = self.widget_cities.borrow();
+        let choices = lists.get(page.n);
+        let weather = self.city_weather.borrow();
+        let shown: Vec<(
+            &crate::feeds::CityChoice,
+            &crate::feeds::openmeteo::CityWeather,
+        )> = choices
+            .iter()
+            .filter_map(|c| Some((c, weather.iter().find(|w| w.id == c.id)?)))
+            .collect();
+        let names: Vec<String> = shown.iter().map(|(c, _)| c.name.clone()).collect();
+        let index =
+            (self.screen.get_city_index().max(0) as usize).min(names.len().saturating_sub(1));
+        let Some((c, cw)) = shown.get(index) else {
+            return;
+        };
+        let now = self.now() as i64;
+        let (w, today) = city_as_weather(cw, now);
+        let text = super::weather::text(&w, &l);
+        let there = (now + cw.utc_offset as i64).rem_euclid(86400);
+        let condition = format!(
+            "{} · {}",
+            text.condition,
+            l.text("city_local_time").replace(
+                "{t}",
+                &format!("{:02}:{:02}", there / 3600, there % 3600 / 60)
+            )
+        );
+        let rows = super::weather::forecast_rows(&w, &l, &today, 5);
+        self.screen.set_city(&super::weather::CityView {
+            title: &c.name,
+            names: &names,
+            index,
+            text: &text,
+            condition: &condition,
+            rows: &rows,
+            footer: l.text("city_credit"),
+        });
+    }
+
+    /// The other cities as the widget's rows: the time there now, the name, the sky, the
+    /// temperature.
+    fn city_rows(&self, now: i64) -> Vec<widgets::CityRow> {
+        samples::city_rows_of(
+            &self.widget_cities.borrow().union(|c| c.id),
+            &self.city_weather.borrow(),
+            now,
+        )
+    }
+
+    /// The widget's second: its turn, and at a new minute the page on screen with fresh data
+    /// (what is over leaves Next).
+    fn tick_widget(&self, now: Instant, minute: bool) {
+        self.tick_feeds();
+        self.board_seen_again();
+        if self.widget_on.borrow().is_empty() {
+            return;
+        }
+        if minute {
+            self.refresh_widget();
+        }
+        let paused = self.widget_paused();
+        let shown = self
+            .widget
+            .borrow_mut()
+            .tick(now, paused, self.widget_every.get(), minute);
+        if let Some(s) = shown {
+            self.show_widget(&s);
+        }
     }
 
     fn refresh_ringing(&self) {
@@ -5103,6 +7787,7 @@ impl<S: Screen> Ui<S> {
         let undo = match &d.undo {
             Some(Undo::Timer(_)) => l.text("timer_cancelled"),
             Some(Undo::Alarm(_)) => l.text("alarm_deleted"),
+            Some(Undo::Note(_)) => l.text("note_removed"),
             None => "",
         };
         self.screen.set_undo(undo);
@@ -5173,6 +7858,8 @@ impl<S: Screen> Ui<S> {
     }
 
     fn refresh_settings(&self) {
+        self.refresh_widget_settings();
+        self.refresh_panel();
         let l = self.locale.borrow();
         let (on, start, end) = self.desk.borrow().night;
         let ha = if !self.ha_linked.get() {
@@ -5359,7 +8046,15 @@ impl<S: Screen> Ui<S> {
                             // says it.
                             p.done = true;
                             drop(p);
-                            self.motion.borrow_mut().seq.done(Instant::now());
+                            // On the page the hands leave the keys (the laptop's clips); left
+                            // already: the bow, then the satisfied pose on the home.
+                            if self.screen.get_page() != "ha" {
+                                let now = Instant::now();
+                                self.motion.borrow_mut().seq.done(now);
+                                // After the bow (anim's `done`, 3 s).
+                                self.satisfied
+                                    .set(Some((now + BOW, now + BOW + SATISFIED_FOR)));
+                            }
                             let said =
                                 word(&self.locale.borrow(), "ha_ready_say", &self.character.name);
                             self.send(UiEvent::Say(said));
@@ -5409,6 +8104,10 @@ impl<S: Screen> Ui<S> {
             }
         }
         self.render_ha();
+        // A job started or ended on the page: the laptop's keys.
+        if self.screen.get_page() == "ha" {
+            self.page_motion();
+        }
         if settings {
             self.refresh_settings();
             self.refresh_tiles();
@@ -5423,6 +8122,7 @@ impl<S: Screen> Ui<S> {
     /// go, and the lists chosen at first (empty = all).
     pub fn set_hub(&self, tx: Sender<HubCmd>, lists: Vec<String>) {
         *self.hub_tx.borrow_mut() = Some(tx);
+        self.send_widget_want();
         self.choice.borrow_mut().lists = lists;
         self.choice.borrow_mut().calendars = self
             .settings
@@ -5431,22 +8131,115 @@ impl<S: Screen> Ui<S> {
             .unwrap_or_default();
     }
 
+    /// What the widget asks of Home Assistant now: only what the pages that are on show.
+    fn widget_want(&self) -> crate::ha::widgets::Want {
+        let on = self.widget_on.borrow();
+        let w = self.widget_ha.borrow();
+        let has = |k: WidgetKind| on.iter().any(|p| p.kind == k);
+        let mut want = crate::ha::widgets::Want {
+            sensors: if has(WidgetKind::Sensors) {
+                w.sensors.clone()
+            } else {
+                Vec::new()
+            },
+            player: if has(WidgetKind::Playing) {
+                w.player.clone()
+            } else {
+                String::new()
+            },
+            people: if has(WidgetKind::Home) {
+                w.people.clone()
+            } else {
+                None
+            },
+            openings: has(WidgetKind::Check) && w.openings,
+            batteries: has(WidgetKind::Check) && w.batteries,
+            ..Default::default()
+        };
+        // The board's tiles: their entities, the wide sensors' days, the Advanced services.
+        self.board_want(&mut want);
+        want
+    }
+
+    fn send_widget_want(&self) {
+        if let Some(tx) = self.hub_tx.borrow().as_ref() {
+            let _ = tx.send(HubCmd::SetWidgets(self.widget_want()));
+        }
+    }
+
+    /// Home Assistant's data in the widget's terms: each sensor with its day when it came (the
+    /// change against 24 hours ago, never coloured).
+    fn apply_ha_widgets(&self) {
+        let d = self.ha_widgets.borrow().clone();
+        let now = now_unix() as i64;
+        let curves = self.ha_curves.borrow();
+        let mut data = self.widget_data.borrow_mut();
+        data.sensors = d
+            .sensors
+            .iter()
+            .map(|s| {
+                let c = curves.get(&s.id);
+                widgets::Trend {
+                    key: s.id.clone(),
+                    name: s.name.clone(),
+                    value: s.value,
+                    decimals: s.decimals,
+                    unit: s.unit.clone(),
+                    prev: c.map(|c| c.first),
+                    pct: false,
+                    points: c.map(|c| c.points.clone()).unwrap_or_default(),
+                    low: c.map_or(s.value, |c| c.low.min(s.value)),
+                    high: c.map_or(s.value, |c| c.high.max(s.value)),
+                    at: now,
+                    fresh: i64::MAX / 4,
+                    max_age: i64::MAX / 4,
+                }
+            })
+            .collect();
+        data.check = d.check.clone();
+        // Alfred's own AirPlay has its card already.
+        data.playing = d
+            .playing
+            .clone()
+            .filter(|_| self.desk.borrow().music.is_none());
+        data.people = d.people.clone();
+        drop(data);
+        drop(curves);
+        self.refresh_widget();
+    }
+
     /// What Home Assistant's thread says.
     pub fn apply_hub(&self, m: HubMsg) {
         match m {
+            HubMsg::Catalog(c) => *self.ha_catalog.borrow_mut() = c,
+            HubMsg::Curve(entity, c) => {
+                match c {
+                    Some(c) => self.ha_curves.borrow_mut().insert(entity, c),
+                    None => self.ha_curves.borrow_mut().remove(&entity),
+                };
+                self.apply_ha_widgets();
+            }
+            HubMsg::Widgets(d) => {
+                *self.ha_widgets.borrow_mut() = d;
+                self.apply_ha_widgets();
+            }
             HubMsg::Card(ev) => {
-                let show = matches!(ev, crate::ha::events::CardEvent::Show(_));
+                // A card that is `quiet` (an update with fresh values) neither sounds nor wakes.
+                let chimes = ev.chimes();
                 let changed = self.desk.borrow_mut().ha_cards.apply(ev, Instant::now());
                 if changed {
                     // Like a reminder: a soft wake and its sound, by day only.
-                    if show && !self.desk.borrow().night_now {
+                    if chimes && !self.desk.borrow().night_now {
                         self.wake(WakeSource::Conversation);
                         self.send(UiEvent::Reminder);
                     }
                     self.refresh_home();
                 }
             }
-            HubMsg::Link { up, last_seen } => super::webview::set_ha_link(up, last_seen),
+            HubMsg::Link { up, last_seen } => {
+                super::webview::set_ha_link(up, last_seen);
+                self.board_link(up);
+            }
             HubMsg::Screen(true) => self.wake(WakeSource::HomeAssistant),
             HubMsg::Screen(false) => self.screen_off_by("Home Assistant"),
             HubMsg::Entities(e) => {
@@ -5475,6 +8268,8 @@ impl<S: Screen> Ui<S> {
                 self.render_shopping();
                 self.refresh_home();
             }
+            HubMsg::Tiles(s) => self.board_states(s),
+            HubMsg::Called { id, ok, error } => self.board_called(id, ok, error),
         }
     }
 
@@ -5511,24 +8306,16 @@ impl<S: Screen> Ui<S> {
 
     /// A tap on a row of Lists and calendars: saved, and the lists change at once.
     fn choice_toggled(&self, id: &str) {
-        let mut c = self.choice.borrow_mut();
+        let mut c = self.choice.borrow().clone();
         if !c.toggle(id) {
             return;
         }
-        if let Some(s) = &self.settings {
-            if id.starts_with("todo.") {
-                s.save_lists(&c.lists);
-            } else {
-                s.save_calendars(&c.calendars);
-            }
-        }
-        if id.starts_with("todo.")
-            && let Some(tx) = self.hub_tx.borrow().as_ref()
-        {
-            let _ = tx.send(HubCmd::SetLists(c.lists.clone()));
-        }
-        drop(c);
-        self.render_choices();
+        let change = if id.starts_with("todo.") {
+            Change::Lists(c.lists)
+        } else {
+            Change::Calendars(c.calendars)
+        };
+        model::commit(self, change);
     }
 
     fn render_choices(&self) {
@@ -5536,19 +8323,63 @@ impl<S: Screen> Ui<S> {
         self.screen.set_choices(&todo, &cal);
     }
 
-    /// A tick on the page: gone from the screen at once, completed in Home Assistant.
+    /// A tap on an item: ticked for [`SHOP_UNDO`], then bought (completed in Home Assistant, gone
+    /// from the list); a tap meanwhile takes the tick back (Andrea, 2026-11-16).
     fn shop_done(&self, uid: String) {
-        let Some((list, item)) = lists::split_uid(&uid) else {
+        if lists::split_uid(&uid).is_none() {
             return;
-        };
-        if let Some(v) = self.desk.borrow_mut().shopping.as_mut() {
-            lists::remove(v, list, item);
         }
-        if let Some(tx) = self.hub_tx.borrow().as_ref() {
-            let _ = tx.send(HubCmd::Done {
-                list: list.to_string(),
-                uid: item.to_string(),
-            });
+        {
+            let mut t = self.shop_ticks.borrow_mut();
+            if t.remove(&uid).is_none() {
+                t.insert(uid, Instant::now());
+            }
+        }
+        self.render_shopping();
+        if !self.shop_ticks.borrow().is_empty() && !self.shop_timer.running() {
+            let w = self.this.borrow().clone();
+            self.shop_timer
+                .start(TimerMode::Repeated, Duration::from_millis(500), move || {
+                    if let Some(ui) = w.upgrade() {
+                        ui.shop_commit(false);
+                    }
+                });
+        }
+    }
+
+    /// The ticks whose time is over (all of them with `all`): bought.
+    fn shop_commit(&self, all: bool) {
+        let due: Vec<String> = {
+            let mut t = self.shop_ticks.borrow_mut();
+            let due: Vec<String> = t
+                .iter()
+                .filter(|(_, at)| all || at.elapsed() >= SHOP_UNDO)
+                .map(|(u, _)| u.clone())
+                .collect();
+            for u in &due {
+                t.remove(u);
+            }
+            due
+        };
+        if self.shop_ticks.borrow().is_empty() {
+            self.shop_timer.stop();
+        }
+        if due.is_empty() {
+            return;
+        }
+        for uid in due {
+            let Some((list, item)) = lists::split_uid(&uid) else {
+                continue;
+            };
+            if let Some(v) = self.desk.borrow_mut().shopping.as_mut() {
+                lists::remove(v, list, item);
+            }
+            if let Some(tx) = self.hub_tx.borrow().as_ref() {
+                let _ = tx.send(HubCmd::Done {
+                    list: list.to_string(),
+                    uid: item.to_string(),
+                });
+            }
         }
         self.render_shopping();
         self.refresh_home();
@@ -5560,7 +8391,13 @@ impl<S: Screen> Ui<S> {
         match &d.shopping {
             Some(v) => self.screen.set_shopping(
                 true,
-                &lists::rows(v),
+                &lists::rows(v)
+                    .into_iter()
+                    .map(|(u, t)| {
+                        let k = self.shop_ticks.borrow().contains_key(&u);
+                        (u, t, k)
+                    })
+                    .collect::<Vec<_>>(),
                 &l.text("tile_shopping")
                     .replace("{n}", &lists::count(v).to_string()),
             ),
@@ -5669,6 +8506,7 @@ impl<S: Screen> Ui<S> {
         let mut changed = false;
         let mut home = false;
         let mut events_seen = false;
+        let mut notes_seen = false;
         let mut upcoming_seen: Option<Vec<(i64, String)>> = None;
         let mut timers: Vec<(u64, Option<String>)> = Vec::new();
         let mut cancels: Vec<String> = Vec::new();
@@ -5846,6 +8684,11 @@ impl<S: Screen> Ui<S> {
                 }
                 BrainMsg::ShowView(v) => house_cards.push(HouseEvent::View(v)),
                 BrainMsg::TakePhoto => house_cards.push(HouseEvent::Photo),
+                BrainMsg::Notes(notes) => {
+                    *self.board.borrow_mut() = notes;
+                    notes_seen = true;
+                    changed = true;
+                }
                 BrainMsg::Upcoming(items) => {
                     d.memories.events = event_rows(&items, &l, now_unix() as i64);
                     d.events = items;
@@ -5905,6 +8748,12 @@ impl<S: Screen> Ui<S> {
         }
         if events_seen && !home {
             self.refresh_home();
+        }
+        if notes_seen {
+            self.refresh_notes();
+            if !home {
+                self.refresh_home();
+            }
         }
         for e in house_cards {
             self.house_event(e);
@@ -6017,7 +8866,16 @@ impl<S: Screen> Ui<S> {
             let left = self.house.borrow().popup_left(Instant::now());
             self.screen.set_done_popup(true, left);
         }
-        let left = self.house.borrow().ask_left(now_unix);
+        let mut left = self.house.borrow().ask_left(now_unix);
+        if self.house.borrow().ask.is_none() {
+            // A tile's question: its 30 s, then a No.
+            if self.board_question_tick(Instant::now()) {
+                return;
+            }
+            if let Some((_, _, _, l)) = self.board_question(Instant::now()) {
+                left = l;
+            }
+        }
         if (left - self.ask_left.get()).abs() >= 0.004 {
             self.ask_left.set(left);
             self.screen.set_ask_left(left);
@@ -6075,14 +8933,26 @@ impl<S: Screen> Ui<S> {
         self.refresh_home();
         let left = h.ask_left(self.now());
         self.ask_left.set(left);
-        match &h.ask {
-            Some(a) => {
+        // One question on screen: the brain's, else a tile's (board_ui.rs); a tile's open when
+        // the brain asks is a No.
+        if h.ask.is_some() {
+            self.board_question_yields();
+        }
+        match (&h.ask, self.board_question(Instant::now())) {
+            (Some(a), _) => {
+                self.screen.set_ask_icon("");
                 self.screen.set_ask(true, &a.text, &a.names_line(), left);
                 let title = a.working_title(self.locale.borrow().text("house_others"));
                 self.screen
                     .set_ask_working(a.working(), &title, a.undo_wanted());
             }
-            None => {
+            (None, Some((title, line, icon, left))) => {
+                self.screen.set_ask_icon(&icon);
+                self.screen.set_ask(true, &title, &line, left);
+                self.screen.set_ask_working(false, "", false);
+            }
+            (None, None) => {
+                self.screen.set_ask_icon("");
                 self.screen.set_ask(false, "", "", 0.0);
                 self.screen.set_ask_working(false, "", false);
             }
@@ -6213,6 +9083,7 @@ impl<S: Screen> Ui<S> {
         self.desk.borrow_mut().undo = Some(what);
         self.refresh_home();
         self.refresh_timers();
+        self.refresh_notes();
         let ui = self.this.borrow().clone();
         self.undo_timer.start(TimerMode::SingleShot, UNDO, move || {
             if let Some(ui) = ui.upgrade() {
@@ -6228,17 +9099,22 @@ impl<S: Screen> Ui<S> {
         match what {
             Undo::Timer(id) => self.send(UiEvent::TimerCancel(id)),
             Undo::Alarm(id) => self.send(UiEvent::AlarmDelete(id)),
+            Undo::Note(id) => self.brain_do(brain_link::note_delete(id)),
         }
         self.screen.set_undo("");
     }
 }
 
 /// An answer longer than this leaves the bar over Home Assistant's view for Alfred's layout.
-const BAR_ANSWER: usize = 70;
+pub(crate) const BAR_ANSWER: usize = 70;
 /// Who answers (one brain for now: Home Assistant's Assist pipeline).
 const BRAIN: &str = "Home Assistant";
 /// "Now" in demo mode: 2026-11-03 14:25 UTC (tools/shoot-golden.sh runs with TZ=UTC).
 const DEMO_NOW: f64 = 1_793_715_900.0;
+/// The evening demos' "now": DEMO_NOW + 4 h 45 min = 19:10, after the sample's sunset.
+const DEMO_EVENING: f64 = 17_100.0;
+/// DEMO_NOW's date.
+const DEMO_DATE: &str = "2026-11-03";
 /// The demo conversation's second session (seconds after the first).
 const SESSION_DEMO: i64 = 24 * 3600;
 
@@ -6397,6 +9273,135 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_city_s_days_in_its_own_time() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(20395), (2025, 11, 3));
+        assert_eq!(civil_from_days(-1), (1969, 12, 31));
+        let (_, cities) = demo_cities();
+        // Tokyo, nine hours ahead: at 14:25 UTC it is already the next day there.
+        let (w, today) = city_as_weather(&cities[1], DEMO_NOW as i64);
+        assert_eq!(today, "2026-11-03");
+        assert_eq!(w.unit, "°C");
+        let late = DEMO_NOW as i64 + 10 * 3600;
+        assert_eq!(city_as_weather(&cities[1], late).1, "2026-11-04");
+        assert!(w.today.is_some() && w.next_days.len() == 4);
+    }
+
+    #[test]
+    fn the_home_pose_of_the_moment() {
+        let m = HomeMoment::default();
+        assert_eq!(home_state_of(m), State::Idle);
+        assert_eq!(home_state_of(HomeMoment { nod: true, ..m }), State::Nod);
+        assert_eq!(
+            home_state_of(HomeMoment {
+                satisfied: true,
+                nod: true,
+                ..m
+            }),
+            State::Satisfied
+        );
+        assert_eq!(
+            home_state_of(HomeMoment {
+                working: true,
+                satisfied: true,
+                ..m
+            }),
+            State::Working
+        );
+        assert_eq!(
+            home_state_of(HomeMoment {
+                linking: true,
+                working: true,
+                ..m
+            }),
+            State::Link
+        );
+        assert_eq!(
+            home_state_of(HomeMoment {
+                mic_off: true,
+                linking: true,
+                ..m
+            }),
+            State::Muted
+        );
+    }
+
+    #[test]
+    fn a_card_asks_for_a_downloaded_pose_then_one_of_the_character() {
+        let alfred = |s: State| s != State::TimerFinished;
+        // Downloaded first, even with a state's name.
+        assert_eq!(
+            card_look_of("laundry", true, alfred),
+            Some(Look::Downloaded("laundry".into()))
+        );
+        assert_eq!(
+            card_look_of("working", true, alfred),
+            Some(Look::Downloaded("working".into()))
+        );
+        // Else the character's own pose by its state's name.
+        assert_eq!(
+            card_look_of("working", false, alfred),
+            Some(Look::Own(State::Working))
+        );
+        assert_eq!(
+            card_look_of("offline", false, alfred),
+            Some(Look::Own(State::Offline))
+        );
+        // A state without a pose of its own, or no such name: the card shows alone.
+        assert_eq!(card_look_of("timer_finished", false, alfred), None);
+        assert_eq!(card_look_of("laundry", false, alfred), None);
+    }
+
+    #[test]
+    fn a_card_s_pose_in_place_of_the_moment_s() {
+        let card = Some(Look::Own(State::Thinking));
+        // On the home a card's pose over any moment's pose.
+        for moment in [State::Idle, State::Muted, State::Working, State::Nod] {
+            assert_eq!(
+                home_look_of(card.clone(), false, moment),
+                card.clone().unwrap()
+            );
+        }
+        assert_eq!(
+            home_look_of(None, false, State::Muted),
+            Look::Own(State::Muted)
+        );
+        // The settings and More pages keep theirs: the moment's (idle, link, working).
+        assert_eq!(
+            home_look_of(card.clone(), true, State::Idle),
+            Look::Own(State::Idle)
+        );
+        assert_eq!(
+            home_look_of(Some(Look::Downloaded("bbq".into())), true, State::Working),
+            Look::Own(State::Working)
+        );
+    }
+
+    #[test]
+    fn a_pose_animation_table() {
+        let dir = Path::new("/x/poses");
+        let a = pose_animation(
+            "file = \"laundry-anim.png\"\nsize = [454, 880]\nframes = [0, 80]\nfps = 16\nrect = [271.0, 44.8, 755.1, 983.5]\n",
+            dir,
+        )
+        .unwrap();
+        assert_eq!(a.name, anim::CARD_POSE);
+        assert_eq!(a.file, dir.join("laundry-anim.png"));
+        assert_eq!(
+            (a.size, a.first, a.end, a.fps, a.pause),
+            ((454, 880), 0, 80, 16.0, 0.0)
+        );
+        for bad in [
+            "file = \"../poses/idle.png\"\nsize = [1, 1]\nframes = [0, 2]\nfps = 16\nrect = [0.0, 0.0, 1.0, 1.0]\n",
+            "file = \"a.png\"\nsize = [1, 1]\nframes = [2, 2]\nfps = 16\nrect = [0.0, 0.0, 1.0, 1.0]\n",
+            "file = \"a.png\"\nsize = [1, 1]\nframes = [0, 2]\nfps = 0\nrect = [0.0, 0.0, 1.0, 1.0]\n",
+            "file = \"a.png\"\nsize = [1, 1]\nframes = [0, 2]\nfps = 16\nrect = [0.0, 0.0, 1.0, 1.0]\nname = \"idle\"\n",
+        ] {
+            assert!(pose_animation(bad, dir).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn memories_tile_says_what_waits() {
         let l = locale::load(&locale::repo_locales(), "it").unwrap();
         assert_eq!(memories_tile(&l, "6 ricordi", 0), "6 ricordi");
@@ -6484,6 +9489,7 @@ mod tests {
             },
             link: None,
             update: None,
+            panel: None,
         };
         let ui = Ui::new(prepared.screen, character, opts, tx).unwrap();
         let w = &ui.screen;
@@ -6546,7 +9552,1335 @@ mod tests {
                 WakeSensitivity::Less
             ]
         );
+        // Settings → conversation mode: off at first; the switch shows it, tells the core and
+        // writes it.
+        assert!(!w.get_conversation_mode());
+        w.invoke_conversation_mode_changed(true);
+        assert!(w.get_conversation_mode());
+        w.invoke_conversation_mode_changed(false);
+        let sent: Vec<bool> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                CoreEvent::Ui(UiEvent::ConversationMode(on)) => Some(on),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sent, [true, false]);
+        // … and how many times in a row: three at first, one at a time, never past the ends.
+        assert_eq!(w.get_conversation_max(), 3);
+        w.invoke_conversation_max_changed(4);
+        assert_eq!(w.get_conversation_max(), 4);
+        w.invoke_conversation_max_changed(0);
+        assert_eq!(w.get_conversation_max(), 1, "clamped");
+        w.invoke_conversation_max_changed(11);
+        assert_eq!(w.get_conversation_max(), 10, "clamped");
+        let sent: Vec<u32> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                CoreEvent::Ui(UiEvent::ConversationMax(n)) => Some(n),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sent, [4, 1, 10]);
         drop(ui);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The mirror's swipe home from the home button's edge exists only while mirroring: with the
+    /// edge on the right it was a 36 px strip at x >= 1244 on every page, which took every touch
+    /// there (a swipe from the right edge of any page went home).
+    #[test]
+    fn the_mirrors_edge_swipe_only_while_mirroring() {
+        use super::super::webview::CasaScreen as _;
+        use slint::LogicalPosition;
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let (ui, dir) = headless_ui("mirror-edge");
+        let w = &ui.screen;
+        let button = PointerEventButton::Left;
+        let drag = |from: (f32, f32), to: (f32, f32)| {
+            let at = |p: (f32, f32)| LogicalPosition::new(p.0, p.1);
+            w.window()
+                .dispatch_event(WindowEvent::PointerMoved { position: at(from) });
+            w.window().dispatch_event(WindowEvent::PointerPressed {
+                position: at(from),
+                button,
+            });
+            for i in 1..=8 {
+                let f = i as f32 / 8.0;
+                let p = (from.0 + (to.0 - from.0) * f, from.1 + (to.1 - from.1) * f);
+                w.window()
+                    .dispatch_event(WindowEvent::PointerMoved { position: at(p) });
+            }
+            w.window().dispatch_event(WindowEvent::PointerReleased {
+                position: at(to),
+                button,
+            });
+        };
+        w.casa_set_edge("right");
+        for page in ["more", "settings"] {
+            w.set_page(page.into());
+            drag((1270.0, 400.0), (1000.0, 400.0));
+            assert_eq!(w.get_page(), page, "a swipe from the right edge of {page}");
+        }
+        // The mirror's own swipe in from the home button's edge still goes home.
+        w.set_mirror(true, "Phone", 1280, 800);
+        w.set_page("mirror".into());
+        drag((1270.0, 400.0), (1000.0, 400.0));
+        assert_eq!(w.get_page(), "home", "the mirror's edge swipe");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The board follows the finger: pulled in from the home's edge, across its pages and out
+    /// to the right from its first page. Let go short of a quarter of the screen (slowly), it
+    /// springs back; past it, it goes on. A drag that starts on a tile never taps it.
+    #[test]
+    fn the_board_follows_the_finger() {
+        use super::super::webview::CasaScreen as _;
+        use slint::LogicalPosition;
+        use slint::Model;
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let (ui, dir) = headless_ui("board-drag");
+        let w = &ui.screen;
+        let (hub, cmds) = std::sync::mpsc::channel();
+        *ui.hub_tx.borrow_mut() = Some(hub);
+        ui.show_demo_board(1);
+        w.casa_set_edge("bottom");
+        let button = PointerEventButton::Left;
+        let tick = |ms: u64| {
+            std::thread::sleep(Duration::from_millis(ms));
+            slint::platform::update_timers_and_animations();
+        };
+        let at = |p: (f32, f32)| LogicalPosition::new(p.0, p.1);
+        // Down, eight moves, `hold` ms still, then up (a slow drag is no flick).
+        let press = |from: (f32, f32), to: (f32, f32)| {
+            w.window()
+                .dispatch_event(WindowEvent::PointerMoved { position: at(from) });
+            w.window().dispatch_event(WindowEvent::PointerPressed {
+                position: at(from),
+                button,
+            });
+            for i in 1..=8 {
+                let f = i as f32 / 8.0;
+                let p = (from.0 + (to.0 - from.0) * f, from.1 + (to.1 - from.1) * f);
+                w.window()
+                    .dispatch_event(WindowEvent::PointerMoved { position: at(p) });
+            }
+        };
+        let lift = |to: (f32, f32)| {
+            w.window().dispatch_event(WindowEvent::PointerReleased {
+                position: at(to),
+                button,
+            });
+        };
+        let slow = |from: (f32, f32), to: (f32, f32)| {
+            press(from, to);
+            tick(300);
+            lift(to);
+        };
+        let calls = || {
+            cmds.try_iter()
+                .filter(|c| matches!(c, HubCmd::Call { .. }))
+                .count()
+        };
+        w.set_page("home".into());
+        tick(450);
+        // From the home's edge: under the finger while it moves.
+        press((1265.0, 400.0), (1065.0, 400.0));
+        assert!(w.get_board_finger());
+        assert_eq!(w.get_board_pull(), 200.0);
+        assert_eq!(w.get_page(), "home");
+        tick(300);
+        lift((1065.0, 400.0));
+        assert_eq!(w.get_page(), "home", "200 px, slowly: back");
+        assert!(!w.get_board_finger());
+        assert_eq!(w.get_board_pull(), 0.0);
+        tick(450);
+        slow((1265.0, 400.0), (865.0, 400.0));
+        assert_eq!(w.get_page(), "board", "400 px: in");
+        tick(450);
+        let _ = calls();
+        // Across the pages, starting on a tile (the floor lamp).
+        press((220.0, 340.0), (20.0, 340.0));
+        assert_eq!(w.get_board_slide(), -200.0, "the pages follow the finger");
+        tick(300);
+        lift((20.0, 340.0));
+        assert_eq!(w.get_board_slide(), 0.0, "200 px, slowly: back");
+        tick(450);
+        assert_eq!(
+            (w.get_board_index(), w.get_board_title().as_str()),
+            (0, "Living room")
+        );
+        slow((620.0, 340.0), (220.0, 340.0));
+        assert_eq!(w.get_board_slide(), -1280.0, "on its way to the next page");
+        tick(300);
+        assert_eq!(w.get_board_slide(), 0.0);
+        assert_eq!(
+            (w.get_board_index(), w.get_board_title().as_str()),
+            (1, "Night")
+        );
+        assert_eq!(
+            w.get_board_prev_tiles().row_count(),
+            15,
+            "the first page beside it"
+        );
+        assert_eq!(w.get_board_next_tiles().row_count(), 0);
+        assert_eq!(calls(), 0, "no tile tapped by a drag");
+        // Past the last page: it only gives a little.
+        press((620.0, 500.0), (220.0, 500.0));
+        assert_eq!(w.get_board_slide(), -100.0);
+        lift((220.0, 500.0));
+        tick(450);
+        assert_eq!(w.get_board_index(), 1);
+        // Back to the first, then out to the right: a short one stays, a long one goes home.
+        slow((220.0, 500.0), (620.0, 500.0));
+        tick(450);
+        assert_eq!(w.get_board_index(), 0);
+        press((220.0, 500.0), (420.0, 500.0));
+        assert_eq!(
+            w.get_board_back(),
+            200.0,
+            "the page goes out with the finger"
+        );
+        assert_eq!(w.get_board_slide(), 0.0);
+        tick(300);
+        lift((420.0, 500.0));
+        assert_eq!(w.get_page(), "board", "200 px, slowly: back in");
+        assert_eq!(w.get_board_back(), 0.0);
+        tick(450);
+        slow((220.0, 500.0), (620.0, 500.0));
+        assert_eq!(w.get_page(), "home", "400 px: home");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A page left alone goes home after a minute; the board stays, like Home Assistant's view.
+    #[test]
+    fn the_board_stays_when_left_alone() {
+        let (ui, dir) = headless_ui("board-alone");
+        let w = &ui.screen;
+        let long_ago = Instant::now().checked_sub(PAGE_IDLE + Duration::from_secs(1));
+        for (page, after) in [("more", "home"), ("board", "board")] {
+            w.set_page(page.into());
+            ui.desk.borrow_mut().touched = long_ago;
+            ui.tick_clock();
+            assert_eq!(w.get_page(), after, "{page} left alone");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The board's home button: shown by a touch on the board where Home Assistant's view's
+    /// rests, gone 4 s after the last touch; dragged, it rests on the nearest edge, saved for
+    /// the view too.
+    #[test]
+    fn the_boards_home_button() {
+        use crate::ui::webview::{controls::Place, saved_place};
+        let (ui, dir) = headless_ui("board-home");
+        let w = &ui.screen;
+        w.set_page("board".into());
+        ui.wake(WakeSource::Touch);
+        assert!(w.get_board_home_shown());
+        let (x, y) = Place::default().xy();
+        assert_eq!((w.get_board_home_x(), w.get_board_home_y()), (x, y));
+        ui.tick_clock();
+        assert!(
+            w.get_board_home_shown(),
+            "still there right after the touch"
+        );
+        ui.desk.borrow_mut().touched = Instant::now().checked_sub(Duration::from_secs(5));
+        ui.tick_clock();
+        assert!(!w.get_board_home_shown(), "gone after a while");
+        ui.board_home_moved(30.0, 300.0);
+        let p = saved_place(&dir);
+        assert_eq!((p.edge.name(), p.offset), ("left", 300.0));
+        assert_eq!((w.get_board_home_x(), w.get_board_home_y()), p.xy());
+        // A touch on another page does not bring it.
+        w.set_page("more".into());
+        ui.wake(WakeSource::Touch);
+        assert!(!w.get_board_home_shown());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A headless Ui on its own state directory, Home Assistant not linked, no first start.
+    /// The board on a real (headless) screen: replaced and saved, followed by the hub, a tap
+    /// sent at once and waiting for its state, a failure shown, a shutter asking first, a
+    /// level sent at most every 300 ms and when the finger lifts, and one question at a time
+    /// with the brain's.
+    #[test]
+    fn the_boards_taps_levels_and_question() {
+        use board_ui::Place;
+        use slint::Model;
+        let (ui, dir) = headless_ui("board");
+        let w = &ui.screen;
+        let (hub, cmds) = std::sync::mpsc::channel();
+        *ui.hub_tx.borrow_mut() = Some(hub);
+        let (b, states, curves) = board_ui::demo_board(false);
+        ui.ha_curves.borrow_mut().extend(curves);
+        assert!(ui.replace_board(b).is_empty());
+        assert_eq!(Settings::in_dir(&dir).board().pages.len(), 2, "saved");
+        assert!(w.get_board_handle());
+        let want = cmds
+            .try_iter()
+            .filter_map(|c| match c {
+                HubCmd::SetWidgets(w) => Some(w),
+                _ => None,
+            })
+            .last()
+            .unwrap();
+        assert!(want.tiles.contains(&"cover.living_room".to_string()));
+        assert_eq!(
+            want.tile_curves,
+            [
+                "sensor.outdoor_temperature",
+                "sensor.power",
+                "sensor.indoor_humidity"
+            ]
+        );
+        ui.apply_hub(HubMsg::Tiles(states));
+        w.set_page("board".into());
+        ui.render_board(false);
+        assert_eq!(w.get_board_title(), "Living room");
+        assert_eq!((w.get_board_index(), w.get_board_count()), (0, 2));
+        let tile = |i: usize| w.get_board_tiles().row_data(i).unwrap();
+        assert_eq!(w.get_board_tiles().row_count(), 15);
+        assert_eq!(
+            (tile(1).name.as_str(), tile(1).state.as_str()),
+            ("Floor lamp", "on")
+        );
+        // A light: at once, then it waits for its state.
+        ui.board_tap(Place::Page(0), 2);
+        let sent = |cmds: &std::sync::mpsc::Receiver<HubCmd>| {
+            cmds.try_iter()
+                .filter_map(|c| match c {
+                    HubCmd::Call {
+                        id,
+                        domain,
+                        service,
+                        entity_id,
+                        data,
+                    } => Some((id, format!("{domain}.{service}"), entity_id, data)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let calls = sent(&cmds);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            (calls[0].1.as_str(), calls[0].2.as_str()),
+            ("homeassistant.toggle", "light.ceiling")
+        );
+        assert_eq!(tile(2).state, "pending");
+        // Refused by Home Assistant: the tile says so.
+        ui.apply_hub(HubMsg::Called {
+            id: calls[0].0,
+            ok: false,
+            error: Some("no".into()),
+        });
+        assert_eq!(
+            (tile(2).state.as_str(), tile(2).status.as_str()),
+            ("failed", "Didn't work")
+        );
+        // The shutter asks first; No does nothing, Yes sends it.
+        ui.board_tap(Place::Page(0), 6);
+        assert!(sent(&cmds).is_empty());
+        assert!(w.get_ask_shown());
+        assert_eq!(w.get_ask_text(), "Close Shutter?");
+        assert_eq!(w.get_ask_names(), "Living room");
+        assert!(!w.get_ask_icon_path().is_empty());
+        ui.board_answer(true, "screen");
+        assert!(!w.get_ask_shown());
+        let calls = sent(&cmds);
+        // What was asked ("Close …?"), not a toggle: a Yes after a wall switch closed it
+        // does not open it.
+        assert_eq!(
+            (calls[0].1.as_str(), calls[0].2.as_str()),
+            ("cover.close_cover", "cover.living_room")
+        );
+        // A level: the first value at once, the next within 300 ms waits, the finger's lift goes.
+        ui.board_level(Place::Page(0), 0, 40, false);
+        ui.board_level(Place::Page(0), 0, 45, false);
+        ui.board_level(Place::Page(0), 0, 55, true);
+        let calls = sent(&cmds);
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert_eq!(calls[0].3, json!({"brightness_pct": 40}));
+        assert_eq!(calls[1].3, json!({"brightness_pct": 55}));
+        // One question at a time: the brain's wins over a tile's, and a tile's waits for none.
+        ui.board_tap(Place::Page(0), 6);
+        assert!(w.get_ask_shown());
+        ui.house.borrow_mut().confirm(
+            9,
+            "Open the valve?".into(),
+            Vec::new(),
+            now_unix() as i64 + 30,
+            ui.now(),
+        );
+        ui.render_house();
+        assert_eq!(w.get_ask_text(), "Open the valve?");
+        assert_eq!(w.get_ask_icon_path(), "");
+        assert!(ui.tile_board.borrow().ask.is_none(), "the tile's is a No");
+        ui.board_tap(Place::Page(0), 6);
+        assert!(
+            ui.tile_board.borrow().ask.is_none(),
+            "refused while the brain asks"
+        );
+        assert_eq!(w.get_ask_text(), "Open the valve?");
+        assert!(sent(&cmds).is_empty());
+        // Swiping across the pages.
+        ui.house.borrow_mut().clear_question();
+        ui.render_house();
+        w.invoke_board_swiped(1);
+        assert_eq!(w.get_board_title(), "Night");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The board reached with a finger on a real (headless) screen, as on the device: Home
+    /// Assistant's view hidden, its home button on the right edge, the normal and the compact
+    /// home. A swipe in from the home's right edge opens the board; there a tap on a tile, a
+    /// drag on a level's bar and a swipe to the right reach their handlers.
+    #[test]
+    fn the_board_by_touch_from_the_right_edge() {
+        use super::super::webview::CasaScreen as _;
+        use slint::LogicalPosition;
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let (ui, dir) = headless_ui("board-touch");
+        let w = &ui.screen;
+        let (hub, cmds) = std::sync::mpsc::channel();
+        *ui.hub_tx.borrow_mut() = Some(hub);
+        ui.show_demo_board(1);
+        assert!(w.get_board_handle());
+        let button = PointerEventButton::Left;
+        let drag = |from: (f32, f32), to: (f32, f32)| {
+            let at = |p: (f32, f32)| LogicalPosition::new(p.0, p.1);
+            w.window()
+                .dispatch_event(WindowEvent::PointerMoved { position: at(from) });
+            w.window().dispatch_event(WindowEvent::PointerPressed {
+                position: at(from),
+                button,
+            });
+            for i in 1..=8 {
+                let f = i as f32 / 8.0;
+                let p = (from.0 + (to.0 - from.0) * f, from.1 + (to.1 - from.1) * f);
+                w.window()
+                    .dispatch_event(WindowEvent::PointerMoved { position: at(p) });
+            }
+            w.window().dispatch_event(WindowEvent::PointerReleased {
+                position: at(to),
+                button,
+            });
+        };
+        // The board's page slides in (400 ms): let it come to its place.
+        let settle = || {
+            std::thread::sleep(Duration::from_millis(450));
+            slint::platform::update_timers_and_animations();
+        };
+        let calls = || {
+            cmds.try_iter()
+                .filter_map(|c| match c {
+                    HubCmd::Call { entity_id, .. } => Some(entity_id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        for edge in ["bottom", "right"] {
+            w.casa_set_edge(edge);
+            for compact in [false, true] {
+                w.set_home_compact(compact);
+                let case = format!("edge {edge}, compact {compact}");
+                w.set_page("home".into());
+                settle();
+                // A swipe in from the right edge, even one starting on its outer half.
+                for x in [1260.0, 1275.0] {
+                    w.set_page("home".into());
+                    settle();
+                    drag((x, 400.0), (1000.0, 400.0));
+                    assert_eq!(w.get_page(), "board", "{case}, from {x}");
+                }
+                settle();
+                let _ = calls();
+                // A tap on a tile (the floor lamp).
+                drag((120.0, 340.0), (120.0, 340.0));
+                assert_eq!(calls(), ["light.floor_lamp"], "{case}: tap");
+                // A drag along a level's bar (the living room's lights, four cells of the
+                // first row).
+                drag((300.0, 200.0), (700.0, 200.0));
+                assert!(
+                    calls().iter().any(|e| e == "light.living_room"),
+                    "{case}: level"
+                );
+                // A swipe to the right on the first page: back home.
+                drag((500.0, 700.0), (800.0, 700.0));
+                assert_eq!(w.get_page(), "home", "{case}: back");
+                // A tap on the edge strip opens nothing.
+                drag((1260.0, 500.0), (1260.0, 500.0));
+                assert_eq!(w.get_page(), "home", "{case}: tap");
+            }
+        }
+        // The mirror's own swipe in from the home button's edge (here the right one) goes home.
+        w.set_mirror(true, "Phone", 1280, 800);
+        w.set_page("mirror".into());
+        settle();
+        drag((1270.0, 400.0), (1000.0, 400.0));
+        assert_eq!(w.get_page(), "home", "the mirror's edge swipe");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn headless_ui(name: &str) -> (Rc<Ui<super::super::sw::CompanionWindow>>, PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("home-companion-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let prepared = super::super::renderer::prepare_fb(
+            super::super::renderer::Kind::Headless,
+            Path::new(""),
+            0,
+        )
+        .unwrap();
+        let character =
+            Rc::new(character::load(&character::repo_characters().join("alfred")).unwrap());
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let opts = UiOptions {
+            locales: locale::repo_locales(),
+            language: "en".into(),
+            sample_weather: false,
+            demo: None,
+            screen: ScreenOptions {
+                animations: false,
+                ..Default::default()
+            },
+            state_dir: Some(dir.clone()),
+            ha_linked: false,
+            ha_host: None,
+            setup_at_start: false,
+            first_start: crate::settings::FirstStart {
+                language: false,
+                home_assistant: false,
+            },
+            link: None,
+            update: None,
+            panel: None,
+        };
+        (Ui::new(prepared.screen, character, opts, tx).unwrap(), dir)
+    }
+
+    /// The widget on a real (headless) screen: it turns every 20 s on the home and only there,
+    /// writes nothing between two turns, and with no page on the home is as before.
+    #[test]
+    fn widget_turns_on_the_home_only() {
+        let (ui, dir) = headless_ui("widget");
+        let w = &ui.screen;
+        let now = now_unix() as i64;
+        {
+            let mut d = ui.desk.borrow_mut();
+            d.upcoming = vec![(now + 3600, "Dentist".into())];
+            d.shopping = Some(vec![ShopList {
+                entity: "todo.shopping".into(),
+                name: "Shopping".into(),
+                items: vec![("1".into(), "Bread".into()), ("2".into(), "Milk".into())],
+            }]);
+        }
+        // No page on: cards as before, no widget.
+        ui.widget_on.borrow_mut().clear();
+        ui.refresh_home();
+        assert!(!w.get_widget_shown());
+        // (Home Assistant is not linked: its status card is first.)
+        assert_eq!(*ui.card_kinds.borrow(), ["status", "upcoming", "shopping"]);
+        // All pages on: those two cards become the widget's pages, in the two slots left.
+        *ui.widget_on.borrow_mut() = WidgetPage::all();
+        ui.refresh_home();
+        assert_eq!(*ui.card_kinds.borrow(), ["status"]);
+        assert!(w.get_widget_shown());
+        assert_eq!(w.get_widget_kind(), "next");
+        // Two slots free: the one-line size (never a shorter full widget, widgets::size).
+        assert_eq!((w.get_widget_slots(), w.get_widget_count()), (1, 2));
+        let seq = w.get_widget_seq();
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        for s in 1..20 {
+            ui.tick_widget(at(s), false);
+            assert_eq!(
+                (w.get_widget_kind().as_str(), w.get_widget_seq()),
+                ("next", seq)
+            );
+        }
+        ui.tick_widget(at(20), false);
+        assert_eq!(w.get_widget_kind(), "shopping");
+        assert_eq!(w.get_widget_seq(), seq + 1);
+        // Another page: the turn stands still.
+        w.set_page("altro".into());
+        for s in 21..120 {
+            ui.tick_widget(at(s), s % 60 == 0);
+        }
+        assert_eq!(w.get_widget_kind(), "shopping");
+        // Back home: a whole interval, then the next page.
+        w.set_page("home".into());
+        ui.tick_widget(at(120), false);
+        ui.tick_widget(at(139), false);
+        assert_eq!(w.get_widget_kind(), "shopping");
+        ui.tick_widget(at(140), false);
+        assert_eq!(w.get_widget_kind(), "next");
+        // A timer card: one slot left.
+        ui.desk.borrow_mut().timers = vec![TimerView {
+            id: "a".into(),
+            name: "Eggs".into(),
+            left: "07:42".into(),
+            fraction: 0.5,
+            paused: false,
+            due_unix: 0.0,
+        }];
+        ui.refresh_home();
+        assert_eq!(w.get_widget_slots(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The settings model on a real (headless) screen: every item set through it (as the browser
+    /// panel does) changes what the screen shows or does, and the file.
+    #[test]
+    fn settings_model_applies_on_the_screen() {
+        let (ui, dir) = headless_ui("model");
+        let set = |k: &str, v: serde_json::Value| model::set(&*ui, k, &v).unwrap();
+        set("home_compact", json!(true));
+        assert!(ui.home_compact.get());
+        assert!(ui.screen.get_home_compact());
+        set("night_start", json!(21));
+        set("night_on", json!(false));
+        assert_eq!(ui.desk.borrow().night, (false, 21, 7));
+        set("widgets", json!(["weather"]));
+        assert_eq!(*ui.widget_on.borrow(), [WidgetKind::Weather]);
+        set("widgets_every", json!("0"));
+        assert_eq!(ui.widget_every.get(), None);
+        set("keep_conversations", json!(false));
+        assert!(!ui.history.borrow().keeps());
+        set("wake_sensitivity", json!("less"));
+        assert_eq!(ui.screen.get_wake_step(), -1);
+        set("conversation_mode", json!(true));
+        assert!(ui.screen.get_conversation_mode());
+        assert_eq!(model::get(&*ui, "conversation_mode"), Some(json!(true)));
+        set("conversation_max", json!(5));
+        assert_eq!(ui.screen.get_conversation_max(), 5);
+        set("volume", json!(55));
+        assert_eq!(ui.volume.get(), 55);
+        assert_eq!(model::get(&*ui, "volume"), Some(json!(55)));
+        set("language", json!("it"));
+        assert_eq!(ui.locale.borrow().code, "it");
+        assert_eq!(model::get(&*ui, "language"), Some(json!("it")));
+        ui.choice.borrow_mut().known.todo =
+            vec![("todo.a".into(), "A".into()), ("todo.b".into(), "B".into())];
+        set("lists", json!(["todo.b"]));
+        assert_eq!(ui.choice.borrow().lists, ["todo.b"]);
+        // Written a second later, all at once.
+        assert!(!Settings::in_dir(&dir).home_compact());
+        ui.flush_settings();
+        let saved = Settings::in_dir(&dir);
+        assert!(saved.home_compact());
+        assert_eq!(saved.night(), (false, 21, 7));
+        assert!(saved.conversation_mode());
+        assert_eq!(saved.conversation_max(), 5);
+        assert_eq!(saved.widgets(), (vec![WidgetKind::Weather.into()], 0));
+        assert_eq!(saved.lists(), ["todo.b"]);
+        assert_eq!(saved.language().as_deref(), Some("it"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The browser panel on a real (headless) screen, touched where a finger would: the switch,
+    /// a request with its dialog (Allow, Refuse), the QR code's ticket, Revoke (twice), and the
+    /// cases where nothing may be asked.
+    #[test]
+    fn panel_access_from_the_screen() {
+        use slint::LogicalPosition;
+        use slint::Model;
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let (ui, dir) = headless_ui("panel");
+        let w = &ui.screen;
+        let tap = |x: f32, y: f32| {
+            let position = LogicalPosition::new(x, y);
+            let button = PointerEventButton::Left;
+            w.window()
+                .dispatch_event(WindowEvent::PointerPressed { position, button });
+            w.window()
+                .dispatch_event(WindowEvent::PointerReleased { position, button });
+        };
+        let ask = |peer: &str| {
+            ui.panel_sessions.borrow_mut().skip_pause();
+            ui.panel_call(&json!({"op": "pair.request", "peer": peer,
+                "agent": {"browser": "Chrome", "os": "macOS"}}))
+        };
+        // Off by default: nothing is asked.
+        assert_eq!(ask("192.0.2.24")["error"], "off");
+        assert_eq!(w.get_dialog(), "");
+        // Settings → Access from the browser → the switch.
+        w.set_page("panel".into());
+        ui.refresh_settings();
+        assert!(!w.get_panel_on());
+        tap(1172.0, 150.0);
+        assert!(w.get_panel_on());
+        ui.flush_settings();
+        assert!(Settings::in_dir(&dir).panel_on());
+        assert!(w.get_panel_address().starts_with("http://"));
+        // A request: the dialog with the code; Allow lets the browser in.
+        let r = ask("192.0.2.24");
+        assert_eq!(w.get_dialog(), "panel-ask");
+        assert_eq!(w.get_panel_ask_code(), r["code"].as_str().unwrap());
+        assert_eq!(w.get_panel_ask_line(), "Chrome on macOS · 192.0.2.24");
+        // A second one while it waits: busy, the dialog stays the first's.
+        assert_eq!(ask("192.0.2.25")["error"], "busy");
+        // Just appeared: a tap does not answer it yet (700 ms, a timer in the real loop).
+        tap(975.0, 572.0);
+        assert_eq!(w.get_dialog(), "panel-ask");
+        w.set_panel_ask_ready(true);
+        tap(975.0, 572.0);
+        assert_eq!(w.get_dialog(), "");
+        let st = ui.panel_call(&json!({"op": "pair.status", "id": r["id"]}));
+        assert_eq!(st["status"], "allowed");
+        let token = st["token"].as_str().unwrap().to_string();
+        let hello = ui.panel_call(&json!({"op": "hello", "token": token}));
+        assert_eq!(hello["session"], true);
+        ui.poll_panel();
+        assert_eq!(w.get_panel_devices().row_count(), 1);
+        // Refuse (the page closed: with it open, requests are let through again).
+        w.set_page("settings".into());
+        let r = ask("192.0.2.26");
+        w.set_panel_ask_ready(true);
+        tap(680.0, 572.0);
+        assert_eq!(w.get_dialog(), "");
+        let st = ui.panel_call(&json!({"op": "pair.status", "id": r["id"]}));
+        assert_eq!(st["status"], "refused");
+        // Unanswered: the dialog goes when the minute is over.
+        let r = ask("192.0.2.27");
+        assert_eq!(w.get_dialog(), "panel-ask");
+        ui.panel_sessions
+            .borrow_mut()
+            .expire(crate::panel::sessions::Now::system().plus(Duration::from_secs(61)));
+        ui.tick_panel();
+        assert_eq!(w.get_dialog(), "");
+        let st = ui.panel_call(&json!({"op": "pair.status", "id": r["id"]}));
+        assert_eq!(st["status"], "expired");
+        // Two failures, then a third: requests stop and the home has a card.
+        ui.panel.borrow_mut().blocked = false;
+        let r = ask("192.0.2.28");
+        assert!(r["ok"].as_bool().unwrap());
+        w.set_panel_ask_ready(true);
+        tap(680.0, 572.0);
+        ui.tick_panel();
+        assert!(ui.panel.borrow().blocked);
+        assert!(ui.card_kinds.borrow().contains(&"panel"));
+        assert_eq!(ask("192.0.2.29")["error"], "blocked");
+        // Opening the page lets requests through again.
+        w.set_page("panel".into());
+        ui.tick_panel();
+        assert!(!ui.panel.borrow().blocked);
+        // The QR code's ticket lets in once.
+        w.set_page("panel".into());
+        ui.refresh_panel();
+        let ticket = ui.panel.borrow().ticket_shown.clone().unwrap();
+        let q = ui.panel_call(&json!({"op": "pair.qr", "ticket": ticket, "peer": "192.0.2.40"}));
+        assert_eq!(q["ok"], true);
+        let again =
+            ui.panel_call(&json!({"op": "pair.qr", "ticket": ticket, "peer": "192.0.2.41"}));
+        assert_eq!(again["error"], "bad_ticket");
+        ui.poll_panel();
+        assert_eq!(w.get_panel_devices().row_count(), 2);
+        // A new ticket on the next tick.
+        ui.tick_panel();
+        assert_ne!(
+            ui.panel.borrow().ticket_shown.as_deref(),
+            Some(ticket.as_str())
+        );
+        // Revoke: the first touch arms it, the second revokes.
+        let first = w.get_panel_devices().row_data(0).unwrap().id.to_string();
+        w.invoke_panel_revoke(first.clone().into());
+        assert_eq!(w.get_panel_armed(), first.as_str());
+        assert_eq!(w.get_panel_devices().row_count(), 2);
+        w.invoke_panel_revoke(first.into());
+        assert_eq!(w.get_panel_devices().row_count(), 1);
+        // Switched off: everything answers off, the devices stay.
+        tap(1172.0, 150.0);
+        assert!(!w.get_panel_on());
+        assert_eq!(
+            ui.panel_call(&json!({"op": "state", "token": token}))["error"],
+            "off"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The remote screen: its switch on the panel's page, the sign while a device is in
+    /// control, Stop on the screen, touches back into the loop, private pages never sent.
+    #[test]
+    fn remote_screen_from_the_screen() {
+        use slint::LogicalPosition;
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let (ui, dir) = headless_ui("remote");
+        let w = &ui.screen;
+        let tap = |x: f32, y: f32| {
+            let position = LogicalPosition::new(x, y);
+            let button = PointerEventButton::Left;
+            w.window()
+                .dispatch_event(WindowEvent::PointerPressed { position, button });
+            w.window()
+                .dispatch_event(WindowEvent::PointerReleased { position, button });
+        };
+        let rx = crate::ui::remote_input::TouchQueue::default();
+        ui.set_remote_io(
+            crate::ui::capture::Capture::unavailable("renderer"),
+            rx.clone(),
+        );
+        crate::settings_model::commit(&*ui, Change::Panel(true));
+        ui.panel_sessions.borrow_mut().skip_pause();
+        let r = ui.panel_call(&json!({"op": "pair.request", "peer": "192.0.2.24",
+            "agent": {"browser": "Chrome", "os": "macOS"}}));
+        ui.panel_answered_for_test(true);
+        w.set_dialog("".into());
+        let token = ui.panel_call(&json!({"op": "pair.status", "id": r["id"]}))["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let call = |op: &str, extra: serde_json::Value| {
+            let mut r = json!({"op": op, "token": token, "peer": "192.0.2.24"});
+            for (k, v) in extra.as_object().unwrap() {
+                r[k] = v.clone();
+            }
+            ui.panel_call(&r)
+        };
+        // Off by default.
+        assert_eq!(call("screen.start", json!({}))["error"], "screen_off");
+        // The switch under the panel's.
+        w.set_page("panel".into());
+        ui.refresh_settings();
+        assert!(!w.get_remote_on());
+        tap(1172.0, 234.0);
+        assert!(w.get_remote_on());
+        ui.flush_settings();
+        assert!(Settings::in_dir(&dir).panel_screen());
+        // Asked on the screen first (on unless switched off): the question, no sign yet,
+        // nothing sent nor touched; the question itself is never sent.
+        assert!(w.get_remote_confirm());
+        assert_eq!(call("screen.start", json!({}))["waiting"], true);
+        assert_eq!(w.get_dialog(), "remote-ask");
+        assert_eq!(w.get_remote_ask_line(), "Chrome on macOS · 192.0.2.24");
+        assert_eq!(w.get_remote_sign(), "");
+        assert_eq!(call("screen.frame", json!({}))["waiting"], true);
+        // Deny: gone, and the browser is told.
+        w.invoke_remote_answered(false);
+        assert_eq!(call("screen.frame", json!({}))["error"], "screen_denied");
+        assert_eq!(call("screen.start", json!({}))["error"], "screen_denied");
+        ui.panel_sessions.borrow_mut().remote = Default::default();
+        // Allow: in control.
+        assert_eq!(call("screen.start", json!({}))["waiting"], true);
+        w.set_dialog("".into());
+        w.invoke_remote_answered(true);
+        // The panel's page is never sent (its QR code lets in).
+        assert_eq!(w.get_remote_sign(), "Controlled by Chrome on macOS");
+        // Where the sign is, for the real finger's Stop over Home Assistant's view.
+        let (sx, sy, sw, sh) = w.remote_sign_rect().unwrap();
+        assert!(sw > 200.0 && sh >= 56.0, "{sw}x{sh}");
+        assert!(ui.remote_sign_hit(sx + sw - 20.0, sy + sh / 2.0));
+        assert!(!ui.remote_sign_hit(sx - 5.0, sy + sh / 2.0));
+        assert!(!ui.remote_sign_hit(sx + 10.0, sy + sh + 5.0));
+        assert_eq!(call("screen.frame", json!({}))["hidden"], "code");
+        assert_eq!(
+            call(
+                "screen.input",
+                json!({"events": [{"k": "d", "x": 0.5, "y": 0.5}]})
+            )["error"],
+            "screen_hidden"
+        );
+        // Not off the access page (its Revoke waits for a second touch of whoever is there)...
+        assert_eq!(call("screen.home", json!({}))["error"], "screen_home_here");
+        assert_eq!(w.get_page(), "panel");
+        // ...nor over a finger on the device, nor twice in a row.
+        w.set_page("camera".into());
+        ui.remote_real_touch();
+        assert_eq!(call("screen.home", json!({}))["error"], "screen_in_use");
+        ui.remote.borrow_mut().real_touch = None;
+        assert_eq!(call("screen.home", json!({}))["ok"], true);
+        assert_eq!(w.get_page(), "home");
+        w.set_page("camera".into());
+        assert_eq!(call("screen.home", json!({}))["error"], "slow_down");
+        ui.remote.borrow_mut().home_at = None;
+        w.set_page("home".into());
+        // Home: frames (none on this renderer), touches into the loop in logical pixels.
+        assert_eq!(
+            call("screen.frame", json!({}))["error"],
+            "screen_unavailable"
+        );
+        assert_eq!(
+            call(
+                "screen.input",
+                json!({"events": [{"k": "d", "x": 0.5, "y": 0.25}]})
+            )["ok"],
+            true
+        );
+        let (epoch, t) = rx.pop().unwrap();
+        assert_eq!((t.x, t.y), (640.0, 200.0));
+        assert!(ui.remote_accepts(epoch));
+        // The queue toward the loop is bounded: a request that does not fit is refused whole.
+        let moves = json!({"events": vec![json!({"k": "m", "x": 0.5, "y": 0.5}); 32]});
+        assert_eq!(call("screen.input", moves.clone())["ok"], true);
+        assert_eq!(call("screen.input", moves.clone())["ok"], true);
+        assert_eq!(call("screen.input", moves)["error"], "slow_down");
+        assert_eq!(rx.len(), 64);
+        while rx.pop().is_some() {}
+        // The confirmations of an update and of Home Assistant's unlink: not sent, not touched,
+        // and a touch queued before the dialog opened is not dispatched.
+        // So are the other confirmations (forget, clear, suspend, a photo, revoking every
+        // device): only the dialogs named as allowed are sent and touched.
+        for d in [
+            "update",
+            "unlink",
+            "forget",
+            "clear",
+            "suspend",
+            "photo-delete",
+            "panel-revoke-all",
+            "a-dialog-added-later",
+        ] {
+            w.set_dialog(d.into());
+            assert_eq!(call("screen.frame", json!({}))["hidden"], "confirm", "{d}");
+            assert!(!ui.remote_accepts(epoch), "{d}");
+        }
+        w.set_dialog("new-timer".into());
+        assert!(ui.remote_accepts(epoch));
+        w.set_dialog("".into());
+        assert!(ui.remote_accepts(epoch));
+        // A Yes/No question of the house, a board tile's or the brain's: not sent, not touched
+        // (a remote finger never answers it).
+        let (b, states, _) = board_ui::demo_board(false);
+        ui.tile_board.borrow_mut().states = states;
+        ui.apply_board(b);
+        ui.board_tap(board_ui::Place::Page(0), 6);
+        assert!(w.get_ask_shown());
+        assert_eq!(call("screen.frame", json!({}))["hidden"], "confirm");
+        assert!(!ui.remote_accepts(epoch));
+        ui.board_answer(false, "screen");
+        assert!(!w.get_ask_shown());
+        assert!(ui.remote_accepts(epoch));
+        ui.house.borrow_mut().confirm(
+            7,
+            "Close the shutter?".into(),
+            Vec::new(),
+            now_unix() as i64 + 30,
+            ui.now(),
+        );
+        ui.render_house();
+        assert!(w.get_ask_shown());
+        assert_eq!(call("screen.frame", json!({}))["hidden"], "confirm");
+        assert!(!ui.remote_accepts(epoch));
+        ui.house.borrow_mut().clear_question();
+        ui.render_house();
+        assert!(ui.remote_accepts(epoch));
+        // The memories and the conversations: read only on the device.
+        for page in ["memories", "chat"] {
+            w.set_page(page.into());
+            assert_eq!(
+                call("screen.frame", json!({}))["hidden"],
+                "private",
+                "{page}"
+            );
+            assert!(!ui.remote_accepts(epoch), "{page}");
+        }
+        // Installing an update and Home Assistant's link: in front of the device only.
+        for (page, why) in [("update", "update"), ("ha", "ha_setup")] {
+            w.set_page(page.into());
+            assert_eq!(call("screen.frame", json!({}))["hidden"], why, "{page}");
+            assert!(!ui.remote_accepts(epoch), "{page}");
+        }
+        w.set_page("board".into());
+        assert!(ui.remote_accepts(epoch));
+        w.set_page("home".into());
+        assert!(ui.remote_accepts(epoch));
+        // Touches still queued when a session ends go with it (the next one starts empty).
+        let tap_ev =
+            json!({"events": [{"k": "d", "x": 0.5, "y": 0.5}, {"k": "u", "x": 0.5, "y": 0.5}]});
+        assert_eq!(call("screen.input", tap_ev)["ok"], true);
+        assert_eq!(rx.len(), 2);
+        // Ended while the sessions were busy answering: no sign, no frame, then the tick ends it.
+        {
+            let _busy = ui.panel_sessions.borrow_mut();
+            ui.remote_end(crate::panel::remote::End::Screen);
+        }
+        assert_eq!(w.get_remote_sign(), "");
+        assert!(
+            !ui.remote_accepts(epoch),
+            "touches of the old session dropped"
+        );
+        assert_eq!(ui.remote_hidden_now(), Some("ended"));
+        assert!(rx.is_empty(), "the ended session's touches are dropped");
+        assert!(ui.panel_sessions.borrow().remote.active());
+        ui.tick_remote();
+        assert!(!ui.panel_sessions.borrow().remote.active());
+        assert_eq!(call("screen.start", json!({}))["error"], "screen_stopped");
+        ui.panel_sessions.borrow_mut().remote = Default::default();
+        assert_eq!(call("screen.start", json!({}))["ok"], true);
+        // Stop on the sign: gone at once, and nobody may start for a while.
+        w.invoke_remote_stop();
+        assert_eq!(w.get_remote_sign(), "");
+        assert_eq!(call("screen.start", json!({}))["error"], "screen_stopped");
+        // The switch off ends a session too.
+        ui.panel_sessions.borrow_mut().remote = Default::default();
+        assert_eq!(call("screen.start", json!({}))["ok"], true);
+        crate::settings_model::commit(&*ui, Change::PanelScreen(false));
+        assert_eq!(w.get_remote_sign(), "");
+        assert!(!ui.panel_sessions.borrow().remote.active());
+        // Ask first: switched off only through the warning; then a start is in control at once.
+        crate::settings_model::commit(&*ui, Change::PanelScreen(true));
+        w.set_page("panel".into());
+        ui.refresh_settings();
+        w.set_dialog("".into());
+        tap(1172.0, 318.0);
+        assert_eq!(w.get_dialog(), "remote-confirm-off");
+        assert!(
+            w.get_remote_confirm(),
+            "not before the warning is confirmed"
+        );
+        // The warning is the screen's own: never sent, never touched.
+        assert!(!remote_ui::remote_dialog_allowed(&w.get_dialog()));
+        w.set_dialog("".into());
+        w.invoke_remote_confirm_toggled(false);
+        assert!(!w.get_remote_confirm());
+        ui.flush_settings();
+        assert!(!Settings::in_dir(&dir).panel_screen_confirm());
+        ui.panel_sessions.borrow_mut().remote = Default::default();
+        w.set_page("home".into());
+        assert_eq!(call("screen.start", json!({}))["ok"], true);
+        assert!(call("screen.start", json!({})).get("waiting").is_none());
+        assert_eq!(w.get_remote_sign(), "Controlled by Chrome on macOS");
+        // On again at once.
+        crate::settings_model::commit(&*ui, Change::PanelScreenConfirm(true));
+        assert!(w.get_remote_confirm());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Nothing is asked at night, with do not disturb, during a conversation or over a dialog.
+    #[test]
+    fn panel_asks_only_when_it_may() {
+        let (ui, dir) = headless_ui("panel-quiet");
+        crate::settings_model::commit(&*ui, Change::Panel(true));
+        let ask = |peer: &str| ui.panel_call(&json!({"op": "pair.request", "peer": peer}));
+        ui.desk.borrow_mut().night_now = true;
+        assert_eq!(ask("192.0.2.1")["error"], "cannot_ask");
+        ui.desk.borrow_mut().night_now = false;
+        ui.view.set(Phase::Speaking);
+        assert_eq!(ask("192.0.2.1")["error"], "cannot_ask");
+        ui.view.set(Phase::Home);
+        ui.screen.set_dialog("suspend".into());
+        assert_eq!(ask("192.0.2.1")["error"], "cannot_ask");
+        ui.screen.set_dialog("".into());
+        ui.set_dnd(Some(now_unix() as u64 + 600));
+        assert_eq!(ask("192.0.2.1")["error"], "cannot_ask");
+        ui.set_dnd(None);
+        // Put to sleep with Vol+ and Vol−: nothing lights it up until it wakes.
+        ui.panel.borrow_mut().keys_asleep = true;
+        assert_eq!(ask("192.0.2.1")["error"], "cannot_ask");
+        ui.panel.borrow_mut().keys_asleep = false;
+        let r = ask("192.0.2.1");
+        assert_eq!(r["ok"], true);
+        assert_eq!(ui.screen.get_dialog(), "panel-ask");
+        // Switched off while it waits: the dialog goes, the browser hears no, nobody counted.
+        crate::settings_model::commit(&*ui, Change::Panel(false));
+        assert_eq!(ui.screen.get_dialog(), "");
+        crate::settings_model::commit(&*ui, Change::Panel(true));
+        let st = ui.panel_call(&json!({"op": "pair.status", "id": r["id"]}));
+        assert_eq!(st["status"], "refused");
+        ui.panel_sessions.borrow_mut().skip_pause();
+        assert_eq!(ask("192.0.2.1")["ok"], true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tap on the markets' widget opens their page with a card each; on the cities' widget,
+    /// the city page, whose chips change the city; on now playing, nothing.
+    #[test]
+    fn widget_taps_open_their_pages() {
+        use slint::LogicalPosition;
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let (ui, dir) = headless_ui("widget-taps");
+        let w = &ui.screen;
+        let tap = |x: f32, y: f32| {
+            let position = LogicalPosition::new(x, y);
+            let button = PointerEventButton::Left;
+            w.window()
+                .dispatch_event(WindowEvent::PointerPressed { position, button });
+            w.window()
+                .dispatch_event(WindowEvent::PointerReleased { position, button });
+            slint::platform::update_timers_and_animations();
+        };
+        let show = |kind: WidgetKind| {
+            *ui.widget_on.borrow_mut() = vec![kind.into()];
+            ui.refresh_home();
+            assert_eq!(ui.widget.borrow().kind(), Some(kind));
+            w.set_page("home".into());
+        };
+        ui.widget_data.borrow_mut().quotes = demo_quotes()
+            .into_iter()
+            .map(|mut t| {
+                t.at = now_unix() as i64;
+                t
+            })
+            .collect();
+        let choice = |t: &widgets::Trend| crate::feeds::QuoteChoice {
+            source: crate::feeds::Source::Yahoo,
+            id: t.key["yahoo:".len()..].to_string(),
+            name: t.name.clone(),
+        };
+        let demo: Vec<_> = demo_quotes().iter().map(choice).collect();
+        *ui.widget_quotes.borrow_mut() = Lists::one(demo.clone());
+        show(WidgetKind::Quotes);
+        tap(800.0, 500.0);
+        assert_eq!(w.get_page(), "trends");
+        assert_eq!(w.get_trends_kind(), "quotes");
+        ui.on_page("trends");
+        assert_eq!(slint::Model::row_count(&w.get_trend_rows()), 5);
+        // A second markets' page with its own two: its own page in the turn, and a tap on it
+        // opens its own markets.
+        let second = WidgetPage::new(WidgetKind::Quotes, 2);
+        ui.widget_order.borrow_mut().push(second);
+        ui.widget_quotes.borrow_mut().set(1, demo[..3].to_vec());
+        ui.widget_quotes.borrow_mut().set(2, demo[3..].to_vec());
+        *ui.widget_on.borrow_mut() = vec![WidgetKind::Quotes.into(), second];
+        w.set_page("home".into());
+        ui.refresh_home();
+        assert_eq!(w.get_widget_count(), 2);
+        if ui.widget.borrow().page() != Some(second) {
+            let s = ui.widget.borrow_mut().swipe(1, Instant::now()).unwrap();
+            ui.screen.set_widget(&s);
+        }
+        assert_eq!(ui.widget.borrow().page(), Some(second));
+        assert_eq!(w.get_widget_title(), "Markets 2");
+        tap(800.0, 500.0);
+        assert_eq!(w.get_page(), "trends");
+        ui.on_page("trends");
+        assert_eq!(slint::Model::row_count(&w.get_trend_rows()), 2);
+        assert_eq!(w.get_trends_title(), "Markets 2");
+        ui.widget_order.borrow_mut().retain(|p| *p != second);
+        let (choices, mut weather) = demo_cities();
+        for c in &mut weather {
+            c.at = now_unix() as i64;
+        }
+        *ui.widget_cities.borrow_mut() = Lists::one(choices);
+        *ui.city_weather.borrow_mut() = weather;
+        show(WidgetKind::Cities);
+        tap(800.0, 500.0);
+        assert_eq!(w.get_page(), "city");
+        ui.on_page("city");
+        assert_eq!(w.get_city_title(), "Berlin");
+        // The second chip: Tokyo.
+        tap(796.0, 144.0);
+        assert_eq!(w.get_city_title(), "Tokyo");
+        // The board: its page from the widget, a note removed waits for Undo.
+        *ui.board.borrow_mut() = vec![
+            brain_link::Note {
+                id: 4,
+                text: "Water the plants".into(),
+                created: 1,
+            },
+            brain_link::Note {
+                id: 5,
+                text: "Call the plumber".into(),
+                created: 2,
+            },
+        ];
+        ui.refresh_notes();
+        show(WidgetKind::Notes);
+        tap(800.0, 500.0);
+        assert_eq!(w.get_page(), "notes");
+        assert_eq!(slint::Model::row_count(&w.get_note_rows()), 2);
+        ui.remove_later(Undo::Note(4));
+        assert_eq!(slint::Model::row_count(&w.get_note_rows()), 1);
+        assert_eq!(w.get_undo_text(), "Note removed");
+        ui.undo_timer.stop();
+        ui.desk.borrow_mut().undo = None;
+        ui.refresh_notes();
+        assert_eq!(slint::Model::row_count(&w.get_note_rows()), 2);
+        ui.widget_data.borrow_mut().playing = Some(widgets::Playing {
+            title: "Song".into(),
+            artist: "Band".into(),
+            player: "Speaker".into(),
+        });
+        show(WidgetKind::Playing);
+        assert!(!w.get_widget_tappable());
+        tap(800.0, 500.0);
+        assert_eq!(w.get_page(), "home");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other cities follow the home's unit when Home Assistant's weather tells it.
+    #[test]
+    fn cities_follow_the_home_s_unit() {
+        let (ui, dir) = headless_ui("cities-unit");
+        assert!(!ui.fahrenheit.get());
+        let mut w = Weather::sample();
+        w.unit = "°F".into();
+        ui.set_weather(Some(w));
+        assert!(ui.fahrenheit.get());
+        ui.set_weather(None);
+        assert!(ui.fahrenheit.get(), "a weather gone keeps the unit");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Home Assistant's data reaches the widget: each page from its message, a sensor's curve
+    /// when it comes; only what the pages that are on show is asked.
+    #[test]
+    fn home_assistant_data_in_the_widget() {
+        let (ui, dir) = headless_ui("widget-ha");
+        let (data, curves) = demo_ha(&ui.locale.borrow());
+        ui.apply_hub(HubMsg::Widgets(data));
+        {
+            let d = ui.widget_data.borrow();
+            assert_eq!(d.sensors.len(), 4);
+            assert!(d.sensors[0].points.is_empty() && d.sensors[0].prev.is_none());
+            assert_eq!(d.check.len(), 2);
+            assert!(d.playing.is_some());
+        }
+        let (k, c) = curves
+            .into_iter()
+            .find(|(k, _)| k == "sensor.outdoor")
+            .unwrap();
+        let first = c.first;
+        ui.apply_hub(HubMsg::Curve(k, Some(c)));
+        let d = ui.widget_data.borrow();
+        assert_eq!(d.sensors[0].prev, Some(first));
+        assert!(!d.sensors[0].points.is_empty());
+        drop(d);
+        *ui.widget_ha.borrow_mut() = crate::ha::widgets::Want {
+            sensors: vec!["sensor.a".into()],
+            player: "media_player.b".into(),
+            people: Some(vec![]),
+            openings: true,
+            batteries: true,
+            ..Default::default()
+        };
+        *ui.widget_on.borrow_mut() = vec![WidgetKind::Sensors.into()];
+        let w = ui.widget_want();
+        assert_eq!(w.sensors, ["sensor.a"]);
+        assert!(w.player.is_empty() && w.people.is_none() && !w.openings && !w.batteries);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Settings → Screen → Widgets, touched where a finger would: each switch takes its page
+    /// out of the turn (and Next and Shopping back to cards), the stepper changes the interval,
+    /// both saved.
+    #[test]
+    fn widget_settings_switches_do_something() {
+        use slint::LogicalPosition;
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let (ui, dir) = headless_ui("widget-settings");
+        let w = &ui.screen;
+        let tap = |x: f32, y: f32| {
+            let position = LogicalPosition::new(x, y);
+            let button = PointerEventButton::Left;
+            w.window()
+                .dispatch_event(WindowEvent::PointerPressed { position, button });
+            w.window()
+                .dispatch_event(WindowEvent::PointerReleased { position, button });
+        };
+        ui.desk.borrow_mut().shopping = Some(vec![ShopList {
+            entity: "todo.shopping".into(),
+            name: "Shopping".into(),
+            items: vec![("1".into(), "Bread".into())],
+        }]);
+        ui.refresh_home();
+        assert!(!ui.card_kinds.borrow().contains(&"shopping"));
+        use slint::Model;
+        w.set_page("widgets".into());
+        ui.refresh_settings();
+        let on = |i: usize| w.get_widget_pages().row_data(i).unwrap().on;
+        let key = |i: usize| w.get_widget_pages().row_data(i).unwrap().key.to_string();
+        assert_eq!(w.get_widget_pages().row_count(), WidgetKind::ALL.len());
+        assert_eq!(
+            (key(0), key(2), key(9)),
+            ("next".into(), "weather".into(), "home".into())
+        );
+        assert!(on(0) && on(2) && !on(9));
+        assert_eq!(w.get_widget_summary(), "10 on");
+        // The pages chosen from the browser say so under their switch.
+        assert_eq!(
+            w.get_widget_pages().row_data(1).unwrap().hint,
+            "Chosen from the browser"
+        );
+        // The first switch: Next off, a card again.
+        tap(1172.0, 258.0);
+        assert!(!on(0));
+        assert!(!ui.widget_on.borrow().contains(&WidgetKind::Next.into()));
+        assert_eq!(w.get_widget_summary(), "9 on");
+        // The markets (a taller row) and the weather.
+        tap(1172.0, 334.0);
+        tap(1172.0, 438.0);
+        assert!(!on(1) && !on(2));
+        assert_eq!(
+            ui.widget_on.borrow()[..2],
+            [WidgetKind::Cities, WidgetKind::Shopping]
+        );
+        tap(1172.0, 438.0);
+        assert!(on(2));
+        assert_eq!(ui.widget_on.borrow()[0], WidgetKind::Weather);
+        // "Change every": + to 30 s, 1 min, by hand (and no further), − back.
+        assert_eq!(w.get_widget_every(), 20);
+        tap(1184.0, 166.0);
+        assert_eq!(w.get_widget_every(), 30);
+        tap(1184.0, 166.0);
+        tap(1184.0, 166.0);
+        tap(1184.0, 166.0);
+        assert_eq!(w.get_widget_every(), 0);
+        assert_eq!(ui.widget_every.get(), None);
+        tap(960.0, 166.0);
+        assert_eq!(w.get_widget_every(), 60);
+        // Saved.
+        ui.flush_settings();
+        let saved = Settings::in_dir(&dir).widgets();
+        assert_eq!(saved.1, 60);
+        assert_eq!(saved.0[0], WidgetKind::Weather);
+        assert!(
+            !saved.0.contains(&WidgetKind::Next.into())
+                && !saved.0.contains(&WidgetKind::Home.into())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The audio did not start after the reboot for it (crate::audio_down): home shows its
+    /// status card, one card also over an offline Home Assistant.
+    #[test]
+    fn audio_down_puts_its_card_on_the_home() {
+        let dir =
+            std::env::temp_dir().join(format!("home-companion-audiodown-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let prepared = super::super::renderer::prepare_fb(
+            super::super::renderer::Kind::Headless,
+            Path::new(""),
+            0,
+        )
+        .unwrap();
+        let character =
+            Rc::new(character::load(&character::repo_characters().join("alfred")).unwrap());
+        let (tx, _events) = std::sync::mpsc::channel();
+        let opts = UiOptions {
+            locales: locale::repo_locales(),
+            language: locale::DEFAULT.into(),
+            sample_weather: false,
+            demo: None,
+            screen: ScreenOptions {
+                animations: false,
+                ..Default::default()
+            },
+            state_dir: Some(dir.clone()),
+            ha_linked: false,
+            ha_host: None,
+            setup_at_start: false,
+            first_start: crate::settings::FirstStart {
+                language: false,
+                home_assistant: false,
+            },
+            link: None,
+            update: None,
+            panel: None,
+        };
+        let ui = Ui::new(prepared.screen, character, opts, tx).unwrap();
+        let status = |ui: &Ui<_>| ui.card_kinds.borrow().contains(&"status");
+        // Home with Home Assistant answering: no status card.
+        ui.apply(UiCommand::View(Phase::Home));
+        assert!(!status(&ui));
+        // What main sends when the audio does not start after the reboot for it.
+        ui.apply(UiCommand::AudioDown);
+        assert!(status(&ui));
+        assert!(ui.audio_down.get());
+        // The card stays over a Home Assistant that is not answering (one card, the audio's).
+        ui.apply(UiCommand::View(Phase::Offline));
+        let kinds = ui.card_kinds.borrow().clone();
+        assert_eq!(kinds.iter().filter(|k| **k == "status").count(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -6567,7 +10901,7 @@ mod tests {
         .unwrap();
         let character =
             Rc::new(character::load(&character::repo_characters().join("alfred")).unwrap());
-        let (tx, _rx) = std::sync::mpsc::channel();
+        let (tx, events) = std::sync::mpsc::channel();
         let opts = UiOptions {
             locales: locale::repo_locales(),
             language: locale::DEFAULT.into(),
@@ -6587,6 +10921,7 @@ mod tests {
             },
             link: None,
             update: None,
+            panel: None,
         };
         let ui = Ui::new(prepared.screen, character, opts, tx).unwrap();
         let (hub, fired) = std::sync::mpsc::channel();
@@ -6598,6 +10933,8 @@ mod tests {
                 text: "Text".into(),
                 icon: None,
                 seconds: None,
+                pose: None,
+                quiet: false,
             }))
         };
         // The OK of the first card of Home Assistant on the home, whatever else is shown.
@@ -6637,6 +10974,41 @@ mod tests {
         ui.apply_hub(show(None));
         assert!(tap(&ui));
         assert!(ids(&fired).is_empty());
+        // A card sounds; the same card sent again `quiet` (fresh values) does not, nor a new
+        // quiet one, and it still replaces the card by its id.
+        let reminders = |rx: &std::sync::mpsc::Receiver<CoreEvent>| {
+            rx.try_iter()
+                .filter(|e| matches!(e, CoreEvent::Ui(UiEvent::Reminder)))
+                .count()
+        };
+        let quiet = |id: &str, text: &str| {
+            HubMsg::Card(CardEvent::Show(HaCard {
+                id: Some(id.into()),
+                text: text.into(),
+                quiet: true,
+                ..Default::default()
+            }))
+        };
+        reminders(&events);
+        ui.apply_hub(show(Some("kamado")));
+        assert_eq!(reminders(&events), 1);
+        ui.apply_hub(quiet("kamado", "T1 180 °C"));
+        ui.apply_hub(quiet("kamado", "T1 182 °C"));
+        ui.apply_hub(quiet("pool", "36 °C"));
+        assert_eq!(reminders(&events), 0);
+        let texts: Vec<String> = ui
+            .desk
+            .borrow()
+            .ha_cards
+            .views("")
+            .into_iter()
+            .map(|(_, text, _)| text)
+            .collect();
+        assert_eq!(texts, ["T1 182 °C", "36 °C"]);
+        ui.apply_hub(HubMsg::Card(CardEvent::Dismiss("kamado".into())));
+        ui.apply_hub(HubMsg::Card(CardEvent::Dismiss("pool".into())));
+        ids(&fired);
+
         // Do not disturb: the tap is what counts.
         ui.set_dnd(Some(now_unix() as u64 + 3600));
         assert!(ui.dnd_on());

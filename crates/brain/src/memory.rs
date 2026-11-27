@@ -215,6 +215,8 @@ CREATE TRIGGER IF NOT EXISTS sessions_au AFTER UPDATE OF summary ON sessions BEG
 CREATE TRIGGER IF NOT EXISTS sessions_ad AFTER DELETE ON sessions BEGIN
     INSERT INTO summaries_fts(summaries_fts, rowid, summary) VALUES ('delete', old.id, coalesce(old.summary, '')); END;
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS notes (
+    id INTEGER PRIMARY KEY, text TEXT NOT NULL, created INTEGER NOT NULL);
 ";
 
 /// Words that carry no meaning for recall.

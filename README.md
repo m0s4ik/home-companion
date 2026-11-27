@@ -34,10 +34,76 @@ At night Alfred sleeps: the clock stays, dimmed, with the next alarm, and a touc
 seconds. By day the brightness follows the room's light. When Home Assistant does not answer, the home says so and
 retries by itself; timers and alarms go on working.
 
+Alfred takes a pose for the moment (linking, working, satisfied, a nod). On the settings pages he takes out his
+toolbox, on More he looks at the tiles, with the microphone off he wears earmuffs, and on the Home Assistant page he
+types on a laptop while it checks: each comes and goes without a cut.
+
 <p align="center">
 <img src="docs/images/night.png" width="400" alt="The night screen: Alfred asleep in his nightcap, the dimmed clock at 23:48 and the next alarm at 07:00"> <!-- state: night -->
 <img src="docs/images/offline.png" width="400" alt="Home Assistant is not answering: Alfred on a deckchair under a beach umbrella, the card says he retries by himself and that timers and alarms work"> <!-- state: offline -->
 </p>
+
+### 🧩 The widget: markets, other cities, notes, Home Assistant's numbers
+
+Under the cards, one widget at a time turns through what is around the house, in the order you choose from the
+browser panel (below): what comes next, the weather, the shopping, stocks, indices, currencies and coins with the
+day's curve, the weather of other cities in their own time, a board of notes ("write on the board that…"), Home
+Assistant's sensors with their last 24 hours, the doors and windows left open and the batteries running low, what a
+media player plays, who is home. Markets, other cities and sensors can be there up to four times each, every one
+with its own list and name ("Crypto"). The widget takes the full height, or one line when the cards leave little
+room; the weather says what comes next in a sentence ("Cloudy, rainy from 17:00") with the day's range and the next
+four hours. Swipe it to turn it, tap it to open the page behind it.
+
+<p align="center">
+<img src="docs/images/widget-quotes.png" width="400" alt="The home with the Markets widget: four rows with a name, a small curve of the day, the price and the change in green or red"> <!-- state: widget-quotes -->
+<img src="docs/images/trends.png" width="400" alt="The Markets page: a card per quote with its price, change, the day's curve and its high and low"> <!-- state: trends -->
+</p>
+<p align="center">
+<img src="docs/images/widget-cities.png" width="400" alt="The Other cities widget: the time in Berlin, Tokyo and Springfield, the sky and the temperature"> <!-- state: widget-cities -->
+<img src="docs/images/city.png" width="400" alt="A city's page: chips with the cities, the weather now with the local time, the next days"> <!-- state: city -->
+</p>
+<p align="center">
+<img src="docs/images/widget-sensors.png" width="400" alt="The Sensors widget: outdoor temperature, living room, humidity and power, each with its curve of the last 24 hours"> <!-- state: widget-sensors -->
+<img src="docs/images/widget-notes.png" width="400" alt="The Notes widget: three short notes for whoever is home"> <!-- state: widget-notes -->
+</p>
+
+Where the data comes from, and what leaves your home network:
+
+- **Markets**: [Yahoo Finance](https://finance.yahoo.com) (an **unofficial API**, it may change or stop working;
+  quotes are delayed, for information only) and [CoinGecko](https://www.coingecko.com) ("Crypto data by
+  CoinGecko"). **Other cities**: [Open-Meteo](https://open-meteo.com) ("Weather data by Open-Meteo.com", CC BY 4.0;
+  its free API is for non-commercial use). No keys. The device asks these services directly, with `curl`, only for
+  what you chose and only while that page is on, by day, with the screen on (a market every 15 minutes while it is
+  open, the coins every 10, the cities every 30): they see the symbols and cities and your home's internet address.
+  Nothing is asked until you add something. The last data is kept in `feeds.json` next to the settings.
+- **Notes** live in `home-companion-brain` (not in the memory, never in the assistant's instructions).
+- **Home Assistant's pages** use the token of the QR link and nothing else: one `get_states` for the list of
+  sensors, players and people, one subscription for the chosen ones, the sensors' statistics for the curves.
+  Anyone who looks at the screen sees them: "At home" is off until you turn it on.
+
+### 🖥️ The browser panel and the remote screen
+
+Settings → Access from the browser turns on a page for a phone or a computer on the home network: its address and a
+QR code are on that screen, and every new device must be allowed there first, after comparing a code (up to five;
+each can be revoked). **Home** draws the device's screen with the widget in place, the rotation as a strip to drag
+into order, and each widget's editor: its markets, cities or sensors, its name, on the home or not. **Board** sets the
+board's pages and custom widgets (above). **Shopping**
+ticks and deletes items of Home Assistant's lists; **Settings** has the device's settings. In English, Italian,
+German and Dutch.
+
+**Screen** shows the device's screen live and turns taps and drags in the browser into real touches. It is off until
+switched on **on the device** (Settings → Access from the browser → Remote screen). Each start is then asked **on the
+device** first: «Chrome on macOS wants to control the screen», **Deny** or **Allow**, and nothing is shown or touched
+until someone there allows it; Deny keeps that device out, and nobody answering refuses it after 30 seconds. The
+browser says which happened. *Ask on the screen first* can be switched off on the device, after a warning (any device
+let in could then watch and control the screen with nobody there agreeing); never from the browser. One device
+controls it at a time, a sign above Alfred says which, and **Stop** on it ends the session at once (a real finger
+always wins) and keeps that device out until the switch is turned off and on again. The camera, the photos, the
+memories, the conversations, Home Assistant's own view, the update and Home Assistant link pages, the codes that let
+devices in, AirPlay mirroring and every confirmation but a new timer or alarm are never sent nor touched (every page
+is classified as shown or hidden, and a page added later is hidden until it is). **Home** from the browser waits
+while someone is touching the device and never leaves Access from the browser. Switch it on only on a home network
+you trust. Frames are made only while someone watches.
 
 ### 🗣️ Talk to it
 
@@ -122,6 +188,14 @@ only standing facts said by you (never what was done today, nor dates), and a na
 "To confirm" until you tap Right. Conversations are kept on the screen too, if you want them (Settings → Keep
 conversations).
 
+Alfred listens again by himself when his answer is a question. With **Settings → Conversation mode** (off by default)
+he also does after any other answer of Home Assistant he speaks (not after a reflex, which he answers by himself),
+for a few seconds and without the wake word, so you can go on talking; a
+window nobody speaks in closes without a sound. "Times in a row", shown under it while it is on (1 to 10, 3 at
+first), is how often he does so before the wake word is needed again, a question of his among them: a television must
+not keep him talking. Both are on the browser panel too. The window's length is the configuration's
+`[conversation] follow_up_seconds` (6).
+
 So that the assistant knows these facts at every conversation, Alfred writes them (at most 1500 characters) into Home
 Assistant as the state `sensor.alfred_memory`, which his agent's instructions read. Like any state, every Home
 Assistant user can see it and its history is kept for the recorder's purge period (add it to `recorder: exclude:` to
@@ -152,6 +226,40 @@ the time of the last data.
 <img src="docs/images/home-assistant.png" width="400" alt="Home Assistant's dashboard on the device: weather, lights, a cover, a thermostat, with the gold home button">
 </p>
 <p align="center"><sub>A test Home Assistant with its demo devices.</sub></p>
+
+### 🎚️ The board: your Home Assistant tiles
+
+A swipe in from the right edge of the home brings in the **board**: full-screen pages of Home Assistant tiles drawn by
+the device itself (no browser), 6 × 4 cells under Alfred's portrait. A tile is 1 × 1, 2 × 1, 2 × 2 or 4 × 1:
+**buttons** do what the device's kind suggests (a light or a plug toggles, a scene runs, a shutter opens or closes),
+**values** show a sensor with its last 24 hours, **sliders** set a brightness, a volume, a shutter's position. Shutters
+and valves ask first (Ask for confirmation, on by default, can be switched off per tile); locks, alarms, garage doors
+and gates are never offered. A tile waits for Home Assistant's real state after a tap (a slider stays where you let
+it go meanwhile), and turns red if the command fails; while Home Assistant is not reachable the tiles are dimmed,
+say so and do nothing. Several pages follow the finger across; back home with Alfred's portrait, the home button (Home Assistant's
+view's, at the same place) or a swipe to the right. The same tiles also make a **custom widget** that takes its turn
+on the home.
+
+A button can call another service than its kind's: **Advanced** in the panel's editor takes a service and its data
+by hand (`cover.set_cover_position` with `{"position": 30}`, `light.turn_on` with a colour). It is limited to a
+service of the tile's own domain, or `homeassistant.turn_on`, `turn_off`, `toggle` and `update_entity`, always on
+the tile's own entity: data that names other entities is refused, and so is a script other than the tile's. A tile
+whose entity's name speaks of a door, a gate or a lock is never offered, scenes and automations included; that is
+the safe side, so an automation called "Light on when the door opens" is left out too.
+
+<p align="center">
+<img src="docs/images/board.png" width="400" alt="The board on the device: lights, a fan, a shutter, a scene, a temperature with its day's curve, the power drawn and a light's slider, under Alfred's portrait">
+<img src="docs/images/board-confirm.png" width="400" alt="A tap on a shutter: Close Shutter? with No and Yes over the board">
+</p>
+<p align="center">
+<img src="docs/images/widget-board.png" width="400" alt="A custom widget on the home: four buttons, a temperature and a volume slider">
+<img src="docs/images/panel-board.png" width="400" alt="The board in the browser panel: the page's grid as on the device and the chosen tile's settings beside it">
+</p>
+<p align="center"><sub>Sample devices.</sub></p>
+
+The tiles are chosen in the browser panel's **Board**: the grid as on the device, a tap on an empty place searches
+Home Assistant's devices and proposes the kind, icon, name and confirmation; drag to move, pull a corner to resize.
+Every change shows on the device at once.
 
 ### 🎵 AirPlay: music and screen mirroring
 
@@ -212,10 +320,48 @@ event_data:
   icon: mdi:washing-machine   # optional
   seconds: 600         # optional: the card goes away by itself
   device: Alfred       # optional: only the device with this name (default: every device)
+  pose: working        # optional: a pose of the character instead of its home pose while the card shows
+  quiet: true          # optional: no sound and no waking the screen
 ```
 
 The card plays the soft reminder sound by day and goes away with its OK. `home_companion_card_dismiss` with an `id`
 takes a card away.
+
+A card that is sent again and again with fresh values under the same `id` (the barbecue's probes every minute, the hot
+tub warming up) takes `quiet: true`: it replaces the card in its place without the sound and without waking the screen.
+Send the first one without it, so the card is noticed once:
+
+```yaml
+- event: home_companion_card
+  event_data: {id: barbecue, title: Barbecue, text: Heating up, icon: mdi:grill}
+- repeat:
+    while: [{condition: state, entity_id: input_boolean.barbecue, state: "on"}]
+    sequence:
+      - event: home_companion_card
+        event_data:
+          id: barbecue
+          title: Barbecue
+          text: "Probe {{ states('sensor.probe_1_temperature') }} °C"
+          icon: mdi:grill
+          quiet: true
+      - delay: {minutes: 1}
+```
+
+With `pose`, the character takes that pose on the home for as long as the card shows, with its animation if it has a
+looping one (the deck chair of `offline`), also while an announcement is said over it; not at night, and the
+conversation's poses stay as they are. The settings and More pages keep their own animation. The name is either a pose
+you downloaded (below), looked for first, or one of the character's own by its state name (`working`, `satisfied`,
+`link`, `nod`, `muted`, `offline`, `thinking`, ...: the poses in its `character.toml`). Lowercase letters, digits, `-`
+and `_`; any other name, and the card shows alone.
+
+**Settings → Poses** downloads extra poses of the character (taking the washing out, at the barbecue): the newest
+release of `[update] repo` (the updates' repository, from the root-owned configuration only) whose tag starts with
+`poses-` lists them in its `poses.json` (drafts and pre-releases are skipped); a switch per pose of the character
+downloads it (every file checked against its size and SHA-256) into `/var/lib/home-companion/poses/<character>/`, or
+takes it away. A card then asks for it by its name. Making such a release:
+[tools/make-pose-catalogue.py](tools/make-pose-catalogue.py). The updates never take a `poses-` release for a version,
+but publish it with `--latest=false` so the repository's "Latest" stays the newest home-companion, and keep it among
+the newest 500 releases (the device looks through them page by page).
 
 The screen can be put to sleep and woken the same way, for example from a presence sensor:
 
@@ -301,7 +447,7 @@ event_type: home_companion_conversation
 event_data:
   device: Alfred          # the character's name
   state: started          # started | ended
-  trigger: wake           # wake | talk (a touch) | follow_up (Alfred asked a question)
+  trigger: wake           # wake | talk (a touch) | follow_up (Alfred asked a question, or conversation mode)
   handled_by: reflex      # only on "ended": reflex | home_assistant | none
 ```
 
@@ -366,9 +512,9 @@ v0.5** (v0.3-rc3 or later works), built with `WEB=1` (the Home Assistant view), 
 system image is where the Wi-Fi and your ssh key are set. Then, on the device:
 
 ```sh
-curl -LO https://github.com/m0s4ik/home-companion/releases/download/v0.3.1/home-companion-0.3.1-arm64.tar.gz
-tar xzf home-companion-0.3.1-arm64.tar.gz
-cd home-companion-0.3.1-arm64 && ./install.sh
+curl -LO https://github.com/m0s4ik/home-companion/releases/download/v0.4.0/home-companion-0.4.0-arm64.tar.gz
+tar xzf home-companion-0.4.0-arm64.tar.gz
+cd home-companion-0.4.0-arm64 && ./install.sh
 ```
 
 The installer asks nothing: it checks the system (it never lets apt replace the image's Mesa), installs the
@@ -379,7 +525,7 @@ language → Home Assistant (found on the network) → QR code. Options (`--lang
 **Updating**, from 0.3.0 on: Settings → Info says when a newer release is out, and **Install** installs it (the
 device restarts by itself, its settings stay; if the new version does not start, the one before comes back). It
 looks once a day at the releases of `[update] repo` in `/etc/home-companion/home-companion.toml`, this repository by
-default: point it at your fork to get your own builds. Release candidates are offered too with the switch on the same page. The
+default: point it at your fork to get your own builds. Release candidates are offered too with **Release candidates too** on the same page. The
 repository is read from that root-owned file only, never from the screen. By hand it is the same three lines with
 the new version.
 
@@ -389,7 +535,9 @@ To change the Wi-Fi later: `nmcli device wifi connect "<ssid>" password "<passwo
 
 Italian, English, Dutch and German, complete: the screen (`locales/`), the reflexes' grammar
 (`characters/alfred/grammar/`) and the speech model the installer downloads. With any other language set in Home
-Assistant, the device still works (Home Assistant answers in its language) without the local reflexes.
+Assistant, the device still works (Home Assistant answers in its language) without the local reflexes. The German
+and Dutch texts of 0.4's new parts (the widgets, the browser panel, the poses, the board) are machine translations for now:
+corrections welcome.
 
 Adding a language: a `locales/<lang>.toml`, a `characters/alfred/grammar/<lang>.toml`, the number words in
 `crates/reflex/src/slots.rs`, and the [Vosk model](https://alphacephei.com/vosk/models) in the installer's
@@ -405,7 +553,7 @@ Cross-compiled from an amd64 Debian 13 with the arm64 multiarch libraries:
 ```sh
 cargo build --release --target aarch64-unknown-linux-gnu -p home-companion --no-default-features --features fbdev,gpu
 cargo run -p home-companion -- --simulator          # the screen in a window on a laptop
-tools/release/build-bundle.sh 0.3.1                 # the release bundle
+tools/release/build-bundle.sh 0.4.0                 # the release bundle
 ```
 
 Contributing, with or without a coding assistant: [AGENTS.md](AGENTS.md).
@@ -418,7 +566,9 @@ The design: [docs/design.md](docs/design.md) and the screen: [docs/ui.md](docs/u
 - Third parties, all listed in the release bundle's `THIRD-PARTY.md`: [UxPlay](https://github.com/FDH2/UxPlay)
   (GPL-3.0, patched: `tools/airplay/`), [femtovg](https://github.com/femtovg/femtovg) (MIT/Apache-2.0, patched:
   `third_party/`), [Slint](https://slint.dev) (GPL-3.0), [Vosk](https://alphacephei.com/vosk) (Apache-2.0),
-  TensorFlow Lite Micro (Apache-2.0).
+  TensorFlow Lite Micro (Apache-2.0), [Material Design Icons](https://pictogrammers.com/library/mdi/) by
+  Pictogrammers (Apache-2.0: the screen's icons and the board's, `icons/mdi.json` in the bundle),
+  [gridstack.js](https://gridstackjs.com/) (MIT: the browser panel's board editor, `crates/panel/web/vendor/`).
 - Wake word "Okay Alfred": [Tater Totterson](https://github.com/TaterTotterson/Tater-Wake-Words) (MIT); "stop":
   ESPHome's (Apache-2.0).
 - ⚠️ The stop words **"basta" and "stop_alfred"** were trained here on synthetic speech that includes some

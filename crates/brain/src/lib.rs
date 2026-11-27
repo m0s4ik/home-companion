@@ -18,5 +18,6 @@ pub mod lists;
 pub mod llm;
 pub mod mcp;
 pub mod memory;
+pub mod notes;
 pub mod question;
 pub mod safety;

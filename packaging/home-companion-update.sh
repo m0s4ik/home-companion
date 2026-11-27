@@ -24,7 +24,9 @@ UNITS=/etc/systemd/system
 KEEP=/var/lib/home-companion-update/previous
 WORK=/var/tmp/home-companion-update
 DEFAULT_REPO=m0s4ik/home-companion
-# The body must be up this long after the install, without systemd restarting it.
+# The body must be up this long after the install, without systemd restarting it. Shorter than
+# a body whose audio is down lives with its mark (audio_down.rs, SHOWN_FOR, tested): such an
+# update ends "done", not in a race with "rolled-back".
 SETTLE=60
 
 VERSION=
@@ -129,6 +131,17 @@ done
 restore() {
     rm -rf "$OPT.new"
     cp -a "$KEEP/opt" "$OPT.new" && rm -rf "$OPT" && mv "$OPT.new" "$OPT"
+    # units the new version added and the old one does not know: stopped and gone (a socket
+    # unit would otherwise keep listening for a program that is no longer there)
+    for f in "$UNITS"/home-companion*; do
+        [ -e "$f" ] || continue
+        n=${f##*/}
+        if [ ! -e "$KEEP/units/$n" ]; then
+            case "$n" in
+                *.service | *.socket | *.path | *.timer) systemctl disable --now "$n" 2>/dev/null || true ;;
+            esac
+        fi
+    done
     rm -rf "$UNITS"/home-companion*
     cp -a "$KEEP/units/." "$UNITS/"
     [ -f "$KEEP/home-companion.nft" ] && cp -a "$KEEP/home-companion.nft" /etc/nftables.d/

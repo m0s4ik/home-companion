@@ -46,16 +46,31 @@ USED = {
     # "falso allarme": the wake word heard by mistake
     "ear-hearing-off": [48],
     # cards, status, dialogs
-    "bell": [32], "bell-off": [32, 28], "help-circle": [48], "cloud-off": [32], "cloud": [20], "sync": [28, 12], "camera": [44, 32], "image-multiple": [48], "microphone-off": [32], "alert-circle": [64, 32],
-    "wifi-strength-1": [32, 28], "wifi-strength-2": [32, 28], "wifi-strength-3": [32, 28], "wifi-strength-4": [32, 28], "wifi-strength-off-outline": [32, 28], "check-circle": [48, 32], "undo": [36], "cart": [48, 32], "calendar-clock": [48, 32], "alarm": [40, 32, 28, 24], "cellphone": [28], "timer-sand-full": [48],
-    # weather (the date line)
-    "weather-sunny": [32], "weather-night-partly-cloudy": [32], "weather-partly-cloudy": [32],
+    "bell": [32], "bell-off": [32, 28], "help-circle": [48], "cloud-off": [32], "cloud": [20], "sync": [28, 12], "camera": [44, 32], "image-multiple": [48, 28], "microphone-off": [32], "alert-circle": [64, 32],
+    "wifi-strength-1": [32, 28], "wifi-strength-2": [32, 28], "wifi-strength-3": [32, 28], "wifi-strength-4": [32, 28], "wifi-strength-off-outline": [32, 28], "check-circle": [48, 32], "undo": [36], "cart": [48, 32, 28], "calendar-clock": [48, 32, 28], "alarm": [40, 32, 28, 24], "cellphone": [28], "timer-sand-full": [48],
+    # access from the browser (the panel): the dialog, the blocked card
+    "monitor-cellphone": [48, 32, 28],
+    # weather (the date line, the widget's columns; 28: the widget's header)
+    "weather-sunny": [32], "weather-night-partly-cloudy": [32], "weather-partly-cloudy": [32, 28],
     "weather-cloudy": [32], "weather-rainy": [32], "weather-pouring": [32],
     "weather-snowy": [32], "weather-snowy-rainy": [32], "weather-fog": [32],
     "weather-hail": [32], "weather-lightning": [32], "weather-lightning-rainy": [32],
     "weather-windy": [32], "weather-windy-variant": [32],
 }
 USED["weather-night"] = [32, 28]
+# the weather widget's big block: the sky (112 on the normal home, 144 on the compact one), the
+# sunrise and the sunset
+for _k in ["weather-sunny", "weather-night", "weather-partly-cloudy", "weather-cloudy",
+           "weather-rainy", "weather-pouring", "weather-snowy", "weather-snowy-rainy", "weather-fog",
+           "weather-hail", "weather-lightning", "weather-lightning-rainy", "weather-windy",
+           "weather-windy-variant"]:
+    USED[_k] = sorted(set(USED[_k]) | {112, 144}, reverse=True)
+USED.update({"weather-sunset-up": [24], "weather-sunset-down": [24]})
+# the widget's pages configured from the browser (markets, other cities, notes, Home Assistant's
+# sensors, what to check, what plays, who is home): their headers and the one-row card
+USED.update({"chart-line": [28], "earth": [28], "note-text": [28], "gauge": [28],
+             "door-open": [28], "account-group": [28]})
+USED["music-note"] = [48, 32, 28]
 
 
 def main():

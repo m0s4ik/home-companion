@@ -13,13 +13,13 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  NEW_CRATES: -p wyoming -p audio -p wakeword -p home-companion
+  NEW_CRATES: -p wyoming -p audio -p wakeword -p home-companion -p httpd -p panel
 
 jobs:
   check:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -29,11 +29,13 @@ jobs:
         run: tools/check-spdx.sh
       - name: no private data
         run: tools/check-private.sh
+      - name: shellcheck (packaging)
+        run: shellcheck packaging/*.sh tools/release/build-bundle.sh
 
   test-x86:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -47,7 +49,7 @@ jobs:
         with:
           key: x86
       - name: TFLite Micro cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: crates/wakeword/third_party
           key: tflm-${{ hashFiles('crates/wakeword/tools/fetch-tflm.sh') }}
@@ -56,7 +58,7 @@ jobs:
       - name: build
         run: cargo build --workspace --release --exclude spike-native --exclude spike-audio --exclude spike-ui
       - name: test
-        run: cargo test --release -p wyoming -p audio -p wakeword -p home-companion -p character -p locale
+        run: cargo test --release -p wyoming -p audio -p wakeword -p home-companion -p character -p locale -p httpd -p panel
       - name: clippy
         run: cargo clippy --release $NEW_CRATES --all-targets -- -D warnings
       - name: end to end (home-companion <-> fake Home Assistant)
@@ -67,7 +69,7 @@ jobs:
           python3 -I crates/home-companion/tools/check-golden.py crates/home-companion/fixtures/golden crates/home-companion/out/golden
       - name: artifacts on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-and-screens
           path: |
@@ -84,7 +86,7 @@ jobs:
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
       T: target/aarch64-unknown-linux-gnu/release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-unknown-linux-gnu
@@ -109,7 +111,7 @@ jobs:
         with:
           key: aarch64
       - name: TFLite Micro cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: crates/wakeword/third_party
           key: tflm-${{ hashFiles('crates/wakeword/tools/fetch-tflm.sh') }}
@@ -140,7 +142,7 @@ jobs:
           # The gbm crate links libgbm; EGL/GLES are opened at run time.
           check dist/home-companion "$base libgbm.so.1"
           ls -l dist/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: home-companion-aarch64
           path: |

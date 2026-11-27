@@ -41,6 +41,9 @@ pub enum UiEvent {
     Home,
     /// Something the user waited for worked (linked to Home Assistant): the "ok" sound.
     Success,
+    /// Something touched did not work (a board tile's call refused, or a tile's question
+    /// refused while another question is open): the error sound.
+    Failed,
     /// Something the character says aloud in Home Assistant's voice (Home Assistant's setup is
     /// done: "Tutto pronto"): the success sound now, the words when they come.
     Say(String),
@@ -76,6 +79,10 @@ pub enum UiEvent {
     /// Settings → how readily the character answers to his wake word: saved, and applied by the
     /// wake word thread before its next frame.
     WakeSensitivity(WakeSensitivity),
+    /// Settings → "Conversation mode" switched (the screen saves it): from the next answer on.
+    ConversationMode(bool),
+    /// Settings → how many of its windows may follow one another.
+    ConversationMax(u32),
     /// Timer e sveglie: a new timer of this many seconds (a local one).
     /// Seconds and what it is for, when said.
     TimerStart(u64, Option<String>),
@@ -110,7 +117,8 @@ pub enum UiEvent {
 
 pub enum CoreEvent {
     Server(ServerEvent),
-    WakeWord(wakeword::Detection),
+    /// A detection and the audio before it (wake_thread::CHECK_SAMPLES), for the wake check.
+    WakeWord(wakeword::Detection, Vec<i16>),
     /// The stop word ("basta", "stop"), while the character thinks, speaks or rings.
     StopWord(wakeword::Detection),
     /// Only while streaming to Home Assistant.
@@ -216,8 +224,12 @@ pub enum UiCommand {
     /// An announcement (a reminder said by Home Assistant) plays: a due reminder on the screen
     /// stays, the voice over it, no conversation screen.
     Announcing(bool),
+    /// A reflex was done (the character nods when its home comes back).
+    ReflexDone,
     /// "Stop" or "basta" over a due reminder: its OK.
     NoticeStop,
+    /// The audio did not start (crate::audio_down; sent by main, not by the core): home says so.
+    AudioDown,
     /// A conversation started or ended: Home Assistant is told (`home_companion_conversation`).
     Conversation {
         state: &'static str,
@@ -338,10 +350,32 @@ impl HaLink {
     }
 }
 
+/// The wake check (reflex::wake_check): the phrase to hear in a detection's audio, and the
+/// longest wait for the reflex helper's answer.
+#[derive(Debug, Clone)]
+pub struct WakeCheckCfg {
+    pub phrase: String,
+    pub timeout: Duration,
+}
+
+/// A detection waiting for the wake check: the frames heard meanwhile are kept for the
+/// conversation (people go on speaking right after the name).
+struct WakeChecking {
+    id: u64,
+    det: wakeword::Detection,
+    frames: Vec<CaptureFrame>,
+    asked: Instant,
+}
+
+/// Frames kept while a wake check runs (the check takes well under a second).
+const CHECK_FRAMES: usize = 150;
+
 #[derive(Debug, Clone)]
 pub struct CoreConfig {
     /// The wake model's id (`detection.name`, must match `Info`).
     pub wake_name: String,
+    /// None: every detection starts a conversation at once.
+    pub wake_check: Option<WakeCheckCfg>,
     pub bell_repeats: u32,
     pub bell_gap: Duration,
     pub listen_timeout: Duration,
@@ -355,12 +389,25 @@ pub struct CoreConfig {
     pub sounds_dir: Option<PathBuf>,
     /// Prices for the cloud services' rough cost (usage.rs).
     pub usage_prices: crate::usage::Prices,
+    /// Conversation mode (Settings, off by default): how long the microphone stays open after
+    /// a spoken answer that is not a question (zero: never).
+    pub follow_up_window: Duration,
+}
+
+impl CoreConfig {
+    /// The longest a run of Home Assistant can take: listening, then thinking. A conversation
+    /// mode window opens its run at once and gives someone who starts speaking at its end a
+    /// whole turn from there, so the window's length comes on top.
+    fn run_limit(&self) -> Duration {
+        self.follow_up_window + self.listen_timeout + self.think_timeout
+    }
 }
 
 impl Default for CoreConfig {
     fn default() -> Self {
         CoreConfig {
             wake_name: "okay_alfred".into(),
+            wake_check: None,
             bell_repeats: 6,
             bell_gap: Duration::from_secs(1),
             listen_timeout: Duration::from_secs(20),
@@ -372,6 +419,7 @@ impl Default for CoreConfig {
             screenshot_dir: PathBuf::from("."),
             sounds_dir: None,
             usage_prices: Default::default(),
+            follow_up_window: Duration::from_secs(6),
         }
     }
 }
@@ -445,12 +493,14 @@ const ASK_VOICE_WAIT: Duration = Duration::from_millis(2500);
 /// An utterance held back: buffered and fed to the reflex helper while the user speaks, the
 /// helper's events judged by [`reflex::verdict`]; then either done locally or sent to Home
 /// Assistant in one burst (and live after it while the user still speaks). Also without a
-/// helper, while Home Assistant's previous run is still open (one run at a time).
+/// helper, while Home Assistant's previous run is still open (one run at a time), and for a
+/// conversation mode window until its detector hears speech.
 struct Gate {
     id: u64,
     buf: Vec<i16>,
     vad: Vad,
-    /// The verdict's memory (None: no helper, only waiting for the previous run).
+    /// The verdict's memory (None: no helper; waiting for the previous run, or for speech in a
+    /// window).
     st: Option<reflex::verdict::GateState>,
     /// The utterance is for Home Assistant (decided): it waits for the previous run to end.
     want: Option<Want>,
@@ -535,6 +585,15 @@ const TURNS_KEPT: usize = 8;
 
 /// A new utterance waits at most this long for the previous run's final message.
 const PREVIOUS_RUN_CAP: Duration = Duration::from_secs(3);
+
+/// Home Assistant's error code for speech-to-text that found no words in the audio.
+const NO_TEXT_RECOGNIZED: &str = "stt-no-text-recognized";
+/// Home Assistant's code for a pipeline whose speech-to-text entity is not there (yet).
+const STT_PROVIDER_MISSING: &str = "stt-provider-missing";
+/// How long after an `stt-provider-missing` the run is tried again (an integration reload).
+const PROVIDER_RETRY_AFTER: Duration = Duration::from_secs(3);
+/// At most this much audio (samples, 30 s) is kept for that retry.
+const RETRY_KEEP_MAX: usize = 16_000 * 30;
 /// After its question, a run quiet this long is over (Home Assistant ends it in about 2 s, the
 /// model's empty answer, without a word to the satellite).
 const ASKED_QUIET: Duration = Duration::from_secs(6);
@@ -560,6 +619,17 @@ pub struct Core {
     error_until: Option<Instant>,
     flash_until: Option<Instant>,
     listen_deadline: Option<Instant>,
+    /// Settings → "Conversation mode": every spoken answer opens a short listening window.
+    conversation_mode: bool,
+    /// At most this many such windows in a row before the wake word is needed again (Settings).
+    follow_up_max: u32,
+    /// Such windows opened in a row since the last wake word, touch or question.
+    follow_ups: u32,
+    /// The conversation about to start is such a window (it listens for a shorter time).
+    follow_window: bool,
+    /// The conversation listening now is such a window, and what was heard in it so far: when
+    /// its time is up with nobody speaking it ends quietly (nothing was asked of anyone).
+    window_vad: Option<Vad>,
     think_deadline: Option<Instant>,
     speak_deadline: Option<Instant>,
     wave: VecDeque<f32>,
@@ -631,6 +701,9 @@ pub struct Core {
     /// "Falso allarme"; when the conversation began (unix seconds).
     last_recording: Option<PathBuf>,
     last_wake: Option<(String, f32)>,
+    /// A detection waiting for the wake check, and the next check's id.
+    checking: Option<WakeChecking>,
+    next_check_id: u64,
     conv_started_wall: Option<u64>,
     /// When the character's own phrase began to play, and how long it lasts.
     speaking_since: Option<Instant>,
@@ -789,6 +862,11 @@ impl Core {
             error_until: None,
             flash_until: None,
             listen_deadline: None,
+            conversation_mode: false,
+            follow_up_max: crate::settings::CONVERSATION_MAX_DEFAULT,
+            follow_ups: 0,
+            follow_window: false,
+            window_vad: None,
             think_deadline: None,
             speak_deadline: None,
             wave: VecDeque::with_capacity(BARS),
@@ -829,6 +907,8 @@ impl Core {
             speaking_text: String::new(),
             last_recording: None,
             last_wake: None,
+            checking: None,
+            next_check_id: 1,
             conv_started_wall: None,
             speaking_since: None,
             speaking_len: None,
@@ -845,6 +925,8 @@ impl Core {
         if let Some(s) = &self.d.settings {
             self.mic_muted = s.mic_muted();
             self.airplay_on = s.airplay_on();
+            self.conversation_mode = s.conversation_mode();
+            self.follow_up_max = s.conversation_max();
             if let Some(dir) = s.path.parent() {
                 self.usage = Some(crate::usage::Usage::in_dir(dir));
             }
@@ -873,6 +955,9 @@ impl Core {
             if let Some(w) = &self.voice_wait {
                 until = until.min(w.deadline);
             }
+            if let Some(d) = self.check_deadline() {
+                until = until.min(d);
+            }
             match rx.recv_timeout(
                 until
                     .saturating_duration_since(now)
@@ -889,6 +974,9 @@ impl Core {
             let now = Instant::now();
             if self.voice_wait.as_ref().is_some_and(|w| now >= w.deadline) {
                 self.voice_late();
+            }
+            if self.check_deadline().is_some_and(|d| now >= d) {
+                self.on_wake_checked(None, 0.0, "no answer in time");
             }
             if self.ring_wait.is_some_and(|(_, until)| now >= until) {
                 log::info!(event = "ring_voice", voiced = false; "no voice in time for the ringing: the bell");
@@ -918,7 +1006,7 @@ impl Core {
     pub fn handle(&mut self, ev: CoreEvent) {
         match ev {
             CoreEvent::Server(e) => self.on_server(e),
-            CoreEvent::WakeWord(d) => self.on_wake(d),
+            CoreEvent::WakeWord(d, audio) => self.on_wake(d, audio),
             CoreEvent::StopWord(d) => self.on_stop_word(d),
             CoreEvent::MicFrame(f) => self.on_mic(f),
             CoreEvent::Audio(e) => self.on_audio(e),
@@ -1240,11 +1328,21 @@ impl Core {
 
     /// A new conversation; `answering`: the brain's question it hears the answer to.
     fn start_conversation_for(&mut self, trigger: Trigger, answering: Option<i64>) {
+        // Talk pressed while a detection was being checked: the button wins.
+        self.checking = None;
         // With the reflex helper up, the utterance is held back and decoded locally first; Home
         // Assistant is not needed for a reflex (Wi-Fi off, Home Assistant down).
         self.speaking_text.clear();
         self.speaking_since = None;
         self.speaking_len = None;
+        // A conversation mode window listens for a shorter time. The count of windows starts
+        // again only when the user starts (the wake word, a touch): a follow-up of any kind keeps
+        // it, so an answer to noise ("Can you repeat?") cannot run past the most in a row.
+        let window = std::mem::take(&mut self.follow_window);
+        if trigger != Trigger::FollowUp {
+            self.follow_ups = 0;
+        }
+        self.window_vad = window.then(Vad::new);
         let id = self.next_id;
         let gated = self.d.reflexes.as_ref().is_some_and(|r| {
             // The answer to a question: decoded against the answers only (a short "no" is
@@ -1273,6 +1371,7 @@ impl Core {
         let mut c = Conversation::new(id, trigger);
         c.detection_at = Some(Instant::now());
         c.answering = answering;
+        c.window = window;
         self.cue("wake");
         self.d.mic.set(MicMode::Stream);
         self.last_recording = None;
@@ -1288,6 +1387,13 @@ impl Core {
         self.ui(UiCommand::Answer(String::new()));
         let ok = if gated {
             self.gate = Some(Gate::new(id, true));
+            true
+        } else if window {
+            // A conversation mode window without the reflexes: held until its own detector
+            // hears speech (`on_mic_gated`). Opening the pipeline at once would have Home
+            // Assistant transcribe the room, and run its agent on any words it finds there,
+            // for every window nobody speaks in.
+            self.gate = Some(Gate::new(id, false));
             true
         } else if self.run.is_some() {
             // Home Assistant's previous run is still open: the speech is held until it ends.
@@ -1305,7 +1411,12 @@ impl Core {
             self.go_idle();
             return;
         }
-        self.listen_deadline = Some(Instant::now() + self.cfg.listen_timeout);
+        let listen = if window {
+            self.cfg.follow_up_window
+        } else {
+            self.cfg.listen_timeout
+        };
+        self.listen_deadline = Some(Instant::now() + listen);
         self.wave.clear();
         self.set_phase(Phase::Listening);
     }
@@ -1337,6 +1448,63 @@ impl Core {
         }
         self.summary.detections_sent += 1;
         ok
+    }
+
+    /// The run that failed with `stt-provider-missing`, once more: the pipeline again, the audio
+    /// so far in one burst, then `audio-stop` if the speech is over or the live stream.
+    fn retry_run(&mut self) {
+        let Some(c) = self.conv.as_mut() else { return };
+        c.retry_at = None;
+        let sent = std::mem::take(&mut c.sent);
+        if c.policy.swallows() || !matches!(self.phase, Phase::Listening | Phase::Thinking) {
+            // Stopped meanwhile: nothing to try again.
+            return;
+        }
+        if self.run.is_some() || !self.ha_ready() {
+            log::warn!(event = "pipeline_retry_failed", run_open = self.run.is_some(); "the run cannot be tried again");
+            self.fail("error:stt-provider-missing");
+            return;
+        }
+        let t = Instant::now();
+        let mut ok = self.open_pipeline();
+        let mut frames = 0u64;
+        for (i, chunk) in sent.chunks(reflex::vad::FRAME).enumerate() {
+            if !ok {
+                break;
+            }
+            self.chunk_buf.clear();
+            for s in chunk {
+                self.chunk_buf.extend_from_slice(&s.to_le_bytes());
+            }
+            let ts = (i * audio::FRAME_MS as usize) as i64;
+            ok = self
+                .d
+                .sender
+                .send_chunk(&AudioFormat::MIC, Some(ts), &self.chunk_buf)
+                .is_ok();
+            frames += 1;
+        }
+        log::info!(event = "pipeline_retry_sent", audio_s = sent.len() as f64 / 16_000.0, over = self.phase == Phase::Thinking, burst_ms = t.elapsed().as_secs_f64() * 1000.0; "the run again: {:.1} s of audio", sent.len() as f64 / 16_000.0);
+        if let Some(c) = &mut self.conv {
+            c.frames_sent += frames;
+            c.first_frame = None;
+            c.live_offset = frames;
+        }
+        if !ok {
+            self.mic_idle();
+            self.stop_recorder();
+            self.close("disconnected");
+            self.go_idle();
+            return;
+        }
+        if self.phase == Phase::Thinking {
+            // The speech ended while waiting.
+            self.send(&Message::AudioStop { timestamp: None });
+            if let Some(c) = &mut self.conv {
+                c.audio_stop_sent = true;
+            }
+            self.think_deadline = Some(Instant::now() + self.cfg.think_timeout);
+        }
     }
 
     /// End of the user's speech (voice-stopped or transcript): stop streaming.
@@ -1507,9 +1675,130 @@ impl Core {
         log::info!(event = "false_wake", saved = true, files = copied, dir = dir.display().to_string().as_str(); "false alarm: {copied} files kept in {}", dir.display());
     }
 
-    fn on_wake(&mut self, d: wakeword::Detection) {
-        self.last_wake = Some((d.name.clone(), d.probability));
+    fn on_wake(&mut self, d: wakeword::Detection, audio: Vec<i16>) {
         log::info!(event = "wake_word", name = d.name.as_str(), probability = d.probability as f64, at_s = d.at.as_secs_f64(); "wake word {} ({:.3})", d.name, d.probability);
+        let answers = matches!(
+            self.phase,
+            Phase::Home | Phase::Offline | Phase::Error | Phase::Ringing
+        );
+        // The wake check: asked to the reflex helper, the detection waits for its answer
+        // (on_wake_checked) with the frames that follow; nothing on the screen meanwhile.
+        if answers && self.checking.is_none() {
+            let phrase = self.cfg.wake_check.as_ref().map(|c| c.phrase.clone());
+            if let (Some(phrase), Some(r)) = (phrase, self.d.reflexes.as_ref())
+                && r.link.ready()
+                && !audio.is_empty()
+            {
+                let id = self.next_check_id;
+                if r.link.send(ReflexRequest::Verify {
+                    id,
+                    phrase,
+                    samples: audio,
+                }) {
+                    self.next_check_id += 1;
+                    self.checking = Some(WakeChecking {
+                        id,
+                        det: d,
+                        frames: Vec::new(),
+                        asked: Instant::now(),
+                    });
+                    return;
+                }
+            }
+        }
+        self.wake_accepted(d, Vec::new());
+    }
+
+    /// The wake check's answer (or none in time: `heard` None): the detection stands when the
+    /// name is heard, the phrase cannot be checked or the check did not answer.
+    fn on_wake_checked(&mut self, heard: Option<(&str, bool)>, ms: f64, why: &str) {
+        let Some(c) = self.checking.take() else {
+            return;
+        };
+        let phrase = self
+            .cfg
+            .wake_check
+            .as_ref()
+            .map_or("", |w| w.phrase.as_str());
+        let waited_ms = c.asked.elapsed().as_secs_f64() * 1000.0;
+        let (text, known) = heard.unwrap_or(("", false));
+        let keep = heard.is_none() || !known || reflex::wake_check::heard_name(phrase, text);
+        log::info!(
+            event = "wake_check", kept = keep, heard = text, known = known, why = why,
+            probability = c.det.probability as f64, helper_ms = ms, waited_ms = waited_ms;
+            "wake check: {} ({why}: {text:?}, {waited_ms:.0} ms)", if keep { "kept" } else { "dropped" }
+        );
+        if keep {
+            self.wake_accepted(c.det, c.frames);
+            return;
+        }
+        self.save_dropped_wake(&c.det, text);
+        self.mic_idle();
+        self.d.mic.request_reset();
+    }
+
+    /// Until when the running wake check is waited for.
+    fn check_deadline(&self) -> Option<Instant> {
+        let (c, w) = self.checking.as_ref().zip(self.cfg.wake_check.as_ref())?;
+        Some(c.asked + w.timeout)
+    }
+
+    /// A detection dropped by the wake check: the microphone's last seconds (what woke the
+    /// character) kept in `false-wakes/` like a "Falso allarme", with `"via": "check"`, for
+    /// training the wake word again. Only with the recordings on.
+    fn save_dropped_wake(&self, d: &wakeword::Detection, heard: &str) {
+        let Some(path) = self
+            .d
+            .recorder
+            .as_ref()
+            .and_then(|r| r.save_context("wake"))
+        else {
+            return;
+        };
+        let Some(dir) = path
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("false-wakes"))
+        else {
+            return;
+        };
+        let stem = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .trim_end_matches("-wake")
+            .to_string();
+        let to = dir.join(format!("{stem}-wake.wav"));
+        let moved = std::fs::create_dir_all(&dir).and_then(|()| {
+            std::fs::rename(&path, &to).or_else(|_| {
+                std::fs::copy(&path, &to)?;
+                std::fs::remove_file(&path)
+            })
+        });
+        if let Err(e) = moved {
+            log::warn!("{}: {e}", to.display());
+            return;
+        }
+        let info = serde_json::json!({
+            "false_wake": true,
+            "via": "check",
+            "wake_word": d.name,
+            "probability": d.probability,
+            "check_heard": heard,
+            "conversation_started_unix": serde_json::Value::Null,
+            "detected_unix": now_unix(),
+            "files": stem,
+            "audio": "the microphone's last seconds, ending a moment after the detection",
+        });
+        let _ = std::fs::write(
+            dir.join(format!("{stem}-false.json")),
+            format!("{info:#}\n"),
+        );
+    }
+
+    /// A detection that stands: a conversation, with the frames heard while it was checked.
+    fn wake_accepted(&mut self, d: wakeword::Detection, frames: Vec<CaptureFrame>) {
+        self.last_wake = Some((d.name.clone(), d.probability));
         match self.phase {
             Phase::Home | Phase::Offline | Phase::Error => self.start_conversation(Trigger::Wake),
             Phase::Ringing => {
@@ -1523,10 +1812,20 @@ impl Core {
         if self.phase != Phase::Listening {
             self.mic_idle();
             self.d.mic.request_reset();
+            return;
+        }
+        for f in frames {
+            self.on_mic(f);
         }
     }
 
     fn on_mic(&mut self, f: CaptureFrame) {
+        if let Some(c) = &mut self.checking {
+            if c.frames.len() < CHECK_FRAMES {
+                c.frames.push(f);
+            }
+            return;
+        }
         if self.phase != Phase::Listening {
             return;
         }
@@ -1535,35 +1834,56 @@ impl Core {
             return;
         }
         let Some(c) = &mut self.conv else { return };
-        let first = *c.first_frame.get_or_insert(f.index);
-        let ts = ((f.index.saturating_sub(first) + c.live_offset) * audio::FRAME_MS as u64) as i64;
-        self.chunk_buf.clear();
-        for s in f.samples.iter() {
-            self.chunk_buf.extend_from_slice(&s.to_le_bytes());
+        // Waiting to try the run again (`stt-provider-missing`): kept, sent with the retry.
+        let waiting = c.retry_at.is_some();
+        if waiting || !c.no_retry {
+            c.sent.extend_from_slice(&f.samples);
+            if c.sent.len() > RETRY_KEEP_MAX && !waiting {
+                // Its speech-to-text never said it started: no retry rather than more memory.
+                c.no_retry = true;
+                c.sent = Vec::new();
+            }
         }
-        if self
-            .d
-            .sender
-            .send_chunk(&AudioFormat::MIC, Some(ts), &self.chunk_buf)
-            .is_ok()
-        {
-            c.frames_sent += 1;
-            c.first_chunk_at.get_or_insert_with(Instant::now);
+        if !waiting {
+            let first = *c.first_frame.get_or_insert(f.index);
+            let ts =
+                ((f.index.saturating_sub(first) + c.live_offset) * audio::FRAME_MS as u64) as i64;
+            self.chunk_buf.clear();
+            for s in f.samples.iter() {
+                self.chunk_buf.extend_from_slice(&s.to_le_bytes());
+            }
+            if self
+                .d
+                .sender
+                .send_chunk(&AudioFormat::MIC, Some(ts), &self.chunk_buf)
+                .is_ok()
+            {
+                c.frames_sent += 1;
+                c.first_chunk_at.get_or_insert_with(Instant::now);
+            }
         }
         if self.wave.len() == BARS / 2 {
             self.wave.pop_back();
         }
         self.wave.push_front(level_to_bar(f.level.rms_dbfs));
+        if let Some(v) = &mut self.window_vad {
+            v.push(&f.samples);
+        }
         let over = self.live_vad.as_mut().is_some_and(|v| {
             v.push(&f.samples);
             live_speech_over(v)
         });
         if over {
             self.live_vad = None;
-            log::info!(event = "live_end"; "end of speech heard by the body: audio-stop to Home Assistant");
-            self.send(&Message::AudioStop { timestamp: None });
-            if let Some(c) = &mut self.conv {
-                c.audio_stop_sent = true;
+            if waiting {
+                // The retry sends the speech and its end.
+                log::info!(event = "live_end", retry = true; "end of speech heard by the body: audio-stop with the retry");
+            } else {
+                log::info!(event = "live_end"; "end of speech heard by the body: audio-stop to Home Assistant");
+                self.send(&Message::AudioStop { timestamp: None });
+                if let Some(c) = &mut self.conv {
+                    c.audio_stop_sent = true;
+                }
             }
             self.end_listening();
         }
@@ -1589,6 +1909,14 @@ impl Core {
         }
         g.buf.extend_from_slice(&f.samples);
         g.vad.push(&f.samples);
+        if g.st.is_none() {
+            // A conversation mode window held without the reflexes: to Home Assistant, live,
+            // once someone speaks; the window's end closes it quietly otherwise.
+            if g.vad.speech_ms() >= Vad::MIN_SPEECH_MS {
+                self.release(false, "speech in the window");
+            }
+            return;
+        }
         let fed = self
             .d
             .reflexes
@@ -1602,7 +1930,23 @@ impl Core {
         match e {
             ReflexEvent::Ready { .. } => {}
             ReflexEvent::Lost => {
+                self.on_wake_checked(None, 0.0, "helper lost");
                 self.judge(Seen::Lost);
+            }
+            ReflexEvent::Verify {
+                id,
+                text,
+                known,
+                ms,
+            } => {
+                if self.checking.as_ref().is_some_and(|c| c.id == id) {
+                    let why = if known {
+                        "checked"
+                    } else {
+                        "phrase not in the vocabulary"
+                    };
+                    self.on_wake_checked(Some((&text, known)), ms, why);
+                }
             }
             ReflexEvent::Partial { id, text, audio_s } => {
                 let Some(g) = self.gate.as_mut().filter(|g| ours(g, id)) else {
@@ -1800,6 +2144,11 @@ impl Core {
                 r.link.send(ReflexRequest::End(g.id));
             }
         }
+        // The reflexes sent it on: someone spoke, and gets a whole turn. A gate that only waits
+        // for the previous run decided nothing: the window's time runs on.
+        if g.st.is_some() {
+            self.window_vad = None;
+        }
         g.want = Some(Want {
             over,
             why,
@@ -1872,6 +2221,9 @@ impl Core {
             frames += 1;
         }
         if let Some(c) = &mut self.conv {
+            if !c.no_retry {
+                c.sent.extend_from_slice(&g.buf);
+            }
             c.frames_sent += frames;
             c.first_chunk_at.get_or_insert(t);
             // The live frames go on from the buffer's end (timestamps from 0, as without it).
@@ -1901,7 +2253,13 @@ impl Core {
         } else {
             // Home Assistant listens on, live; our detector (it has heard everything so far)
             // ends it at the user's silence, Home Assistant's own end of speech otherwise.
-            self.listen_deadline = Some(Instant::now() + self.cfg.listen_timeout);
+            if self.window_vad.is_some() {
+                // A conversation mode window that waited for the previous run: still a window,
+                // its time counted from its start, with what was heard while it waited.
+                self.window_vad = Some(g.vad.clone());
+            } else {
+                self.listen_deadline = Some(Instant::now() + self.cfg.listen_timeout);
+            }
             self.live_vad = Some(g.vad);
         }
     }
@@ -2129,6 +2487,10 @@ impl Core {
         };
         self.stop_recorder();
         log::info!(event = "reflex_done", heard = heard, answer = answer.as_str(); "reflex done: {heard:?} → {answer:?}");
+        // A nod, but not for the photo's countdown nor for a yes to the house (its card answers).
+        if !matches!(cmd, Reflex::TakePhoto | Reflex::Yes) {
+            after.push(UiCommand::ReflexDone);
+        }
         // Each reflex has its own sound: it is clear the body did it (Home Assistant answers aloud).
         let cue_name: Option<&'static str> = match &cmd {
             Reflex::Time => Some("time"),
@@ -2488,6 +2850,13 @@ impl Core {
                 self.go_idle();
             }
             Message::Transcribe { language } => {
+                // Its speech-to-text started: no retry for a missing provider any more, the
+                // audio kept for one is not needed.
+                let current = self.run.as_ref().map(|r| r.conv);
+                if let Some(c) = self.conv.as_mut().filter(|c| Some(c.id) == current) {
+                    c.no_retry = true;
+                    c.sent = Vec::new();
+                }
                 log::info!(event = "transcribe", language = language.as_deref().unwrap_or(""); "pipeline language {}", language.as_deref().unwrap_or("?"))
             }
             Message::VoiceStarted { .. } => log::debug!("voice-started"),
@@ -2787,6 +3156,38 @@ impl Core {
         log::warn!(event = "pipeline_error", code = code.as_str(), text = text.as_str(); "Home Assistant: {text} ({code})");
         match &self.conv {
             Some(c) if c.policy.swallows() => self.close("stopped"),
+            Some(c)
+                if code == STT_PROVIDER_MISSING
+                    && !c.no_retry
+                    && matches!(self.phase, Phase::Listening | Phase::Thinking) =>
+            {
+                // Its speech-to-text is not there for a moment: the setup has just written the
+                // agent's instructions, and the AI integration (which often gives the
+                // speech-to-text too) reloads. Once more in a moment, with the same audio.
+                log::warn!(event = "pipeline_retry", code = code.as_str(), after_s = PROVIDER_RETRY_AFTER.as_secs_f64(); "speech-to-text missing: trying the run again in {:.0} s", PROVIDER_RETRY_AFTER.as_secs_f32());
+                let at = Instant::now() + PROVIDER_RETRY_AFTER;
+                if let Some(c) = &mut self.conv {
+                    c.no_retry = true;
+                    c.retry_at = Some(at);
+                }
+                if self.phase == Phase::Thinking {
+                    self.think_deadline = Some(at + self.cfg.think_timeout);
+                }
+            }
+            Some(c) if c.window && code == NO_TEXT_RECOGNIZED && self.phase.in_conversation() => {
+                // A cough or the television in a conversation mode window: Home Assistant
+                // found no words in it. Nobody asked for the window, so it ends as one nobody
+                // spoke in, not as a failed request.
+                log::info!(event = "follow_up_window_closed", heard = true; "conversation mode: no words in what was heard, back to the wake word");
+                self.mic_idle();
+                self.d.mic.request_reset();
+                self.stop_recorder();
+                self.close("no speech");
+                self.listen_deadline = None;
+                self.think_deadline = None;
+                self.wave.clear();
+                self.go_idle();
+            }
             Some(_) if self.phase.in_conversation() || self.phase == Phase::Ringing => {
                 let outcome = format!("error:{code}");
                 self.fail(&outcome);
@@ -2819,10 +3220,25 @@ impl Core {
                 if is_answer {
                     // A question back ("Cosa devo ricordarti?"): listen again without the wake
                     // word, as Home Assistant would ask a voice satellite of its own.
-                    let follow = self.conv.as_ref().is_some_and(|c| {
-                        !c.policy.swallows()
-                            && c.trigger != Trigger::Announcement
-                            && asks_for_answer(&c.answer)
+                    // With conversation mode on, any other spoken answer opens a short window too,
+                    // a few times in a row.
+                    // Not with the microphone off (its switch moved while he spoke, or muted on
+                    // the screen): the window would show Listening and hear nothing.
+                    let mic_off = self.mic_muted || self.mic_switch_off;
+                    // Nor while AirPlay music plays: it is only ducked, and a window would
+                    // hear it as speech.
+                    let music = self.now_playing.as_ref().is_some_and(|n| n.playing);
+                    let windows = (self.conversation_mode
+                        && !mic_off
+                        && !music
+                        && self.follow_ups < self.follow_up_max)
+                        .then_some(self.cfg.follow_up_window);
+                    let after = self.conv.as_ref().map_or(AfterAnswer::Nothing, |c| {
+                        if c.policy.swallows() || c.trigger == Trigger::Announcement {
+                            AfterAnswer::Nothing
+                        } else {
+                            after_answer(&c.answer, windows)
+                        }
                     });
                     if let Some(c) = &mut self.conv {
                         c.stream = None;
@@ -2831,9 +3247,56 @@ impl Core {
                     self.close("played");
                     if self.phase == Phase::Speaking {
                         self.go_idle();
-                        if follow {
-                            log::info!(event = "follow_up"; "the answer was a question: listening again");
-                            self.start_conversation(Trigger::FollowUp);
+                        // go_idle may have started the bell of a timer that came due meanwhile:
+                        // no listening over it (a window would send the bell to Home Assistant
+                        // as a turn). A reminder full screen (maybe for hours, its chime every
+                        // 15 s) holds back conversation mode's windows only: a question of
+                        // Alfred's is still answered.
+                        let ringing = self.phase == Phase::Ringing;
+                        let after = match after {
+                            AfterAnswer::Nothing => after,
+                            _ if ringing => {
+                                log::info!(event = "follow_up_skipped", ringing = true; "a timer rings: no listening after the answer");
+                                AfterAnswer::Nothing
+                            }
+                            // The microphone off (switch or screen): no Listening that hears
+                            // nothing, not even for a question of his.
+                            _ if mic_off => {
+                                log::info!(event = "follow_up_skipped", mic_off = true; "the microphone is off: no listening after the answer");
+                                AfterAnswer::Nothing
+                            }
+                            AfterAnswer::Window if self.noticing => {
+                                log::info!(event = "follow_up_skipped", reminder = true; "a reminder is shown: no conversation window");
+                                AfterAnswer::Nothing
+                            }
+                            _ => after,
+                        };
+                        match after {
+                            // Within conversation mode's windows a question of his counts as one
+                            // of them: noise heard in a window and answered "Can you repeat?"
+                            // must not keep the microphone open. Outside them, as always.
+                            AfterAnswer::Question
+                                if self.conversation_mode
+                                    && self.follow_ups > 0
+                                    && self.follow_ups >= self.follow_up_max =>
+                            {
+                                log::info!(event = "follow_up_window_closed", n = self.follow_ups, of = self.follow_up_max; "conversation mode: a question, but already {} in a row: back to the wake word", self.follow_ups);
+                            }
+                            AfterAnswer::Question => {
+                                if self.conversation_mode && self.follow_ups > 0 {
+                                    self.follow_ups += 1;
+                                }
+                                log::info!(event = "follow_up", n = self.follow_ups; "the answer was a question: listening again");
+                                self.start_conversation(Trigger::FollowUp);
+                            }
+                            AfterAnswer::Window => {
+                                let n = self.follow_ups + 1;
+                                log::info!(event = "follow_up_window", n = n, of = self.follow_up_max, seconds = self.cfg.follow_up_window.as_secs_f64(); "conversation mode: window {n} of {}, listening for {:.0} s", self.follow_up_max, self.cfg.follow_up_window.as_secs_f32());
+                                self.follow_window = true;
+                                self.follow_ups = n;
+                                self.start_conversation(Trigger::FollowUp);
+                            }
+                            AfterAnswer::Nothing => {}
                         }
                     }
                 } else if self.bell == Some(id) {
@@ -3076,6 +3539,14 @@ impl Core {
                 }
                 self.d.mic.set_wake_sensitivity(s);
             }
+            UiEvent::ConversationMode(on) => {
+                log::info!(event = "conversation_mode", on = on; "conversation mode {}", if on { "on" } else { "off" });
+                self.conversation_mode = on;
+            }
+            UiEvent::ConversationMax(n) => {
+                log::info!(event = "conversation_max", times = n; "conversation mode: {n} in a row at most");
+                self.follow_up_max = n;
+            }
             UiEvent::ControlTile(k) => self.on_control_tile(&k),
             UiEvent::MusicToggle => self.on_music_toggle(),
             UiEvent::MusicNext => self.music_remote(crate::airplay::Remote::Next),
@@ -3187,6 +3658,14 @@ impl Core {
                     self.next_voice_id += 1;
                     v.say(id, &text, self.ha.is_connected());
                     self.say_wait = Some((id, Instant::now() + Duration::from_secs(6)));
+                }
+            }
+            UiEvent::Failed => {
+                if !self.speaker_busy()
+                    && !matches!(self.phase, Phase::Speaking | Phase::Ringing)
+                    && !self.dnd(now_unix())
+                {
+                    self.cue("error");
                 }
             }
             UiEvent::Success => {
@@ -3875,6 +4354,14 @@ impl Core {
             self.flash_until = None;
             self.ui(UiCommand::View(self.phase));
         }
+        if self
+            .conv
+            .as_ref()
+            .and_then(|c| c.retry_at)
+            .is_some_and(|t| now >= t)
+        {
+            self.retry_run();
+        }
         if let Some(q) = self
             .asking_voice
             .as_ref()
@@ -3898,10 +4385,40 @@ impl Core {
             }
         }
         if self.phase == Phase::Listening
+            && self.window_vad.is_some()
+            && self.listen_deadline.is_some_and(|t| now >= t)
+        {
+            // A conversation mode window's time is up. Someone speaking gets a whole turn, as
+            // after the wake word; with nothing said it closes as Stop would, without a sound.
+            let heard = match (&self.gate, &self.window_vad) {
+                (Some(g), _) => Some(&g.vad),
+                (None, v) => v.as_ref(),
+            };
+            let speaking = heard.is_some_and(|v| v.speech_ms() >= Vad::MIN_SPEECH_MS);
+            self.window_vad = None;
+            if speaking {
+                self.listen_deadline = Some(Instant::now() + self.cfg.listen_timeout);
+            } else {
+                log::info!(event = "follow_up_window_closed"; "conversation mode: nothing said, back to the wake word");
+                self.stop_conversation();
+            }
+        }
+        if self.phase == Phase::Listening
             && self.gate.is_some()
             && self.listen_deadline.is_some_and(|t| now >= t)
         {
             self.release(false, "listening too long");
+        }
+        if self.phase == Phase::Listening
+            && self.gate.is_none()
+            && self.listen_deadline.is_some_and(|t| now >= t)
+            && self.conv.as_ref().is_some_and(|c| c.window)
+        {
+            // A conversation mode window kept open for speech in which Home Assistant then
+            // heard no end: nobody asked for the window, so it closes as one nobody spoke in
+            // (as Stop would, without a sound), not as a failed request.
+            log::info!(event = "follow_up_window_closed", timeout = true; "conversation mode: Home Assistant heard no end of speech, back to the wake word");
+            self.stop_conversation();
         }
         if self.phase == Phase::Listening
             && self.gate.is_none()
@@ -3944,7 +4461,7 @@ impl Core {
         if self
             .run
             .as_ref()
-            .is_some_and(|r| r.opened.elapsed() > self.cfg.listen_timeout + self.cfg.think_timeout)
+            .is_some_and(|r| r.opened.elapsed() > self.cfg.run_limit())
         {
             log::warn!(event = "timeout", stage = "run"; "Home Assistant's run never ended: forgotten");
             self.run_over("too old");
@@ -4103,6 +4620,30 @@ fn live_speech_over(v: &Vad) -> bool {
 /// See [`live_speech_over`].
 const LIVE_END_SILENCE_MS: u32 = 1_500;
 
+/// What follows an answer once it has been spoken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterAnswer {
+    /// Back to the wake word.
+    Nothing,
+    /// He asked something: a whole listening turn.
+    Question,
+    /// Conversation mode: a short window in case the user goes on.
+    Window,
+}
+
+/// `window`: conversation mode's listening time when a window may open now (the mode is on and
+/// fewer than the most in a row were opened); an answer with nothing to say (no letter or
+/// digit) and a window of zero seconds open none.
+fn after_answer(answer: &str, window: Option<Duration>) -> AfterAnswer {
+    if asks_for_answer(answer) {
+        AfterAnswer::Question
+    } else if window.is_some_and(|w| !w.is_zero()) && answer.chars().any(char::is_alphanumeric) {
+        AfterAnswer::Window
+    } else {
+        AfterAnswer::Nothing
+    }
+}
+
 fn asks_for_answer(answer: &str) -> bool {
     let a = answer.trim_end();
     if !a.ends_with('?') {
@@ -4195,7 +4736,7 @@ pub fn rss_mb() -> f64 {
 }
 
 /// After a house command that went through, an answer this short only confirms it ("Fatto.",
-/// "Ho acceso la luce dello studio."): not spoken. A question or a longer answer (something
+/// "Ho acceso la luce del soggiorno."): not spoken. A question or a longer answer (something
 /// failed, or the user also asked something) still is.
 const QUIET_MAX_WORDS: usize = 8;
 
@@ -4215,6 +4756,20 @@ pub fn stop_is_a_false_wake(phase: Phase, trigger: Option<crate::conversation::T
 mod tests {
 
     #[test]
+    fn a_run_may_last_a_window_and_a_whole_turn() {
+        // A window of 6 s, speech from its last moment for the 20 s of a turn, an answer after
+        // 55 s: 81 s after the run opened, and not forgotten as "too old".
+        let cfg = CoreConfig {
+            follow_up_window: Duration::from_secs(6),
+            listen_timeout: Duration::from_secs(20),
+            think_timeout: Duration::from_secs(60),
+            ..Default::default()
+        };
+        assert!(Duration::from_secs(6 + 20 + 55) <= cfg.run_limit());
+        assert_eq!(cfg.run_limit(), Duration::from_secs(86));
+    }
+
+    #[test]
     fn courtesy_questions_do_not_open_the_microphone() {
         assert!(asks_for_answer("A che ora devo ricordarglielo?"));
         assert!(asks_for_answer("Chiudo la tapparella del salotto?"));
@@ -4227,6 +4782,29 @@ mod tests {
         assert!(!asks_for_answer("Fatto. C'è altro?"));
         assert!(!asks_for_answer("Done. Anything else I can do?"));
         assert!(!asks_for_answer("Fatto."));
+        // Conversation mode: a window after an answer that says something, never in place of a
+        // question's own turn, never for a window of no length or with the mode off.
+        let six = Some(Duration::from_secs(6));
+        assert_eq!(after_answer("Fatto.", None), AfterAnswer::Nothing);
+        assert_eq!(after_answer("Fatto.", six), AfterAnswer::Window);
+        assert_eq!(
+            after_answer("Done. Anything else I can do?", six),
+            AfterAnswer::Window
+        );
+        assert_eq!(
+            after_answer("Chiudo la tapparella del salotto?", six),
+            AfterAnswer::Question
+        );
+        assert_eq!(
+            after_answer("Chiudo la tapparella del salotto?", None),
+            AfterAnswer::Question
+        );
+        assert_eq!(after_answer("", six), AfterAnswer::Nothing);
+        assert_eq!(after_answer(" … ", six), AfterAnswer::Nothing);
+        assert_eq!(
+            after_answer("Fatto.", Some(Duration::ZERO)),
+            AfterAnswer::Nothing
+        );
     }
     use super::*;
 
@@ -4293,12 +4871,12 @@ mod tests {
     #[test]
     fn short_answers_after_a_command_are_not_spoken() {
         assert!(quiet_after_command("Fatto."));
-        assert!(quiet_after_command("Ho acceso la luce dello studio."));
+        assert!(quiet_after_command("Ho acceso la luce del soggiorno."));
         assert!(quiet_after_command(" Done. "));
         assert!(!quiet_after_command(""));
         assert!(!quiet_after_command("Vuoi che accenda anche la cucina?"));
         assert!(!quiet_after_command(
-            "Ho acceso la luce dello studio, ma in cucina non trovo nessuna lampada."
+            "Ho acceso la luce del soggiorno, ma in cucina non trovo nessuna lampada."
         ));
     }
 

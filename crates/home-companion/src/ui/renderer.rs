@@ -17,7 +17,7 @@ use std::cell::Cell;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use slint::platform::software_renderer::MinimalSoftwareWindow;
@@ -28,6 +28,10 @@ use super::backlight::WakeSource;
 use super::platform_fb::{self, Framebuffer, Output, VtGuard};
 use super::screen::{Ui, UiOptions, save_png};
 use super::touch::{TouchEvent, TouchKind};
+
+/// After a remote tap, how long before the next remote event is judged (what the tap opened is
+/// on screen and known by then).
+const REMOTE_TAP_GAP: Duration = Duration::from_millis(150);
 use crate::core::{CoreEvent, UiCommand};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,6 +287,18 @@ pub fn prepare_gpu(rotation: u32) -> Result<Prepared<super::gpu::CompanionWindow
     })
 }
 
+/// Applies the core's pending commands; false once the core has stopped (it held the only
+/// sender, so the channel is closed when its thread ends).
+fn drain_commands(commands: &Receiver<UiCommand>, mut apply: impl FnMut(UiCommand)) -> bool {
+    loop {
+        match commands.try_recv() {
+            Ok(cmd) => apply(cmd),
+            Err(TryRecvError::Empty) => return true,
+            Err(TryRecvError::Disconnected) => return false,
+        }
+    }
+}
+
 /// What the UI loop needs besides the screen.
 pub struct UiContext {
     pub character: Rc<character::Character>,
@@ -316,11 +332,22 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
     let Prepared {
         screen,
         kind,
+        rotation,
         fb,
         _vt,
-        ..
     } = p;
     let ui = Ui::new(screen, ctx.character.clone(), ctx.opts, ctx.core.clone())?;
+    // The remote screen (crate::panel::remote): its frames read from the display's buffer (GPU
+    // only: crate::ui::capture says why), its touches back into this loop as the panel's own.
+    let remote_queue = super::remote_input::TouchQueue::default();
+    let capture = if kind == Kind::Gpu {
+        super::capture::Capture::new(rotation, || {
+            super::capture::drm::Drm::open().map(|d| Box::new(d) as Box<dyn super::capture::Source>)
+        })
+    } else {
+        super::capture::Capture::unavailable("renderer")
+    };
+    ui.set_remote_io(capture, remote_queue.clone());
     // The Home Assistant button opens "Casa" instead of telling the core.
     let casa = ctx.web.map(|mut w| {
         w.gpu = kind == Kind::Gpu;
@@ -357,37 +384,86 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
         let (exit_after, screenshot, stop) =
             (ctx.exit_after, ctx.screenshot.clone(), ctx.stop_requested);
         let pressed = Cell::new(false);
+        // The real finger and the remote's touches (remote_input.rs: the finger wins, Stop on the
+        // sign goes nowhere else, each source its own press).
+        let arbiter = std::cell::RefCell::new(super::remote_input::Arbiter::default());
+        let remote_gap: Cell<Option<Instant>> = Cell::new(None);
         drain.start(TimerMode::Repeated, Duration::from_millis(20), move || {
-            while let Ok(cmd) = commands.try_recv() {
-                ui.apply(cmd);
-            }
+            let core_running = drain_commands(&commands, |cmd| ui.apply(cmd));
             ui.poll_mirror();
-            if let Some(t) = &touch {
-                while let Ok(ev) = t.try_recv() {
-                    if ev.kind == TouchKind::Down {
-                        ui.wake(WakeSource::Touch);
+            let now = Instant::now();
+            let mut outs = Vec::new();
+            {
+                let mut arb = arbiter.borrow_mut();
+                if let Some(t) = &touch {
+                    for ev in t.try_iter() {
+                        ui.remote_real_touch();
+                        let on_sign = ev.kind == TouchKind::Down && ui.remote_sign_hit(ev.x, ev.y);
+                        outs.extend(arb.real(ev, on_sign, now));
                     }
-                    if casa.as_ref().is_some_and(|c| c.touch(&ev)) {
+                }
+                // One remote tap per round at most, and none for REMOTE_TAP_GAP after it: what
+                // the tap opens (a page, a dialog) is on screen and known to `remote_accepts`
+                // before the next remote event is judged, so a batch cannot tap through a
+                // private page that its own first tap opened. The rest waits in the channel.
+                // A remote press whose Up was lost goes; the next click is then a whole one.
+                outs.extend(arb.release_stale(now));
+                // A round ends at whatever lifts a press, the arbiter's own release included.
+                if remote_gap.get().is_none_or(|t| now >= t) {
+                    let (got, tapped) = arb.remote_round(
+                        || {
+                            // Checked now, not when it was sent: the session may have ended
+                            // meanwhile or the screen gone private.
+                            // A press that starts on the sign is nobody's: the sign's Stop
+                            // is for the room, and under it may be Home Assistant's view.
+                            remote_queue.pop().map(|(epoch, ev)| {
+                                let on_sign =
+                                    ev.kind == TouchKind::Down && ui.remote_sign_hit(ev.x, ev.y);
+                                (ev, ui.remote_accepts(epoch) && !on_sign)
+                            })
+                        },
+                        now,
+                    );
+                    outs.extend(got);
+                    if tapped {
+                        remote_gap.set(Some(now + REMOTE_TAP_GAP));
+                    }
+                }
+                if !ui.remote_on_now() {
+                    outs.extend(arb.idle());
+                }
+            }
+            for out in outs {
+                let ev = match out {
+                    super::remote_input::Out::EndSession => {
+                        ui.remote_end(crate::panel::remote::End::Screen);
                         continue;
                     }
-                    let position = LogicalPosition::new(ev.x, ev.y);
-                    let button = slint::platform::PointerEventButton::Left;
-                    let e = match ev.kind {
-                        TouchKind::Down => {
-                            pressed.set(true);
-                            ui.screen.window().dispatch_event(
-                                slint::platform::WindowEvent::PointerMoved { position },
-                            );
-                            slint::platform::WindowEvent::PointerPressed { position, button }
-                        }
-                        TouchKind::Move => slint::platform::WindowEvent::PointerMoved { position },
-                        TouchKind::Up if pressed.replace(false) => {
-                            slint::platform::WindowEvent::PointerReleased { position, button }
-                        }
-                        TouchKind::Up => continue,
-                    };
-                    ui.screen.window().dispatch_event(e);
+                    super::remote_input::Out::Touch(ev) => ev,
+                };
+                if ev.kind == TouchKind::Down {
+                    ui.wake(WakeSource::Touch);
                 }
+                if casa.as_ref().is_some_and(|c| c.touch(&ev)) {
+                    continue;
+                }
+                let position = LogicalPosition::new(ev.x, ev.y);
+                let button = slint::platform::PointerEventButton::Left;
+                let e = match ev.kind {
+                    TouchKind::Down => {
+                        pressed.set(true);
+                        ui.screen.window().dispatch_event(
+                            slint::platform::WindowEvent::PointerMoved { position },
+                        );
+                        slint::platform::WindowEvent::PointerPressed { position, button }
+                    }
+                    TouchKind::Move => slint::platform::WindowEvent::PointerMoved { position },
+                    TouchKind::Up if pressed.replace(false) => {
+                        slint::platform::WindowEvent::PointerReleased { position, button }
+                    }
+                    TouchKind::Up => continue,
+                };
+                ui.screen.window().dispatch_event(e);
             }
             if let Some(w) = &wake {
                 while let Ok(why) = w.try_recv() {
@@ -418,8 +494,16 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
                 ui.request_screenshot();
             }
             ui.poll();
+            // Whatever changed the page or a dialog in this round (touches, commands, the
+            // panel's requests): the capture knows before the next frame is drawn.
+            ui.sync_remote();
             let expired = exit_after.is_some_and(|s| start.elapsed().as_secs_f64() >= s);
-            if (expired || stop()) && !quit.get() {
+            if (expired || stop() || !core_running) && !quit.get() {
+                if !core_running {
+                    // An audio error, for one, stops the core but not the screen: without this
+                    // the process lives on without voice and systemd never restarts it.
+                    log::warn!(event = "core_gone"; "the core stopped: closing the screen too");
+                }
                 if let Some(path) = &screenshot {
                     if let Err(e) = save_png(&ui.screen, path) {
                         log::error!("screenshot {}: {e}", path.display());
@@ -463,4 +547,32 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
     };
     ui.on_exit();
     r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn drain_reports_the_core_running_while_it_holds_the_sender() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(UiCommand::VolumeNow(40)).unwrap();
+        tx.send(UiCommand::VolumeNow(60)).unwrap();
+        let mut got = Vec::new();
+        assert!(drain_commands(&rx, |c| got.push(c)));
+        assert_eq!(got.len(), 2);
+        assert!(drain_commands(&rx, |_| panic!("nothing is pending")));
+    }
+
+    #[test]
+    fn drain_applies_the_last_commands_then_reports_the_core_gone() {
+        // The core's thread ended (an audio error): its sender is dropped.
+        let (tx, rx) = mpsc::channel();
+        tx.send(UiCommand::VolumeNow(40)).unwrap();
+        drop(tx);
+        let mut got = 0;
+        assert!(!drain_commands(&rx, |_| got += 1));
+        assert_eq!(got, 1);
+    }
 }

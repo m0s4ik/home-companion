@@ -246,6 +246,7 @@ impl home_companion::reflex::ReflexLink for ScriptReflex {
                     }));
                 }
             }
+            Request::Verify { .. } => {}
         }
         true
     }
@@ -331,6 +332,12 @@ pub struct Setup {
     /// false: the real wake thread over the null (silent) microphone.
     pub scripted_mic: Option<Vec<Utt>>,
     pub think_timeout: Option<Duration>,
+    /// Conversation mode's window (None: the core's own).
+    pub follow_up: Option<Duration>,
+    /// How long a conversation listens (None: the core's own).
+    pub listen_timeout: Option<Duration>,
+    /// AirPlay music plays from the start (its "now playing" sent to the core).
+    pub music: bool,
 }
 
 impl Setup {
@@ -341,6 +348,9 @@ impl Setup {
             helper: Helper::None,
             scripted_mic: None,
             think_timeout: None,
+            follow_up: None,
+            listen_timeout: None,
+            music: false,
         }
     }
     /// The reflexes play `utts`, and the microphone speaks them.
@@ -554,7 +564,29 @@ pub fn run_setup(setup: Setup) -> Run {
     if let Some(t) = setup.think_timeout {
         core_cfg.think_timeout = t;
     }
+    if let Some(window) = setup.follow_up {
+        core_cfg.follow_up_window = window;
+    }
+    if let Some(t) = setup.listen_timeout {
+        core_cfg.listen_timeout = t;
+    }
     let core = std::thread::spawn(move || Core::new(core_cfg, deps).run(core_rx));
+    if setup.music {
+        let now = home_companion::airplay::NowPlaying {
+            title: "Song".into(),
+            artist: "Band".into(),
+            album: String::new(),
+            source: "Phone".into(),
+            cover: None,
+            cover_at: None,
+            playing: true,
+        };
+        core_tx
+            .send(CoreEvent::Music(home_companion::airplay::MusicEvent::Now(
+                now,
+            )))
+            .unwrap();
+    }
     let scenario = setup.scenario;
     let t0 = Instant::now();
     let ha = std::thread::spawn(move || fake_ha::run(addr, &scenario).unwrap());

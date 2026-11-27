@@ -33,6 +33,15 @@ pub struct WebSocket<S: Read + Write> {
     rbuf: Vec<u8>,
     /// The fragments of a message split over several frames.
     partial: Option<Vec<u8>>,
+    /// A message over [`MAX_MESSAGE`] being dropped: the bytes of its frame still to skip, and
+    /// whether more frames of it follow.
+    skip: u64,
+    skip_fin: bool,
+    /// The longest message kept ([`MAX_MESSAGE`]).
+    max: usize,
+    dropping: bool,
+    /// Messages dropped for their size since the last [`WebSocket::take_dropped`].
+    dropped: u32,
 }
 
 fn invalid(msg: impl Into<String>) -> io::Error {
@@ -112,10 +121,21 @@ pub struct Frame {
     pub payload: Vec<u8>,
     /// Bytes of the buffer it took.
     pub used: usize,
+    /// A frame over [`MAX_MESSAGE`]: its payload (this many bytes after `used`) is to be
+    /// skipped, never kept.
+    pub skip: u64,
 }
 
 /// A complete frame at the start of `buf`; None = more bytes needed.
 pub fn decode_frame(buf: &[u8]) -> io::Result<Option<Frame>> {
+    decode_frame_max(buf, MAX_MESSAGE)
+}
+
+/// Frames longer than this are not even skipped: the connection is broken.
+const ABSURD: u64 = 1 << 30;
+
+/// [`decode_frame`] with another limit (the tests).
+pub fn decode_frame_max(buf: &[u8], max: usize) -> io::Result<Option<Frame>> {
     if buf.len() < 2 {
         return Ok(None);
     }
@@ -142,9 +162,6 @@ pub fn decode_frame(buf: &[u8]) -> io::Result<Option<Frame>> {
         }
         n => (n as u64, 2),
     };
-    if len > MAX_MESSAGE as u64 {
-        return Err(invalid(format!("websocket: frame of {len} bytes")));
-    }
     let mask = if masked {
         if buf.len() < at + 4 {
             return Ok(None);
@@ -155,6 +172,19 @@ pub fn decode_frame(buf: &[u8]) -> io::Result<Option<Frame>> {
     } else {
         None
     };
+    if len > ABSURD {
+        return Err(invalid(format!("websocket: frame of {len} bytes")));
+    }
+    if len > max as u64 {
+        // Too big to keep: the header is taken, the payload will be skipped as it comes.
+        return Ok(Some(Frame {
+            fin,
+            opcode,
+            payload: Vec::new(),
+            used: at,
+            skip: len,
+        }));
+    }
     let end = at + len as usize;
     if buf.len() < end {
         return Ok(None);
@@ -170,6 +200,7 @@ pub fn decode_frame(buf: &[u8]) -> io::Result<Option<Frame>> {
         opcode,
         payload,
         used: end,
+        skip: 0,
     }))
 }
 
@@ -242,6 +273,11 @@ impl<S: Read + Write> WebSocket<S> {
             stream,
             rbuf,
             partial: None,
+            skip: 0,
+            skip_fin: false,
+            max: MAX_MESSAGE,
+            dropping: false,
+            dropped: 0,
         })
     }
 
@@ -261,27 +297,67 @@ impl<S: Read + Write> WebSocket<S> {
         let _ = self.send(0x8, &1000u16.to_be_bytes());
     }
 
+    /// How many messages were dropped for their size since the last call (the connection
+    /// goes on: a message too big is skipped, not an error).
+    pub fn take_dropped(&mut self) -> u32 {
+        std::mem::take(&mut self.dropped)
+    }
+
     /// The next message; `Ok(None)` when the read timed out first. Pings are answered here.
+    /// A message over [`MAX_MESSAGE`] is skipped as it comes, never kept ([`Self::take_dropped`]).
     pub fn read(&mut self) -> io::Result<Option<Message>> {
-        loop {
-            while let Some(Frame {
-                fin,
-                opcode,
-                payload,
-                used,
-            }) = decode_frame(&self.rbuf)?
+        'frames: loop {
+            // The rest of a frame too big to keep.
+            if self.skip > 0 {
+                let n = self.skip.min(self.rbuf.len() as u64) as usize;
+                self.rbuf.drain(..n);
+                self.skip -= n as u64;
+                if self.skip == 0 && self.skip_fin {
+                    self.dropping = false;
+                    self.dropped += 1;
+                }
+            }
+            while self.skip == 0
+                && let Some(Frame {
+                    fin,
+                    opcode,
+                    payload,
+                    used,
+                    skip,
+                }) = decode_frame_max(&self.rbuf, self.max)?
             {
                 self.rbuf.drain(..used);
+                if skip > 0 && opcode <= 0x2 {
+                    self.partial = None;
+                    self.dropping = true;
+                    self.skip = skip;
+                    self.skip_fin = fin;
+                    continue 'frames;
+                }
+                if skip > 0 {
+                    return Err(invalid(format!("websocket: control frame of {skip} bytes")));
+                }
                 match opcode {
+                    0x0 if self.dropping => {
+                        if fin {
+                            self.dropping = false;
+                            self.dropped += 1;
+                        }
+                    }
                     0x0 => {
                         let Some(p) = self.partial.as_mut() else {
                             return Err(invalid("websocket: continuation without a message"));
                         };
                         p.extend_from_slice(&payload);
-                        if p.len() > MAX_MESSAGE {
-                            return Err(invalid("websocket: message too large"));
-                        }
-                        if fin {
+                        if p.len() > self.max {
+                            // Too big: the rest of it is skipped.
+                            self.partial = None;
+                            if fin {
+                                self.dropped += 1;
+                            } else {
+                                self.dropping = true;
+                            }
+                        } else if fin {
                             let p = self.partial.take().unwrap_or_default();
                             return text(p).map(Some);
                         }
@@ -363,9 +439,35 @@ mod tests {
         let f = encode_frame(0x1, &payload, [1, 2, 3, 4]);
         let frame = decode_frame(&f).unwrap().unwrap();
         assert_eq!(frame.payload.len(), payload.len());
+        // Over the limit: the header is taken, the payload to skip.
         let mut f = vec![0x81, 127];
         f.extend_from_slice(&((MAX_MESSAGE as u64) + 1).to_be_bytes());
-        assert!(decode_frame(&f).is_err());
+        let fr = decode_frame(&f).unwrap().unwrap();
+        assert_eq!(
+            (fr.used, fr.skip, fr.payload.len()),
+            (10, MAX_MESSAGE as u64 + 1, 0)
+        );
+    }
+
+    /// A message too big is skipped, whole or in fragments, and the next one comes through on
+    /// the same connection.
+    #[test]
+    fn too_big_messages_are_skipped_not_fatal() {
+        let mut input = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n".to_vec();
+        input.extend(server_frame(true, 0x1, &[b'x'; 100]));
+        input.extend(server_frame(false, 0x1, &[b'y'; 30]));
+        input.extend(server_frame(false, 0x0, &[b'y'; 30]));
+        input.extend(server_frame(true, 0x0, &[b'y'; 30]));
+        input.extend(server_frame(true, 0x1, b"{\"ok\":1}"));
+        let pipe = Pipe {
+            input: io::Cursor::new(input),
+            output: Vec::new(),
+        };
+        let mut ws = WebSocket::handshake(pipe, "h", "/api/websocket").unwrap();
+        ws.max = 50;
+        assert_eq!(ws.read().unwrap(), Some(Message::Text("{\"ok\":1}".into())));
+        assert_eq!(ws.take_dropped(), 2);
+        assert_eq!(ws.take_dropped(), 0);
     }
 
     /// An in-memory stream: what the "server" sent, what the client wrote.

@@ -24,7 +24,7 @@ import { ScrollFade, MusicBar, CornerClock,
     Icon, BareButton, PrimaryButton, PillButton, InfoCard, TimerCard, NowPlayingCard, PageHeader,
     Tile, SectionTitle, Row, Group, TimerLine, AlarmLine, ChatUser, ChatCharacter, ChatSeparator,
     Step, Stepper, Chip, Dialog, Separator, VolumeHud, GlyphButton, ControlTile, LevelBar, Feedback,
-    DoneCard, Status
+    DoneCard, Status, WidgetPanel, WidgetRow, WeatherHero, BoardGrid, BoardTileData
 } from "design/components.slint";
 import { CasaScreen, CasaBridge } from "casa.slint";
 import { WeatherPage, ListsPage, PickPage, EventRow, ForecastRow, ChoiceRow, PickRow } from "ha-pages.slint";
@@ -40,6 +40,29 @@ export { Grid } from "design/tokens.slint";
 // One tile of the control center: `key` picks its icon ("wifi", "bluetooth", "airplay", "mic",
 // "night", "ha"); the words come from the body (crates/home-companion/src/ui/control.rs).
 // One step of an install (update.rs): "done", "now", "todo" or "failed".
+// The markets' or the sensors' page: one number with its day.
+export struct TrendRow {
+    name: string,
+    // The symbol, or "data from 14:02".
+    detail: string,
+    value: string,
+    change: string,
+    trend: int,
+    // SVG path commands in a 520 x 96 box ("" none).
+    curve: string,
+    low: string,
+    high: string,
+}
+
+// Settings → Screen → Widgets: one page of the widget, in the turn's order.
+export struct WidgetPage {
+    key: string,
+    label: string,
+    on: bool,
+    // Under the switch (text-3): "3 quotes · chosen from the browser"; "" none.
+    hint: string,
+}
+
 export struct UpdateStep {
     label: string,
     detail: string,
@@ -110,6 +133,8 @@ export struct JobRow {
 export struct ShopRow {
     uid: string,
     text: string,
+    // Tapped: ticked for a few seconds, a second tap takes it back (then it is bought).
+    ticked: bool,
 }
 
 // A check of Settings → Home Assistant: level 0 ok, 1 warn, 2 bad, 3 skipped, 4 not checked;
@@ -142,6 +167,16 @@ export struct FindRow {
     url: string,
 }
 
+// Settings → Poses: one pose of the catalogue (src/poses.rs); `on` = installed, `busy` = being
+// downloaded (a turning sign instead of its switch).
+export struct PoseRow {
+    name: string,
+    label: string,
+    value: string,
+    on: bool,
+    busy: bool,
+}
+
 export struct LanguageRow {
     code: string,
     name: string,
@@ -149,6 +184,14 @@ export struct LanguageRow {
 }
 
 // The body's words in the user's language (locales/*.toml, `[text]`, same names).
+// Settings → Access from the browser: a device let in ("Chrome on macOS", "192.0.2.24 · 20 nov
+// 14:02").
+export struct PanelDevice {
+    id: string,
+    line: string,
+    detail: string,
+}
+
 export struct Words {
     ha_short: string,
     talk: string,
@@ -201,10 +244,45 @@ export struct Words {
     false_wake: string,
     home_compact_off: string,
     home_compact_on: string,
+    widgets: string,
+    widgets_every: string,
+    widgets_by_hand: string,
+    widgets_hint: string,
+    panel_access: string,
+    panel_access_on: string,
+    panel_access_off: string,
+    panel_access_hint: string,
+    panel_address_hint: string,
+    panel_devices_title: string,
+    panel_no_devices: string,
+    panel_devices_revoke: string,
+    panel_revoke_sure: string,
+    panel_revoke_all: string,
+    panel_revoke_all_question: string,
+    panel_revoke_all_text: string,
+    panel_ask_title: string,
+    panel_ask_text: string,
+    panel_allow: string,
+    panel_refuse: string,
+    panel_screen: string,
+    panel_screen_hint: string,
+    panel_screen_confirm: string,
+    remote_stop: string,
+    remote_ask_title: string,
+    remote_ask_text: string,
+    remote_deny: string,
+    remote_confirm_off_title: string,
+    remote_confirm_off_text: string,
+    remote_confirm_off: string,
+    widget_next: string,
+    widget_weather: string,
+    widget_shopping: string,
     wake_sensitivity: string,
     wake_less: string,
     wake_normal: string,
     wake_more: string,
+    conversation_mode: string,
+    conversation_max: string,
     setup_title: string,
     setup_subtitle: string,
     setup_step1: string,
@@ -262,9 +340,13 @@ export struct Words {
     no: string,
     ask_executing: string,
     what_short: string,
+    shop_undo_hint: string,
     update_title: string,
     update_check: string,
     update_prerelease: string,
+    poses_title: string,
+    poses_intro: string,
+    poses_check: string,
     camera: string,
     camera_shoot: string,
     camera_covered: string,
@@ -435,9 +517,12 @@ component ConfirmRow inherits Rectangle {
     }
 }
 
-// An item of the shopping list: a tap ticks it (bought).
+// An item of the shopping list: a tap ticks it; for a few seconds a second tap takes the tick
+// back (Andrea, 2026-11-16: a tap by mistake), then it is bought and goes.
 component ShopItem inherits Rectangle {
     in property <string> text;
+    in property <bool> ticked;
+    in property <string> undo-hint;
     callback done();
     height: max(76px, label.preferred-height + 28px);
     border-radius: 16px;
@@ -449,16 +534,33 @@ component ShopItem inherits Rectangle {
         height: 32px;
         border-radius: 16px;
         border-width: 2px;
-        border-color: Theme.text-2;
+        border-color: root.ticked ? Theme.accent : Theme.text-2;
+        background: root.ticked ? Theme.accent : transparent;
+        if root.ticked: Icon {
+            x: 4px;
+            y: 4px;
+            width: 24px;
+            height: 24px;
+            source: Icons.check-28;
+            color: Theme.bg;
+        }
     }
     label := Text {
         x: 80px;
         y: (parent.height - self.preferred-height) / 2;
-        width: parent.width - 104px;
+        width: parent.width - 104px - (root.ticked ? hint.preferred-width + 16px : 0px);
         text: root.text;
         font-size: 26px;
-        color: Theme.text;
+        color: root.ticked ? Theme.text-3 : Theme.text;
         wrap: word-wrap;
+    }
+    hint := Text {
+        x: parent.width - 24px - self.preferred-width;
+        y: (parent.height - self.preferred-height) / 2;
+        visible: root.ticked;
+        text: root.undo-hint;
+        font-size: 18px;
+        color: Theme.text-3;
     }
     touch := TouchArea {
         clicked => {
@@ -717,6 +819,86 @@ export component CompanionWindow inherits Window {
     in property <string> temperature: "14°";
     // The middle band of the home: at most three, the most urgent first.
     in property <[CardRow]> cards: [{ kind: "timer", title: "Pasta", left: "07:42", remaining: 0.77 }];
+    // The home's widget (ui/widgets.rs) under the cards, in the slots they leave free: its
+    // page (kind "next", "weather", "shopping"), header, rows, where it is in the turn.
+    in property <bool> widget-shown: false;
+    in property <string> widget-kind: "";
+    in property <string> widget-title: "";
+    in property <string> widget-aside: "";
+    in property <[WidgetRow]> widget-rows: [];
+    in property <bool> widget-columns: false;
+    in property <WeatherHero> widget-hero;
+    in property <int> widget-slots: 0;
+    in property <int> widget-index: 0;
+    in property <int> widget-count: 0;
+    in property <int> widget-seq: 0;
+    in property <bool> widget-tappable: true;
+    callback widget-tapped();
+    // The markets' and the sensors' page ("trends"): which, its title, its rows, the sources'
+    // credit under them.
+    in-out property <string> trends-kind: "quotes";
+    in property <string> trends-title: "";
+    in property <[TrendRow]> trend-rows: [];
+    in property <string> trends-footer: "";
+    // The other cities' page ("city"): the cities' names (chips), the one shown, its weather.
+    in property <[string]> city-names: [];
+    in-out property <int> city-index: 0;
+    in property <string> city-title: "";
+    in property <string> city-icon: "";
+    in property <string> city-temperature: "";
+    in property <string> city-condition: "";
+    in property <string> city-high: "";
+    in property <string> city-low: "";
+    in property <[ForecastRow]> city-rows: [];
+    in property <string> city-footer: "";
+    callback city-chosen(int);
+    callback widget-swiped(int);
+    // Settings → Screen → Widgets: every page in the turn's order with its switch, the interval
+    // in seconds (0 = by hand), the Screen page's line.
+    in property <[WidgetPage]> widget-pages: [];
+    in property <int> widget-every: 20;
+    in property <string> widget-summary: "";
+    // A page switched: (its key, on).
+    callback widget-toggled(string, bool);
+    // "Change every": -1 shorter, +1 longer (by hand is the longest).
+    callback widget-every-stepped(int);
+    // Settings → Access from the browser (the panel, home-companion-panel): on, the address to
+    // type and its QR code (a one-time ticket: it lets in whoever scans it), the devices let in,
+    // the one whose Revoke was touched once (a second touch revokes it), the Settings row's value.
+    in property <bool> panel-on: false;
+    in property <string> panel-address: "";
+    in property <image> panel-qr;
+    in property <[PanelDevice]> panel-devices: [];
+    in property <string> panel-armed: "";
+    in property <string> panel-summary: "";
+    // The access dialog: who asks ("Chrome on macOS · 192.0.2.24") and the code their browser shows.
+    in property <string> panel-ask-line: "";
+    in property <string> panel-ask-code: "";
+    // The dialog's buttons answer only once it has been on screen a moment (700 ms).
+    in property <bool> panel-ask-ready: true;
+    callback panel-toggled(bool);
+    callback panel-revoke(string);
+    callback panel-revoke-all();
+    callback panel-answered(bool);
+    // Settings → Access from the browser → Remote screen (crate::panel::remote): the switch, and
+    // the sign while a device is in control ("Controlled by Chrome on macOS"; "" none), with Stop.
+    in property <bool> remote-on: false;
+    in property <string> remote-sign: "";
+    callback remote-toggled(bool);
+    callback remote-stop();
+    // Ask on the screen at each start (on by default): the switch under the remote screen's,
+    // and the dialog «… wants to control the screen» (who, and whether its buttons answer yet).
+    in property <bool> remote-confirm: true;
+    in property <string> remote-ask-line: "";
+    in property <bool> remote-ask-ready: true;
+    callback remote-confirm-toggled(bool);
+    callback remote-answered(bool);
+    // Where the sign is (the renderer's loop: a real touch there never reaches the screen under
+    // it, Home Assistant's view included).
+    out property <length> remote-sign-x: remote-sign-box.x;
+    out property <length> remote-sign-y: remote-sign-box.y;
+    out property <length> remote-sign-w: remote-sign-box.width;
+    out property <length> remote-sign-h: remote-sign-box.height;
     // Home Assistant is not connected (the HA action is dimmed; a status card says so).
     in property <bool> offline: false;
     // Start-up: the character's loading animation, its name, "Starting…"; no clock.
@@ -805,6 +987,8 @@ export component CompanionWindow inherits Window {
     in property <float> mirror-freeze: -1;
     // The character's face (the conversation bar over the mirrored video).
     in property <image> face;
+    // The character's portrait, head and shoulders (the board's header badge).
+    in property <image> portrait;
     // Memories (home-companion-brain): present = its control socket answers (the tile, the row).
     in property <bool> brain-present: false;
     in property <string> memories-status: "";
@@ -815,6 +999,13 @@ export component CompanionWindow inherits Window {
     in property <[MemoryRow]> memory-rows: [];
     in property <[MemoryRow]> confirm-rows: [];
     in property <[JobRow]> job-rows: [];
+    // The board's notes (the brain), oldest first; a note removed waits 5 s for Undo.
+    in property <[JobRow]> note-rows: [];
+    in property <string> notes-title: "";
+    in property <string> notes-hint: "";
+    in property <string> notes-empty: "";
+    in property <string> reminders-chip: "";
+    callback note-delete(int);
     // The shopping list (`[lists] shopping`): on = configured; its open items.
     in property <bool> shopping-on: false;
     in property <[ShopRow]> shop-rows: [];
@@ -859,6 +1050,10 @@ export component CompanionWindow inherits Window {
     in property <bool> home-compact: false;
     // Settings → how readily the character answers to his wake word: -1 less, 0 normal, 1 more.
     in property <int> wake-step: 0;
+    // Settings → conversation mode: he listens again after every spoken answer.
+    in property <bool> conversation-mode: false;
+    // … and how many times in a row before the wake word is needed again.
+    in property <int> conversation-max: 3;
     in property <int> night-start: 23;
     in property <int> night-end: 7;
     // Setup: what the body sees (Wi-Fi, where Home Assistant is).
@@ -895,6 +1090,133 @@ export component CompanionWindow inherits Window {
     in property <float> ask-left: 1;
     callback ask-answered(bool);
     callback ask-cancel();
+    // A tile's question (the body's own, ui/screen/board_ui.rs): the tile's icon as MDI path
+    // data in the question's window ("" = the brain's question, with its question mark).
+    in property <string> ask-icon-path: "";
+
+    // ---- The board (ui/board.rs): a page of tiles opened by a swipe in from the right edge of
+    // the home; its page's name, tiles, place among the pages; nothing on it yet (`board-empty`:
+    // dashed places and a line saying where tiles come from).
+    in property <string> board-title: "";
+    in property <[BoardTileData]> board-tiles: [];
+    in property <int> board-index: 0;
+    in property <int> board-count: 0;
+    in property <bool> board-empty: false;
+    in property <string> board-hint: "";
+    // A page has tiles: a thin handle on the home's right edge says the board is there.
+    in property <bool> board-handle: false;
+    // The custom widget's tiles (the page of the turn on screen, when it is one).
+    in property <[BoardTileData]> widget-tiles: [];
+    // A tile touched ("page" or "widget", its id), a level set (and whether the finger lifted).
+    callback board-tapped(string, int);
+    callback board-level(string, int, int, bool);
+    // A swipe across the page: +1 the next page, -1 the previous one.
+    callback board-swiped(int);
+    // A touch that started on the home's right edge, when it is over (for the log): "board"
+    // (it opened), "short", "tap"; how far it went.
+    callback board-edge(string, length);
+    // The neighbour pages' tiles (none: empty), drawn beside the page while a finger drags it.
+    in property <[BoardTileData]> board-prev-tiles: [];
+    in property <[BoardTileData]> board-next-tiles: [];
+    // The answer is too long for the conversation bar: the board steps aside for Alfred.
+    in property <bool> answer-long: false;
+    // A finger touched the home's right edge: Rust draws the board's page as it is now (it is
+    // not redrawn while not seen), before it comes in under the finger.
+    callback board-peek();
+    // The way home, as over Home Assistant's view: the same round button at the same place
+    // (top left; Rust keeps it, shared with the view), shown for a few seconds after a touch.
+    // A drag moves it; where it was let go (top left) Rust snaps to the nearest edge.
+    in property <length> board-home-x: 1280px - 16px - 96px;
+    in property <length> board-home-y: 800px - 24px - 96px;
+    in property <bool> board-home-shown: false;
+    callback board-home-moved(length, length);
+
+    // The board is full screen (Home Assistant's view's way): it comes in from the right edge
+    // following the finger, the home stepping back under it, and goes out the same way.
+    // A finger moves it (no animation, its own place) / it was just put in place (none either).
+    in-out property <bool> board-finger: false;
+    property <bool> board-snap: false;
+    // How far a finger pulled it in from the home's edge; how far a swipe to the right on its
+    // first page took it out again; where its pages are across (the finger's, or the next page's
+    // place on the way to it).
+    in-out property <length> board-pull: 0;
+    in-out property <length> board-back: 0;
+    in-out property <length> board-slide: 0;
+    // When the finger's drag started (a fast flick counts as a long drag).
+    property <duration> board-drag-at: 0ms;
+    // A page change on its way (+1, -1): the pages slide, then the next one is drawn in place.
+    property <int> board-turn: 0;
+    // On screen: not while a timer rings, a reminder or the start-up take the screen, nor while
+    // an answer too long for the bar is spoken (Alfred's layout takes it, the board comes back).
+    property <bool> board-on: root.page == "board" && !root.ringing && !root.starting && !root.noticing
+        && !(root.answer-long && root.state == "speaking");
+    // Its left edge (0 in place, the screen's width away) and how much of the home it covers.
+    property <length> board-x: root.board-on ? root.board-back : root.width - root.board-pull;
+    animate board-x {
+        duration: root.board-finger ? 0ms : 400ms;
+        easing: cubic-bezier(0.05, 0.7, 0.1, 1.0);
+    }
+    property <float> board-cover: clamp(1 - root.board-x / root.width, 0, 1);
+    // The pages' offset: the finger's, then animated to the next page or back to 0.
+    property <length> board-shift: root.board-slide;
+    animate board-shift {
+        duration: root.board-finger || root.board-snap ? 0ms : 260ms;
+        easing: cubic-bezier(0.2, 0.8, 0.2, 1.0);
+    }
+    // Far enough to change: a quarter of the screen, or a fast flick (80 px in 250 ms).
+    pure function board-far(dx: length) -> bool {
+        abs(dx) > root.width / 4 || (abs(dx) > 80px && animation-tick() - root.board-drag-at < 250ms)
+    }
+    // A finger across the board's page: on the first page to the right it takes the page out
+    // towards the home; otherwise the pages follow it (a quarter of the way past the last).
+    function board-drag(dx: length) {
+        if (root.board-turn != 0) {
+            return;
+        }
+        if (!root.board-finger) {
+            root.board-drag-at = animation-tick();
+        }
+        root.board-finger = true;
+        root.board-snap = false;
+        root.board-back = root.board-index == 0 ? max(0, dx) : 0;
+        root.board-slide = root.board-index == 0 && dx > 0 ? 0
+            : dx < 0 && root.board-index >= root.board-count - 1 ? dx / 4 : dx;
+    }
+    function board-drop(dx: length) {
+        if (!root.board-finger) {
+            return;
+        }
+        root.board-finger = false;
+        root.board-snap = false;
+        root.board-back = 0;
+        if (dx > 0 && root.board-index == 0) {
+            root.board-slide = 0;
+            if (root.board-far(dx)) {
+                Feedback.back();
+                root.page = "home";
+            }
+        } else if (root.board-far(dx) && dx < 0 && root.board-index < root.board-count - 1) {
+            root.board-slide = -root.width;
+            root.board-turn = 1;
+        } else if (root.board-far(dx) && dx > 0 && root.board-index > 0) {
+            root.board-slide = root.width;
+            root.board-turn = -1;
+        } else {
+            root.board-slide = 0;
+        }
+    }
+    board-turner := Timer {
+        interval: 260ms;
+        running: root.board-turn != 0;
+        triggered => {
+            // The next page drawn in place of the slid one, at once.
+            root.board-snap = true;
+            root.board-swiped(root.board-turn);
+            root.board-slide = 0;
+            root.board-turn = 0;
+        }
+    }
+
     // The done pop-up goes on from the question's window (its size and place, no new window).
     in property <bool> done-from-ask: false;
     // Do not disturb: on, and its line ("Do not disturb · until 07:00").
@@ -976,6 +1298,14 @@ export component CompanionWindow inherits Window {
     in property <string> update-question;
     in property <string> update-confirm-text;
     callback update-check();
+    // Settings → Poses (src/poses.rs): the catalogue's poses of the character, what is going
+    // on (looking, downloading, a failure) and the number installed (the settings row).
+    in property <[PoseRow]> pose-rows;
+    in property <string> poses-state;
+    in property <bool> poses-busy;
+    in property <string> poses-value;
+    callback pose-toggled(string, bool);
+    callback poses-check();
     callback update-install-clicked();
     callback photo-open(int);
     callback music-toggle();
@@ -1008,6 +1338,8 @@ export component CompanionWindow inherits Window {
     callback night-changed(bool, int, int);
     callback home-compact-changed(bool);
     callback wake-step-changed(int);
+    callback conversation-mode-changed(bool);
+    callback conversation-max-changed(int);
     callback setup-later();
     // The first start: search Home Assistant again; one picked (its address).
     callback find-search();
@@ -1074,7 +1406,7 @@ export component CompanionWindow inherits Window {
     property <length> mirror-band: (root.width - root.mirror-w) / 2;
     property <bool> mirror-sides: root.mirror-band >= 300px;
     // How much of Alfred's own screen is covered (it steps back under Casa or the mirror).
-    property <float> covered: max(root.casa-cover, root.mirror-t);
+    property <float> covered: max(root.casa-cover, root.mirror-t, root.board-cover);
     changed state => {
         root.dialog = "";
         root.state-changed(root.state);
@@ -1101,7 +1433,7 @@ export component CompanionWindow inherits Window {
     out property <length> character-cx: Grid.stage-width / 2;
     // Where the pop-ups over everything are centred: on the desk column while the character is on
     // the stage (they never cover it), on the screen over a full view (Home Assistant, mirroring).
-    property <length> dialog-cx: CasaBridge.visible || root.mirror-t > 0.001 ? root.width / 2 : Grid.col-cx;
+    property <length> dialog-cx: CasaBridge.visible || root.mirror-t > 0.001 || root.board-cover > 0.5 ? root.width / 2 : Grid.col-cx;
     out property <length> character-top: 30px;
     out property <length> character-height: 740px;
     // The action band's slots (x of each 160 px wide slot).
@@ -1437,8 +1769,8 @@ export component CompanionWindow inherits Window {
             }
         }
 
-        // Nothing alive: the invitation, quiet, in the middle of the band.
-        if root.cards.length == 0 || root.notifications-hidden: Text {
+        // Nothing alive and no widget: the invitation, quiet, in the middle of the band.
+        if (root.cards.length == 0 && !root.widget-shown) || root.notifications-hidden: Text {
             x: Grid.col-x;
             y: Grid.cards-y;
             width: Grid.col-width;
@@ -1497,6 +1829,7 @@ export component CompanionWindow inherits Window {
                         : c.kind == "alarm" ? Icons.alarm-32
                         : c.kind == "mirror" ? Icons.cast-connected-32
                         : c.kind == "ready" ? Icons.check-circle-32
+                        : c.kind == "panel" ? Icons.monitor-cellphone-32
                         : c.kind == "hc-alert" ? Icons.alert-circle-32
                         : c.kind == "hc-check" ? Icons.check-circle-32
                         : c.kind == "hc-cart" ? Icons.cart-32
@@ -1507,7 +1840,7 @@ export component CompanionWindow inherits Window {
                         : c.kind == "hc-rain" ? Icons.weather-rainy-32
                         : c.kind == "hc-sun" ? Icons.weather-sunny-32
                         : Icons.forum-32;
-                    icon-color: c.kind == "status" || c.kind == "hc-alert" ? Theme.danger
+                    icon-color: c.kind == "status" || c.kind == "hc-alert" || c.kind == "panel" ? Theme.danger
                         : c.kind == "more" || c.kind == "answer" ? Theme.text-2 : Theme.accent;
                     title: c.title;
                     text: c.text;
@@ -1546,12 +1879,71 @@ export component CompanionWindow inherits Window {
                         } else if (c.kind == "ready") {
                             root.ready-dismissed();
                             root.home-assistant-clicked();
+                        } else if (c.kind == "panel") {
+                            root.page = "panel";
                         } else if (c.kind == "upcoming" || c.kind == "reminder") {
                             root.page-back = "home";
                             root.page = "reminders";
                         }
                     }
                 }
+            }
+        }
+
+        // The widget, in the slots the cards leave free.
+        if root.widget-shown && !root.notifications-hidden && root.widget-slots > 0: WidgetPanel {
+            x: Grid.col-x;
+            // Midway between what is above it (the date line, or the last card) and the action
+            // band, never over a card.
+            property <length> above: root.cards.length == 0 ? Grid.date-bottom
+                : Grid.cards-y + root.cards.length * (Grid.card-height + Grid.card-gap) - Grid.card-gap;
+            y: max(Grid.cards-y + root.cards.length * (Grid.card-height + Grid.card-gap),
+                self.above + (Grid.band-y - self.above - self.height) / 2);
+            // Two sizes only, the same for every page (widgets::size): one line as a card, or
+            // the whole of its slots (three), its content from the top; the dots inside.
+            height: root.widget-slots <= 1 ? Grid.card-height
+                : root.widget-slots * Grid.card-height + (root.widget-slots - 1) * Grid.card-gap;
+            kind: root.widget-kind;
+            title: root.widget-title;
+            aside: root.widget-aside;
+            rows: root.widget-rows;
+            columns: root.widget-columns;
+            hero: root.widget-hero;
+            slots: root.widget-slots;
+            index: root.widget-index;
+            count: root.widget-count;
+            seq: root.widget-seq;
+            tappable: root.widget-tappable;
+            tiles: root.widget-tiles;
+            tile-tapped(id) => {
+                root.board-tapped("widget", id);
+            }
+            tile-level(id, v, done) => {
+                root.board-level("widget", id, v, done);
+            }
+            // A tap opens the page's own page (Rust holds the turn and logs it).
+            tapped => {
+                root.widget-tapped();
+                if (root.widget-kind == "weather") {
+                    root.page = "weather";
+                } else if (root.widget-kind == "shopping") {
+                    root.page-back = "home";
+                    root.page = "shopping";
+                } else if (root.widget-kind == "next") {
+                    root.page-back = "home";
+                    root.page = "reminders";
+                } else if (root.widget-kind == "quotes" || root.widget-kind == "sensors") {
+                    root.trends-kind = root.widget-kind;
+                    root.page = "trends";
+                } else if (root.widget-kind == "cities") {
+                    root.page = "city";
+                } else if (root.widget-kind == "notes") {
+                    root.page-back = "home";
+                    root.page = "notes";
+                }
+            }
+            swiped(d) => {
+                root.widget-swiped(d);
             }
         }
 
@@ -1581,6 +1973,53 @@ export component CompanionWindow inherits Window {
             label: root.t.more;
             clicked => {
                 root.page = "altro";
+            }
+        }
+
+        // The board is a swipe in from the right edge away: a thin handle says so when a page has
+        // tiles. The strip (40 px, under the control center's pull at the top) is right of the
+        // desk column, where nothing else takes a touch; the board follows the finger in from it.
+        if root.board-handle: Rectangle {
+            x: 1262px;
+            y: 376px;
+            width: 4px;
+            height: 48px;
+            border-radius: 2px;
+            background: #3a3832;
+        }
+        // The board comes in under the finger; let go a quarter of the way in (or flicked), it
+        // goes on to its place, else back.
+        TouchArea {
+            x: root.width - 40px;
+            y: 48px;
+            width: 40px;
+            height: root.height - 48px;
+            property <length> pulled: self.pressed-x - self.mouse-x;
+            moved => {
+                if (self.pressed && (root.board-finger || self.pulled > 8px)) {
+                    if (!root.board-finger) {
+                        root.board-peek();
+                        root.board-drag-at = animation-tick();
+                    }
+                    root.board-finger = true;
+                    root.board-snap = false;
+                    root.board-pull = clamp(self.pulled, 0, root.width);
+                }
+            }
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
+                    let open = e.kind == PointerEventKind.up && root.board-finger && root.board-far(self.pulled)
+                        && self.pulled > 0;
+                    root.board-finger = false;
+                    root.board-pull = 0;
+                    if (open) {
+                        Feedback.tap();
+                        root.page = "board";
+                        root.board-edge("board", self.pulled);
+                    } else {
+                        root.board-edge(self.pulled > 8px ? "short" : "tap", self.pulled);
+                    }
+                }
             }
         }
     }
@@ -2496,7 +2935,8 @@ export component CompanionWindow inherits Window {
                     text: root.character-name.to-uppercase();
                 }
                 Group {
-                    height: 3 * 76px;
+                    // "Times in a row" shows only with conversation mode on.
+                    height: (root.conversation-mode ? 6 : 5) * 76px;
                     Row {
                         y: 0;
                         width: parent.width;
@@ -2538,6 +2978,49 @@ export component CompanionWindow inherits Window {
                             root.wake-step-changed(max(-1, min(1, root.wake-step + d)));
                         }
                     }
+                    // After every spoken answer the microphone opens again for a few seconds.
+                    Row {
+                        y: 228px;
+                        width: parent.width;
+                        kind: "toggle";
+                        icon: Icons.account-voice-28;
+                        label: root.t.conversation-mode;
+                        on: root.conversation-mode;
+                        toggled(v) => {
+                            root.conversation-mode-changed(v);
+                        }
+                    }
+                    // How many times in a row he listens again before the wake word is needed.
+                    Row {
+                        y: 304px;
+                        width: parent.width;
+                        visible: root.conversation-mode;
+                        kind: "";
+                        icon: Icons.account-voice-28;
+                        label: root.t.conversation-max;
+                    }
+                    Stepper {
+                        x: parent.width - 16px - self.width;
+                        y: 304px + 6px;
+                        visible: root.conversation-mode;
+                        value-width: 200px;
+                        font-size: 28px;
+                        value: "\{root.conversation-max}";
+                        step(d) => {
+                            root.conversation-max-changed(root.conversation-max + d);
+                        }
+                    }
+                    // Extra poses of the character to download, for Home Assistant's cards.
+                    Row {
+                        y: root.conversation-mode ? 380px : 304px;
+                        width: parent.width;
+                        icon: Icons.image-multiple-28;
+                        label: root.t.poses-title;
+                        value: root.poses-value;
+                        clicked => {
+                            root.page = "poses";
+                        }
+                    }
                 }
                 Rectangle {
                     height: 8px;
@@ -2546,7 +3029,7 @@ export component CompanionWindow inherits Window {
                     text: root.t.section-device;
                 }
                 Group {
-                    height: 4 * 76px;
+                    height: 5 * 76px;
                     Row {
                         y: 0;
                         width: parent.width;
@@ -2569,6 +3052,16 @@ export component CompanionWindow inherits Window {
                     Row {
                         y: 152px;
                         width: parent.width;
+                        icon: Icons.qrcode-28;
+                        label: root.t.panel-access;
+                        value: root.panel-summary;
+                        clicked => {
+                            root.page = "panel";
+                        }
+                    }
+                    Row {
+                        y: 228px;
+                        width: parent.width;
                         icon: Icons.information-28;
                         label: root.t.info;
                         value: root.version;
@@ -2577,7 +3070,7 @@ export component CompanionWindow inherits Window {
                         }
                     }
                     Row {
-                        y: 228px;
+                        y: 304px;
                         width: parent.width;
                         icon: Icons.power-sleep-28;
                         label: root.t.suspend-row;
@@ -2838,6 +3331,275 @@ export component CompanionWindow inherits Window {
         }
     }
 
+    // ---- The board's notes: a row each, removed with a second touch (Undo for 5 s); written
+    // by voice or from the browser (the line under them says so). Reached from the widget or
+    // from the reminders' chips.
+    if root.desk && root.desk-page == "notes": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.notes-title;
+            clock: root.clock;
+            back => {
+                root.page = root.page-back == "notes" ? "home" : root.page-back;
+            }
+        }
+        HorizontalLayout {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            height: 64px;
+            spacing: 12px;
+            alignment: start;
+            Chip {
+                width: 220px;
+                label: root.reminders-chip;
+                clicked => {
+                    root.page = "reminders";
+                }
+            }
+            Chip {
+                width: 220px;
+                label: root.notes-title;
+                chosen: true;
+            }
+        }
+        notes-flick := Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y + 80px;
+            width: Grid.col-width;
+            height: Grid.page-height - 80px;
+            content-height: max(self.height, notes-col.preferred-height + 16px);
+            notes-col := VerticalLayout {
+                alignment: start;
+                spacing: 8px;
+                for n in root.note-rows: DeletableRow {
+                    text: n.text;
+                    detail: n.when;
+                    ask: root.t.delete-question;
+                    delete => {
+                        root.note-delete(n.id);
+                    }
+                }
+                if root.note-rows.length == 0: Text {
+                    height: 72px;
+                    text: root.notes-empty;
+                    font-size: 24px;
+                    color: Theme.text-3;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.notes-hint;
+                    font-size: 20px;
+                    color: Theme.text-3;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        ScrollFade {
+            x: notes-flick.x;
+            y: notes-flick.y + notes-flick.height - self.height;
+            width: notes-flick.width;
+            more: notes-flick.content-height > notes-flick.height + 1px
+                && notes-flick.content-y > notes-flick.height - notes-flick.content-height + 1px;
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.microphone-44;
+            label: root.t.talk;
+            clicked => {
+                root.talk-clicked();
+            }
+        }
+    }
+
+    // ---- The markets or the sensors chosen from the browser, one card each: name, value, the
+    // change, the day's curve (520 x 96), its low and high; the sources' credit at the end.
+    // Read only: they are chosen from the browser.
+    if root.desk && root.desk-page == "trends": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.trends-title;
+            clock: root.clock;
+            back => {
+                root.page = "home";
+            }
+        }
+        trends-flick := Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: Grid.page-height;
+            content-height: max(self.height, trends-col.preferred-height + 24px);
+            trends-col := VerticalLayout {
+                alignment: start;
+                spacing: 16px;
+                for r in root.trend-rows: Rectangle {
+                    height: 208px;
+                    border-radius: Grid.card-radius;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.line;
+                    property <color> change-color: root.trends-kind != "quotes" || r.trend == 0 ? Theme.text-2
+                        : r.trend > 0 ? Theme.ok : Theme.danger;
+                    Text {
+                        x: 24px;
+                        y: 16px;
+                        width: parent.width - 48px - 280px;
+                        height: 48px;
+                        text: r.name;
+                        font-size: 28px;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Text {
+                        x: parent.width - 24px - self.width;
+                        y: 12px;
+                        width: 280px;
+                        height: 56px;
+                        text: r.value;
+                        font-family: "Inter Tnum";
+                        font-size: 40px;
+                        color: Theme.text;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        x: 24px;
+                        y: 64px;
+                        width: parent.width - 48px - 280px;
+                        height: 28px;
+                        text: r.detail;
+                        font-size: 20px;
+                        color: Theme.text-3;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Text {
+                        x: parent.width - 24px - self.width;
+                        y: 64px;
+                        width: 280px;
+                        height: 32px;
+                        text: r.change;
+                        font-family: "Inter Tnum";
+                        font-size: 26px;
+                        color: change-color;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+                    if r.curve != "": Path {
+                        x: 24px;
+                        y: 100px;
+                        width: 520px;
+                        height: 96px;
+                        viewbox-x: 0;
+                        viewbox-y: 0;
+                        viewbox-width: 520;
+                        viewbox-height: 96;
+                        commands: r.curve;
+                        stroke: Theme.text-2;
+                        stroke-width: 2px;
+                    }
+                    Text {
+                        x: parent.width - 24px - self.width;
+                        y: 120px;
+                        width: 200px;
+                        height: 28px;
+                        text: r.high;
+                        font-family: "Inter Tnum";
+                        font-size: 20px;
+                        color: Theme.text-3;
+                        horizontal-alignment: right;
+                    }
+                    Text {
+                        x: parent.width - 24px - self.width;
+                        y: 156px;
+                        width: 200px;
+                        height: 28px;
+                        text: r.low;
+                        font-family: "Inter Tnum";
+                        font-size: 20px;
+                        color: Theme.text-3;
+                        horizontal-alignment: right;
+                    }
+                }
+                if root.trends-footer != "": Text {
+                    text: root.trends-footer;
+                    font-size: 20px;
+                    color: Theme.text-3;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        ScrollFade {
+            x: trends-flick.x;
+            y: trends-flick.y + trends-flick.height - self.height;
+            width: trends-flick.width;
+            more: trends-flick.content-height > trends-flick.height + 1px
+                && trends-flick.content-y > trends-flick.height - trends-flick.content-height + 1px;
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.microphone-44;
+            label: root.t.talk;
+            clicked => {
+                root.talk-clicked();
+            }
+        }
+    }
+
+    // ---- Another city's weather: the cities as chips, the one chosen as the weather page (its
+    // time there in the condition's line), the source's credit under the forecast.
+    if root.desk && root.desk-page == "city": Rectangle {
+        WeatherPage {
+            title: root.city-title;
+            clock: root.clock;
+            icon: root.city-icon;
+            temperature: root.city-temperature;
+            condition: root.city-condition;
+            high: root.city-high;
+            low: root.city-low;
+            forecast-title: root.t.weather-forecast;
+            empty: root.t.weather-no-forecast;
+            rows: root.city-rows;
+            top: root.city-names.length > 1 ? 80px : 0px;
+            footer: root.city-footer;
+            back => {
+                root.page = "home";
+            }
+        }
+        if root.city-names.length > 1: HorizontalLayout {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: 64px;
+            spacing: 12px;
+            alignment: start;
+            for n[i] in root.city-names: Chip {
+                width: min(240px, (Grid.col-width - (root.city-names.length - 1) * 12px) / root.city-names.length);
+                label: n;
+                chosen: i == root.city-index;
+                clicked => {
+                    root.city-index = i;
+                    root.city-chosen(i);
+                }
+            }
+        }
+        PrimaryButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.microphone-44;
+            label: root.t.talk;
+            clicked => {
+                root.talk-clicked();
+            }
+        }
+    }
+
     // ---- The weather: the current condition and the daily forecast (Home Assistant).
     if root.desk && root.desk-page == "weather": Rectangle {
         WeatherPage {
@@ -3011,11 +3773,31 @@ export component CompanionWindow inherits Window {
                 root.page = root.page-back;
             }
         }
-        Flickable {
+        // Reminders · Notes: the board lives next to the reminders (Altro has no room).
+        HorizontalLayout {
             x: Grid.col-x;
             y: Grid.page-y;
+            height: 64px;
+            spacing: 12px;
+            alignment: start;
+            Chip {
+                width: 220px;
+                label: root.reminders-chip;
+                chosen: true;
+            }
+            Chip {
+                width: 220px;
+                label: root.notes-title;
+                clicked => {
+                    root.page = "notes";
+                }
+            }
+        }
+        Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y + 80px;
             width: Grid.col-width;
-            height: Grid.page-height;
+            height: Grid.page-height - 80px;
             content-height: max(self.height, rem-col.preferred-height);
             rem-col := VerticalLayout {
                 alignment: start;
@@ -3093,6 +3875,8 @@ export component CompanionWindow inherits Window {
                     }
                     if item.uid != "": ShopItem {
                         text: item.text;
+                        ticked: item.ticked;
+                        undo-hint: root.t.shop-undo-hint;
                         done => {
                             root.shop-done(item.uid);
                         }
@@ -3145,6 +3929,70 @@ export component CompanionWindow inherits Window {
     // ---- Settings → Screen: the night hours.
     // ---- Settings → Info: updates. What is going on, the facts in one small line, the release
     // notes of a newer version, its SHA-256 in small (for whoever wants to compare it).
+    // ---- Settings → Poses: the catalogue's poses of the character, a switch each (on =
+    // downloaded and installed, off = removed); src/poses.rs.
+    if root.desk && root.desk-page == "poses": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.poses-title;
+            clock: root.clock;
+            back => {
+                root.page = "settings";
+            }
+        }
+        poses-flick := Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: Grid.band-y - Grid.page-y - 16px;
+            content-height: max(self.height, poses-col.preferred-height);
+            poses-col := VerticalLayout {
+                alignment: start;
+                spacing: 12px;
+                Text {
+                    text: root.t.poses-intro;
+                    font-size: 22px;
+                    color: Theme.text-2;
+                    wrap: word-wrap;
+                }
+                if root.poses-state != "": Text {
+                    text: root.poses-state;
+                    font-size: 22px;
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                if root.pose-rows.length > 0: Group {
+                    height: root.pose-rows.length * 76px;
+                    for r[i] in root.pose-rows: Row {
+                        y: i * 76px;
+                        width: parent.width;
+                        first: i == 0;
+                        kind: r.busy ? "busy" : "toggle";
+                        label: r.label;
+                        value: r.value;
+                        on: r.on;
+                        toggled(v) => {
+                            if !root.poses-busy {
+                                root.pose-toggled(r.name, v);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        BareButton {
+            x: root.slot-mid;
+            y: Grid.band-y;
+            icon: Icons.refresh-48;
+            label: root.t.poses-check;
+            enabled: !root.poses-busy;
+            clicked => {
+                root.poses-check();
+            }
+        }
+    }
+
     if root.desk && root.desk-page == "update": Rectangle {
         PageHeader {
             x: Grid.col-x;
@@ -3423,6 +4271,322 @@ export component CompanionWindow inherits Window {
                 on: root.home-compact;
                 toggled(v) => {
                     root.home-compact-changed(v);
+                }
+            }
+        }
+        // The home's widget: its own page.
+        Group {
+            x: Grid.col-x;
+            y: night-hint.y + night-hint.preferred-height + 24px + 76px + 12px;
+            width: Grid.col-width;
+            height: 76px;
+            Row {
+                y: 0;
+                width: parent.width;
+                first: true;
+                kind: "page";
+                icon: Icons.calendar-clock-28;
+                label: root.t.widgets;
+                value: root.widget-summary;
+                clicked => {
+                    root.page = "widgets";
+                }
+            }
+        }
+    }
+
+    // ---- Settings → Screen → Widgets: the interval, then a switch per page of the home's
+    // widget in the turn's order (what each shows is chosen from the browser: a line under
+    // it says so); the list scrolls.
+    if root.desk && root.desk-page == "widgets": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.widgets;
+            clock: root.clock;
+            back => {
+                root.page = "screen";
+            }
+        }
+        widgets-flick := Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: Grid.page-height;
+            content-height: max(self.height, widgets-col.preferred-height + 32px);
+            widgets-col := VerticalLayout {
+                alignment: start;
+                padding-top: 16px;
+                spacing: 16px;
+                Group {
+                    height: 76px;
+                    Row {
+                        y: 0;
+                        width: parent.width;
+                        first: true;
+                        kind: "";
+                        label: root.t.widgets-every;
+                    }
+                    Stepper {
+                        x: parent.width - 16px - self.width;
+                        y: 6px;
+                        value-width: 160px;
+                        font-size: 34px;
+                        value: root.widget-every == 0 ? root.t.widgets-by-hand
+                            : root.widget-every < 60 ? root.widget-every + " s" : root.widget-every / 60 + " min";
+                        step(d) => {
+                            root.widget-every-stepped(d);
+                        }
+                    }
+                }
+                Group {
+                    height: widgets-rows.preferred-height;
+                    widgets-rows := VerticalLayout {
+                        for p[i] in root.widget-pages: Rectangle {
+                            height: p.hint != "" ? 76px + 28px : 76px;
+                            Row {
+                                y: 0;
+                                width: parent.width;
+                                first: i == 0;
+                                kind: "toggle";
+                                icon: p.key == "weather" ? Icons.weather-partly-cloudy-28
+                                    : p.key == "shopping" ? Icons.cart-28
+                                    : p.key == "quotes" ? Icons.chart-line-28
+                                    : p.key == "cities" ? Icons.earth-28
+                                    : p.key == "notes" ? Icons.note-text-28
+                                    : p.key == "sensors" ? Icons.gauge-28
+                                    : p.key == "check" ? Icons.door-open-28
+                                    : p.key == "playing" ? Icons.music-note-28
+                                    : p.key == "home" ? Icons.account-group-28
+                                    : Icons.calendar-clock-28;
+                                label: p.label;
+                                on: p.on;
+                                toggled(v) => {
+                                    root.widget-toggled(p.key, v);
+                                }
+                            }
+                            if p.hint != "": Text {
+                                x: 72px;
+                                y: 60px;
+                                width: parent.width - 72px - 28px;
+                                height: 32px;
+                                text: p.hint;
+                                font-size: 20px;
+                                color: Theme.text-3;
+                                vertical-alignment: top;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                }
+                Text {
+                    x: 8px;
+                    text: root.t.widgets-hint;
+                    font-size: 24px;
+                    color: Theme.text-3;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        ScrollFade {
+            x: widgets-flick.x;
+            y: widgets-flick.y + widgets-flick.height - self.height;
+            width: widgets-flick.width;
+            more: widgets-flick.content-height > widgets-flick.height + 1px
+                && widgets-flick.content-y > widgets-flick.height - widgets-flick.content-height + 1px;
+        }
+    }
+
+    // ---- Settings → Access from the browser: the switch, the address and its QR code, the
+    // devices let in with Revoke (a second touch confirms), Revoke all.
+    if root.desk && root.desk-page == "panel": Rectangle {
+        PageHeader {
+            x: Grid.col-x;
+            y: Grid.header-y;
+            title: root.t.panel-access;
+            clock: root.clock;
+            back => {
+                root.page = "settings";
+            }
+        }
+        Flickable {
+            x: Grid.col-x;
+            y: Grid.page-y;
+            width: Grid.col-width;
+            height: root.height - Grid.page-y - 16px;
+            content-height: max(self.height, panel-col.preferred-height);
+            panel-col := VerticalLayout {
+                alignment: start;
+                spacing: 8px;
+                Group {
+                    height: 76px;
+                    Row {
+                        y: 0;
+                        width: parent.width;
+                        first: true;
+                        kind: "toggle";
+                        icon: Icons.qrcode-28;
+                        label: root.t.panel-access;
+                        on: root.panel-on;
+                        toggled(v) => {
+                            root.panel-toggled(v);
+                        }
+                    }
+                }
+                // The remote screen: a switch of its own, only with the panel on.
+                if root.panel-on: Group {
+                    height: 76px;
+                    Row {
+                        y: 0;
+                        width: parent.width;
+                        first: true;
+                        kind: "toggle";
+                        icon: Icons.monitor-cellphone-28;
+                        label: root.t.panel-screen;
+                        on: root.remote-on;
+                        toggled(v) => {
+                            root.remote-toggled(v);
+                        }
+                    }
+                }
+                // Ask first: off only after the warning (dialog "remote-confirm-off").
+                if root.panel-on && root.remote-on: Group {
+                    height: 76px;
+                    Row {
+                        y: 0;
+                        width: parent.width;
+                        first: true;
+                        kind: "toggle";
+                        icon: Icons.account-group-28;
+                        label: root.t.panel-screen-confirm;
+                        on: root.remote-confirm;
+                        toggled(v) => {
+                            if (v) {
+                                root.remote-confirm-toggled(true);
+                            } else {
+                                root.dialog = "remote-confirm-off";
+                            }
+                        }
+                    }
+                }
+                if root.panel-on: Text {
+                    text: root.t.panel-screen-hint;
+                    font-size: 22px;
+                    color: Theme.text-3;
+                    wrap: word-wrap;
+                }
+                if !root.panel-on: Text {
+                    text: root.t.panel-access-hint;
+                    font-size: 24px;
+                    color: Theme.text-3;
+                    wrap: word-wrap;
+                }
+                // The address and its QR code: scanned, it lets the phone in at once.
+                if root.panel-on: Rectangle {
+                    height: 328px;
+                    Rectangle {
+                        x: 0;
+                        y: 16px;
+                        width: 296px;
+                        height: 296px;
+                        border-radius: 16px;
+                        background: Theme.text;
+                        Image {
+                            x: 16px;
+                            y: 16px;
+                            width: 264px;
+                            height: 264px;
+                            source: root.panel-qr;
+                            image-rendering: pixelated;
+                        }
+                    }
+                    Text {
+                        x: 328px;
+                        y: 32px;
+                        width: parent.width - 328px;
+                        text: root.panel-address;
+                        font-size: 32px;
+                        font-weight: 500;
+                        color: Theme.accent;
+                        wrap: char-wrap;
+                    }
+                    Text {
+                        x: 328px;
+                        y: 32px + 48px + 16px;
+                        width: parent.width - 328px;
+                        text: root.t.panel-address-hint;
+                        font-size: 24px;
+                        color: Theme.text-2;
+                        wrap: word-wrap;
+                    }
+                }
+                Rectangle {
+                    height: 8px;
+                }
+                SectionTitle {
+                    text: root.t.panel-devices-title;
+                }
+                if root.panel-devices.length == 0: Text {
+                    text: root.t.panel-no-devices;
+                    font-size: 24px;
+                    color: Theme.text-3;
+                    wrap: word-wrap;
+                }
+                if root.panel-devices.length > 0: Group {
+                    height: root.panel-devices.length * 88px;
+                    for d[i] in root.panel-devices: Rectangle {
+                        y: i * 88px;
+                        width: parent.width;
+                        height: 88px;
+                        if i > 0: Separator {
+                            y: 0;
+                            width: parent.width - 48px;
+                        }
+                        Text {
+                            x: 28px;
+                            y: 12px;
+                            width: parent.width - 28px - 220px;
+                            text: d.line;
+                            font-size: 28px;
+                            color: Theme.text;
+                            overflow: elide;
+                        }
+                        Text {
+                            x: 28px;
+                            y: 50px;
+                            width: parent.width - 28px - 220px;
+                            text: d.detail;
+                            font-size: 22px;
+                            color: Theme.text-3;
+                            overflow: elide;
+                        }
+                        PillButton {
+                            x: parent.width - 16px - self.width;
+                            y: 12px;
+                            width: 188px;
+                            label: root.panel-armed == d.id ? root.t.panel-revoke-sure : root.t.panel-devices-revoke;
+                            primary: root.panel-armed == d.id;
+                            clicked => {
+                                root.panel-revoke(d.id);
+                            }
+                        }
+                    }
+                }
+                if root.panel-devices.length > 1: Group {
+                    height: 76px;
+                    Row {
+                        y: 0;
+                        width: parent.width;
+                        first: true;
+                        kind: "";
+                        label: root.t.panel-revoke-all;
+                    }
+                    TouchArea {
+                        clicked => {
+                            Feedback.tap();
+                            root.dialog = "panel-revoke-all";
+                        }
+                    }
                 }
             }
         }
@@ -3965,6 +5129,94 @@ export component CompanionWindow inherits Window {
     }
 
     // ---- Dialogs on the desk.
+    // A browser asks to be let in: who, and the code its page shows; Refuse · Allow.
+    if root.dialog == "panel-ask": Dialog {
+        icon: Icons.monitor-cellphone-48;
+        title: root.t.panel-ask-title;
+        text: root.t.panel-ask-text;
+        cancel: root.t.panel-refuse;
+        confirm: root.t.panel-allow;
+        touch-enabled: root.panel-ask-ready;
+        content-height: 32px + 16px + 64px;
+        Text {
+            x: 48px;
+            y: 0;
+            width: 672px - 96px;
+            text: root.panel-ask-line;
+            font-size: 24px;
+            color: Theme.text-2;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+        Text {
+            x: 48px;
+            y: 32px + 16px;
+            width: 672px - 96px;
+            text: root.panel-ask-code;
+            font-size: 48px;
+            font-weight: 500;
+            letter-spacing: 12px;
+            color: Theme.accent;
+            horizontal-alignment: center;
+        }
+        answered(yes) => {
+            root.dialog = "";
+            root.panel-answered(yes);
+        }
+    }
+    // A device let in asks to control the screen: who; Deny · Allow (nothing is sent before).
+    if root.dialog == "remote-ask": Dialog {
+        icon: Icons.monitor-cellphone-48;
+        title: root.t.remote-ask-title;
+        text: root.t.remote-ask-text;
+        cancel: root.t.remote-deny;
+        confirm: root.t.panel-allow;
+        touch-enabled: root.remote-ask-ready;
+        content-height: 32px;
+        Text {
+            x: 48px;
+            y: 0;
+            width: 672px - 96px;
+            text: root.remote-ask-line;
+            font-size: 24px;
+            color: Theme.text-2;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+        answered(yes) => {
+            root.dialog = "";
+            root.remote-answered(yes);
+        }
+    }
+    // Ask first switched off: what it means, before it is.
+    if root.dialog == "remote-confirm-off": Dialog {
+        icon: Icons.monitor-cellphone-48;
+        icon-color: Theme.danger;
+        border: Theme.danger;
+        title: root.t.remote-confirm-off-title;
+        text: root.t.remote-confirm-off-text;
+        cancel: root.t.cancel;
+        confirm: root.t.remote-confirm-off;
+        answered(yes) => {
+            root.dialog = "";
+            if (yes) {
+                root.remote-confirm-toggled(false);
+            }
+        }
+    }
+    if root.dialog == "panel-revoke-all": Dialog {
+        icon: Icons.close-48;
+        title: root.t.panel-revoke-all-question;
+        text: root.t.panel-revoke-all-text;
+        cancel: root.t.cancel;
+        confirm: root.t.panel-revoke-all;
+        answered(yes) => {
+            root.dialog = "";
+            if (yes) {
+                root.panel-revoke-all();
+            }
+        }
+    }
     if root.dialog == "suspend": Dialog {
         icon: Icons.power-sleep-48;
         title: root.t.suspend-question;
@@ -4148,10 +5400,262 @@ export component CompanionWindow inherits Window {
     }
 
     // The veil over the stepped-back home (one flat rectangle; only while the view is moving).
-    if (CasaBridge.visible || root.mirror-t > 0) && root.covered > 0.001 && root.covered < 0.999: Rectangle {
+    if (CasaBridge.visible || root.mirror-t > 0 || root.board-cover > 0) && root.covered > 0.001 && root.covered < 0.999: Rectangle {
         width: root.width;
         height: root.height;
         background: #000000.with-alpha(0.35 * root.covered);
+    }
+
+    // ---- The board («Plancia», ui/board.rs): Home Assistant's tiles over the whole screen, 6 x 4
+    // cells of 195 x 157, 12 apart (x 25, y 96), under a header with Alfred's face (ringed in the
+    // state's colour while he listens, thinks or speaks; the words come in the bar at the top as
+    // over Home Assistant's view), the page's name and the time; the pages' dots at the bottom.
+    // It comes in from the right edge under the finger and leaves to the right from its first
+    // page, or by a tap on the face (never by itself: like Home Assistant's view, it stays); the pages follow the
+    // finger across. Only its x moves (nothing animates at rest).
+    if root.board-x < root.width - 0.5px: Rectangle {
+        x: round(root.board-x / 1px) * 1px;
+        width: root.width;
+        height: root.height;
+        background: Theme.bg;
+        clip: true;
+        // Whatever no tile takes (the header, the margins): a drag across, as on the grid.
+        TouchArea {
+            property <bool> dragging: false;
+            // In the screen's coordinates: the page moves under the finger.
+            property <length> down-at: 0;
+            property <length> moved-by: self.absolute-position.x + self.mouse-x - self.down-at;
+            moved => {
+                if (self.pressed && (self.dragging || abs(self.moved-by) > 12px)) {
+                    self.dragging = true;
+                    root.board-drag(self.moved-by);
+                }
+            }
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) {
+                    self.dragging = false;
+                    self.down-at = self.absolute-position.x + self.pressed-x;
+                } else if (self.dragging && (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel)) {
+                    self.dragging = false;
+                    root.board-drop(e.kind == PointerEventKind.up ? self.moved-by : 0);
+                }
+            }
+        }
+        // The header: the face (a tap: home), the page's name, the Wi-Fi and the time.
+        board-face := Rectangle {
+            x: 24px;
+            y: 20px;
+            width: 56px;
+            height: 56px;
+            border-radius: 28px;
+            background: Theme.surface-2;
+            clip: true;
+            Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.portrait;
+                image-fit: cover;
+            }
+            // A thin edge: a badge, not a head cut out of the dark.
+            Rectangle {
+                border-radius: parent.border-radius;
+                border-width: 1.5px;
+                border-color: Theme.accent.with-alpha(0.45);
+            }
+        }
+        if root.conversation: Rectangle {
+            x: board-face.x - 5px;
+            y: board-face.y - 5px;
+            width: board-face.width + 10px;
+            height: board-face.height + 10px;
+            border-radius: self.width / 2;
+            border-width: 3px;
+            border-color: root.state-color;
+        }
+        Text {
+            x: 100px;
+            y: 20px;
+            width: 900px;
+            height: 56px;
+            text: root.board-title;
+            // Under the conversation's bar while Alfred talks.
+            visible: !root.conversation;
+            font-size: 34px;
+            font-weight: 300;
+            color: Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        TouchArea {
+            x: 8px;
+            y: 8px;
+            width: 88px;
+            height: 80px;
+            clicked => {
+                Feedback.back();
+                root.page = "home";
+            }
+        }
+        if Status.wifi-level >= 0: Icon {
+            x: board-clock.x - 12px - self.width;
+            y: 34px;
+            width: 28px;
+            height: 28px;
+            source: Status.wifi-icon(Status.wifi-level, false);
+            color: Status.wifi-level == 0 ? Theme.danger : Theme.text-2;
+        }
+        board-clock := Text {
+            x: 1255px - self.width;
+            y: 20px;
+            width: self.preferred-width;
+            height: 56px;
+            text: root.clock;
+            font-family: "Inter Tnum";
+            font-size: 28px;
+            color: Theme.text-2;
+            vertical-alignment: center;
+        }
+        // The pages: the one shown where the finger has it, its neighbours a screen's width
+        // beside it (drawn only while they come in).
+        Rectangle {
+            x: round(root.board-shift / 1px) * 1px;
+            y: 96px;
+            width: root.width;
+            height: 664px;
+            BoardGrid {
+                x: 25px;
+                y: 0;
+                tiles: root.board-tiles;
+                columns: 6;
+                cell-width: 195px;
+                // Nothing on it yet: three rows of places, the fourth says where tiles come from.
+                rows: root.board-empty ? 3 : 4;
+                empty-cells: root.board-empty;
+                tapped(id) => {
+                    root.board-tapped("page", id);
+                }
+                level-changed(id, v, done) => {
+                    root.board-level("page", id, v, done);
+                }
+                slide(dx) => {
+                    root.board-drag(dx);
+                }
+                slide-end(dx) => {
+                    root.board-drop(dx);
+                }
+            }
+            if root.board-empty && root.board-hint != "": Text {
+                x: 25px;
+                y: 3 * (157px + 12px);
+                width: 1230px;
+                height: 157px;
+                text: root.board-hint;
+                font-size: 24px;
+                color: Theme.text-3;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+            BoardGrid {
+                x: 25px - root.width;
+                y: 0;
+                visible: root.board-shift > 0.5px && root.board-index > 0;
+                tiles: root.board-prev-tiles;
+                columns: 6;
+                cell-width: 195px;
+            }
+            BoardGrid {
+                x: 25px + root.width;
+                y: 0;
+                visible: root.board-shift < -0.5px && root.board-index < root.board-count - 1;
+                tiles: root.board-next-tiles;
+                columns: 6;
+                cell-width: 195px;
+            }
+        }
+        if root.board-count > 1: Rectangle {
+            y: 776px;
+            width: root.width;
+            height: 10px;
+            for i in root.board-count: Rectangle {
+                x: (parent.width - root.board-count * 16px + 10px) / 2 + i * 16px;
+                y: 2px;
+                width: 6px;
+                height: 6px;
+                border-radius: 3px;
+                background: i == root.board-index ? Theme.accent : Theme.line;
+            }
+        }
+        // The home button over the tiles (Home Assistant's: gold ring, deep fill, a white
+        // house). Hidden it takes no touch: the tile under it does.
+        board-home := Rectangle {
+            property <bool> dragging: false;
+            property <length> drag-x: 0;
+            property <length> drag-y: 0;
+            property <length> start-x: 0;
+            property <length> start-y: 0;
+            property <length> down-x: 0;
+            property <length> down-y: 0;
+            x: self.dragging ? self.drag-x : root.board-home-x;
+            y: self.dragging ? self.drag-y : root.board-home-y;
+            width: Grid.primary-size;
+            height: Grid.primary-size;
+            border-radius: self.width / 2;
+            background: home-touch.pressed ? Theme.accent-deep.brighter(0.5) : Theme.accent-deep;
+            border-color: Theme.accent.with-alpha(0.9);
+            border-width: 2px;
+            opacity: root.board-home-shown || home-touch.pressed ? 1 : 0;
+            visible: self.opacity > 0;
+            animate opacity { duration: 200ms; }
+            animate x, y {
+                duration: self.dragging ? 0ms : 160ms;
+                easing: ease-out;
+            }
+            Icon {
+                x: 26px;
+                y: 26px;
+                width: 44px;
+                height: 44px;
+                source: Icons.home-44;
+                color: Theme.text;
+            }
+            home-touch := TouchArea {
+                enabled: root.board-home-shown;
+                // The finger in the screen's coordinates (the button moves under it).
+                property <length> fx: self.absolute-position.x + self.mouse-x;
+                property <length> fy: self.absolute-position.y + self.mouse-y;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        parent.dragging = false;
+                        parent.start-x = parent.x;
+                        parent.start-y = parent.y;
+                        parent.down-x = self.absolute-position.x + self.pressed-x;
+                        parent.down-y = self.absolute-position.y + self.pressed-y;
+                    } else if (e.kind == PointerEventKind.up) {
+                        if (parent.dragging) {
+                            root.board-home-moved(parent.drag-x, parent.drag-y);
+                            parent.dragging = false;
+                        } else {
+                            Feedback.back();
+                            root.page = "home";
+                        }
+                    } else if (e.kind == PointerEventKind.cancel) {
+                        parent.dragging = false;
+                    }
+                }
+                moved => {
+                    if (self.pressed) {
+                        if (!parent.dragging && (abs(self.fx - parent.down-x) > 12px || abs(self.fy - parent.down-y) > 12px)) {
+                            parent.dragging = true;
+                        }
+                        if (parent.dragging) {
+                            parent.drag-x = clamp(parent.start-x + self.fx - parent.down-x, 0, root.width - parent.width);
+                            parent.drag-y = clamp(parent.start-y + self.fy - parent.down-y, 0, root.height - 20px - parent.height);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // ---- Screen mirroring: the sender's screen centred on the character's background, as large
@@ -4493,8 +5997,10 @@ export component CompanionWindow inherits Window {
         stage-height: root.character-height;
         stage-background: root.character-background;
         // Swipe in from the home button's edge, as over Home Assistant's view (the same edge,
-        // CasaBridge.edge): far enough in, home; the mirroring goes on.
-        mirror-swipe := TouchArea {
+        // CasaBridge.edge): far enough in, home; the mirroring goes on. Only while the mirror is
+        // on screen: CasaScreen is always there, and its strip along that edge would take every
+        // touch there on every page (the board's edge on the home, with the edge on the right).
+        if root.mirroring: TouchArea {
             property <string> e: CasaBridge.edge;
             property <length> d: self.e == "right" ? self.pressed-x - self.mouse-x
                 : self.e == "left" ? self.mouse-x - self.pressed-x
@@ -4517,10 +6023,13 @@ export component CompanionWindow inherits Window {
     // answer goes to Alfred's layout and comes back (Rust closes and reopens the view).
     // It slides down from the top edge when the conversation starts and back up when it ends
     // (translate only); out of the way above the screen otherwise.
-    if CasaBridge.visible || (root.mirror-t > 0.999 && !root.mirror-sides): Rectangle {
+    if CasaBridge.visible || (root.mirror-t > 0.999 && !root.mirror-sides) || root.board-cover > 0.999: conv-bar := Rectangle {
         property <length> bar-height: clamp(bar-text.preferred-height + 32px, 80px, 128px);
-        x: (root.width - self.width) / 2;
-        y: root.conversation ? 16px : -self.height - 8px;
+        // Over the board: next to the face in its header (ringed in the state's colour), over
+        // the page's name; without a face of its own.
+        property <bool> on-board: root.board-cover > 0.999 && !CasaBridge.visible && root.mirror-t < 0.001;
+        x: self.on-board ? 96px : (root.width - self.width) / 2;
+        y: root.conversation ? (self.on-board ? 8px : 16px) : -self.height - 8px;
         animate y {
             duration: 180ms;
             easing: ease-out;
@@ -4532,7 +6041,7 @@ export component CompanionWindow inherits Window {
         border-width: 2px;
         border-color: root.state-color.with-alpha(0.6);
         TouchArea { }
-        Rectangle {
+        if !conv-bar.on-board: Rectangle {
             x: 12px;
             y: (parent.height - self.height) / 2;
             width: 56px;
@@ -4548,9 +6057,9 @@ export component CompanionWindow inherits Window {
             }
         }
         bar-text := Text {
-            x: 84px;
+            x: conv-bar.on-board ? 28px : 84px;
             y: (parent.height - min(self.preferred-height, 68px)) / 2;
-            width: parent.width - 84px - 200px;
+            width: parent.width - self.x - 200px;
             height: min(self.preferred-height, 68px);
             text: root.state == "speaking" ? root.answer
                 : root.state == "listening" ? root.phrase-listening
@@ -4610,8 +6119,8 @@ export component CompanionWindow inherits Window {
     // (On the home it is the first card of the context band instead: cards.rs; on the other
     // desk pages none, it would cover them.)
     if root.done-shown && !root.done-popup && !root.night-home && !root.starting && !root.ringing
-        && (CasaBridge.visible || root.mirror-t > 0.001 || root.conversation): DoneCard {
-        property <bool> full: CasaBridge.visible || (root.mirror-t > 0.999 && !root.mirror-sides);
+        && (CasaBridge.visible || root.mirror-t > 0.001 || root.board-cover > 0.999 || root.conversation): DoneCard {
+        property <bool> full: CasaBridge.visible || (root.mirror-t > 0.999 && !root.mirror-sides) || root.board-cover > 0.999;
         x: self.full ? (root.width - self.width) / 2 : Grid.col-x;
         // Over a full view: top centre (bottom centre while the conversation bar is at the top).
         y: self.full ? (root.conversation ? root.height - 24px - self.height : 24px)
@@ -4679,7 +6188,9 @@ export component CompanionWindow inherits Window {
         // The veil stays to the end: one window, and the page under it does not read through.
         scrim: true;
         closable: root.ask-done;
-        icon: root.ask-done ? Icons.check-circle-48 : root.ask-working ? Icons.refresh-44 : Icons.help-circle-48;
+        icon: root.ask-icon-path != "" && self.asking ? @image-url("") : root.ask-done ? Icons.check-circle-48
+            : root.ask-working ? Icons.refresh-44 : Icons.help-circle-48;
+        icon-path: self.asking ? root.ask-icon-path : "";
         title: root.ask-done ? root.done-name : root.ask-working ? root.ask-working-title : root.ask-text;
         text: root.ask-done ? root.done-state : root.ask-working ? root.t.ask_executing : root.ask-names;
         text-gold: root.ask-done;
@@ -4886,6 +6397,60 @@ export component CompanionWindow inherits Window {
         x: Grid.col-x + Grid.col-width - self.width;
         y: 16px;
         level: root.volume;
+    }
+
+    // ---- The remote screen: who is in control from a browser, and Stop, over everything
+    // (Home Assistant's view, the dialogs): never hidden while it lasts. Small, above the
+    // character's head in its third of the screen, so the pages' headers (back) stay free.
+    remote-sign-box := Rectangle {
+        visible: root.remote-sign != "";
+        width: Grid.stage-width - 24px;
+        x: 12px;
+        y: 8px;
+        height: 72px;
+        border-radius: 20px;
+        background: Theme.surface;
+        border-width: 2px;
+        border-color: Theme.danger;
+        drop-shadow-blur: 16px;
+        drop-shadow-color: #000000a0;
+        // Touches on the sign stop here, not on what is under it.
+        TouchArea { }
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 8px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            spacing: 12px;
+            Rectangle {
+                width: 28px;
+                Icon {
+                    y: (parent.height - self.height) / 2;
+                    width: 28px;
+                    height: 28px;
+                    source: Icons.monitor-cellphone-32;
+                    color: Theme.danger;
+                }
+            }
+            Text {
+                text: root.remote-sign;
+                font-size: 20px;
+                font-weight: 500;
+                color: Theme.text;
+                vertical-alignment: center;
+                wrap: word-wrap;
+                overflow: elide;
+            }
+            PillButton {
+                width: 136px;
+                height: 56px;
+                label: root.t.remote-stop;
+                primary: true;
+                clicked => {
+                    root.remote-stop();
+                }
+            }
+        }
     }
 
     // ---- The microphone's switch moved: a big card in the middle, over everything.

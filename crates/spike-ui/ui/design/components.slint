@@ -7,7 +7,7 @@
 // Icons are SVG images (drawn at their exact size), never vector paths.
 // Every touch target is at least 64 x 64.
 
-import { Theme, Grid } from "tokens.slint";
+import { Theme, Grid, Type } from "tokens.slint";
 import { Icons } from "icons.slint";
 
 // An icon: an SVG from icons.slint drawn at exactly its size (the size is in its name), tinted.
@@ -800,7 +800,8 @@ export component Row inherits Rectangle {
     in property <string> label;
     in property <string> value;
     in property <bool> first: false;
-    // "page" (chevron), "check", "toggle" or "" (information only).
+    // "page" (chevron), "check", "toggle", "busy" (a turning sign where the toggle goes, while
+    // what it switches is under way) or "" (information only).
     in property <string> kind: "page";
     in property <bool> on: false;
     callback clicked();
@@ -829,7 +830,7 @@ export component Row inherits Rectangle {
         vertical-alignment: center;
         overflow: elide;
     }
-    property <length> end: root.kind == "" ? 28px : root.kind == "toggle" ? 116px : 64px;
+    property <length> end: root.kind == "" ? 28px : root.kind == "toggle" || root.kind == "busy" ? 116px : 64px;
     if root.value != "": Text {
         x: parent.width - root.end - self.width;
         width: min(self.preferred-width, 320px);
@@ -863,6 +864,16 @@ export component Row inherits Rectangle {
             Feedback.tap();
             root.clicked();
         }
+    }
+    if root.kind == "busy": Icon {
+        // In the middle of where the toggle is.
+        x: parent.width - 12px - 48px - 14px;
+        y: 24px;
+        width: 28px;
+        height: 28px;
+        source: Icons.sync-28;
+        color: Theme.accent;
+        transform-rotation: -mod(animation-tick() / 1ms, 1400) / 1400 * 360deg;
     }
     if root.kind == "toggle": Toggle {
         x: parent.width - 12px - self.width;
@@ -1230,6 +1241,8 @@ export component DoneCard inherits Rectangle {
 // taps outside do nothing); without it a tap outside closes, like the X.
 export component Dialog inherits Rectangle {
     in property <image> icon;
+    // Or an MDI glyph's path data (a board tile's icon), drawn in the icon's place.
+    in property <string> icon-path: "";
     in property <color> icon-color: Theme.accent;
     in property <string> title;
     in property <string> text;
@@ -1238,6 +1251,9 @@ export component Dialog inherits Rectangle {
     in property <string> confirm;
     in property <image> confirm-icon;
     in property <bool> closable: false;
+    // False: the buttons ignore touches (a dialog that just appeared, so a tap meant for what
+    // was there before does not answer it).
+    in property <bool> touch-enabled: true;
     // Working: the icon turns (a wait with nothing to touch); `busy-bar`: a light running
     // along a line under the text, so it is clearly alive.
     in property <bool> spinning: false;
@@ -1263,7 +1279,7 @@ export component Dialog inherits Rectangle {
     }
     property <bool> buttons: root.cancel != "" || root.confirm != "";
     box := Rectangle {
-        property <length> top-pad: root.icon.width > 0 ? 104px : 48px;
+        property <length> top-pad: root.icon.width > 0 || root.icon-path != "" ? 104px : 48px;
         property <length> body-y: title-text.y + title-text.preferred-height
             + (root.text != "" ? 8px + body-text.preferred-height : 0px);
         property <length> buttons-y: self.body-y + 32px + root.content-height
@@ -1319,6 +1335,19 @@ export component Dialog inherits Rectangle {
             color: root.icon-color;
             rotation-angle: root.spinning ? mod(animation-tick() / 1ms, 1200) / 1200 * 360deg : 0deg;
         }
+        if root.icon-path != "": Path {
+            x: (parent.width - self.width) / 2;
+            y: 40px;
+            width: 48px;
+            height: 48px;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: root.icon-path;
+            fill: root.icon-color;
+            stroke-width: 0;
+        }
         title-text := Text {
             x: 40px;
             y: box.top-pad;
@@ -1368,6 +1397,7 @@ export component Dialog inherits Rectangle {
                 vertical-alignment: center;
             }
             cancel-touch := TouchArea {
+                enabled: root.touch-enabled;
                 clicked => {
                     Feedback.tap();
                     root.answered(false);
@@ -1406,6 +1436,7 @@ export component Dialog inherits Rectangle {
                 }
             }
             confirm-touch := TouchArea {
+                enabled: root.touch-enabled;
                 clicked => {
                     Feedback.tap();
                     root.answered(true);
@@ -1609,6 +1640,1108 @@ export component LevelBar inherits Rectangle {
             if self.pressed {
                 root.changed(round(clamp(self.mouse-x / self.width, 0, 1) * 100));
             }
+        }
+    }
+}
+
+// --- The board (ui/board.rs, ui/board/draw.rs): tiles of Home Assistant's entities on a grid of
+// cells, on the board's pages (6 x 4 cells of 195 x 157) and in the custom widget (4 x 2 of
+// 193 x 130; one line of 193 x 88). Every value is data from Rust, icons included (MDI path
+// data, drawn with a Path in a 24 x 24 box). Nothing moves at rest: a tile redraws when its data
+// changes; after a tap its icon dims once (180 ms) while it waits for Home Assistant.
+
+export struct BoardTileData {
+    // Its index in its canvas's tiles (what a tap names).
+    id: int,
+    // Place and size, in cells.
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    // "button", "sensor", "level".
+    kind: string,
+    // "off", "on", "pending", "unavailable", "failed", "stale" (Home Assistant not reachable:
+    // the last state known, dimmed).
+    state: string,
+    // SVG path data in a 24 x 24 box.
+    icon: string,
+    name: string,
+    value: string,
+    status: string,
+    range: string,
+    // 0-100, -1 none.
+    level: int,
+    // The day's curve, path commands in the tile's curve box (draw.rs `curve_box`).
+    curve: string,
+    tappable: bool,
+}
+
+// An MDI glyph from its path data.
+component TileGlyph inherits Path {
+    in property <string> data;
+    in property <color> color;
+    viewbox-x: 0;
+    viewbox-y: 0;
+    viewbox-width: 24;
+    viewbox-height: 24;
+    commands: root.data;
+    fill: root.color;
+    stroke-width: 0;
+}
+
+export component BoardTile inherits Rectangle {
+    in property <BoardTileData> tile;
+    // The widget's cells (130 px tall): a little tighter.
+    in property <bool> small: false;
+    // The widget's one line: icon, name and value side by side.
+    in property <bool> line: false;
+    callback tapped();
+    // A level dragged: the value, and whether the finger lifted.
+    callback level-changed(int, bool);
+    // A swipe across the tile (+1 to the next page, -1 back).
+    callback swiped(int);
+    // A finger moving across the tile (the board's page follows it): how far from where it
+    // went down; and when it lifts (or the touch is taken away), how far it went.
+    callback slide(length);
+    callback slide-end(length);
+    property <bool> on: root.tile.state == "on";
+    property <bool> pending: root.tile.state == "pending";
+    property <bool> gone: root.tile.state == "unavailable";
+    property <bool> failed: root.tile.state == "failed";
+    property <bool> stale: root.tile.state == "stale";
+    property <bool> level: root.tile.kind == "level";
+    property <bool> sensor: root.tile.kind == "sensor";
+    // The gold ground of a thing that is on (a level's bar shows it instead).
+    property <bool> gold: root.on && !root.level;
+    property <length> pad-x: root.small ? 18px : 20px;
+    property <length> pad-y: root.small ? 14px : 18px;
+    property <color> icon-color: root.gone ? #4a4740 : root.pending || root.gold ? Theme.accent : Theme.text-2;
+    property <color> name-color: root.gone ? Theme.text-3 : Theme.text;
+    property <color> status-color: root.gone ? Theme.night : root.failed ? Theme.danger
+        : root.pending ? Theme.text-2 : root.gold ? Theme.accent : Theme.text-3;
+    // After a tap the icon dims once and stays so until Home Assistant answers.
+    property <float> icon-alpha: root.pending ? 0.55 : 1;
+    animate icon-alpha { duration: 180ms; }
+    // While a finger drags the bar: its value (-1: none).
+    property <int> drag: -1;
+    property <int> shown-level: root.drag >= 0 ? root.drag : root.tile.level;
+    border-radius: root.line ? Grid.card-radius : Grid.tile-radius;
+    // Home Assistant away: the whole tile dimmed (what it shows may be old).
+    opacity: root.stale ? 0.45 : 1;
+    background: touch.pressed && !touch.dragging && root.tile.tappable && !root.level ? Theme.surface-2
+        : root.gold ? Theme.accent-deep : Theme.surface;
+    border-width: 1px;
+    border-color: root.failed ? Theme.danger : root.gold ? Theme.accent.with-alpha(0.35) : Theme.line;
+    clip: true;
+
+    // The whole tile: a tap does its action; a swipe across is the page's (or the widget's turn).
+    touch := TouchArea {
+        enabled: !root.level || root.line;
+        // Across, 12 px or more: a drag of the page, no tap any more.
+        property <bool> dragging: false;
+        // In the screen's coordinates: the page moves under the finger.
+        property <length> down-at: 0;
+        property <length> moved-by: self.absolute-position.x + self.mouse-x - self.down-at;
+        moved => {
+            if (self.pressed && (self.dragging || abs(self.moved-by) > 12px)) {
+                self.dragging = true;
+                root.slide(self.moved-by);
+            }
+        }
+        pointer-event(e) => {
+            let slid = self.dragging;
+            if (e.kind == PointerEventKind.down) {
+                self.dragging = false;
+                self.down-at = self.absolute-position.x + self.pressed-x;
+            } else if (self.dragging && (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel)) {
+                self.dragging = false;
+                root.slide-end(e.kind == PointerEventKind.up ? self.moved-by : 0);
+            }
+            if (e.kind == PointerEventKind.up && self.has-hover) {
+                if (slid && abs(self.moved-by) > 48px) {
+                    root.swiped(self.moved-by < 0 ? 1 : -1);
+                } else if (!slid && abs(self.mouse-y - self.pressed-y) < 48px && root.tile.tappable) {
+                    Feedback.tap();
+                    root.tapped();
+                }
+            }
+        }
+    }
+
+    // ---- One line (the widget with one free slot).
+    if root.line: Rectangle {
+        TileGlyph {
+            x: 18px;
+            y: (parent.height - self.height) / 2;
+            width: 32px;
+            height: 32px;
+            data: root.tile.icon;
+            color: root.icon-color;
+            opacity: root.icon-alpha;
+        }
+        VerticalLayout {
+            x: 64px;
+            width: parent.width - 64px - 14px;
+            alignment: center;
+            Text {
+                text: root.tile.name;
+                font-size: 20px;
+                font-weight: 500;
+                color: root.name-color;
+                overflow: elide;
+            }
+            Text {
+                text: root.tile.value != "" ? root.tile.value : root.tile.status;
+                font-family: root.tile.value != "" ? "Inter Tnum" : "";
+                font-size: 18px;
+                color: root.status-color;
+                overflow: elide;
+            }
+        }
+    }
+
+    // ---- A button: the icon at the top, the name and the state at the bottom; 2 x 2 centred.
+    if !root.line && root.tile.kind == "button" && root.tile.h < 2: Rectangle {
+        TileGlyph {
+            x: root.pad-x;
+            y: root.pad-y;
+            width: root.small ? 36px : 40px;
+            height: self.width;
+            data: root.tile.icon;
+            color: root.icon-color;
+            opacity: root.icon-alpha;
+        }
+        VerticalLayout {
+            x: root.pad-x;
+            y: parent.height - root.pad-y - self.height;
+            width: parent.width - 2 * root.pad-x;
+            height: self.preferred-height;
+            Text {
+                text: root.tile.name;
+                font-size: root.small ? 22px : 24px;
+                font-weight: 500;
+                color: root.name-color;
+                overflow: elide;
+            }
+            if root.tile.status != "": Text {
+                text: root.tile.status;
+                font-size: root.small ? 18px : 20px;
+                color: root.status-color;
+                overflow: elide;
+            }
+        }
+    }
+    if !root.line && root.tile.kind == "button" && root.tile.h >= 2: VerticalLayout {
+        x: root.pad-x;
+        width: parent.width - 2 * root.pad-x;
+        alignment: center;
+        spacing: 4px;
+        Rectangle {
+            height: 96px + 12px;
+            TileGlyph {
+                x: (parent.width - self.width) / 2;
+                y: 0;
+                width: 96px;
+                height: 96px;
+                data: root.tile.icon;
+                color: root.icon-color;
+                opacity: root.icon-alpha;
+            }
+        }
+        Text {
+            text: root.tile.name;
+            font-size: 24px;
+            font-weight: 500;
+            color: root.name-color;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+        if root.tile.status != "": Text {
+            text: root.tile.status;
+            font-size: 20px;
+            color: root.status-color;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    // ---- A sensor 1 x 1: the icon, the value, the name under it.
+    if !root.line && root.sensor && root.tile.w == 1: Rectangle {
+        TileGlyph {
+            x: root.pad-x;
+            y: root.pad-y;
+            width: 28px;
+            height: 28px;
+            data: root.tile.icon;
+            color: root.gone ? #4a4740 : Theme.text-2;
+        }
+        VerticalLayout {
+            x: root.pad-x;
+            y: parent.height - root.pad-y - self.height;
+            width: parent.width - 2 * root.pad-x;
+            height: self.preferred-height;
+            spacing: 2px;
+            Text {
+                text: root.tile.value;
+                font-family: "Inter Tnum";
+                font-size: root.small ? 34px : 40px;
+                color: root.name-color;
+                overflow: elide;
+            }
+            Text {
+                text: root.tile.name;
+                font-size: root.small ? 18px : 20px;
+                color: Theme.text-3;
+                overflow: elide;
+            }
+        }
+    }
+    // ---- A wide sensor: the icon and the name in a header, the value, the day's curve.
+    if !root.line && root.sensor && root.tile.w > 1: wide := Rectangle {
+        property <bool> tall: root.tile.h >= 2;
+        TileGlyph {
+            x: root.pad-x;
+            y: root.pad-y;
+            width: 28px;
+            height: 28px;
+            data: root.tile.icon;
+            color: root.gone ? #4a4740 : Theme.text-2;
+        }
+        Text {
+            x: root.pad-x + 28px + 10px;
+            y: root.pad-y;
+            width: parent.width - self.x - root.pad-x;
+            height: 28px;
+            text: root.tile.name;
+            font-size: root.small ? 20px : 22px;
+            color: root.gone ? Theme.text-3 : Theme.text-2;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if !wide.tall: Text {
+            x: root.pad-x;
+            y: parent.height - root.pad-y - self.height;
+            width: root.tile.curve != "" ? parent.width - 2 * root.pad-x - (root.tile.w > 2 ? 440px : 150px) - 12px
+                : parent.width - 2 * root.pad-x;
+            height: root.small ? 44px : 52px;
+            text: root.tile.value;
+            font-family: "Inter Tnum";
+            font-size: root.small ? 40px : 48px;
+            color: root.name-color;
+            vertical-alignment: bottom;
+            overflow: elide;
+        }
+        if !wide.tall && root.tile.curve != "": Path {
+            x: parent.width - 20px - self.width;
+            y: parent.height - 22px - self.height;
+            width: root.tile.w > 2 ? 440px : 150px;
+            height: 44px;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: self.width / 1px;
+            viewbox-height: 44;
+            commands: root.tile.curve;
+            stroke: Theme.text-2;
+            stroke-width: 2px;
+        }
+        if wide.tall: Text {
+            x: root.pad-x;
+            y: root.pad-y + 28px + 18px;
+            width: parent.width - 2 * root.pad-x;
+            height: 100px;
+            text: root.tile.value;
+            font-family: "Inter Tnum";
+            font-size: 96px;
+            font-weight: 300;
+            letter-spacing: -2px;
+            color: root.name-color;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if wide.tall && root.tile.curve != "": Path {
+            x: 20px;
+            y: parent.height - root.pad-y - 26px - 10px - self.height;
+            width: parent.width - 40px;
+            height: 84px;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: self.width / 1px;
+            viewbox-height: 84;
+            commands: root.tile.curve;
+            stroke: Theme.accent;
+            stroke-width: 2px;
+        }
+        if wide.tall: Text {
+            x: root.pad-x;
+            y: parent.height - root.pad-y - 26px;
+            width: parent.width - 2 * root.pad-x;
+            height: 26px;
+            text: root.tile.range;
+            font-family: "Inter Tnum";
+            font-size: 20px;
+            color: Theme.text-3;
+            overflow: elide;
+        }
+    }
+
+    // ---- A level: the name and its state over a bar the finger drags (a tap on its icon
+    // switches it on and off).
+    if !root.line && root.level: Rectangle {
+        property <length> bar-h: root.small ? 56px : 72px;
+        HorizontalLayout {
+            x: root.pad-x;
+            y: root.pad-y;
+            width: parent.width - 2 * root.pad-x;
+            height: 30px;
+            spacing: 12px;
+            Text {
+                text: root.tile.name;
+                font-size: root.small ? 22px : 24px;
+                font-weight: 500;
+                color: root.name-color;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            if root.tile.status != "": Text {
+                text: root.tile.status;
+                font-size: root.small ? 18px : 20px;
+                color: root.failed ? Theme.danger : Theme.text-3;
+                vertical-alignment: center;
+                horizontal-stretch: 0;
+            }
+        }
+        bar := Rectangle {
+            x: root.pad-x;
+            y: parent.height - root.pad-y - self.height;
+            width: parent.width - 2 * root.pad-x;
+            height: parent.bar-h;
+            border-radius: self.height / 2;
+            background: Theme.surface-2;
+            clip: true;
+            if root.shown-level > 0: Rectangle {
+                x: 0;
+                width: max(bar.height, bar.width * clamp(root.shown-level, 0, 100) / 100);
+                height: bar.height;
+                border-radius: bar.height / 2;
+                background: root.gone ? Theme.surface : Theme.accent-deep;
+            }
+            TileGlyph {
+                x: 22px;
+                y: (bar.height - self.height) / 2;
+                width: 32px;
+                height: 32px;
+                data: root.tile.icon;
+                color: root.gone ? #4a4740 : Theme.accent;
+                opacity: root.icon-alpha;
+            }
+            Text {
+                x: bar.width - 22px - self.width;
+                width: 120px;
+                height: bar.height;
+                text: root.drag >= 0 ? root.drag + "%" : root.tile.value;
+                font-family: "Inter Tnum";
+                font-size: 24px;
+                color: root.gone ? Theme.text-3 : Theme.text;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+            // The icon's end of the bar: a tap there switches it; anywhere else a drag sets it.
+            // Released, the bar shows Rust's level: the one let go until Home Assistant has it
+            // (board::Pending), so it does not jump back meanwhile. A touch taken away (cancel)
+            // ends the drag where it was sent last.
+            bar-touch := TouchArea {
+                enabled: root.tile.tappable;
+                property <int> at: round(clamp(self.mouse-x / self.width, 0, 1) * 100);
+                property <bool> dragging: false;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        self.dragging = false;
+                    } else if (e.kind == PointerEventKind.up) {
+                        if (self.dragging) {
+                            root.level-changed(self.at, true);
+                            root.drag = -1;
+                        } else if (self.pressed-x < 76px) {
+                            Feedback.tap();
+                            root.tapped();
+                        } else {
+                            root.drag = -1;
+                            root.level-changed(self.at, true);
+                        }
+                        self.dragging = false;
+                    } else if (e.kind == PointerEventKind.cancel) {
+                        self.dragging = false;
+                        root.drag = -1;
+                    }
+                }
+                moved => {
+                    if (self.pressed && (self.dragging || abs(self.mouse-x - self.pressed-x) > 8px)) {
+                        self.dragging = true;
+                        root.drag = self.at;
+                        root.level-changed(self.at, false);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Tiles on a grid of `columns` x `rows` cells: each where its x, y, w, h say. A swipe across
+// the grid (on a gap, an empty cell or a tile) says +1 or -1; a tile's tap and level say its
+// `id`.
+export component BoardGrid inherits Rectangle {
+    in property <[BoardTileData]> tiles;
+    in property <int> columns: 4;
+    in property <int> rows: 4;
+    in property <length> cell-width: 193px;
+    in property <length> cell-height: 157px;
+    in property <length> gap: 12px;
+    // The widget's one line.
+    in property <bool> line: false;
+    // Empty cells drawn as dashed places with a plus (a board with nothing on it yet).
+    in property <bool> empty-cells: false;
+    callback tapped(int);
+    callback level-changed(int, int, bool);
+    callback swiped(int);
+    // A finger moving across the grid or a tile, and its lift (BoardTile's slide, slide-end).
+    callback slide(length);
+    callback slide-end(length);
+    width: root.columns * root.cell-width + (root.columns - 1) * root.gap;
+    height: root.rows * root.cell-height + (root.rows - 1) * root.gap;
+    TouchArea {
+        property <bool> dragging: false;
+        // In the screen's coordinates: the page moves under the finger.
+        property <length> down-at: 0;
+        property <length> moved-by: self.absolute-position.x + self.mouse-x - self.down-at;
+        moved => {
+            if (self.pressed && (self.dragging || abs(self.moved-by) > 12px)) {
+                self.dragging = true;
+                root.slide(self.moved-by);
+            }
+        }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                self.dragging = false;
+                self.down-at = self.absolute-position.x + self.pressed-x;
+            } else if (self.dragging && (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel)) {
+                self.dragging = false;
+                root.slide-end(e.kind == PointerEventKind.up ? self.moved-by : 0);
+            }
+            if (e.kind == PointerEventKind.up && abs(self.moved-by) > 48px) {
+                root.swiped(self.moved-by < 0 ? 1 : -1);
+            }
+        }
+    }
+    if root.empty-cells: Rectangle {
+        for n in root.columns * root.rows: Rectangle {
+            x: mod(n, root.columns) * (root.cell-width + root.gap);
+            y: floor(n / root.columns) * (root.cell-height + root.gap);
+            width: root.cell-width;
+            height: root.cell-height;
+            border-radius: Grid.tile-radius;
+            border-width: 2px;
+            border-color: #24262d;
+            Icon {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 36px;
+                height: 36px;
+                source: Icons.plus-36;
+                color: #33353d;
+            }
+        }
+    }
+    for t[i] in root.tiles: BoardTile {
+        x: t.x * (root.cell-width + root.gap);
+        y: t.y * (root.cell-height + root.gap);
+        width: t.w * root.cell-width + (t.w - 1) * root.gap;
+        height: t.h * root.cell-height + (t.h - 1) * root.gap;
+        tile: t;
+        small: root.cell-height < 150px;
+        line: root.line;
+        tapped => {
+            root.tapped(t.id);
+        }
+        level-changed(v, done) => {
+            root.level-changed(t.id, v, done);
+        }
+        swiped(d) => {
+            root.swiped(d);
+        }
+        slide(dx) => {
+            root.slide(dx);
+        }
+        slide-end(dx) => {
+            root.slide-end(dx);
+        }
+    }
+}
+
+// --- The home's widget (ui/widgets.rs): one panel under the cards that takes the slots they
+// leave free and turns through what is around the house. Rows are data, filled by Rust; the
+// panel only draws them. `slots`: 1 = one row as tall as a card, no header; 2 = a header and
+// 2 rows; 3 = 4 rows; 4 (compact home) = 6 rows. `columns`: the rows are columns side by side
+// (the weather: `left` the hour, `note` the condition, `text` the temperature). The dots of the
+// turn sit in the band's last 16 px. A new page fades in once (180 ms, from `seq`); nothing
+// else moves.
+
+export struct WidgetRow {
+    left: string,
+    text: string,
+    right: string,
+    // A weather condition: its icon before the value (other cities).
+    note: string,
+    // After the value: "▲ 1.2%"; `trend` -1/0/+1 colours it on the markets' page only.
+    change: string,
+    trend: int,
+    // The last hours as SVG path commands in a 160 x 32 box ("" no curve), drawn by Rust.
+    curve: string,
+}
+
+// A weather condition's icon (Home Assistant's names), 32 px.
+export component WeatherGlyph inherits Icon {
+    in property <string> kind;
+    width: 32px;
+    height: 32px;
+    source: root.kind == "sunny" ? Icons.weather-sunny-32
+        : root.kind == "clear-night" ? Icons.weather-night-32
+        : root.kind == "partlycloudy" ? Icons.weather-partly-cloudy-32
+        : root.kind == "cloudy" ? Icons.weather-cloudy-32
+        : root.kind == "rainy" ? Icons.weather-rainy-32
+        : root.kind == "pouring" ? Icons.weather-pouring-32
+        : root.kind == "snowy" ? Icons.weather-snowy-32
+        : root.kind == "snowy-rainy" ? Icons.weather-snowy-rainy-32
+        : root.kind == "fog" ? Icons.weather-fog-32
+        : root.kind == "hail" ? Icons.weather-hail-32
+        : root.kind == "lightning" ? Icons.weather-lightning-32
+        : root.kind == "lightning-rainy" ? Icons.weather-lightning-rainy-32
+        : root.kind == "windy" ? Icons.weather-windy-32
+        : root.kind == "windy-variant" ? Icons.weather-windy-variant-32
+        : Icons.weather-cloudy-32;
+}
+
+// The weather's big block (ui/weather.rs WeatherHero): now, or tomorrow in the evening.
+export struct WeatherHero {
+    shown: bool,
+    // What the weather does next in words: "Nuvoloso, pioggia dalle 17:00" / "Domani pioggia".
+    label: string,
+    // Home Assistant's condition (the big icon).
+    kind: string,
+    // The temperature now or tomorrow's high ("14°"; not drawn: the date's line above has the
+    // temperature now).
+    temp: string,
+    // Under the sentence, small: "Oggi tra 8° e 15°" ("" unknown).
+    range: string,
+}
+
+// A weather condition's icon drawn big: 112 px, or 144 with `large` (the compact home).
+export component WeatherBig inherits Icon {
+    in property <string> kind;
+    in property <bool> large: false;
+    width: self.large ? 144px : 112px;
+    height: self.width;
+    source: root.large ? (
+        root.kind == "sunny" ? Icons.weather-sunny-144
+        : root.kind == "clear-night" ? Icons.weather-night-144
+        : root.kind == "partlycloudy" ? Icons.weather-partly-cloudy-144
+        : root.kind == "rainy" ? Icons.weather-rainy-144
+        : root.kind == "pouring" ? Icons.weather-pouring-144
+        : root.kind == "snowy" ? Icons.weather-snowy-144
+        : root.kind == "snowy-rainy" ? Icons.weather-snowy-rainy-144
+        : root.kind == "fog" ? Icons.weather-fog-144
+        : root.kind == "hail" ? Icons.weather-hail-144
+        : root.kind == "lightning" ? Icons.weather-lightning-144
+        : root.kind == "lightning-rainy" ? Icons.weather-lightning-rainy-144
+        : root.kind == "windy" ? Icons.weather-windy-144
+        : root.kind == "windy-variant" ? Icons.weather-windy-variant-144
+        : Icons.weather-cloudy-144) : (
+        root.kind == "sunny" ? Icons.weather-sunny-112
+        : root.kind == "clear-night" ? Icons.weather-night-112
+        : root.kind == "partlycloudy" ? Icons.weather-partly-cloudy-112
+        : root.kind == "rainy" ? Icons.weather-rainy-112
+        : root.kind == "pouring" ? Icons.weather-pouring-112
+        : root.kind == "snowy" ? Icons.weather-snowy-112
+        : root.kind == "snowy-rainy" ? Icons.weather-snowy-rainy-112
+        : root.kind == "fog" ? Icons.weather-fog-112
+        : root.kind == "hail" ? Icons.weather-hail-112
+        : root.kind == "lightning" ? Icons.weather-lightning-112
+        : root.kind == "lightning-rainy" ? Icons.weather-lightning-rainy-112
+        : root.kind == "windy" ? Icons.weather-windy-112
+        : root.kind == "windy-variant" ? Icons.weather-windy-variant-112
+        : Icons.weather-cloudy-112);
+}
+
+export component WidgetPanel inherits Rectangle {
+    // "next", "quotes", "weather", "cities", "shopping", "notes", "sensors", "check", "playing",
+    // "home", "custom" (the board's tiles).
+    in property <string> kind;
+    // A tap opens a page of its own (now playing and who is home have none: no press either).
+    in property <bool> tappable: true;
+    in property <string> title;
+    in property <string> aside;
+    in property <[WidgetRow]> rows;
+    in property <bool> columns: false;
+    in property <int> slots: 3;
+    in property <int> index: 0;
+    in property <int> count: 1;
+    in property <int> seq: 0;
+    // The weather's big block (with `columns`: the next hours under it, small).
+    in property <WeatherHero> hero;
+    // "custom": the board's tiles in the slot itself, no panel around them (4 x 2 cells of
+    // 193 x 130; one line: row 0, 88 px tall). A tile's tap and level go out with its id.
+    in property <[BoardTileData]> tiles;
+    callback tile-tapped(int);
+    callback tile-level(int, int, bool);
+    callback tapped();
+    // +1 the next page (a swipe to the left), -1 the previous one.
+    callback swiped(int);
+    width: Grid.col-width;
+    property <bool> custom: root.kind == "custom";
+    property <bool> big: root.hero.shown && !root.line;
+    property <bool> line: root.slots <= 1;
+    property <bool> dots: root.count > 1 && !root.line;
+    // The fade: `fade` follows `seq` in 180 ms; between two whole numbers the content is
+    // partly drawn (0 at the start of the change, 1 at its end and at rest).
+    property <float> fade: root.seq;
+    animate fade { duration: 180ms; }
+    property <float> alpha: 1 - (ceil(root.fade) - root.fade);
+    property <image> icon: root.kind == "weather" ? Icons.weather-partly-cloudy-28
+        : root.kind == "shopping" ? Icons.cart-28
+        : root.kind == "quotes" ? Icons.chart-line-28
+        : root.kind == "cities" ? Icons.earth-28
+        : root.kind == "notes" ? Icons.note-text-28
+        : root.kind == "sensors" ? Icons.gauge-28
+        : root.kind == "check" ? Icons.door-open-28
+        : root.kind == "playing" ? Icons.music-note-28
+        : root.kind == "home" ? Icons.account-group-28
+        : Icons.calendar-clock-28;
+    // The change's colour: up and down mean something on the markets only.
+    function change-color(trend: int) -> color {
+        if (root.kind != "quotes" || trend == 0) {
+            return Theme.text-2;
+        }
+        return trend > 0 ? Theme.ok : Theme.danger;
+    }
+    panel := Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: root.dots ? parent.height - 16px : parent.height;
+        border-radius: Grid.card-radius;
+        background: root.custom ? transparent : touch.pressed && root.tappable ? Theme.surface-2 : Theme.surface;
+        border-width: root.custom ? 0 : 1px;
+        border-color: Theme.line;
+        if !root.custom: Rectangle {
+            opacity: root.alpha;
+            // One row, as a card: the page's icon, then the row.
+            if root.line && !root.columns: Rectangle {
+                Icon {
+                    x: 28px;
+                    y: 30px;
+                    width: 28px;
+                    height: 28px;
+                    source: root.icon;
+                    color: Theme.accent;
+                }
+                HorizontalLayout {
+                    x: 92px;
+                    y: 0;
+                    width: parent.width - 92px - 28px;
+                    height: parent.height;
+                    spacing: 20px;
+                    if root.rows[0].left != "": Text {
+                        text: root.rows[0].left;
+                        font-family: "Inter Tnum";
+                        font-size: 28px;
+                        color: Theme.accent;
+                        vertical-alignment: center;
+                        horizontal-stretch: 0;
+                    }
+                    Text {
+                        text: root.rows[0].text;
+                        font-size: 28px;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    if root.rows[0].note != "": Rectangle {
+                        width: 32px;
+                        horizontal-stretch: 0;
+                        WeatherGlyph {
+                            y: (parent.height - 32px) / 2;
+                            kind: root.rows[0].note;
+                        }
+                    }
+                    if root.rows[0].right != "": Text {
+                        text: root.rows[0].right;
+                        font-family: root.rows[0].change != "" ? "Inter Tnum" : "";
+                        font-size: root.rows[0].change != "" ? 28px : 24px;
+                        color: root.rows[0].change != "" ? Theme.text : Theme.text-2;
+                        vertical-alignment: center;
+                        horizontal-stretch: 0;
+                    }
+                    if root.rows[0].change != "": Text {
+                        text: root.rows[0].change;
+                        font-family: "Inter Tnum";
+                        font-size: 24px;
+                        color: root.change-color(root.rows[0].trend);
+                        vertical-alignment: center;
+                        horizontal-stretch: 0;
+                    }
+                }
+            }
+            if root.line && root.columns && !root.hero.shown: Rectangle {
+                Icon {
+                    x: 28px;
+                    y: 30px;
+                    width: 28px;
+                    height: 28px;
+                    source: root.icon;
+                    color: Theme.accent;
+                }
+                for c[i] in root.rows: Rectangle {
+                    x: 84px + i * (parent.width - 84px - 12px) / root.rows.length;
+                    width: (parent.width - 84px - 12px) / root.rows.length;
+                    HorizontalLayout {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        alignment: center;
+                        spacing: 8px;
+                        Text {
+                            text: c.left;
+                            font-family: "Inter Tnum";
+                            font-size: 20px;
+                            color: Theme.text-2;
+                            vertical-alignment: center;
+                        }
+                        Rectangle {
+                            width: 32px;
+                            WeatherGlyph {
+                                y: (parent.height - 32px) / 2;
+                                kind: c.note;
+                            }
+                        }
+                        Text {
+                            text: c.text;
+                            font-size: 24px;
+                            color: Theme.text;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+            // The weather in one row: the sky and what it does next (the date's line above has
+            // the temperature now).
+            if root.line && root.hero.shown: HorizontalLayout {
+                x: 28px;
+                width: parent.width - 56px;
+                spacing: 20px;
+                Rectangle {
+                    width: 32px;
+                    horizontal-stretch: 0;
+                    WeatherGlyph {
+                        y: (parent.height - 32px) / 2;
+                        kind: root.hero.kind;
+                        color: Theme.accent;
+                    }
+                }
+                Text {
+                    text: root.hero.label;
+                    font-size: Type.body;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+            }
+            // The weather's big block: the sky on the left, a dotted line, what the weather does
+            // next in words with the range small under it; the next hours small at the bottom
+            // when there is room (three slots and more).
+            if root.big: hero-box := Rectangle {
+                property <bool> large: root.slots >= 4;
+                // Two slots: the block alone, packed tighter.
+                property <bool> tight: root.slots == 2;
+                property <bool> hours: root.slots >= 3 && root.columns && root.rows.length > 0;
+                // The block's height (the sentence and the range centred in it).
+                property <length> top: self.tight ? 6px : 16px;
+                property <length> temp-line: self.large ? 176px : self.tight ? 94px : 108px;
+                property <length> block: self.top + 28px + self.temp-line + 36px;
+                property <length> left-w: self.large ? 224px : 184px;
+                WeatherBig {
+                    x: (hero-box.left-w - self.width) / 2 + 8px;
+                    y: (hero-box.block - self.height) / 2 + 4px;
+                    kind: root.hero.kind;
+                    large: hero-box.large;
+                    color: Theme.accent;
+                }
+                // The dotted divider.
+                for i in floor((hero-box.block - hero-box.top - 16px) / 8px): Rectangle {
+                    x: hero-box.left-w + 8px;
+                    y: hero-box.top + 4px + i * 8px;
+                    width: 2px;
+                    height: 2px;
+                    border-radius: 1px;
+                    background: Theme.text-3;
+                    opacity: 0.6;
+                }
+                // What the weather does next, in words, and the day's range small under it: no big
+                // number (the date's line above has the temperature now).
+                VerticalLayout {
+                    x: hero-box.left-w + 40px;
+                    y: hero-box.top;
+                    width: parent.width - self.x - 32px;
+                    height: hero-box.block - hero-box.top - 8px;
+                    alignment: center;
+                    spacing: hero-box.tight ? 6px : 12px;
+                    Text {
+                        text: root.hero.label;
+                        font-size: hero-box.large ? Type.title : Type.headline;
+                        color: Theme.text;
+                        wrap: word-wrap;
+                        overflow: elide;
+                        max-height: hero-box.large ? 2 * 60px : 2 * 50px;
+                    }
+                    if root.hero.range != "": Text {
+                        text: root.hero.range;
+                        font-family: "Inter Tnum";
+                        font-size: hero-box.large ? Type.body : Type.reading;
+                        color: Theme.text-2;
+                    }
+                }
+                // The next hours, one small line: the hour, the sky, the temperature.
+                if hero-box.hours: Rectangle {
+                    x: 24px;
+                    y: hero-box.block + max(8px, (parent.height - hero-box.block - 48px - 12px) / 2);
+                    width: parent.width - 48px;
+                    height: 48px;
+                    Rectangle {
+                        y: -8px;
+                        height: 1px;
+                        background: Theme.line;
+                    }
+                    for c[i] in root.rows: HorizontalLayout {
+                        x: i * parent.width / root.rows.length;
+                        width: parent.width / root.rows.length;
+                        height: parent.height;
+                        alignment: center;
+                        spacing: 4px;
+                        Text {
+                            text: c.left;
+                            font-family: "Inter Tnum";
+                            font-size: Type.caption;
+                            color: Theme.text-3;
+                            vertical-alignment: center;
+                        }
+                        Rectangle {
+                            width: 32px;
+                            WeatherGlyph {
+                                y: (parent.height - 32px) / 2;
+                                kind: c.note;
+                            }
+                        }
+                        Text {
+                            text: c.text;
+                            font-family: "Inter Tnum";
+                            font-size: Type.reading;
+                            color: Theme.text;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+            // A header and rows.
+            if !root.line && !root.big: Rectangle {
+                Icon {
+                    x: 24px;
+                    y: 24px;
+                    width: 28px;
+                    height: 28px;
+                    source: root.icon;
+                    color: Theme.accent;
+                }
+                Text {
+                    x: 64px;
+                    y: 16px;
+                    width: parent.width - 64px - 24px;
+                    height: 44px;
+                    text: root.title;
+                    font-size: 20px;
+                    font-weight: 500;
+                    letter-spacing: 1px;
+                    color: Theme.text-3;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                if root.aside != "": Text {
+                    x: parent.width - 24px - self.width;
+                    y: 16px;
+                    height: 44px;
+                    text: root.aside;
+                    font-size: 20px;
+                    color: Theme.text-3;
+                    vertical-alignment: center;
+                }
+                if !root.columns: rows-box := Rectangle {
+                    // Rows from y 60, 52 px each; the left column 148 px wide ("tomorrow") only if a row has one.
+                    property <bool> lefts: root.rows.length > 0 && (root.rows[0].left != ""
+                        || (root.rows.length > 1 && root.rows[1].left != ""));
+                    for r[i] in root.rows: Rectangle {
+                        x: 24px;
+                        y: 60px + i * 52px;
+                        width: parent.width - 48px;
+                        height: 52px;
+                        if r.left != "": Text {
+                            x: 0;
+                            width: 148px;
+                            height: parent.height;
+                            text: r.left;
+                            font-family: "Inter Tnum";
+                            font-size: 28px;
+                            color: Theme.accent;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        // From the right: the change, the value, the sky, the curve; the
+                        // text takes what is left.
+                        change-text := Text {
+                            x: parent.width - self.width;
+                            width: r.change != "" ? max(self.preferred-width, 112px) : 0px;
+                            height: parent.height;
+                            text: r.change;
+                            font-family: "Inter Tnum";
+                            font-size: 24px;
+                            color: root.change-color(r.trend);
+                            vertical-alignment: center;
+                            horizontal-alignment: right;
+                        }
+                        // With a curve the values form a column (176 px, right-aligned), so the
+                        // curves stand one under the other.
+                        right-text := Text {
+                            x: change-text.x - (r.change != "" ? 16px : 0px) - self.width;
+                            width: r.curve != "" ? max(self.preferred-width, 176px) : self.preferred-width;
+                            horizontal-alignment: right;
+                            height: parent.height;
+                            text: r.right;
+                            font-family: "Inter Tnum";
+                            font-size: 28px;
+                            color: r.change != "" ? Theme.text : Theme.text-2;
+                            vertical-alignment: center;
+                        }
+                        if r.note != "": WeatherGlyph {
+                            x: right-text.x - 16px - 32px;
+                            y: (parent.height - 32px) / 2;
+                            kind: r.note;
+                        }
+                        if r.curve != "": Path {
+                            x: right-text.x - 24px - 160px;
+                            y: (parent.height - 32px) / 2;
+                            width: 160px;
+                            height: 32px;
+                            viewbox-x: 0;
+                            viewbox-y: 0;
+                            viewbox-width: 160;
+                            viewbox-height: 32;
+                            commands: r.curve;
+                            stroke: Theme.text-2;
+                            stroke-width: 2px;
+                        }
+                        Text {
+                            x: rows-box.lefts ? 164px : 0px;
+                            width: right-text.x - self.x - (r.curve != "" ? 24px + 160px + 24px
+                                : r.note != "" ? 16px + 32px + 16px : r.right != "" ? 24px : 0px);
+                            height: parent.height;
+                            text: r.text;
+                            font-size: 28px;
+                            color: Theme.text;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                }
+                if root.columns: cols-box := Rectangle {
+                    // Columns under the header, 24 px off the bottom: the hour, the sky, the
+                    // temperature.
+                    property <length> top: 60px + max(0px, parent.height - 60px - 112px - 24px);
+                    for c[i] in root.rows: Rectangle {
+                        x: 24px + i * (parent.width - 48px) / root.rows.length;
+                        y: cols-box.top;
+                        width: (parent.width - 48px) / root.rows.length;
+                        height: 112px;
+                        Text {
+                            x: 0;
+                            y: 0px;
+                            width: parent.width;
+                            height: 28px;
+                            text: c.left;
+                            font-family: "Inter Tnum";
+                            font-size: 24px;
+                            color: Theme.text-2;
+                            horizontal-alignment: center;
+                        }
+                        WeatherGlyph {
+                            x: (parent.width - 32px) / 2;
+                            y: 36px;
+                            kind: c.note;
+                        }
+                        Text {
+                            x: 0;
+                            y: 76px;
+                            width: parent.width;
+                            height: 36px;
+                            text: c.text;
+                            font-size: 28px;
+                            color: Theme.text;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+        // A tap opens the page's own page; a swipe across (more than 48 px) turns it.
+        touch := TouchArea {
+            clicked => {
+                if (abs(self.mouse-x - self.pressed-x) > 48px) {
+                    root.swiped(self.mouse-x < self.pressed-x ? 1 : -1);
+                } else if (root.tappable) {
+                    Feedback.tap();
+                    root.tapped();
+                }
+            }
+        }
+        if root.custom: BoardGrid {
+            opacity: root.alpha;
+            tiles: root.tiles;
+            columns: 4;
+            rows: root.line ? 1 : 2;
+            cell-height: root.line ? 88px : 130px;
+            line: root.line;
+            tapped(id) => {
+                root.tile-tapped(id);
+            }
+            level-changed(id, v, done) => {
+                root.tile-level(id, v, done);
+            }
+            swiped(d) => {
+                root.swiped(d);
+            }
+        }
+    }
+    if root.dots: Rectangle {
+        x: 0;
+        y: parent.height - 16px;
+        width: parent.width;
+        height: 16px;
+        opacity: root.alpha;
+        for i in root.count: Rectangle {
+            x: (parent.width - root.count * 16px + 10px) / 2 + i * 16px;
+            y: 5px;
+            width: 6px;
+            height: 6px;
+            border-radius: 3px;
+            background: i == root.index ? Theme.accent : Theme.line;
         }
     }
 }

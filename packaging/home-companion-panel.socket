@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+# The browser panel (Settings -> Access from the browser): systemd listens on the port and starts
+# home-companion-panel.service at the first connection; the service leaves after ten minutes
+# without requests. Nothing runs and no memory is used until a browser connects. The firewall
+# opens the port to the LAN only (home-companion.nft); whether anyone may get in is the body's
+# answer (off unless switched on on the screen, each device allowed on the screen). The port is
+# [panel] port in home-companion.toml too (the address the screen shows): change both.
+[Unit]
+Description=Home Companion browser panel (socket)
+
+[Socket]
+ListenStream=8125
+# One process serves every connection (it threads them itself)
+Accept=no
+NoDelay=yes
+# Only the device itself and the home network (the firewall says so too)
+IPAddressDeny=any
+IPAddressAllow=localhost link-local 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 fc00::/7
+
+[Install]
+WantedBy=sockets.target

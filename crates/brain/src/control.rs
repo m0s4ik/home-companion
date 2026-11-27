@@ -16,6 +16,8 @@
 //! | `{"cmd":"jobs.list"}` | `{"ok":true,"jobs":[{id,due_at,repeat,text,how,status,source,late}]}` |
 //! | `{"cmd":"jobs.cancel","id":N}` / `{"cmd":"job.ack","id":N}` | `{"ok":true,"changed":0\|1}` |
 //! | `{"cmd":"job.snooze","id":N,"minutes":M}` | `{"ok":true,"id":N\|null}`: acknowledged, the same words again in M minutes (default 10) |
+//! | `{"cmd":"notes.list"}` | `{"ok":true,"notes":[{id,text,created}]}`: the board (notes.rs), oldest first |
+//! | `{"cmd":"notes.add","text":…}` / `{"cmd":"notes.edit","id":N,"text":…}` / `{"cmd":"notes.delete","id":N}` | `{"ok":true,"notes":[…]}`; errors `invalid` (empty, longer than 280), `full` (20 notes), `unknown note`; every change is also a `notes` event |
 //! | `{"cmd":"subscribe"}` | `{"ok":true}`, then the reminders delivered and not yet touched, then every new event (events.rs) on this connection |
 //! | `{"cmd":"ha.token","token":…,"expires_at":…,"url":…,"satellite_entity":…,"allow":[…],"language":…,"lists":[…],"calendars":[…]}` | `{"ok":true}`: the body's Home Assistant link; `lists`/`calendars` are the `todo.*`/`calendar.*` entities chosen on the screen (absent = unchanged, empty = all) |
 //! | `{"cmd":"turn","id":N,"text":…,"answers":Q\|null}` | `{"ok":true}`: Home Assistant's transcript of the body's conversation `id` (the body's counter, used only to pair `turn.end`); it becomes the open turn, which the model's tool calls belong to. With `answers` = the id of a question still waiting, a whole-sentence yes or no answers it (via `voice_ha`) |
@@ -183,6 +185,19 @@ pub fn answer(brain: &Brain, req: &Value) -> (Value, bool) {
         "control.undo" => brain
             .undo_control(id)
             .map_or_else(err, |_| json!({"ok": true})),
+        "notes.list" => json!({"ok": true, "notes": brain.notes_list()}),
+        "notes.add" | "notes.edit" | "notes.delete" => {
+            let text = req.get("text").and_then(Value::as_str).unwrap_or("");
+            let r = match req.get("cmd").and_then(Value::as_str).unwrap_or("") {
+                "notes.add" => brain.note_add(text).map(|_| ()),
+                "notes.edit" => brain.note_edit(id, text),
+                _ => brain.note_delete(id),
+            };
+            match r {
+                Ok(()) => json!({"ok": true, "notes": brain.notes_list()}),
+                Err(e) => err(e.key()),
+            }
+        }
         "subscribe" => return (json!({"ok": true}), true),
         other => err(format!("unknown command {other:?}")),
     };

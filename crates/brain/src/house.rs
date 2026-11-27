@@ -512,12 +512,12 @@ mod tests {
     }
 
     fn house() -> Vec<Entity> {
-        let mut group = ent("light.study", "Study", "Study");
-        group.members = vec!["light.study_left".into(), "light.study_right".into()];
+        let mut group = ent("light.office", "Office", "Office");
+        group.members = vec!["light.office_left".into(), "light.office_right".into()];
         vec![
             ent("light.kitchen", "Kitchen light", "Kitchen"),
-            ent("light.study_left", "Study left", "Study"),
-            ent("light.study_right", "Study right", "Study"),
+            ent("light.office_left", "Office left", "Office"),
+            ent("light.office_right", "Office right", "Office"),
             group,
             ent("cover.living_left", "Living left", "Living room"),
             ent("cover.living_right", "Living right", "Living room"),
@@ -547,21 +547,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p.len(), 2);
-        let p = plan2(&h, &json!({"area": "Study", "service": "spegni"})).unwrap();
+        let p = plan2(&h, &json!({"area": "Office", "service": "spegni"})).unwrap();
         assert_eq!(
             ids(&p),
             [
-                ("light.study_left", "turn_off"),
-                ("light.study_right", "turn_off")
+                ("light.office_left", "turn_off"),
+                ("light.office_right", "turn_off")
             ]
         );
         // A group alone stays a group; duplicates go.
         let p = plan2(
             &h,
-            &json!({"entity_ids": ["light.study", "light.study"], "service": "on"}),
+            &json!({"entity_ids": ["light.office", "light.office"], "service": "on"}),
         )
         .unwrap();
-        assert_eq!(ids(&p), [("light.study", "turn_on")]);
+        assert_eq!(ids(&p), [("light.office", "turn_on")]);
         // Names instead of ids.
         let p = plan2(
             &h,
@@ -570,7 +570,7 @@ mod tests {
         .unwrap();
         assert_eq!(ids(&p), [("light.kitchen", "turn_off")]);
         let e = plan2(&h, &json!({"area": "Attic", "service": "off"})).unwrap_err();
-        assert!(e.contains("Kitchen") && e.contains("Study"), "{e}");
+        assert!(e.contains("Kitchen") && e.contains("Office"), "{e}");
         let e = plan2(&h, &json!({"service": "off"})).unwrap_err();
         assert!(e.contains("which devices"), "{e}");
         assert!(plan2(&h, &json!({"entity_id": "light.nope", "service": "off"})).is_err());
@@ -717,7 +717,7 @@ mod tests {
             "Close 5 blinds in Living room?"
         );
         let mut spread = five.clone();
-        spread[4].entity.area = "Study".into();
+        spread[4].entity.area = "Office".into();
         assert_eq!(question_text(&spread, Lang::It), "Chiudo 5 tapparelle?");
         let mut kinds = five.clone();
         kinds[4].entity.entity_id = "light.x".into();

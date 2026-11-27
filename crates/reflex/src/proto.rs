@@ -5,7 +5,10 @@
 //!
 //! Body → helper (stdin, binary, little endian): `S` + u64 utterance id (a new utterance: the
 //! recognizer starts over), `A` + u32 sample count + that many s16 samples at 16 kHz, `E` + u64
-//! id (the utterance is over: flush the final result unless an endpoint was already reported).
+//! id (the utterance is over: flush the final result unless an endpoint was already reported),
+//! `W` + u64 id + u16 byte length + the wake phrase (UTF-8) + u32 sample count + that many s16
+//! samples (the audio that woke the character: is the phrase in it? Answered with `verify`, on a
+//! recognizer of its own, so an utterance being decoded is not disturbed).
 //!
 //! Helper → body (stdout): one JSON object per line ([`Reply`]): `ready` once the model and the
 //! grammar are loaded, then per utterance:
@@ -32,6 +35,39 @@ pub enum Request {
     StartAnswer(u64),
     Audio(Vec<i16>),
     End(u64),
+    /// The audio before a wake word detection, to check that the wake phrase is in it.
+    Verify {
+        id: u64,
+        phrase: String,
+        samples: Vec<i16>,
+    },
+}
+
+/// Longest audio block the helper accepts (10 s).
+const MAX_SAMPLES: usize = 16_000 * 10;
+
+fn put_samples(v: &mut Vec<u8>, s: &[i16]) {
+    v.extend_from_slice(&(s.len() as u32).to_le_bytes());
+    for x in s {
+        v.extend_from_slice(&x.to_le_bytes());
+    }
+}
+
+fn read_samples(r: &mut impl Read) -> io::Result<Vec<i16>> {
+    let mut n = [0u8; 4];
+    r.read_exact(&mut n)?;
+    let n = u32::from_le_bytes(n) as usize;
+    if n > MAX_SAMPLES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "audio block too long",
+        ));
+    }
+    let mut b = vec![0u8; n * 2];
+    r.read_exact(&mut b)?;
+    Ok(b.chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .collect())
 }
 
 impl Request {
@@ -43,10 +79,22 @@ impl Request {
             Request::Audio(s) => {
                 let mut v = Vec::with_capacity(5 + s.len() * 2);
                 v.push(b'A');
-                v.extend_from_slice(&(s.len() as u32).to_le_bytes());
-                for x in s {
-                    v.extend_from_slice(&x.to_le_bytes());
-                }
+                put_samples(&mut v, s);
+                v
+            }
+            Request::Verify {
+                id,
+                phrase,
+                samples,
+            } => {
+                let p = phrase.as_bytes();
+                let p = &p[..p.len().min(u16::MAX as usize)];
+                let mut v = Vec::with_capacity(16 + p.len() + samples.len() * 2);
+                v.push(b'W');
+                v.extend_from_slice(&id.to_le_bytes());
+                v.extend_from_slice(&(p.len() as u16).to_le_bytes());
+                v.extend_from_slice(p);
+                put_samples(&mut v, samples);
                 v
             }
         }
@@ -71,23 +119,21 @@ impl Request {
                     _ => Request::End(id),
                 }))
             }
-            b'A' => {
-                let mut n = [0u8; 4];
+            b'A' => Ok(Some(Request::Audio(read_samples(r)?))),
+            b'W' => {
+                r.read_exact(&mut u64b)?;
+                let id = u64::from_le_bytes(u64b);
+                let mut n = [0u8; 2];
                 r.read_exact(&mut n)?;
-                let n = u32::from_le_bytes(n) as usize;
-                if n > 16_000 * 10 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "audio block too long",
-                    ));
-                }
-                let mut b = vec![0u8; n * 2];
-                r.read_exact(&mut b)?;
-                Ok(Some(Request::Audio(
-                    b.chunks_exact(2)
-                        .map(|c| i16::from_le_bytes([c[0], c[1]]))
-                        .collect(),
-                )))
+                let mut p = vec![0u8; u16::from_le_bytes(n) as usize];
+                r.read_exact(&mut p)?;
+                let phrase = String::from_utf8(p)
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "phrase not UTF-8"))?;
+                Ok(Some(Request::Verify {
+                    id,
+                    phrase,
+                    samples: read_samples(r)?,
+                }))
             }
             t => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -124,6 +170,14 @@ pub enum Reply {
         /// Audio received for this utterance.
         audio_s: f64,
     },
+    /// The answer to `W`: what a grammar of the wake phrase alone heard in that audio.
+    Verify {
+        id: u64,
+        text: String,
+        /// False when a word of the phrase is not in the model's vocabulary: no check possible.
+        known: bool,
+        ms: f64,
+    },
     Error {
         message: String,
     },
@@ -152,6 +206,11 @@ mod tests {
             Request::StartAnswer(8),
             Request::Audio(vec![0, -1, 32767, -32768]),
             Request::End(7),
+            Request::Verify {
+                id: 9,
+                phrase: "okay alfred".into(),
+                samples: vec![1, -2, 3],
+            },
         ];
         let bytes: Vec<u8> = all.iter().flat_map(|r| r.encode()).collect();
         let mut c = std::io::Cursor::new(bytes);
@@ -181,6 +240,21 @@ mod tests {
         let mut out = Vec::new();
         r.write(&mut out).unwrap();
         let line = String::from_utf8(out).unwrap();
+        assert_eq!(Reply::parse(line.trim()).unwrap(), r);
+    }
+
+    #[test]
+    fn verify_replies_round_trip() {
+        let r = Reply::Verify {
+            id: 9,
+            text: "okay alfred".into(),
+            known: true,
+            ms: 40.0,
+        };
+        let mut out = Vec::new();
+        r.write(&mut out).unwrap();
+        let line = String::from_utf8(out).unwrap();
+        assert!(line.starts_with(r#"{"type":"verify","id":9,"#), "{line}");
         assert_eq!(Reply::parse(line.trim()).unwrap(), r);
     }
 

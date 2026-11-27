@@ -6,4 +6,6 @@
 One message per line, as Home Assistant 2026.x sends them on `/api/websocket` after
 `subscribe_entities` (id 1, `entity_ids: ["weather.home"]`) and `weather/subscribe_forecast` (id 2,
 `forecast_type: "daily"`). Values are made up; the shapes follow a Met.no weather entity.
-`weather-unavailable.jsonl` is the entity while its integration has no data.
+`weather-unavailable.jsonl` is the entity while its integration has no data. `weather-hourly.jsonl`
+adds the hourly forecast (id 3, `forecast_type: "hourly"`; its last entry has no readable time);
+`weather-no-hourly.jsonl` is an integration that refuses it (`forecast_not_supported`).

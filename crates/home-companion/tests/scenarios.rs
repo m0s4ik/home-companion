@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Andrea Mattera
 
-//! The body's side of the Yes/No question and of the reflex gate, row by row (C01-C25): each
+//! The body's side of the Yes/No question and of the reflex gate, row by row (C01-C27): each
 //! test a sequence seen for real (the model's ways of asking, the answering channels, the
 //! timings), the core in-process against the fake Home Assistant, the brain's events injected
 //! as the screen forwards them, and the brain's port recorded. C24 is in src/ui/house.rs.
@@ -802,6 +802,65 @@ fn c22_a_real_question_listens_again() {
 }
 
 #[test]
+fn c22_a_real_question_listens_again_over_a_reminder() {
+    // A reminder left full screen (until OK, maybe for hours) does not keep a question of
+    // Alfred's from being answered.
+    let r = run_setup(
+        Setup::new(
+            sc(cat(vec![
+                hello(),
+                hear("ricordami di chiamare", 800),
+                answer("A che ora?"),
+                hear("alle cinque", 800),
+                answer("Va bene."),
+                bye(500),
+            ])),
+            vec![
+                press(When::View(Phase::Home), 50, || UiEvent::Notice(true)),
+                press(When::Ms(50), 0, talk),
+            ],
+        )
+        .mic(vec![Utt::says(""), Utt::says("")]),
+    );
+    assert_clean(&r);
+    assert_eq!(
+        r.outcomes(),
+        vec![pair("talk", "played"), pair("follow_up", "played")]
+    );
+}
+
+#[test]
+fn c22_a_question_does_not_listen_with_the_microphone_off() {
+    // Muted while he asks: no Listening that hears nothing.
+    let r = run_setup(
+        Setup::new(
+            sc(cat(vec![
+                hello(),
+                hear("ricordami di chiamare", 800),
+                answer("A che ora?"),
+                bye(2500),
+            ])),
+            vec![
+                TALK_AT_HOME,
+                press(When::View(Phase::Speaking), 0, || {
+                    UiEvent::ControlTile("mic".into())
+                }),
+            ],
+        )
+        .mic(vec![Utt::says(""), Utt::says("")]),
+    );
+    assert_clean(&r);
+    assert_eq!(r.outcomes(), vec![pair("talk", "played")]);
+    assert_eq!(r.record.run_pipelines.len(), 1);
+    let speaking = r.views.iter().position(|p| *p == Phase::Speaking).unwrap();
+    assert!(
+        !r.views[speaking..].contains(&Phase::Listening),
+        "no listening: {:?}",
+        r.views
+    );
+}
+
+#[test]
 fn c22_a_courtesy_question_does_not() {
     let r = answered("Fatto. C'è altro?", bye(2000));
     assert_clean(&r);
@@ -813,6 +872,365 @@ fn c22_an_empty_answer_does_not() {
     let r = answered("", bye(2000));
     assert_clean(&r);
     assert_eq!(r.outcomes(), vec![pair("talk", "played")]);
+}
+
+/// Conversation mode (Settings) switched on at the home, then a plain conversation answered
+/// `said`, then `rest`; the window lasts 1.5 s, at most `max()` in a row.
+fn conversing(said: &str, max: fn() -> UiEvent, mic: Vec<Utt>, rest: Vec<Step>) -> Run {
+    run_setup(conversing_setup(said, max, rest, &[]).mic(mic))
+}
+
+/// [`conversing`]'s setup, with `more` after its Talk; the microphone (and the reflexes, if
+/// any) are the caller's.
+fn conversing_setup(said: &str, max: fn() -> UiEvent, rest: Vec<Step>, more: &[Press]) -> Setup {
+    let mut presses = vec![
+        press(When::View(Phase::Home), 50, || {
+            UiEvent::ConversationMode(true)
+        }),
+        press(When::Ms(50), 0, max),
+        press(When::Ms(50), 0, talk),
+    ];
+    presses.extend_from_slice(more);
+    let mut s = Setup::new(
+        sc(cat(vec![
+            hello(),
+            hear("che ore sono", 800),
+            answer(said),
+            rest,
+        ])),
+        presses,
+    );
+    s.follow_up = Some(std::time::Duration::from_millis(1500));
+    s
+}
+
+/// A window that heard something (a cough, the television): Home Assistant got it and found no
+/// words in it.
+fn noise() -> Vec<Step> {
+    vec![
+        Step::WaitDetection { timeout_ms: 9000 },
+        Step::CollectAudio {
+            min_ms: 800,
+            max_ms: 12000,
+        },
+        Step::SendError {
+            text: "No text recognized".into(),
+            code: "stt-no-text-recognized".into(),
+        },
+    ]
+}
+
+/// The window closed as one nobody spoke in: no error's sound, no error's face.
+fn assert_window_closed_quietly(r: &Run) {
+    assert_clean(r);
+    assert_eq!(
+        r.outcomes(),
+        vec![pair("talk", "played"), pair("follow_up", "no speech")]
+    );
+    assert_eq!(r.cues("error"), 0, "{:?}", r.summary.cues);
+    assert_eq!(r.cues("not_understood"), 0, "{:?}", r.summary.cues);
+}
+
+#[test]
+fn c26_conversation_mode_listens_again_after_a_plain_answer() {
+    let r = conversing(
+        "Sono le cinque.",
+        || UiEvent::ConversationMax(3),
+        vec![Utt::says(""), Utt::says(""), Utt::silent()],
+        cat(vec![
+            hear("e domani che giorno è", 800),
+            answer("Sabato."),
+            bye(2500),
+        ]),
+    );
+    assert_clean(&r);
+    assert_eq!(r.answers(), vec!["Sono le cinque.", "Sabato."]);
+    assert_eq!(
+        r.outcomes(),
+        vec![
+            pair("talk", "played"),
+            pair("follow_up", "played"),
+            pair("follow_up", "stopped")
+        ]
+    );
+    // The window nobody spoke in closed without a sound and without the error's face.
+    assert_eq!(r.cues("error"), 0, "{:?}", r.summary.cues);
+    assert_eq!(r.cues("not_understood"), 0);
+    assert!(!r.views.contains(&Phase::Error), "{:?}", r.views);
+    // Nor did Home Assistant hear it: no run for the third.
+    assert_eq!(r.record.run_pipelines.len(), 2);
+}
+
+#[test]
+fn c26_a_silent_window_without_reflexes_opens_no_run() {
+    // No reflex helper: the window holds its audio and opens Home Assistant's pipeline only
+    // when its detector hears speech. Nobody speaks: Home Assistant never transcribes the room.
+    let r = conversing(
+        "Sono le cinque.",
+        || UiEvent::ConversationMax(3),
+        vec![Utt::says(""), Utt::silent()],
+        bye(3000),
+    );
+    assert_clean(&r);
+    assert_eq!(
+        r.outcomes(),
+        vec![pair("talk", "played"), pair("follow_up", "stopped")]
+    );
+    assert_eq!(r.record.run_pipelines.len(), 1);
+    assert_eq!(r.summary.detections_sent, 1);
+    assert_eq!(r.cues("error"), 0, "{:?}", r.summary.cues);
+    assert_eq!(r.cues("not_understood"), 0);
+}
+
+#[test]
+fn c26_conversation_mode_stops_after_the_most_in_a_row() {
+    // One window at most: the second answer goes back to the wake word.
+    let r = conversing(
+        "Sono le cinque.",
+        || UiEvent::ConversationMax(1),
+        vec![Utt::says(""), Utt::says("")],
+        cat(vec![
+            hear("e domani che giorno è", 800),
+            answer("Sabato."),
+            bye(2500),
+        ]),
+    );
+    assert_clean(&r);
+    assert_eq!(
+        r.outcomes(),
+        vec![pair("talk", "played"), pair("follow_up", "played")]
+    );
+    assert_eq!(r.record.run_pipelines.len(), 2);
+}
+
+#[test]
+fn c26_conversation_mode_counts_a_question_in_its_windows() {
+    // Noise heard in the only window and answered with a question ("Può ripetere?"): the
+    // question counts as one more in a row, so the microphone does not open again.
+    let r = conversing(
+        "Sono le cinque.",
+        || UiEvent::ConversationMax(1),
+        vec![Utt::says(""), Utt::says("")],
+        cat(vec![
+            hear("la colonna può ripetere", 800),
+            answer("Mi perdoni, non ho capito. Può ripetere?"),
+            bye(2500),
+        ]),
+    );
+    assert_clean(&r);
+    assert_eq!(
+        r.outcomes(),
+        vec![pair("talk", "played"), pair("follow_up", "played")]
+    );
+    assert_eq!(r.record.run_pipelines.len(), 2);
+}
+
+#[test]
+fn c26_conversation_mode_leaves_a_question_its_whole_turn() {
+    // A question of his is answered well after the window's 1.5 s would have closed.
+    let r = conversing(
+        "A che ora?",
+        || UiEvent::ConversationMax(3),
+        vec![
+            Utt::says(""),
+            Utt {
+                speech: vec![(3.0, 3.8)],
+                ..Utt::says("")
+            },
+            Utt::silent(),
+        ],
+        cat(vec![
+            hear("alle cinque", 4000),
+            answer("Va bene."),
+            bye(2500),
+        ]),
+    );
+    assert_clean(&r);
+    assert_eq!(r.answers(), vec!["A che ora?", "Va bene."]);
+    assert_eq!(r.cues("error"), 0, "{:?}", r.summary.cues);
+}
+
+#[test]
+fn c26_a_noise_in_the_window_ends_it_quietly() {
+    // No reflexes: Home Assistant hears the window live and answers "no text" within it.
+    let r = conversing(
+        "Sono le cinque.",
+        || UiEvent::ConversationMax(3),
+        vec![Utt::says(""), Utt::says("")],
+        cat(vec![noise(), bye(2500)]),
+    );
+    assert_window_closed_quietly(&r);
+    assert_eq!(r.record.run_pipelines.len(), 2);
+}
+
+#[test]
+fn c26_a_noise_the_reflexes_sent_on_ends_the_window_quietly() {
+    // The reflexes heard something that is no reflex (the television's words) and sent it to
+    // Home Assistant, which found no text in it.
+    let r = run_setup(
+        conversing_setup(
+            "Sono le cinque.",
+            || UiEvent::ConversationMax(3),
+            cat(vec![noise(), bye(2500)]),
+            &[],
+        )
+        .utts(vec![chiudi(), chiudi()]),
+    );
+    assert_window_closed_quietly(&r);
+    assert_eq!(r.record.run_pipelines.len(), 2);
+}
+
+#[test]
+fn c26_a_window_kept_for_speech_with_no_end_heard_closes_quietly() {
+    // Someone (the television) keeps speaking in the window: it is kept open for a whole
+    // turn, Home Assistant never hears an end of speech, the listening time runs out. Nobody
+    // asked for the window: it closes without the error's sound or face. Short pauses keep
+    // the body's own detector hearing speech (a steady sound would stop counting).
+    let chatter: Vec<(f32, f32)> = (0..60).map(|i| (i as f32, i as f32 + 0.8)).collect();
+    let mut s = conversing_setup(
+        "Sono le cinque.",
+        || UiEvent::ConversationMax(3),
+        cat(vec![
+            vec![
+                Step::WaitDetection { timeout_ms: 9000 },
+                Step::ExpectAudioStop { timeout_ms: 9000 },
+                Step::SendError {
+                    text: "No text recognized".into(),
+                    code: "stt-no-text-recognized".into(),
+                },
+            ],
+            bye(1500),
+        ]),
+        &[],
+    )
+    .mic(vec![Utt::says(""), Utt::says("").speech(&chatter)]);
+    s.listen_timeout = Some(std::time::Duration::from_secs(3));
+    let r = run_setup(s);
+    assert_clean(&r);
+    assert_eq!(
+        r.outcomes(),
+        vec![pair("talk", "played"), pair("follow_up", "stopped")]
+    );
+    assert_eq!(r.record.run_pipelines.len(), 2);
+    assert_eq!(r.cues("error"), 0, "{:?}", r.summary.cues);
+    assert_eq!(r.cues("not_understood"), 0);
+}
+
+#[test]
+fn c26_no_text_after_the_wake_word_is_still_an_error() {
+    // Only a window ends quietly: a request the user made and nobody understood says so.
+    let r = run_setup(
+        Setup::new(
+            sc(cat(vec![hello(), noise(), bye(1500)])),
+            vec![TALK_AT_HOME],
+        )
+        .mic(vec![Utt::says("")]),
+    );
+    assert!(r.record.failures.is_empty(), "{:?}", r.record.failures);
+    assert_eq!(r.cues("error"), 1, "{:?}", r.summary.cues);
+    assert!(r.views.contains(&Phase::Error), "{:?}", r.views);
+}
+
+#[test]
+fn c26_no_window_with_the_microphone_off() {
+    // Muted while he speaks: the answer ends the conversation, as with the mode off.
+    let r = run_setup(
+        conversing_setup(
+            "Sono le cinque.",
+            || UiEvent::ConversationMax(3),
+            bye(2500),
+            &[press(When::View(Phase::Speaking), 0, || {
+                UiEvent::ControlTile("mic".into())
+            })],
+        )
+        .mic(vec![Utt::says(""), Utt::says("")]),
+    );
+    assert_clean(&r);
+    assert_eq!(r.outcomes(), vec![pair("talk", "played")]);
+    assert_eq!(r.record.run_pipelines.len(), 1);
+}
+
+#[test]
+fn c26_no_window_over_a_ringing_timer() {
+    // A timer comes due while Alfred thinks (it waits for the conversation's end): after the
+    // answer the bell rings, and no window opens over it to send the bell to Home Assistant.
+    let mut s = Setup::new(
+        sc(cat(vec![
+            hello(),
+            hear("che ore sono", 800),
+            vec![Step::Sleep { ms: 2500 }],
+            answer("Sono le cinque."),
+            bye(2500),
+        ])),
+        vec![
+            press(When::View(Phase::Home), 50, || {
+                UiEvent::ConversationMode(true)
+            }),
+            press(When::Ms(50), 0, || UiEvent::ConversationMax(3)),
+            press(When::Ms(0), 0, || UiEvent::TimerStart(1, None)),
+            press(When::Ms(50), 0, talk),
+        ],
+    )
+    .mic(vec![Utt::says(""), Utt::says("")]);
+    s.follow_up = Some(std::time::Duration::from_millis(1500));
+    let r = run_setup(s);
+    assert_clean(&r);
+    assert_eq!(r.summary.rung.len(), 1);
+    assert_eq!(r.outcomes(), vec![pair("talk", "played")]);
+    assert_eq!(r.record.run_pipelines.len(), 1);
+    let speaking = r.views.iter().position(|p| *p == Phase::Speaking).unwrap();
+    assert!(
+        r.views[speaking..].contains(&Phase::Ringing),
+        "the bell after the answer: {:?}",
+        r.views
+    );
+    assert!(
+        !r.views[speaking..].contains(&Phase::Listening),
+        "no window: {:?}",
+        r.views
+    );
+}
+
+#[test]
+fn c26_no_window_over_a_reminder() {
+    // Its chime every 15 s would be heard in the window.
+    let r = run_setup(
+        conversing_setup(
+            "Sono le cinque.",
+            || UiEvent::ConversationMax(3),
+            bye(2500),
+            &[press(When::Ms(0), 0, || UiEvent::Notice(true))],
+        )
+        .mic(vec![Utt::says(""), Utt::says("")]),
+    );
+    assert_clean(&r);
+    assert_eq!(r.outcomes(), vec![pair("talk", "played")]);
+    assert_eq!(r.record.run_pipelines.len(), 1);
+}
+
+#[test]
+fn c26_no_window_while_music_plays() {
+    // AirPlay music is only ducked: a window would hear it as speech.
+    let mut s = conversing_setup(
+        "Sono le cinque.",
+        || UiEvent::ConversationMax(3),
+        bye(2500),
+        &[],
+    )
+    .mic(vec![Utt::says(""), Utt::says("")]);
+    s.music = true;
+    let r = run_setup(s);
+    assert_clean(&r);
+    assert_eq!(r.outcomes(), vec![pair("talk", "played")]);
+    assert_eq!(r.record.run_pipelines.len(), 1);
+}
+
+#[test]
+fn c26_without_conversation_mode_a_plain_answer_ends_it() {
+    let r = answered("Sono le cinque.", bye(2500));
+    assert_clean(&r);
+    assert_eq!(r.outcomes(), vec![pair("talk", "played")]);
+    assert_eq!(r.record.run_pipelines.len(), 1);
 }
 
 /// Do not disturb does not silence the success sound of a spoken yes received, as it does not
@@ -980,4 +1398,58 @@ fn c26_a_run_quiet_after_its_question_is_over_without_a_wait() {
         .filter(|t| t["id"] == 1)
         .collect();
     assert_eq!(ends, vec![json!({"cmd": "turn.end", "id": 1, "said": ""})]);
+}
+
+/// Home Assistant's run fails at once with `stt-provider-missing` (an integration reloading
+/// after the setup wrote the agent's instructions).
+fn provider_missing() -> Vec<Step> {
+    vec![
+        Step::WaitDetection { timeout_ms: 9000 },
+        Step::SendError {
+            text: "No speech-to-text provider".into(),
+            code: "stt-provider-missing".into(),
+        },
+    ]
+}
+
+#[test]
+fn c27_a_missing_speech_to_text_is_tried_once_more_with_the_same_audio() {
+    let r = run_setup(
+        Setup::new(
+            sc(cat(vec![
+                hello(),
+                provider_missing(),
+                hear("che ore sono", 800),
+                answer("Sono le cinque."),
+                bye(1500),
+            ])),
+            vec![TALK_AT_HOME],
+        )
+        .mic(vec![Utt::says("")]),
+    );
+    assert_clean(&r);
+    assert_eq!(r.outcomes(), vec![pair("talk", "played")]);
+    assert_eq!(r.record.run_pipelines.len(), 2);
+    assert_eq!(r.answers(), vec!["Sono le cinque."]);
+    assert_eq!(r.cues("error"), 0, "{:?}", r.summary.cues);
+}
+
+#[test]
+fn c27_a_missing_speech_to_text_is_tried_only_once() {
+    let r = run_setup(
+        Setup::new(
+            sc(cat(vec![
+                hello(),
+                provider_missing(),
+                provider_missing(),
+                bye(1500),
+            ])),
+            vec![TALK_AT_HOME],
+        )
+        .mic(vec![Utt::says("")]),
+    );
+    assert!(r.record.failures.is_empty(), "{:?}", r.record.failures);
+    assert_eq!(r.record.run_pipelines.len(), 2);
+    assert_eq!(r.cues("error"), 1, "{:?}", r.summary.cues);
+    assert!(r.views.contains(&Phase::Error), "{:?}", r.views);
 }

@@ -1,0 +1,6 @@
+{"id":1,"type":"result","success":true,"result":null}
+{"id":1,"type":"event","event":{"a":{"weather.home":{"s":"cloudy","a":{"temperature":13.7,"temperature_unit":"°C","friendly_name":"Forecast Home","supported_features":3},"c":"01JBCDEFGHJKMNPQRSTVWXYZ00","lc":1793800000.123,"lu":1793800000.123}}}}
+{"id":2,"type":"result","success":true,"result":null}
+{"id":2,"type":"event","event":{"type":"daily","forecast":[{"condition":"cloudy","datetime":"2026-11-04T11:00:00+00:00","temperature":15.2,"templow":7.9},{"condition":"sunny","datetime":"2026-11-05T11:00:00+00:00","temperature":16.1,"templow":6.2}]}}
+{"id":3,"type":"result","success":true,"result":null}
+{"id":3,"type":"event","event":{"type":"hourly","forecast":[{"condition":"cloudy","datetime":"2026-11-04T14:00:00+00:00","temperature":13.8,"precipitation":0.0},{"condition":"rainy","datetime":"2026-11-04T15:00:00+00:00","temperature":13.1,"precipitation":0.4},{"condition":"rainy","datetime":"2026-11-04T16:00:00+00:00","temperature":12.6},{"condition":"cloudy","datetime":"2026-11-04T17:00:00+00:00","temperature":11.9},{"condition":"clear-night","datetime":"2026-11-04T18:00:00+00:00","temperature":10.4},{"condition":"clear-night","datetime":"2026-11-04T19:00:00+00:00","temperature":9.8},{"condition":"sunny","datetime":"not a time","temperature":30}]}}

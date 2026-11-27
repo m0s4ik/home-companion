@@ -6,7 +6,8 @@
 # addresses, tokens, `.local` host names. Documentation uses 192.0.2.x and example.home.
 # Checks the tracked text files (and new untracked ones), not target/, Cargo.lock or binaries.
 # If .private-patterns exists (git-ignored, one extended regex per line: the real names of
-# the house), its patterns are checked too. Exit 1 with the lines found.
+# the house), its patterns are checked too. Exit 1 with the lines found. A line that must hold such a
+# value (a test of the private ranges, a firewall rule) says so with "check-private: allow".
 set -eu
 cd "$(dirname "$0")/.."
 pattern='\b10\.[0-9]+\.[0-9]+\.[0-9]+\b|\b192\.168\.|\b172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+|\b169\.254\.|\b([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b|token\s*=\s*"[^"]{8,}|Bearer [A-Za-z0-9._-]{16,}|[A-Za-z0-9-]\.local\b'
@@ -14,7 +15,8 @@ files=$(git ls-files -co --exclude-standard | grep -vE '^(target/|Cargo\.lock$)|
 found=0
 check() {
     # -I: skip binary files.
-    out=$(printf '%s\n' "$files" | tr '\n' '\0' | xargs -0 grep -nIE "$1" 2>/dev/null || true)
+    out=$(printf '%s\n' "$files" | tr '\n' '\0' | xargs -0 grep -nIE "$1" 2>/dev/null \
+        | grep -v -e 'check-private: allow' -e 'IPAddressAllow=' || true)
     if [ -n "$out" ]; then
         printf '%s\n' "$out"
         found=1

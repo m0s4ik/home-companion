@@ -14,6 +14,8 @@
 #                      libwpewebkit-2.0-dev 2.54, which an amd64 cross setup does not have; built here with
 #                      `make -C web/home-companion-web` when its pkg-config file is found
 #   UXPLAY=<file>      UxPlay already built by tools/airplay/build-uxplay.sh (else it is built now)
+#   MDI_JS=<file>      @mdi/js 7.4.47's mdi.js, for the board's icons (opt/icons/mdi.json, made by
+#                      tools/make-board-icons.py); without it `npm pack @mdi/js@7.4.47` fetches it
 #   JOBS=<n>           cargo's jobs (default 6)
 # The Vosk language models are not in the bundle (~50-90 MB each): install.sh downloads them.
 set -eu
@@ -40,12 +42,13 @@ echo "== binaries ($TARGET)"
 [ -f crates/spike-native/third_party/vosk/aarch64/libvosk.so ] || crates/spike-native/tools/fetch-vosk.sh
 cargo build -q --release --target $TARGET -p home-companion --no-default-features --features fbdev,gpu
 cargo build -q --release --target $TARGET -p brain
+cargo build -q --release --target $TARGET -p panel
 cargo build -q --release --target $TARGET -p reflex --features vosk --bin home-companion-reflex
 git checkout -q Cargo.lock 2>/dev/null || true
 
 rm -rf "$STAGE" "$OUT/$NAME.tar.gz"
 mkdir -p "$STAGE/opt/lib" "$STAGE/opt/airplay" "$STAGE/packaging" "$STAGE/tools" "$STAGE/licenses" "$STAGE/source"
-for b in home-companion home-companion-brain home-companion-reflex; do
+for b in home-companion home-companion-brain home-companion-reflex home-companion-panel; do
     $STRIP -o "$STAGE/opt/$b" "$REL/$b"
 done
 install -m 0755 crates/spike-native/third_party/vosk/aarch64/libvosk.so "$STAGE/opt/lib/libvosk.so"
@@ -77,9 +80,20 @@ file "$STAGE/opt/airplay/uxplay" | grep -q 'ARM aarch64' || { echo "uxplay: not 
 echo "== data, packaging, docs"
 cp -R characters "$STAGE/opt/characters"
 cp -R locales "$STAGE/opt/locales"
+# The board's icons (every MDI icon as path data, read by the body only for a tile's icon that is
+# not built in): beside the locales, as the body looks for them.
+if [ -z "${MDI_JS:-}" ]; then
+    rm -rf "$OUT/mdi" && mkdir -p "$OUT/mdi"
+    (cd "$OUT/mdi" && npm pack -q @mdi/js@7.4.47 >/dev/null && tar -xzf mdi-js-7.4.47.tgz)
+    MDI_JS=$OUT/mdi/package/mdi.js
+fi
+head -n 1 "$MDI_JS" | grep -q 'Material Design Icons v7.4.47' || { echo "$MDI_JS: not @mdi/js 7.4.47" >&2; exit 1; }
+python3 -I tools/make-board-icons.py "$MDI_JS" --json "$STAGE/opt/icons/mdi.json" >/dev/null
 cp packaging/home-companion.service packaging/home-companion-brain.service packaging/home-companion-web.service \
     packaging/home-companion.nft packaging/99-home-companion-backlight.rules \
     packaging/home-companion-update.sh packaging/home-companion-update.service packaging/home-companion-update.path \
+    packaging/home-companion-audio-reboot.sh \
+    packaging/home-companion-panel.socket packaging/home-companion-panel.service \
     packaging/home-companion.toml.in packaging/brain.toml.in "$STAGE/packaging/"
 install -m 0755 packaging/install.sh "$STAGE/install.sh"
 install -m 0755 tools/slim-vosk-model.py "$STAGE/tools/"
@@ -89,6 +103,7 @@ cp LICENSE "$STAGE/LICENSE"
 cp /usr/share/common-licenses/Apache-2.0 "$STAGE/licenses/Apache-2.0.txt"
 cp third_party/femtovg/LICENSE-MIT "$STAGE/licenses/femtovg-LICENSE-MIT"
 cp crates/wakeword/THIRD_PARTY.md "$STAGE/licenses/wakeword-THIRD_PARTY.md"
+cp crates/panel/web/vendor/LICENSE "$STAGE/licenses/gridstack-LICENSE"
 cp third_party/femtovg/femtovg-0.27.0-rotation.patch "$STAGE/source/" 2>/dev/null || cp third_party/femtovg-0.27.0-rotation.patch "$STAGE/source/"
 cp tools/airplay/uxplay-1.73.7-home-companion.patch tools/airplay/build-uxplay.sh "$STAGE/source/"
 {
@@ -106,6 +121,11 @@ cp tools/airplay/uxplay-1.73.7-home-companion.patch tools/airplay/build-uxplay.s
     echo "- TensorFlow Lite Micro, microfrontend, FlatBuffers (Apache-2.0) and KISS FFT (BSD-3-Clause) in
   opt/home-companion (the wake word): licenses/wakeword-THIRD_PARTY.md.
 - femtovg 0.27.0 (in opt/home-companion): MIT OR Apache-2.0, with source/femtovg-0.27.0-rotation.patch."
+    echo "- opt/icons/mdi.json and the board's built-in icons in opt/home-companion: Material Design Icons 7.4.47"
+    echo "  (Pictogrammers, https://pictogrammers.com/library/mdi/), path data from @mdi/js, Apache-2.0"
+    echo "  (licenses/Apache-2.0.txt); the screen's other icons are the same set."
+    echo "- gridstack.js 14.1.0 (https://gridstackjs.com/, in opt/home-companion-panel: the browser panel's board"
+    echo "  editor), MIT (licenses/gridstack-LICENSE), unmodified (crates/panel/web/vendor/README.md: the hashes)."
     echo "- opt/home-companion-web links the system's WPE WebKit (LGPL-2.1/BSD) dynamically; nothing of it is in the bundle."
     echo
     echo "## Rust crates compiled into the binaries (name version | licence)"
@@ -118,10 +138,11 @@ cp tools/airplay/uxplay-1.73.7-home-companion.patch tools/airplay/build-uxplay.s
 printf 'version=%s\ncommit=%s%s\nbuilt=%s\nweb_helper=%s\n' "$VERSION" "$COMMIT" "$DIRTY" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     "$WEB_FROM" | sed "s|$ROOT/||; s|$HOME|~|" >"$STAGE/VERSION"
 
-# Nothing private in the bundle's text files
-if grep -rIl -E '192\.168\.|10\.100\.' "$STAGE" >/dev/null; then
+# Nothing private in the bundle's text files (the whole private range 192.168.0.0/16, as in the panel's (check-private: allow)
+# IPAddressAllow, is not an address)
+if grep -rIn -E '192\.168\.|10\.100\.' "$STAGE" | grep -v -E '192\.168\.0\.0/16' | grep -q .; then
     echo "private-looking addresses in:" >&2
-    grep -rIl -E '192\.168\.|10\.100\.' "$STAGE" >&2
+    grep -rIn -E '192\.168\.|10\.100\.' "$STAGE" | grep -v -E '192\.168\.0\.0/16' >&2
     exit 1
 fi
 

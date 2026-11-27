@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Andrea Mattera
 
 //! The home's middle band: at most three cards (four on the compact home), the most urgent first:
-//! (0) a house command that just went through ("Studio: spento", with Undo while it can be
+//! (0) a house command that just went through ("Soggiorno: spento", with Undo while it can be
 //! undone; after its big pop-up, for its 20 s), (1) the body's own status (Home Assistant not answering), (1b) the setup in Home Assistant
 //! asking for the user ("Complete" when an AI appeared, or something to fix: it opens the
 //! Home Assistant page), (2) messages that need an OK (one
@@ -35,6 +35,8 @@ pub struct Alive<'a> {
     pub status: Option<(String, String)>,
     /// (title, text) when the setup in Home Assistant needs the user.
     pub setup: Option<(String, String)>,
+    /// (title, text) while browser access requests are stopped (too many unanswered).
+    pub panel: Option<(String, String)>,
     /// Messages waiting for an OK: (title, text).
     pub messages: &'a [(String, String)],
     /// ("Duplicazione schermo", "iPhone · Tocca per tornare") while a phone mirrors its screen
@@ -56,6 +58,10 @@ pub struct Alive<'a> {
     pub music: Option<(String, String, bool)>,
     /// (title, the answer) while it is recent.
     pub answer: Option<(String, String)>,
+    /// The home's widget shows what comes next and the shopping (widgets.rs): those are its
+    /// pages then, not cards (each only when its page is on in Settings → Screen → Widgets).
+    pub next_in_widget: bool,
+    pub shopping_in_widget: bool,
 }
 
 /// The words the cards need: "{i} of {n}" for messages, "+{n} timers", "Paused".
@@ -88,6 +94,9 @@ pub fn pick_n(a: &Alive, w: &CardWords, max: usize) -> Vec<CardView> {
     }
     if let Some((t, x)) = &a.setup {
         out.push(card("setup", t, x));
+    }
+    if let Some((t, x)) = &a.panel {
+        out.push(card("panel", t, x));
     }
     if let Some((t, x)) = &a.ready {
         out.push(card("ready", t, x));
@@ -139,10 +148,10 @@ pub fn pick_n(a: &Alive, w: &CardWords, max: usize) -> Vec<CardView> {
     if let Some((t, x)) = &a.alarm {
         out.push(card("alarm", t, x));
     }
-    if let Some((t, x)) = &a.upcoming {
+    if let Some((t, x)) = a.upcoming.as_ref().filter(|_| !a.next_in_widget) {
         out.push(card("upcoming", t, x));
     }
-    if let Some((t, x)) = &a.shopping {
+    if let Some((t, x)) = a.shopping.as_ref().filter(|_| !a.shopping_in_widget) {
         out.push(card("shopping", t, x));
     }
     if let Some((t, x, playing)) = &a.music {
@@ -281,6 +290,12 @@ impl HaCards {
         self.items.is_empty()
     }
 
+    /// The pose to show instead of the character's home pose: the one of the last card that
+    /// has one (the cards' own order: a card replaced by its id keeps its place).
+    pub fn pose(&self) -> Option<&str> {
+        self.items.iter().rev().find_map(|e| e.card.pose.as_deref())
+    }
+
     /// (title, text, kind) for [`Alive::ha`]; `default_title` for a card without one.
     pub fn views(&self, default_title: &str) -> Vec<(String, String, &'static str)> {
         self.items
@@ -308,7 +323,7 @@ mod tests {
         let timers = [];
         let msgs = [("Promemoria".to_string(), "Dentista".to_string())];
         let a = Alive {
-            done: Some(("Studio".into(), "spento".into(), true)),
+            done: Some(("Soggiorno".into(), "spento".into(), true)),
             status: Some(("Offline".into(), "x".into())),
             messages: &msgs,
             timers: &timers,
@@ -324,7 +339,7 @@ mod tests {
         assert_eq!(kinds, ["done-undo", "status", "reminder"]);
         assert_eq!(
             (c[0].title.as_str(), c[0].text.as_str()),
-            ("Studio", "spento")
+            ("Soggiorno", "spento")
         );
     }
 
@@ -375,6 +390,7 @@ mod tests {
             done: None,
             status: Some(("Home Assistant non risponde".into(), "Riprovo".into())),
             setup: None,
+            panel: None,
             messages: &msgs,
             mirror: None,
             ready: None,
@@ -385,6 +401,8 @@ mod tests {
             shopping: None,
             music: Some(("Clair de lune".into(), "Debussy · AirPlay".into(), true)),
             answer: None,
+            next_in_widget: false,
+            shopping_in_widget: false,
         };
         let c = pick(&a, &w);
         assert_eq!(kinds(&c), ["status", "reminder", "timer"]);
@@ -495,6 +513,32 @@ mod tests {
         assert_eq!(kinds(&pick(&b, &w)), ["alarm", "upcoming"]);
     }
 
+    #[test]
+    fn with_the_widget_next_and_shopping_are_its_pages() {
+        let (of, more) = words();
+        let w = CardWords {
+            of: &of,
+            more_timers: &more,
+            paused: "In pausa",
+        };
+        let timers = [timer("Pasta", "4:00")];
+        let a = Alive {
+            timers: &timers,
+            upcoming: Some(("Promemoria · oggi 15:00".into(), "dentista".into())),
+            shopping: Some(("Spesa · 2 da prendere".into(), "pane · latte".into())),
+            next_in_widget: true,
+            shopping_in_widget: true,
+            ..Default::default()
+        };
+        assert_eq!(kinds(&pick(&a, &w)), ["timer"]);
+        // Only the pages that are on leave the cards.
+        let b = Alive {
+            shopping_in_widget: false,
+            ..a
+        };
+        assert_eq!(kinds(&pick(&b, &w)), ["timer", "shopping"]);
+    }
+
     fn ha(id: Option<&str>, text: &str, seconds: Option<u64>) -> CardEvent {
         CardEvent::Show(HaCard {
             id: id.map(String::from),
@@ -521,6 +565,31 @@ mod tests {
         assert!(c.expire(t0 + Duration::from_secs(11)));
         assert_eq!(c.views("M").len(), 2);
         assert!(!c.expire(t0 + Duration::from_secs(9999)));
+    }
+
+    #[test]
+    fn ha_cards_pose_of_the_last_card_that_has_one() {
+        let t0 = Instant::now();
+        let with = |id: &str, pose: Option<&str>| {
+            CardEvent::Show(HaCard {
+                id: Some(id.into()),
+                text: id.into(),
+                pose: pose.map(String::from),
+                ..Default::default()
+            })
+        };
+        let mut c = HaCards::default();
+        assert_eq!(c.pose(), None);
+        c.apply(with("laundry", Some("laundry")), t0);
+        c.apply(with("note", None), t0);
+        assert_eq!(c.pose(), Some("laundry"));
+        c.apply(with("bbq", Some("kamado")), t0);
+        assert_eq!(c.pose(), Some("kamado"));
+        c.apply(CardEvent::Dismiss("bbq".into()), t0);
+        assert_eq!(c.pose(), Some("laundry"));
+        // Sent again without a pose, the card no longer brings one.
+        c.apply(with("laundry", None), t0);
+        assert_eq!(c.pose(), None);
     }
 
     #[test]
@@ -580,5 +649,23 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(kinds(&pick(&a, &w)), ["reminder", "hc-timer"]);
+    }
+
+    /// Browser access requests stopped: a card after the body's own status, before the rest.
+    #[test]
+    fn the_panel_card_comes_after_the_status() {
+        let w = CardWords {
+            of: &|i, n| format!("{i}/{n}"),
+            more_timers: &|n| format!("+{n}"),
+            paused: "Paused",
+        };
+        let a = Alive {
+            status: Some(("Offline".into(), "".into())),
+            panel: Some(("Requests stopped".into(), "Ten minutes".into())),
+            answer: Some(("Last answer".into(), "…".into())),
+            ..Default::default()
+        };
+        let kinds: Vec<&str> = pick(&a, &w).iter().map(|c| c.kind).collect();
+        assert_eq!(kinds, ["status", "panel", "answer"]);
     }
 }

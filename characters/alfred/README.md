@@ -30,6 +30,32 @@ of home-companion.
   the `sleeping` loop (80-143, 4 s, once a minute) and `wake_from_sleep` (144-223, he takes the cap off and
   brightens), in that order so each runs into the next; aligned on `idle.png`. `sleeping.png` matches the loop's
   first frame (mean difference 0.8/255).
+- **Settings**: `animations/settings.png` (176 frames, 436x605, 16 fps) holds `settings_in` (0-31: a toolbox comes out
+  from behind his back), `settings_hold` (32-143, 7 s, every 12 s while a settings page is open, still on the
+  toolbox in between: a spanner comes out from behind his back, he looks at it and puts it back) and `settings_out`
+  (144-175: the toolbox put away, back to `idle.png`), aligned on `idle.png` and matched to its brightness. The pose with the tools (drawn with
+  gpt-image-2.5-flare from `idle.png`) was the clips' key frame; there is no still pose for it: between two rounds
+  the body keeps the loop's last frame.
+- **More**: `animations/more.png` (96 frames, 220x605, 16 fps) holds `more_in` (0-15: he turns his head to the
+  page's tiles), `more_hold` (16-79, 4 s, every 8 s while the More page is open: he looks at them, a blink) and
+  `more_out` (80-95: he looks ahead again), aligned on `idle.png` and matched to its brightness; its key frame was a
+  pose drawn with gpt-image-2.5-flare from `idle.png`. Going from More to the settings pages he looks ahead first,
+  then takes out the toolbox (and the other way round).
+- **Earmuffs**: `animations/earmuffs.png` (146 frames, 381x610, 16 fps) holds `muted_in` (0-72: he takes the
+  earmuffs from behind his back, puts them on, the tape on his mouth, arms open) and `muted_out` (73-145, the same
+  backwards), aligned on `idle.png`; the `muted` loop plays in between. Wan 2.2 on the DGX between `idle.png` and
+  `muted.png`; 2 frames fading from the idle clip before it and 4 into the `muted` loop's first frame after it (the
+  clip still moves on its last frame), so neither joint jumps. Five near-duplicate-then-jump frames of the clip
+  (22, 43, 48, 57, 61) were made again with optical flow on the DGX.
+- **Home Assistant page**: `animations/ha.png` (220 frames, 370x607, 16 fps) holds `ha_in` (0-34: the laptop from
+  behind his back, opened), `ha_hold` (35-98, a 4 s loop, breathing), `ha_type_in` (99-117: fingers to the keys,
+  the screen's light rises on his face), `ha_type` (118-165, a 3 s loop), `ha_type_out` (166-184, `ha_type_in`
+  backwards) and `ha_out` (185-219: closed and put back behind him), aligned on `idle.png`; 3 fading frames after
+  `ha_in`, `ha_type_in` and `ha_out` into the clip that follows. The laptop pose is the `working` one.
+- **The moment's poses**: `animations/link.png` (144 frames: `link_in` 0-38, the `link_hold` loop 39-102,
+  `link_out` 103-143), `animations/satisfied.png` (71 frames: `satisfied_in` 0-19, the `satisfied_hold` loop 20-51,
+  `satisfied_out` 52-70, `satisfied_in` backwards) and `animations/nod.png` (25 frames, idle to idle), made like the
+  laptop (3 fading frames after `link_in`, before and after `link_out`).
 - **How the animations were made**: Wan 2.2 I2V A14B (fp8, with the lightx2v 4-step LoRA; weights under
   Apache-2.0) in ComfyUI, from the poses, one clip per state.
 
@@ -43,5 +69,14 @@ and the rules a new drawing must keep (canvas, feet in the same place, the flat 
 close on their first frame). Rebuild a sheet with `tools/make-animation.py`, look at it with a headless screenshot of
 its state, and open a pull request: contributions to the character are CC0 as well.
 
-Missing today: poses for "plug it in" (the Home Assistant link page), "at work", "satisfied" and "a nod", and
-animations for the offline and muted poses.
+- **The moment's poses** (2026-11): `link.png` (a power plug held up, the cable over his arm: the Home Assistant
+  link pages), `working.png` (typing on a laptop on his forearm: an update installs, the setup checks),
+  `satisfied.png` (a hand on his chest, a thumbs-up: such a job went well), `nod.png` (a small nod: a reflex was
+  done). Drawn as POSES.md says (gpt-image-2, `quality: high`, the image edit endpoint with `idle.png`, its style,
+  "Same character…", the character, then the pose), then fitted to idle's figure (height, feet) on `#03050D`.
+- **Offline and muted animations** (2026-11): `animations/offline.png` (he sips his cocktail in the deck chair) and
+  `animations/muted.png` (a small resigned shrug), Wan 2.2 I2V A14B with the source package's style block, seed 42,
+  the pose as first and last frame (fal.ai's turbo variant, not the package's ComfyUI workflow), every second frame
+  kept (16 fps), the last one dropped, `make-animation.py --threshold 12`.
+
+Missing today: an animation for the `working` pose (it stands still).

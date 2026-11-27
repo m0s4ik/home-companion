@@ -8,7 +8,9 @@
 
 pub mod anim;
 pub mod backlight;
+pub mod board;
 pub mod camera;
+pub mod capture;
 pub mod cards;
 pub mod control;
 pub mod house;
@@ -19,12 +21,14 @@ pub mod mirror;
 pub mod mirror_video;
 pub mod next;
 pub mod platform_fb;
+pub mod remote_input;
 pub mod renderer;
 pub mod screen;
 pub mod sensors;
 pub mod touch;
 pub mod weather;
 pub mod webview;
+pub mod widgets;
 
 use slint::{Color, ComponentHandle, Image, Model, ModelRc, VecModel};
 
@@ -229,6 +233,25 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// removes it.
     fn set_weather(&self, w: Option<(&str, &str, &str)>);
     fn set_cards(&self, cards: &[CardView]);
+    /// The home's widget (widgets.rs): the page cut to its slots, or none.
+    fn set_widget(&self, w: &widgets::Shown);
+    /// Settings → Screen → Widgets: every page in the turn's order (kind, label, on, the line
+    /// under it), the interval in seconds (0 = by hand), and the Screen page's line ("3 on").
+    fn set_widget_settings(&self, pages: &[widgets::PageSetting], every: u32, summary: &str);
+    fn on_widget_toggled(&self, f: impl Fn(String, bool) + 'static);
+    fn on_widget_every_stepped(&self, f: impl Fn(i32) + 'static);
+    fn on_widget_tapped(&self, f: impl Fn() + 'static);
+    /// +1 the next page, -1 the previous one.
+    fn on_widget_swiped(&self, f: impl Fn(i32) + 'static);
+    /// The markets' or the sensors' page: its title, the cards, the sources' credit.
+    fn set_trends(&self, title: &str, cards: &[widgets::TrendCard], footer: &str);
+    fn get_trends_kind(&self) -> String;
+    fn set_trends_kind(&self, kind: &str);
+    /// Another city's page: the cities' names (chips), the one shown, its weather as the weather
+    /// page shows it, the source's credit.
+    fn set_city(&self, v: &weather::CityView);
+    fn get_city_index(&self) -> i32;
+    fn on_city_chosen(&self, f: impl Fn(i32) + 'static);
     /// The weather page: the condition's icon (MDI path data), today's high and low, the
     /// daily forecast.
     fn set_weather_page(&self, icon: &str, high: &str, low: &str, rows: &[weather::ForecastRow]);
@@ -236,6 +259,39 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// calendars.
     fn set_choices(&self, todo: &[(String, String, bool)], calendars: &[(String, String, bool)]);
     fn on_choice_toggled(&self, f: impl Fn(String) + 'static);
+    /// Settings → Access from the browser: on, the address, its QR code (None: kept), the
+    /// devices (id, "Chrome on macOS", "192.0.2.24 · 20 nov 14:02"), the one armed for revoking,
+    /// the Settings row's value.
+    fn set_panel(
+        &self,
+        on: bool,
+        address: &str,
+        qr: Option<Image>,
+        devices: &[(String, String, String)],
+        armed: &str,
+        summary: &str,
+    );
+    /// The access dialog's lines: who asks, the code; whether its buttons answer yet.
+    fn set_panel_ask(&self, line: &str, code: &str);
+    fn set_panel_ask_ready(&self, ready: bool);
+    fn on_panel_toggled(&self, f: impl Fn(bool) + 'static);
+    fn on_panel_revoke(&self, f: impl Fn(String) + 'static);
+    fn on_panel_revoke_all(&self, f: impl Fn() + 'static);
+    fn on_panel_answered(&self, f: impl Fn(bool) + 'static);
+    /// Settings → Access from the browser → Remote screen: the switch, and the sign while a
+    /// device is in control ("" none).
+    fn set_remote(&self, on: bool, sign: &str);
+    fn on_remote_toggled(&self, f: impl Fn(bool) + 'static);
+    fn on_remote_stop(&self, f: impl Fn() + 'static);
+    /// Ask on the screen first: the switch; the question «… wants to control the screen» (who,
+    /// whether its buttons answer yet) and its answer.
+    fn set_remote_confirm(&self, on: bool);
+    fn set_remote_ask(&self, line: &str);
+    fn set_remote_ask_ready(&self, ready: bool);
+    fn on_remote_confirm_toggled(&self, f: impl Fn(bool) + 'static);
+    fn on_remote_answered(&self, f: impl Fn(bool) + 'static);
+    /// The sign's rectangle in logical pixels (x, y, width, height), while it is shown.
+    fn remote_sign_rect(&self) -> Option<(f32, f32, f32, f32)>;
     fn set_offline(&self, offline: bool);
     fn set_starting(&self, starting: bool);
     /// Nothing moves by itself (demo screenshots): the start-up line, the ringing ring.
@@ -253,6 +309,10 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_timer_rows(&self, rows: &[TimerLineView]);
     fn set_alarm_rows(&self, rows: &[AlarmLineView]);
     fn set_undo(&self, text: &str);
+    /// The board's page: its notes (id, text, date), its words (title, hint, empty, the
+    /// reminders' chip).
+    fn set_notes(&self, rows: &[(i64, String, String)], words: [&str; 4]);
+    fn on_note_delete(&self, f: impl Fn(i64) + 'static);
     fn set_tiles(&self, chat: &str, timers: &str, settings: &str);
     fn set_settings_values(&self, v: &SettingsView);
     fn set_setup(&self, wifi: &str, ha: &str);
@@ -285,6 +345,15 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// Settings → Info: the page of updates.
     fn set_update(&self, u: &UpdateView);
     fn on_update_check(&self, f: impl Fn() + 'static);
+    /// Settings → Poses: a row per pose of the catalogue.
+    fn set_pose_rows(&self, rows: &[PoseRowData]);
+    /// What is going on (looking, downloading, a failure); "" = nothing to say.
+    fn set_poses_state(&self, s: &str);
+    fn set_poses_busy(&self, busy: bool);
+    /// The settings row's value: how many are installed.
+    fn set_poses_value(&self, s: &str);
+    fn on_pose_toggled(&self, f: impl Fn(String, bool) + 'static);
+    fn on_poses_check(&self, f: impl Fn() + 'static);
     fn on_update_install(&self, f: impl Fn() + 'static);
     fn on_update_prerelease(&self, f: impl Fn(bool) + 'static);
     /// How an update ended: shown as a dialog until OK.
@@ -308,6 +377,14 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn on_mirror_poked(&self, f: impl Fn() + 'static);
     /// The character's face (the conversation bar over the mirrored video).
     fn set_face(&self, face: Image);
+    /// The character's portrait in a round badge (the board's header).
+    fn set_portrait(&self, portrait: Image);
+    /// The board's home button: where it rests (top left), whether it is shown; where a drag
+    /// let it go.
+    fn set_board_home(&self, x: f32, y: f32);
+    fn set_board_home_shown(&self, shown: bool);
+    fn get_board_home_shown(&self) -> bool;
+    fn on_board_home_moved(&self, f: impl Fn(f32, f32) + 'static);
     fn on_music_toggle(&self, f: impl Fn() + 'static);
     fn on_music_next(&self, f: impl Fn() + 'static);
     /// "Interrompi" on the mirroring page: the sender's session is closed.
@@ -370,7 +447,8 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     /// profile, notes, facts (id, text, date), reminders (id, when, text).
     fn set_memories(&self, m: &MemoriesView);
     /// The shopping list: configured, open items (uid, text), the tile's line.
-    fn set_shopping(&self, on: bool, items: &[(String, String)], tile: &str);
+    /// The shopping list's rows: (uid, text, ticked and waiting a few seconds).
+    fn set_shopping(&self, on: bool, items: &[(String, String, bool)], tile: &str);
     fn on_memory_delete(&self, f: impl Fn(i64) + 'static);
     /// "Right" on a fact to confirm.
     fn on_memory_confirm(&self, f: impl Fn(i64) + 'static);
@@ -422,7 +500,16 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn on_home_compact_changed(&self, f: impl Fn(bool) + 'static);
     /// Settings → how readily the character answers to his wake word (-1 less, 0, 1 more).
     fn set_wake_step(&self, step: i32);
+    fn get_wake_step(&self) -> i32;
     fn on_wake_step_changed(&self, f: impl Fn(i32) + 'static);
+    /// Settings → conversation mode (he listens again after every spoken answer).
+    fn set_conversation_mode(&self, on: bool);
+    fn get_conversation_mode(&self) -> bool;
+    fn on_conversation_mode_changed(&self, f: impl Fn(bool) + 'static);
+    /// … and how many times in a row.
+    fn set_conversation_max(&self, times: u32);
+    fn get_conversation_max(&self) -> u32;
+    fn on_conversation_max_changed(&self, f: impl Fn(i32) + 'static);
     /// The cloud services' use: the Home Assistant page's row ("" hides it) and its page.
     fn set_usage(&self, v: &UsageView);
     /// The microphone off: on, its line over the clock.
@@ -437,7 +524,51 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn on_ask_answered(&self, f: impl Fn(bool) + 'static);
     /// Cancel in the question's window (after the yes).
     fn on_ask_cancel(&self, f: impl Fn() + 'static);
+    /// A tile's question: its icon's path data in the question's window ("" = the brain's).
+    fn set_ask_icon(&self, path: &str);
+    /// The board's page: its name, its tiles, its place among the pages, and whether the
+    /// board has nothing on it yet (with the line saying where tiles come from).
+    fn set_board(
+        &self,
+        title: &str,
+        tiles: &[board::draw::TileDraw],
+        index: usize,
+        count: usize,
+        empty: bool,
+        hint: &str,
+    );
+    /// The tiles of the pages before and after the board's page (empty: none), drawn beside
+    /// it while a finger drags it across.
+    fn set_board_sides(&self, prev: &[board::draw::TileDraw], next: &[board::draw::TileDraw]);
+    /// Demo frames (`--state board-swipe`, `board-opening`): the board held where a finger
+    /// would have it, pulled in from the home's edge by `pull` px, its pages moved by `slide`.
+    fn set_board_held(&self, pull: f32, slide: f32);
+    /// A finger started pulling the board in from the home's right edge.
+    fn on_board_peek(&self, f: impl Fn() + 'static);
+    /// The thin handle on the home's right edge (a page has tiles).
+    fn set_board_handle(&self, on: bool);
+    /// The custom widget's tiles.
+    fn set_widget_tiles(&self, tiles: &[board::draw::TileDraw]);
+    /// A tile touched: "page" or "widget", its index in its canvas.
+    fn on_board_tapped(&self, f: impl Fn(String, i32) + 'static);
+    /// A level dragged: where, its index, the value 0-100, the finger lifted.
+    fn on_board_level(&self, f: impl Fn(String, i32, i32, bool) + 'static);
+    /// A swipe across the board's page: +1 the next, -1 the previous.
+    fn on_board_swiped(&self, f: impl Fn(i32) + 'static);
+    /// A touch from the home's right edge is over: its outcome and how far it went (px).
+    fn on_board_edge(&self, f: impl Fn(String, f32) + 'static);
 }
+
+/// The board's tiles in Slint's struct.
+fn board_tiles<T: From<BoardTileFields>>(tiles: &[board::draw::TileDraw]) -> Vec<T> {
+    tiles
+        .iter()
+        .map(|t| T::from(BoardTileFields(t.clone())))
+        .collect()
+}
+
+/// A tile for `From` into the generated struct (one per renderer module).
+pub struct BoardTileFields(pub board::draw::TileDraw);
 
 /// A fact on the "Ricordi" page.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -473,6 +604,9 @@ pub struct MemoriesView {
     /// Calendar events of today and tomorrow: (when, what), after the reminders.
     pub events: Vec<(String, String)>,
 }
+
+/// A row of Settings → Poses: name, label, value (its size), installed, being downloaded.
+pub type PoseRowData = (String, String, String, bool, bool);
 
 /// Words of `Words` (companion.slint) and their keys in locales/*.toml (`[text]`).
 macro_rules! words {
@@ -630,10 +764,45 @@ macro_rules! impl_screen {
                     false_wake,
                     home_compact_off,
                     home_compact_on,
+                    widgets,
+                    widgets_every,
+                    widgets_by_hand,
+                    widgets_hint,
+                    panel_access,
+                    panel_access_on,
+                    panel_access_off,
+                    panel_access_hint,
+                    panel_address_hint,
+                    panel_devices_title,
+                    panel_no_devices,
+                    panel_devices_revoke,
+                    panel_revoke_sure,
+                    panel_revoke_all,
+                    panel_revoke_all_question,
+                    panel_revoke_all_text,
+                    panel_ask_title,
+                    panel_ask_text,
+                    panel_allow,
+                    panel_refuse,
+                    panel_screen,
+                    panel_screen_hint,
+                    panel_screen_confirm,
+                    remote_stop,
+                    remote_ask_title,
+                    remote_ask_text,
+                    remote_deny,
+                    remote_confirm_off_title,
+                    remote_confirm_off_text,
+                    remote_confirm_off,
+                    widget_next,
+                    widget_weather,
+                    widget_shopping,
                     wake_sensitivity,
                     wake_less,
                     wake_normal,
                     wake_more,
+                    conversation_mode,
+                    conversation_max,
                     setup_title,
                     setup_subtitle,
                     setup_step1,
@@ -691,9 +860,13 @@ macro_rules! impl_screen {
                     no,
                     ask_executing,
                     what_short,
+                    shop_undo_hint,
                     update_title,
                     update_check,
                     update_prerelease,
+                    poses_title,
+                    poses_intro,
+                    poses_check,
                     camera,
                     camera_shoot,
                     camera_covered,
@@ -746,6 +919,70 @@ macro_rules! impl_screen {
                     $m::CompanionWindow::set_temperature(self, temperature.into());
                 }
             }
+            fn set_trends(&self, title: &str, cards: &[widgets::TrendCard], footer: &str) {
+                let rows: Vec<$m::TrendRow> = cards
+                    .iter()
+                    .map(|c| $m::TrendRow {
+                        name: c.name.as_str().into(),
+                        detail: c.detail.as_str().into(),
+                        value: c.value.as_str().into(),
+                        change: c.change.as_str().into(),
+                        trend: c.trend as i32,
+                        curve: widgets::curve_path_in(&c.curve, 520.0, 96.0).into(),
+                        low: c.low.as_str().into(),
+                        high: c.high.as_str().into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_trends_title(self, title.into());
+                $m::CompanionWindow::set_trend_rows(self, model!(rows));
+                $m::CompanionWindow::set_trends_footer(self, footer.into());
+            }
+            fn get_trends_kind(&self) -> String {
+                $m::CompanionWindow::get_trends_kind(self).into()
+            }
+            fn set_trends_kind(&self, kind: &str) {
+                $m::CompanionWindow::set_trends_kind(self, kind.into())
+            }
+            fn set_city(&self, v: &weather::CityView) {
+                let (title, names, index, text, condition, rows, footer) = (
+                    v.title,
+                    v.names,
+                    v.index,
+                    v.text,
+                    v.condition,
+                    v.rows,
+                    v.footer,
+                );
+                let names: Vec<slint::SharedString> =
+                    names.iter().map(|n| n.as_str().into()).collect();
+                $m::CompanionWindow::set_city_title(self, title.into());
+                $m::CompanionWindow::set_city_names(self, model!(names));
+                $m::CompanionWindow::set_city_index(self, index as i32);
+                $m::CompanionWindow::set_city_icon(self, text.icon.into());
+                $m::CompanionWindow::set_city_temperature(self, text.temperature.as_str().into());
+                $m::CompanionWindow::set_city_condition(self, condition.into());
+                $m::CompanionWindow::set_city_high(self, text.high.as_str().into());
+                $m::CompanionWindow::set_city_low(self, text.low.as_str().into());
+                let v: Vec<$m::ForecastRow> = rows
+                    .iter()
+                    .map(|r| $m::ForecastRow {
+                        day: r.day.as_str().into(),
+                        kind: r.kind.as_str().into(),
+                        condition: r.condition.as_str().into(),
+                        high: r.high.as_str().into(),
+                        low: r.low.as_str().into(),
+                        rain: r.rain.as_str().into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_city_rows(self, model!(v));
+                $m::CompanionWindow::set_city_footer(self, footer.into());
+            }
+            fn get_city_index(&self) -> i32 {
+                $m::CompanionWindow::get_city_index(self)
+            }
+            fn on_city_chosen(&self, f: impl Fn(i32) + 'static) {
+                $m::CompanionWindow::on_city_chosen(self, f)
+            }
             fn set_weather_page(
                 &self,
                 icon: &str,
@@ -789,6 +1026,87 @@ macro_rules! impl_screen {
             fn on_choice_toggled(&self, f: impl Fn(String) + 'static) {
                 $m::CompanionWindow::on_choice_toggled(self, move |id| f(id.into()))
             }
+            fn set_panel(
+                &self,
+                on: bool,
+                address: &str,
+                qr: Option<Image>,
+                devices: &[(String, String, String)],
+                armed: &str,
+                summary: &str,
+            ) {
+                $m::CompanionWindow::set_panel_on(self, on);
+                $m::CompanionWindow::set_panel_address(self, address.into());
+                if let Some(q) = qr {
+                    $m::CompanionWindow::set_panel_qr(self, q);
+                }
+                let rows: Vec<$m::PanelDevice> = devices
+                    .iter()
+                    .map(|(id, line, detail)| $m::PanelDevice {
+                        id: id.as_str().into(),
+                        line: line.as_str().into(),
+                        detail: detail.as_str().into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_panel_devices(self, model!(rows));
+                $m::CompanionWindow::set_panel_armed(self, armed.into());
+                $m::CompanionWindow::set_panel_summary(self, summary.into());
+            }
+            fn set_panel_ask_ready(&self, ready: bool) {
+                $m::CompanionWindow::set_panel_ask_ready(self, ready);
+            }
+            fn set_panel_ask(&self, line: &str, code: &str) {
+                $m::CompanionWindow::set_panel_ask_line(self, line.into());
+                $m::CompanionWindow::set_panel_ask_code(self, code.into());
+            }
+            fn on_panel_toggled(&self, f: impl Fn(bool) + 'static) {
+                $m::CompanionWindow::on_panel_toggled(self, f)
+            }
+            fn set_remote(&self, on: bool, sign: &str) {
+                $m::CompanionWindow::set_remote_on(self, on);
+                $m::CompanionWindow::set_remote_sign(self, sign.into());
+            }
+            fn on_remote_toggled(&self, f: impl Fn(bool) + 'static) {
+                $m::CompanionWindow::on_remote_toggled(self, f)
+            }
+            fn on_remote_stop(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_remote_stop(self, f)
+            }
+            fn set_remote_confirm(&self, on: bool) {
+                $m::CompanionWindow::set_remote_confirm(self, on);
+            }
+            fn set_remote_ask(&self, line: &str) {
+                $m::CompanionWindow::set_remote_ask_line(self, line.into());
+            }
+            fn set_remote_ask_ready(&self, ready: bool) {
+                $m::CompanionWindow::set_remote_ask_ready(self, ready);
+            }
+            fn on_remote_confirm_toggled(&self, f: impl Fn(bool) + 'static) {
+                $m::CompanionWindow::on_remote_confirm_toggled(self, f)
+            }
+            fn on_remote_answered(&self, f: impl Fn(bool) + 'static) {
+                $m::CompanionWindow::on_remote_answered(self, f)
+            }
+            fn remote_sign_rect(&self) -> Option<(f32, f32, f32, f32)> {
+                if $m::CompanionWindow::get_remote_sign(self).is_empty() {
+                    return None;
+                }
+                Some((
+                    $m::CompanionWindow::get_remote_sign_x(self),
+                    $m::CompanionWindow::get_remote_sign_y(self),
+                    $m::CompanionWindow::get_remote_sign_w(self),
+                    $m::CompanionWindow::get_remote_sign_h(self),
+                ))
+            }
+            fn on_panel_revoke(&self, f: impl Fn(String) + 'static) {
+                $m::CompanionWindow::on_panel_revoke(self, move |id| f(id.into()))
+            }
+            fn on_panel_revoke_all(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_panel_revoke_all(self, f)
+            }
+            fn on_panel_answered(&self, f: impl Fn(bool) + 'static) {
+                $m::CompanionWindow::on_panel_answered(self, f)
+            }
             fn set_cards(&self, cards: &[CardView]) {
                 let v: Vec<$m::CardRow> = cards
                     .iter()
@@ -802,6 +1120,78 @@ macro_rules! impl_screen {
                     })
                     .collect();
                 $m::CompanionWindow::set_cards(self, model!(v))
+            }
+            fn set_widget(&self, w: &widgets::Shown) {
+                let Some(v) = &w.view else {
+                    $m::CompanionWindow::set_widget_shown(self, false);
+                    return;
+                };
+                let rows: Vec<$m::WidgetRow> = v
+                    .rows
+                    .iter()
+                    .map(|r| $m::WidgetRow {
+                        left: r.left.as_str().into(),
+                        text: r.text.as_str().into(),
+                        right: r.right.as_str().into(),
+                        note: r.note.as_str().into(),
+                        change: r.change.as_str().into(),
+                        trend: r.trend as i32,
+                        curve: widgets::curve_path(&r.curve).into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_widget_kind(self, v.kind.key().into());
+                $m::CompanionWindow::set_widget_title(self, v.title.as_str().into());
+                $m::CompanionWindow::set_widget_aside(self, v.aside.as_str().into());
+                $m::CompanionWindow::set_widget_rows(self, model!(rows));
+                $m::CompanionWindow::set_widget_columns(self, v.columns);
+                let h = v.hero.clone().unwrap_or_default();
+                $m::CompanionWindow::set_widget_hero(
+                    self,
+                    $m::WeatherHero {
+                        shown: v.hero.is_some(),
+                        label: h.label.into(),
+                        kind: h.kind.into(),
+                        temp: h.temp.into(),
+                        range: h.range.into(),
+                    },
+                );
+                $m::CompanionWindow::set_widget_slots(self, w.slots as i32);
+                $m::CompanionWindow::set_widget_index(self, w.index as i32);
+                $m::CompanionWindow::set_widget_count(self, w.count as i32);
+                $m::CompanionWindow::set_widget_seq(self, w.seq as i32);
+                $m::CompanionWindow::set_widget_tappable(self, v.kind.tappable());
+                $m::CompanionWindow::set_widget_shown(self, true);
+            }
+            fn set_widget_settings(
+                &self,
+                pages: &[widgets::PageSetting],
+                every: u32,
+                summary: &str,
+            ) {
+                let rows: Vec<$m::WidgetPage> = pages
+                    .iter()
+                    .map(|p| $m::WidgetPage {
+                        key: p.page.key().into(),
+                        label: p.label.as_str().into(),
+                        on: p.on,
+                        hint: p.hint.as_str().into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_widget_pages(self, model!(rows));
+                $m::CompanionWindow::set_widget_every(self, every as i32);
+                $m::CompanionWindow::set_widget_summary(self, summary.into());
+            }
+            fn on_widget_toggled(&self, f: impl Fn(String, bool) + 'static) {
+                $m::CompanionWindow::on_widget_toggled(self, move |k, on| f(k.into(), on))
+            }
+            fn on_widget_every_stepped(&self, f: impl Fn(i32) + 'static) {
+                $m::CompanionWindow::on_widget_every_stepped(self, f)
+            }
+            fn on_widget_tapped(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_widget_tapped(self, f)
+            }
+            fn on_widget_swiped(&self, f: impl Fn(i32) + 'static) {
+                $m::CompanionWindow::on_widget_swiped(self, f)
             }
             fn set_offline(&self, offline: bool) {
                 $m::CompanionWindow::set_offline(self, offline)
@@ -821,6 +1211,11 @@ macro_rules! impl_screen {
                 $m::CompanionWindow::set_heard(self, s.into())
             }
             fn set_answer(&self, s: &str) {
+                // Too long for the conversation bar over a full-screen page (the board).
+                $m::CompanionWindow::set_answer_long(
+                    self,
+                    s.chars().count() > crate::ui::screen::BAR_ANSWER,
+                );
                 $m::CompanionWindow::set_answer(self, s.into())
             }
             fn set_wave(&self, bars: &[f32]) {
@@ -889,6 +1284,24 @@ macro_rules! impl_screen {
             }
             fn set_undo(&self, text: &str) {
                 $m::CompanionWindow::set_undo_text(self, text.into())
+            }
+            fn set_notes(&self, rows: &[(i64, String, String)], words: [&str; 4]) {
+                let v: Vec<$m::JobRow> = rows
+                    .iter()
+                    .map(|(id, t, w)| $m::JobRow {
+                        id: *id as i32,
+                        text: t.as_str().into(),
+                        when: w.as_str().into(),
+                    })
+                    .collect();
+                $m::CompanionWindow::set_note_rows(self, model!(v));
+                $m::CompanionWindow::set_notes_title(self, words[0].into());
+                $m::CompanionWindow::set_notes_hint(self, words[1].into());
+                $m::CompanionWindow::set_notes_empty(self, words[2].into());
+                $m::CompanionWindow::set_reminders_chip(self, words[3].into());
+            }
+            fn on_note_delete(&self, f: impl Fn(i64) + 'static) {
+                $m::CompanionWindow::on_note_delete(self, move |id| f(id as i64))
             }
             fn set_tiles(&self, chat: &str, timers: &str, settings: &str) {
                 $m::CompanionWindow::set_tile_chat(self, chat.into());
@@ -1012,6 +1425,34 @@ macro_rules! impl_screen {
             fn on_update_check(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_update_check(self, f)
             }
+            fn set_pose_rows(&self, rows: &[PoseRowData]) {
+                let v: Vec<$m::PoseRow> = rows
+                    .iter()
+                    .map(|(n, l, v, on, busy)| $m::PoseRow {
+                        name: n.into(),
+                        label: l.into(),
+                        value: v.into(),
+                        on: *on,
+                        busy: *busy,
+                    })
+                    .collect();
+                $m::CompanionWindow::set_pose_rows(self, model!(v))
+            }
+            fn set_poses_state(&self, s: &str) {
+                $m::CompanionWindow::set_poses_state(self, s.into())
+            }
+            fn set_poses_busy(&self, busy: bool) {
+                $m::CompanionWindow::set_poses_busy(self, busy)
+            }
+            fn set_poses_value(&self, s: &str) {
+                $m::CompanionWindow::set_poses_value(self, s.into())
+            }
+            fn on_pose_toggled(&self, f: impl Fn(String, bool) + 'static) {
+                $m::CompanionWindow::on_pose_toggled(self, move |n, on| f(n.into(), on))
+            }
+            fn on_poses_check(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_poses_check(self, f)
+            }
             fn on_update_install(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_update_install_clicked(self, f)
             }
@@ -1076,6 +1517,22 @@ macro_rules! impl_screen {
             }
             fn set_face(&self, face: Image) {
                 $m::CompanionWindow::set_face(self, face)
+            }
+            fn set_portrait(&self, portrait: Image) {
+                $m::CompanionWindow::set_portrait(self, portrait)
+            }
+            fn set_board_home(&self, x: f32, y: f32) {
+                $m::CompanionWindow::set_board_home_x(self, x);
+                $m::CompanionWindow::set_board_home_y(self, y);
+            }
+            fn set_board_home_shown(&self, shown: bool) {
+                $m::CompanionWindow::set_board_home_shown(self, shown)
+            }
+            fn get_board_home_shown(&self) -> bool {
+                $m::CompanionWindow::get_board_home_shown(self)
+            }
+            fn on_board_home_moved(&self, f: impl Fn(f32, f32) + 'static) {
+                $m::CompanionWindow::on_board_home_moved(self, f)
             }
             fn on_music_toggle(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_music_toggle(self, f)
@@ -1253,14 +1710,15 @@ macro_rules! impl_screen {
                     .collect();
                 $m::CompanionWindow::set_event_rows(self, model!(e));
             }
-            fn set_shopping(&self, on: bool, items: &[(String, String)], tile: &str) {
+            fn set_shopping(&self, on: bool, items: &[(String, String, bool)], tile: &str) {
                 $m::CompanionWindow::set_shopping_on(self, on);
                 $m::CompanionWindow::set_tile_shopping(self, tile.into());
                 let v: Vec<$m::ShopRow> = items
                     .iter()
-                    .map(|(u, t)| $m::ShopRow {
+                    .map(|(u, t, k)| $m::ShopRow {
                         uid: u.into(),
                         text: t.into(),
+                        ticked: *k,
                     })
                     .collect();
                 $m::CompanionWindow::set_shop_rows(self, model!(v));
@@ -1424,11 +1882,32 @@ macro_rules! impl_screen {
             fn on_home_compact_changed(&self, f: impl Fn(bool) + 'static) {
                 $m::CompanionWindow::on_home_compact_changed(self, f)
             }
+            fn get_wake_step(&self) -> i32 {
+                $m::CompanionWindow::get_wake_step(self)
+            }
             fn set_wake_step(&self, step: i32) {
                 $m::CompanionWindow::set_wake_step(self, step);
             }
             fn on_wake_step_changed(&self, f: impl Fn(i32) + 'static) {
                 $m::CompanionWindow::on_wake_step_changed(self, f)
+            }
+            fn set_conversation_mode(&self, on: bool) {
+                $m::CompanionWindow::set_conversation_mode(self, on);
+            }
+            fn get_conversation_mode(&self) -> bool {
+                $m::CompanionWindow::get_conversation_mode(self)
+            }
+            fn on_conversation_mode_changed(&self, f: impl Fn(bool) + 'static) {
+                $m::CompanionWindow::on_conversation_mode_changed(self, f)
+            }
+            fn set_conversation_max(&self, times: u32) {
+                $m::CompanionWindow::set_conversation_max(self, times as i32);
+            }
+            fn get_conversation_max(&self) -> u32 {
+                $m::CompanionWindow::get_conversation_max(self).max(0) as u32
+            }
+            fn on_conversation_max_changed(&self, f: impl Fn(i32) + 'static) {
+                $m::CompanionWindow::on_conversation_max_changed(self, f)
             }
             fn set_usage(&self, v: &UsageView) {
                 $m::CompanionWindow::set_usage_label(self, v.label.as_str().into());
@@ -1484,6 +1963,65 @@ macro_rules! impl_screen {
             fn on_ask_cancel(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_ask_cancel(self, f)
             }
+            fn set_ask_icon(&self, path: &str) {
+                $m::CompanionWindow::set_ask_icon_path(self, path.into())
+            }
+            fn set_board(
+                &self,
+                title: &str,
+                tiles: &[board::draw::TileDraw],
+                index: usize,
+                count: usize,
+                empty: bool,
+                hint: &str,
+            ) {
+                let rows: Vec<$m::BoardTileData> = board_tiles(tiles);
+                $m::CompanionWindow::set_board_title(self, title.into());
+                $m::CompanionWindow::set_board_tiles(self, model!(rows));
+                $m::CompanionWindow::set_board_index(self, index as i32);
+                $m::CompanionWindow::set_board_count(self, count as i32);
+                $m::CompanionWindow::set_board_empty(self, empty);
+                $m::CompanionWindow::set_board_hint(self, hint.into());
+            }
+            fn set_board_sides(
+                &self,
+                prev: &[board::draw::TileDraw],
+                next: &[board::draw::TileDraw],
+            ) {
+                let prev: Vec<$m::BoardTileData> = board_tiles(prev);
+                let next: Vec<$m::BoardTileData> = board_tiles(next);
+                $m::CompanionWindow::set_board_prev_tiles(self, model!(prev));
+                $m::CompanionWindow::set_board_next_tiles(self, model!(next));
+            }
+            fn set_board_held(&self, pull: f32, slide: f32) {
+                $m::CompanionWindow::set_board_finger(self, true);
+                $m::CompanionWindow::set_board_pull(self, pull);
+                $m::CompanionWindow::set_board_slide(self, slide);
+            }
+            fn on_board_peek(&self, f: impl Fn() + 'static) {
+                $m::CompanionWindow::on_board_peek(self, f)
+            }
+            fn set_board_handle(&self, on: bool) {
+                $m::CompanionWindow::set_board_handle(self, on)
+            }
+            fn set_widget_tiles(&self, tiles: &[board::draw::TileDraw]) {
+                let rows: Vec<$m::BoardTileData> = board_tiles(tiles);
+                $m::CompanionWindow::set_widget_tiles(self, model!(rows));
+            }
+            fn on_board_tapped(&self, f: impl Fn(String, i32) + 'static) {
+                $m::CompanionWindow::on_board_tapped(self, move |w, i| f(w.into(), i))
+            }
+            fn on_board_level(&self, f: impl Fn(String, i32, i32, bool) + 'static) {
+                $m::CompanionWindow::on_board_level(self, move |w, i, v, done| {
+                    f(w.into(), i, v, done)
+                })
+            }
+            fn on_board_swiped(&self, f: impl Fn(i32) + 'static) {
+                $m::CompanionWindow::on_board_swiped(self, f)
+            }
+            fn on_board_edge(&self, f: impl Fn(String, f32) + 'static) {
+                $m::CompanionWindow::on_board_edge(self, move |o, d| f(o.into(), d))
+            }
             fn on_ha_dismiss(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_ha_dismiss(self, f)
             }
@@ -1492,6 +2030,28 @@ macro_rules! impl_screen {
             }
         }
     };
+}
+
+impl From<BoardTileFields> for sw::BoardTileData {
+    fn from(BoardTileFields(t): BoardTileFields) -> Self {
+        sw::BoardTileData {
+            id: t.index as i32,
+            x: t.x as i32,
+            y: t.y as i32,
+            w: t.w as i32,
+            h: t.h as i32,
+            kind: t.kind.into(),
+            state: t.state.into(),
+            icon: t.icon.into(),
+            name: t.name.into(),
+            value: t.value.into(),
+            status: t.status.into(),
+            range: t.range.into(),
+            level: t.level,
+            curve: t.curve.into(),
+            tappable: t.tappable,
+        }
+    }
 }
 
 impl_screen!(sw);

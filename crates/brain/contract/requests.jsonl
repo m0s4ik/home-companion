@@ -6,3 +6,7 @@
 {"cmd":"turn.end","id":7,"said":"Done."}
 {"cmd":"confirm.answer","id":42,"yes":false,"via":"stop"}
 {"cmd":"confirm.answer","id":42,"yes":true,"via":"voice_reflex"}
+{"cmd":"notes.list"}
+{"cmd":"notes.add","text":"The plumber comes on Tuesday"}
+{"cmd":"notes.edit","id":1,"text":"The plumber comes on Wednesday"}
+{"cmd":"notes.delete","id":1}

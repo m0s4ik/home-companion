@@ -148,11 +148,12 @@ fi
 # ---------------------------------------------------------------- uninstall
 if [ -n "$UNINSTALL" ]; then
     say "removing home-companion $(sed -n 's/^version=//p' "$PREFIX/VERSION" 2>/dev/null || echo '(unknown version)')"
+    have_unit home-companion-panel.socket && run systemctl disable --now home-companion-panel.socket home-companion-panel.service
     for u in home-companion-web home-companion-brain home-companion; do
         have_unit "$u.service" && run systemctl disable --now "$u.service"
     done
     have_unit home-companion-update.path && run systemctl disable --now home-companion-update.path
-    for f in "$UNITS/home-companion.service" "$UNITS/home-companion-web.service" "$UNITS/home-companion-brain.service" "$UNITS/home-companion-update.service" "$UNITS/home-companion-update.path" "$UDEV_RULE" "$WEB_MESA_DROPIN"; do
+    for f in "$UNITS/home-companion.service" "$UNITS/home-companion-web.service" "$UNITS/home-companion-brain.service" "$UNITS/home-companion-update.service" "$UNITS/home-companion-update.path" "$UNITS/home-companion-panel.socket" "$UNITS/home-companion-panel.service" "$UDEV_RULE" "$WEB_MESA_DROPIN"; do
         [ -e "$f" ] && run rm -f "$f"
     done
     [ -d "$UNITS/home-companion.service.wants" ] && run rm -rf "$UNITS/home-companion.service.wants"
@@ -167,7 +168,7 @@ if [ -n "$UNINSTALL" ]; then
         for d in "$ETC" /var/lib/home-companion /var/lib/home-companion-brain /var/lib/home-companion-web /var/cache/home-companion-web; do
             [ -e "$d" ] && run rm -rf "$d"
         done
-        for u in home-companion home-companion-web home-companion-brain; do
+        for u in home-companion home-companion-web home-companion-brain home-companion-panel; do
             getent passwd "$u" >/dev/null && run userdel "$u"
             getent group "$u" >/dev/null && run groupdel "$u"
         done
@@ -324,8 +325,11 @@ say "users"
 ensure_user home-companion /var/lib/home-companion
 ensure_user home-companion-brain /var/lib/home-companion-brain
 ensure_user home-companion-web /var/lib/home-companion-web
-# the body reaches the brain's and the web helper's sockets through their groups
-for g in home-companion-brain home-companion-web; do
+# the browser panel's process: no home, no state; it only reaches the body's panel.sock
+ensure_user home-companion-panel /nonexistent
+# the body reaches the brain's and the web helper's sockets through their groups; it is in the
+# panel's group to give its panel.sock to it (0660, group home-companion-panel)
+for g in home-companion-brain home-companion-web home-companion-panel; do
     if ! id -nG home-companion 2>/dev/null | tr ' ' '\n' | grep -qx "$g"; then
         run usermod -aG "$g" home-companion
     fi
@@ -349,18 +353,24 @@ tree() {
 }
 say "files in $PREFIX"
 run install -d -m 0755 "$PREFIX" "$PREFIX/lib" "$PREFIX/airplay" "$PREFIX/reflex"
-for b in home-companion home-companion-brain home-companion-reflex; do
+for b in home-companion home-companion-brain home-companion-reflex home-companion-panel; do
     put "$HERE/opt/$b" "$PREFIX/$b" 0755
 done
 put "$HERE/opt/lib/libvosk.so" "$PREFIX/lib/libvosk.so" 0755
 # Updates from the screen (Settings -> Info): the root side (crates/home-companion/src/update.rs)
 put "$HERE/packaging/home-companion-update.sh" "$PREFIX/home-companion-update.sh" 0755
+# A reboot for an audio that does not start (crates/home-companion/src/audio_down.rs): home-companion.service
+put "$HERE/packaging/home-companion-audio-reboot.sh" "$PREFIX/home-companion-audio-reboot.sh" 0755
 put "$HERE/opt/airplay/uxplay" "$PREFIX/airplay/uxplay" 0755
 if [ "$WEB_AVAILABLE" = yes ]; then
     put "$HERE/opt/home-companion-web" "$PREFIX/home-companion-web" 0755
 fi
 tree "$HERE/opt/characters" "$PREFIX/characters"
 tree "$HERE/opt/locales" "$PREFIX/locales"
+# The board's icons (Material Design Icons), read beside the locales.
+if [ -d "$HERE/opt/icons" ]; then
+    tree "$HERE/opt/icons" "$PREFIX/icons"
+fi
 
 # ---------------------------------------------------------------- Vosk models
 # ensure_model LANG NAME SHA256: /opt/home-companion/reflex/LANG, downloaded, checked and slimmed once
@@ -461,6 +471,8 @@ put "$HERE/packaging/home-companion.service" "$UNITS/home-companion.service" 064
 put "$HERE/packaging/home-companion-brain.service" "$UNITS/home-companion-brain.service" 0644
 put "$HERE/packaging/home-companion-update.service" "$UNITS/home-companion-update.service" 0644
 put "$HERE/packaging/home-companion-update.path" "$UNITS/home-companion-update.path" 0644
+put "$HERE/packaging/home-companion-panel.socket" "$UNITS/home-companion-panel.socket" 0644
+put "$HERE/packaging/home-companion-panel.service" "$UNITS/home-companion-panel.service" 0644
 # where the body asks for an update (the path unit watches it) and the service says how it goes
 run install -d -m 0750 -o home-companion -g home-companion /var/lib/home-companion/update
 if [ "$WEB_AVAILABLE" = yes ]; then
@@ -501,11 +513,11 @@ if [ -d /etc/nftables.d ] && grep -qs 'nftables.d' /etc/nftables.conf; then
         fi
     fi
 else
-    warn "this system's firewall does not include /etc/nftables.d/*.nft (thinksmart-view-debian before v0.3-rc2): open TCP 8124, 10700, 10701 (and AirPlay TCP 6010-6011, UDP 6010-6012) from the LAN by hand"
+    warn "this system's firewall does not include /etc/nftables.d/*.nft (thinksmart-view-debian before v0.3-rc2): open TCP 8124, 8125, 10700, 10701 (and AirPlay TCP 6010-6011, UDP 6010-6012) from the LAN by hand"
 fi
 
 # ---------------------------------------------------------------- libraries check
-for b in home-companion home-companion-brain home-companion-reflex airplay/uxplay; do
+for b in home-companion home-companion-brain home-companion-reflex home-companion-panel airplay/uxplay; do
     [ "$b" = airplay/uxplay ] && [ "$AIRPLAY" != yes ] && continue
     f=$PREFIX/$b
     [ -e "$f" ] || f=$HERE/opt/$b
@@ -522,6 +534,11 @@ UNITS_ON="home-companion.service home-companion-brain.service"
 # shellcheck disable=SC2086
 run systemctl enable $UNITS_ON
 run systemctl enable --now home-companion-update.path
+# the browser panel: systemd listens, the panel starts at the first connection (off on the screen
+# until the user switches it on)
+run systemctl enable --now home-companion-panel.socket
+# a panel already running (an upgrade) takes the new binary and unit at its next start
+run systemctl try-restart home-companion-panel.service
 if [ -n "$DRY" ] || systemctl -q is-active home-companion.service; then
     say "restarting the services"
     # home-companion-web is PartOf home-companion: it restarts with it

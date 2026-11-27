@@ -20,13 +20,16 @@ contributor or a coding assistant: [docs/android-port.md](docs/android-port.md).
 
 | Crate | What |
 |---|---|
-| `crates/home-companion` | the body: state machine (`core.rs`), Wyoming satellite, reflexes, timers, the screen (`ui/`: `screen.rs` controller, `cards.rs`, renderers fbdev/GPU/window/headless, `webview/` for the Home Assistant view) |
+| `crates/home-companion` | the body: state machine (`core.rs`), Wyoming satellite, reflexes, timers, the screen (`ui/`: `screen.rs` controller, `cards.rs`, `board.rs` the board's tiles, renderers fbdev/GPU/window/headless, `webview/` for the Home Assistant view), `ha/` (setup, the WebSocket hub), `panel/` (the browser panel's requests, the remote screen), `feeds/` (the widget's markets and other cities, through `curl`) |
 | `crates/spike-ui/ui/*.slint` | the screen layout (Slint), used by `home-companion` |
 | `crates/audio` | one owner of speaker and microphone (ALSA on Linux, `cpal` elsewhere) |
 | `crates/wakeword` | microWakeWord models on TensorFlow Lite Micro |
 | `crates/reflex` | the closed Vosk grammar (`characters/*/grammar/<lang>.toml`) and the `home-companion-reflex` helper |
 | `crates/wyoming` | Wyoming protocol, the satellite server and a fake Home Assistant for tests |
 | `crates/brain` | `home-companion-brain`: MCP tools for Home Assistant's agent, memory (SQLite FTS5), reminders, gates |
+| `crates/safety` | which Home Assistant entities may be controlled, and which only after a yes: one table for the brain (voice) and the board (tiles) |
+| `crates/panel` | `home-companion-panel`: the browser panel's pages (`web/`) on the home network; keeps nothing, every request goes to the body (`crates/home-companion/src/panel/`) over a Unix socket |
+| `crates/httpd` | the small HTTP/1.1 server pieces (request limits, answers) of the QR link, the brain's MCP server and the panel |
 | `crates/character`, `crates/locale` | character packages (`characters/`), the body's words (`locales/`) |
 | `crates/webview-*` | the protocol and test tools of the Home Assistant view helper (`web/`, C) |
 | `crates/spike-*` | M0 experiments, kept for measurements |
@@ -35,9 +38,12 @@ contributor or a coding assistant: [docs/android-port.md](docs/android-port.md).
 
 ```sh
 PATH=$HOME/.cargo/bin:$PATH
-cargo test -p home-companion --lib            # the body (127+ tests, ~1 s)
-cargo test -p brain                # the brain
+cargo test -p home-companion --lib            # the body (~540 tests, ~10 s)
+cargo test -p brain                           # the brain
 cargo test -p home-companion --tests          # against the fake Home Assistant
+cargo test -p safety -p panel -p httpd        # the gates, the browser panel's server, HTTP
+crates/home-companion/tools/shoot-golden.sh && python3 -I crates/home-companion/tools/check-golden.py \
+    crates/home-companion/fixtures/golden crates/home-companion/out/golden   # golden screenshots (release build, Xvfb)
 cargo run -p home-companion -- --simulator    # the screen in a window with the laptop's microphone (default features)
 cargo run -p home-companion -- --renderer headless --state home --exit-after 3 --screenshot /tmp/home.png
 ```

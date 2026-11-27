@@ -20,6 +20,7 @@
 //! | `show_view` | `path` (a Home Assistant path) or `camera` (a `camera.*` entity) | opens Home Assistant's view there |
 //! | `take_photo` | (none) | the camera page with its countdown, then a photo kept on the device |
 //! | `upcoming` | `items`: `start`, `end` (unix s), `all_day`, `title`, `calendar` | the calendar events for the "next" card, soonest first; sent on subscribe and when they change |
+//! | `notes` | `items`: `id`, `text`, `created` (unix s) | the board's notes, all of them, oldest first; sent on subscribe and at every change (notes.rs) |
 
 use serde_json::{Value, json};
 
@@ -117,6 +118,11 @@ pub fn upcoming(items: &[Upcoming]) -> Value {
     json!({"event": "upcoming", "items": items})
 }
 
+/// The board's notes, all of them.
+pub fn notes(items: &[crate::notes::Note]) -> Value {
+    json!({"event": "notes", "items": items})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +163,18 @@ mod tests {
             dnd(true, Some(60)),
             dnd(true, None),
             dnd(false, Some(5)),
+            notes(&[
+                crate::notes::Note {
+                    id: 1,
+                    text: "The plumber comes on Tuesday".into(),
+                    created: 1_794_150_000,
+                },
+                crate::notes::Note {
+                    id: 2,
+                    text: "Water the plants".into(),
+                    created: 1_794_153_600,
+                },
+            ]),
         ];
         let lines: Vec<Value> = include_str!("../contract/events.jsonl")
             .lines()

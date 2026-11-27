@@ -12,3 +12,4 @@
 {"event":"dnd","on":true,"minutes":60}
 {"event":"dnd","on":true}
 {"event":"dnd","on":false}
+{"event":"notes","items":[{"id":1,"text":"The plumber comes on Tuesday","created":1794150000},{"id":2,"text":"Water the plants","created":1794153600}]}

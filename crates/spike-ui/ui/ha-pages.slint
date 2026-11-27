@@ -123,6 +123,10 @@ export component WeatherPage inherits Rectangle {
     in property <string> forecast-title;
     in property <string> empty;
     in property <[ForecastRow]> rows;
+    // Room above the page's content (the other cities' chips) and a line under the forecast
+    // (the source's credit).
+    in property <length> top: 0px;
+    in property <string> footer: "";
     callback back();
     PageHeader {
         x: Grid.col-x;
@@ -135,7 +139,7 @@ export component WeatherPage inherits Rectangle {
     }
     Rectangle {
         x: Grid.col-x;
-        y: Grid.page-y;
+        y: Grid.page-y + root.top;
         width: Grid.col-width;
         height: 128px;
         Path {
@@ -171,7 +175,7 @@ export component WeatherPage inherits Rectangle {
     }
     if root.rows.length == 0: Text {
         x: Grid.col-x;
-        y: Grid.page-y + 140px;
+        y: Grid.page-y + root.top + 140px;
         width: Grid.col-width;
         text: root.empty;
         font-size: 24px;
@@ -180,9 +184,9 @@ export component WeatherPage inherits Rectangle {
     }
     if root.rows.length > 0: Flickable {
         x: Grid.col-x;
-        y: Grid.page-y + 136px;
+        y: Grid.page-y + root.top + 136px;
         width: Grid.col-width;
-        height: Grid.page-height - 136px;
+        height: Grid.page-height - root.top - 136px;
         content-height: max(self.height, forecast-col.preferred-height);
         forecast-col := VerticalLayout {
             alignment: start;
@@ -196,6 +200,13 @@ export component WeatherPage inherits Rectangle {
                     width: parent.width;
                     day: r;
                 }
+            }
+            if root.footer != "": Text {
+                height: 48px;
+                text: root.footer;
+                font-size: 20px;
+                color: Theme.text-3;
+                vertical-alignment: center;
             }
         }
     }

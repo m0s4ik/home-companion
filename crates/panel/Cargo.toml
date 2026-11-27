@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Andrea Mattera
+
+[package]
+name = "panel"
+description = "home-companion-panel: the browser panel's pages on the home network; every request goes to the body over a Unix socket, nothing is kept here"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "home-companion-panel"
+path = "src/main.rs"
+
+[dependencies]
+httpd = { path = "../httpd" }
+serde_json = "1"

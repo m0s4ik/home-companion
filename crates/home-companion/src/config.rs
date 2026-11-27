@@ -27,6 +27,7 @@ pub struct Config {
     pub ui: UiCfg,
     pub screen: ScreenCfg,
     pub timers: TimersCfg,
+    pub conversation: ConversationCfg,
     pub home_assistant: HomeAssistantCfg,
     pub weather: WeatherCfg,
     /// Lists in Home Assistant (`todo.*` entities) shown on the screen.
@@ -42,6 +43,8 @@ pub struct Config {
     /// Updates from the releases of a GitHub repository (update.rs); the root update service
     /// reads `repo` from this file too.
     pub update: crate::update::UpdateCfg,
+    /// The browser panel (home-companion-panel): its port and the body's socket.
+    pub panel: crate::panel::PanelCfg,
     pub paths: Paths,
     pub log: LogCfg,
 }
@@ -141,6 +144,13 @@ pub struct WakeWordCfg {
     pub cutoff: f32,
     pub refractory_seconds: f32,
     pub cooloff_seconds: f32,
+    /// The wake check (reflex::wake_check): before answering a detection, the reflex helper
+    /// decodes its last seconds against the wake phrase alone, and a detection without the name
+    /// in it is dropped (the wake word model also fires on ordinary speech). Needs the reflexes;
+    /// without them, or with the helper down, every detection stands as before.
+    pub verify: bool,
+    /// Longest wait for the check; past it the detection stands.
+    pub verify_timeout_ms: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,6 +263,16 @@ pub struct TimersCfg {
     pub overdue_limit_seconds: u64,
 }
 
+/// Settings → "Conversation mode" (off unless the user switches it on, with how many times in a
+/// row): the window after an answer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ConversationCfg {
+    /// How long the microphone stays open after a spoken answer, without the wake word (at
+    /// most 30 s; 0 = never, whatever the switch says).
+    pub follow_up_seconds: f32,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Paths {
@@ -285,6 +305,7 @@ impl Default for Config {
             ui: UiCfg::default(),
             screen: ScreenCfg::default(),
             timers: TimersCfg::default(),
+            conversation: ConversationCfg::default(),
             home_assistant: HomeAssistantCfg::default(),
             weather: WeatherCfg::default(),
             lists: ListsCfg::default(),
@@ -293,6 +314,7 @@ impl Default for Config {
             airplay: Default::default(),
             usage: Default::default(),
             update: Default::default(),
+            panel: Default::default(),
             paths: Paths::default(),
             log: LogCfg::default(),
         }
@@ -319,6 +341,8 @@ impl Default for WakeWordCfg {
             stop_model: String::new(),
             refractory_seconds: 2.0,
             cooloff_seconds: 1.0,
+            verify: true,
+            verify_timeout_ms: 800,
         }
     }
 }
@@ -411,6 +435,28 @@ impl Default for TimersCfg {
             bell_gap_seconds: 1.0,
             overdue_limit_seconds: 600,
         }
+    }
+}
+
+impl Default for ConversationCfg {
+    fn default() -> Self {
+        ConversationCfg {
+            follow_up_seconds: 6.0,
+        }
+    }
+}
+
+impl ConversationCfg {
+    /// The window's length: `follow_up_seconds` within 0 to 30 s. `nan` is a number in TOML
+    /// (and passes through `clamp`, which a `Duration` then refuses with a panic): it counts
+    /// as not written, the default.
+    pub fn follow_up_window(&self) -> Duration {
+        let s = if self.follow_up_seconds.is_nan() {
+            ConversationCfg::default().follow_up_seconds
+        } else {
+            self.follow_up_seconds
+        };
+        Duration::from_secs_f32(s.clamp(0.0, 30.0))
     }
 }
 
@@ -1001,6 +1047,23 @@ mod tests {
     }
 
     #[test]
+    fn the_window_length_survives_any_number() {
+        let window = |toml: &str| {
+            let c: Config = toml::from_str(toml).unwrap();
+            c.conversation.follow_up_window().as_secs_f32()
+        };
+        assert_eq!(window(""), 6.0);
+        assert_eq!(window("[conversation]\nfollow_up_seconds = 2.5"), 2.5);
+        assert_eq!(window("[conversation]\nfollow_up_seconds = 0"), 0.0);
+        assert_eq!(window("[conversation]\nfollow_up_seconds = -3"), 0.0);
+        assert_eq!(window("[conversation]\nfollow_up_seconds = 600"), 30.0);
+        assert_eq!(window("[conversation]\nfollow_up_seconds = inf"), 30.0);
+        assert_eq!(window("[conversation]\nfollow_up_seconds = -inf"), 0.0);
+        // Not a number: the default, not a panic at start.
+        assert_eq!(window("[conversation]\nfollow_up_seconds = nan"), 6.0);
+    }
+
+    #[test]
     fn defaults_round_trip_and_validate() {
         let c = Config::default();
         let t = c.to_toml();
@@ -1008,6 +1071,7 @@ mod tests {
         assert_eq!(back.satellite.bind, "0.0.0.0:10700");
         assert!(back.satellite.allowed.is_empty());
         assert_eq!(back.timers.bell_repeats, 6);
+        assert_eq!(back.conversation.follow_up_seconds, 6.0);
         assert_eq!(back.screen.idle_brightness, 600);
         assert_eq!(back.screen.active_brightness, 4095);
     }

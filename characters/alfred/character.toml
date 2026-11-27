@@ -114,6 +114,46 @@ frames = [0, 64]
 fps = 16
 rect = [203.9, 40.3, 827.1, 986.0]
 
+# On holiday while Home Assistant cannot be reached: he sips his cocktail in the deck chair. With the
+# microphone switch off: earmuffs on, a small resigned shrug. Wan 2.2 I2V A14B (fal.ai's turbo) from the
+# pose as first and last frame with the source package's style block, seed 42, every second frame
+# (16 fps), the last one dropped; make-animation.py --threshold 12. While the state lasts: a sip, then
+# 10 s still in the chair (the last frame is the pose), like the idle; in a plain loop he never stopped drinking.
+[animations.offline]
+file = "animations/offline.png"
+size = [687, 868]
+frames = [0, 80]
+fps = 16
+pause = 10
+rect = [141.1, 46.0, 875.4, 973.7]
+
+[animations.muted]
+file = "animations/muted.png"
+size = [450, 882]
+frames = [0, 80]
+fps = 16
+rect = [277.8, 45.7, 756.9, 984.7]
+
+# The microphone switch (../README.md, "Animations"): one sheet, he takes the earmuffs from behind
+# his back, puts them on, the tape on his mouth, arms open (muted_in, 0-72, ending on the `muted`
+# loop's first frame), and the same played backwards (muted_out, 73-145, ending on idle). Wan 2.2 on
+# the DGX from poses/idle.png and poses/muted.png; the joints softened by a few fading frames (2
+# from idle before, 4 into the loop after: ~/build/alfred-anim-moments/bridge.py), then
+# tools/make-animation.py --threshold 4 --fill 2, aligned on the clip's own first frame.
+[animations.muted_in]
+file = "animations/earmuffs.png"
+size = [381, 610]
+frames = [0, 73]
+fps = 16
+rect = [263.4, 30.9, 860.0, 986.0]
+
+[animations.muted_out]
+file = "animations/earmuffs.png"
+size = [381, 610]
+frames = [73, 146]
+fps = 16
+rect = [263.4, 30.9, 860.0, 986.0]
+
 # A house command went through: a bow, right hand on the chest (0-19 down, 20-28 held, 29-47 back
 # to the idle pose). Pose drawn with gpt-image-2.5-flare from poses/idle.png, frames by Wan 2.2.
 [animations.done]
@@ -146,3 +186,158 @@ size = [403, 631]
 frames = [144, 224]
 fps = 16
 rect = [229.9, 1.0, 860.0, 988.2]
+
+# The settings pages (../README.md, "Animations"): one sheet, the toolbox comes out from behind his
+# back (0-31); every 12 s the spanner comes out from behind his back, he looks at it and puts it back
+# (32-143); the toolbox goes back behind him to the idle pose (144-175). Made with
+# tools/make-animation.py (--threshold 4 --fill 2) from poses/idle.png, colours matched to it frame by
+# frame (tone curves fitted on the pixels that match the pose).
+[animations.settings_in]
+file = "animations/settings.png"
+size = [436, 605]
+frames = [0, 32]
+fps = 16
+rect = [178.3, 38.6, 860.0, 985.1]
+
+[animations.settings_hold]
+file = "animations/settings.png"
+size = [436, 605]
+frames = [32, 144]
+fps = 16
+pause = 12
+rect = [178.3, 38.6, 860.0, 985.1]
+
+[animations.settings_out]
+file = "animations/settings.png"
+size = [436, 605]
+frames = [144, 176]
+fps = 16
+rect = [178.3, 38.6, 860.0, 985.1]
+
+# The "More" page (../README.md, "Animations"): one sheet, he turns his head to the page's tiles
+# (0-15), looks at them blinking now and then (16-79, every 8 s), looks ahead again (80-95). Made
+# with tools/make-animation.py (--threshold 4 --fill 2) from poses/idle.png, colours matched to it
+# frame by frame (tone curves fitted on the pixels that match the pose).
+[animations.more_in]
+file = "animations/more.png"
+size = [220, 604]
+frames = [0, 16]
+fps = 16
+rect = [336.2, 40.2, 680.2, 985.1]
+
+[animations.more_hold]
+file = "animations/more.png"
+size = [220, 604]
+frames = [16, 80]
+fps = 16
+pause = 8
+rect = [336.2, 40.2, 680.2, 985.1]
+
+[animations.more_out]
+file = "animations/more.png"
+size = [220, 604]
+frames = [80, 96]
+fps = 16
+rect = [336.2, 40.2, 680.2, 985.1]
+
+# The Home Assistant page (../README.md, "Animations"): one sheet, the laptop comes out from behind
+# his back and opens (0-34), he holds it, breathing (35-98, in a loop), fingers to the keys while the
+# screen lights his face (99-117), types (118-165, in a loop while a job runs), the reverse of the
+# keys (166-184), the laptop closed and back behind him to the idle pose (185-219). Made like the
+# earmuffs (3 fading frames after ha_in, ha_type_in and ha_out).
+[animations.ha_in]
+file = "animations/ha.png"
+size = [370, 607]
+frames = [0, 35]
+fps = 16
+rect = [247.1, 37.0, 825.6, 986.7]
+
+[animations.ha_hold]
+file = "animations/ha.png"
+size = [370, 607]
+frames = [35, 99]
+fps = 16
+rect = [247.1, 37.0, 825.6, 986.7]
+
+[animations.ha_type_in]
+file = "animations/ha.png"
+size = [370, 607]
+frames = [99, 118]
+fps = 16
+rect = [247.1, 37.0, 825.6, 986.7]
+
+[animations.ha_type]
+file = "animations/ha.png"
+size = [370, 607]
+frames = [118, 166]
+fps = 16
+rect = [247.1, 37.0, 825.6, 986.7]
+
+[animations.ha_type_out]
+file = "animations/ha.png"
+size = [370, 607]
+frames = [166, 185]
+fps = 16
+rect = [247.1, 37.0, 825.6, 986.7]
+
+[animations.ha_out]
+file = "animations/ha.png"
+size = [370, 607]
+frames = [185, 220]
+fps = 16
+rect = [247.1, 37.0, 825.6, 986.7]
+
+# The moment's poses (../README.md, "Animations"), made like the laptop from DGX clips that start
+# and end on idle.png. The link pages: the plug comes out with its cable (link_in, 0-38, 3 frames
+# fading into the loop), held (link_hold, 39-102, a 4 s loop), put away (link_out, 103-143, 3 frames
+# fading from the loop before it and 3 into idle after it). A job gone well: a hand on the chest,
+# a thumbs-up (satisfied_in, 0-19), held (satisfied_hold, 20-51, a 2 s loop), the same backwards
+# (satisfied_out, 52-70). A reflex done: a small nod, idle to idle (nod).
+[animations.link_in]
+file = "animations/link.png"
+size = [327, 605]
+frames = [0, 39]
+fps = 16
+rect = [265.8, 38.6, 777.1, 985.1]
+
+[animations.link_hold]
+file = "animations/link.png"
+size = [327, 605]
+frames = [39, 103]
+fps = 16
+rect = [265.8, 38.6, 777.1, 985.1]
+
+[animations.link_out]
+file = "animations/link.png"
+size = [327, 605]
+frames = [103, 144]
+fps = 16
+rect = [265.8, 38.6, 777.1, 985.1]
+
+[animations.satisfied_in]
+file = "animations/satisfied.png"
+size = [316, 605]
+frames = [0, 20]
+fps = 16
+rect = [290.8, 38.6, 784.9, 985.1]
+
+[animations.satisfied_hold]
+file = "animations/satisfied.png"
+size = [316, 605]
+frames = [20, 52]
+fps = 16
+rect = [290.8, 38.6, 784.9, 985.1]
+
+[animations.satisfied_out]
+file = "animations/satisfied.png"
+size = [316, 605]
+frames = [52, 71]
+fps = 16
+rect = [290.8, 38.6, 784.9, 985.1]
+
+[animations.nod]
+file = "animations/nod.png"
+size = [222, 604]
+frames = [0, 25]
+fps = 16
+rect = [339.3, 41.7, 686.4, 986.7]

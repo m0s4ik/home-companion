@@ -4263,7 +4263,7 @@ mod tests {
              "name": null, "original_name": "OpenAI STT", "options": {"a": 1}, "labels": []},
             {"entity_id": "sensor.unifi_port_7", "config_entry_id": "U", "platform": "unifi",
              "disabled_by": "integration"},
-            {"entity_id": "light.studio", "config_entry_id": "H", "platform": "hue"}
+            {"entity_id": "light.soggiorno", "config_entry_id": "H", "platform": "hue"}
         ]);
         let r = slim_registry(v);
         assert_eq!(r.len(), 2, "the disabled one left out");
@@ -4272,7 +4272,7 @@ mod tests {
             json!({"entity_id": "stt.openai", "config_entry_id": "E", "config_subentry_id": "S",
                    "unique_id": "u", "platform": "openai_conversation", "disabled_by": null})
         );
-        assert_eq!(r[1]["entity_id"], "light.studio");
+        assert_eq!(r[1]["entity_id"], "light.soggiorno");
         assert!(slim_registry(json!({"x": 1})).is_empty());
     }
 }

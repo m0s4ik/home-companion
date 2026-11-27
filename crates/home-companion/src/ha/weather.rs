@@ -14,11 +14,18 @@
 //! - `weather/subscribe_forecast` with `forecast_type: "daily"`: events `{"type": "daily",
 //!   "forecast": [{"datetime", "condition", "temperature", "templow"}, ...]}` (`forecast` may be
 //!   null while the integration has no data).
+//! - the same with `forecast_type: "hourly"` (the home widget's next hours): many integrations
+//!   have no hourly forecast and refuse it; that is not an error, the widget then shows days.
+//!
+//! The same `subscribe_entities` also follows `sun.sun` (built in, on by default): its state
+//! (`above_horizon` / `below_horizon`) and `next_rising` / `next_setting` give the widget its
+//! sunrise and sunset and tell evening from day. Its other attributes (elevation, azimuth) change
+//! every few minutes: those diffs are read but change nothing on screen.
 
 use serde_json::{Map, Value};
 
 /// A day of the daily forecast.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ForecastDay {
     /// "2026-11-04" (the date part of the forecast's `datetime`).
     pub date: String,
@@ -29,10 +36,35 @@ pub struct ForecastDay {
     pub precipitation: Option<f64>,
     /// Chance of precipitation, percent.
     pub precipitation_probability: Option<f64>,
+    /// The day's wind, in the entity's `wind_speed_unit`, and where it comes from (degrees).
+    pub wind_speed: Option<f64>,
+    pub wind_bearing: Option<f64>,
 }
 
-/// What the home screen shows.
+/// An hour of the hourly forecast.
 #[derive(Debug, Clone, PartialEq)]
+pub struct ForecastHour {
+    /// Its start, seconds since the epoch.
+    pub at: i64,
+    pub condition: String,
+    pub temperature: Option<f64>,
+}
+
+/// The sun as `sun.sun` says it.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Sun {
+    /// Above the horizon now.
+    pub up: bool,
+    /// The next sunrise and sunset, seconds since the epoch.
+    pub next_rising: Option<i64>,
+    pub next_setting: Option<i64>,
+}
+
+/// The entity that has the sun (Home Assistant's built-in `sun` integration).
+pub const SUN_ENTITY: &str = "sun.sun";
+
+/// What the home screen shows.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Weather {
     /// Home Assistant's condition (`sunny`, `rainy`, ...).
     pub condition: String,
@@ -43,6 +75,15 @@ pub struct Weather {
     pub today: Option<ForecastDay>,
     /// The following days (for the dashboard to come).
     pub next_days: Vec<ForecastDay>,
+    /// The hourly forecast, soonest first (empty when the integration has none).
+    pub hours: Vec<ForecastHour>,
+    /// The wind now, in `wind_unit`, and where it comes from (degrees, 0 = north).
+    pub wind_speed: Option<f64>,
+    pub wind_bearing: Option<f64>,
+    /// `wind_speed_unit` ("km/h", "m/s", "mph"...), "km/h" if missing.
+    pub wind_unit: String,
+    /// None without `sun.sun`.
+    pub sun: Option<Sun>,
 }
 
 impl Weather {
@@ -59,9 +100,30 @@ impl Weather {
                 low: Some(8.0),
                 precipitation: None,
                 precipitation_probability: None,
+                wind_speed: Some(9.0),
+                wind_bearing: Some(250.0),
             }),
             next_days: Vec::new(),
+            hours: Vec::new(),
+            wind_speed: Some(12.6),
+            wind_bearing: Some(225.0),
+            wind_unit: "km/h".into(),
+            sun: None,
         }
+    }
+
+    /// The sun of the demos' day: risen at 06:58 and setting at 16:52 UTC of `day` (days since
+    /// the epoch), `now` deciding which ones are next.
+    pub fn with_sample_sun(mut self, day: i64, now: i64) -> Weather {
+        let rise = day * 86400 + 6 * 3600 + 58 * 60;
+        let set = day * 86400 + 16 * 3600 + 52 * 60;
+        let next = |t: i64| if t > now { t } else { t + 86400 };
+        self.sun = Some(Sun {
+            up: now >= rise && now < set,
+            next_rising: Some(next(rise)),
+            next_setting: Some(next(set)),
+        });
+        self
     }
 }
 
@@ -77,6 +139,8 @@ impl Weather {
             low: Some(low),
             precipitation: rain,
             precipitation_probability: None,
+            wind_speed: Some(8.0 + i as f64 * 3.0),
+            wind_bearing: Some(180.0 + i as f64 * 30.0),
         };
         let mut w = Weather::sample();
         w.today = Some(day(0, "cloudy", 15.0, 8.0, None));
@@ -89,6 +153,28 @@ impl Weather {
             day(6, "cloudy", 12.0, 7.0, None),
         ];
         w
+    }
+
+    /// The demos' afternoon, hour by hour from `start` (seconds since the epoch, a whole hour).
+    pub fn with_sample_hours(mut self, start: i64) -> Weather {
+        let hours = [
+            ("partlycloudy", 14.0),
+            ("partlycloudy", 14.0),
+            ("cloudy", 13.0),
+            ("rainy", 12.0),
+            ("rainy", 11.0),
+            ("cloudy", 10.0),
+        ];
+        self.hours = hours
+            .iter()
+            .enumerate()
+            .map(|(i, (c, t))| ForecastHour {
+                at: start + i as i64 * 3600,
+                condition: c.to_string(),
+                temperature: Some(*t),
+            })
+            .collect();
+        self
     }
 }
 
@@ -112,6 +198,11 @@ pub struct Handled {
     /// The forecast subscription should be sent again (it failed while the entity was missing
     /// or unavailable, and the entity is back).
     pub resubscribe_forecast: bool,
+    /// The same for the hourly one.
+    pub resubscribe_hourly: bool,
+    /// The hourly forecast was refused (said once in the log, never an error: many integrations
+    /// have none).
+    pub hourly_refused: Option<String>,
     /// A subscription was refused: (id, Home Assistant's error message).
     pub error: Option<(u64, String)>,
 }
@@ -123,18 +214,83 @@ pub struct WeatherModel {
     pub entities_id: u64,
     /// The current `weather/subscribe_forecast` message id.
     pub forecast_id: u64,
+    /// The current hourly `weather/subscribe_forecast` message id (0: not asked).
+    pub hourly_id: u64,
     entity: Option<EntityState>,
+    sun: Option<EntityState>,
     forecast: Vec<ForecastDay>,
     forecast_failed: bool,
+    hourly: Vec<ForecastHour>,
+    hourly_failed: bool,
 }
 
 fn number(v: Option<&Value>) -> Option<f64> {
     v.and_then(Value::as_f64).filter(|x| x.is_finite())
 }
 
+/// A wind bearing: degrees (a number or a numeric string) or a compass point ("NW", "SSE"),
+/// as integrations write it; 0 = north, clockwise.
+pub fn bearing(v: Option<&Value>) -> Option<f64> {
+    let v = v?;
+    if let Some(x) = number(Some(v)) {
+        return Some(x.rem_euclid(360.0));
+    }
+    let s = v.as_str()?.trim();
+    if let Ok(x) = s.parse::<f64>() {
+        return x.is_finite().then(|| x.rem_euclid(360.0));
+    }
+    const POINTS: [&str; 16] = [
+        "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW",
+        "NW", "NNW",
+    ];
+    let up = s.to_ascii_uppercase();
+    POINTS
+        .iter()
+        .position(|p| *p == up)
+        .map(|i| i as f64 * 22.5)
+}
+
+/// The sun of a `sun.sun` state.
+fn sun_of(e: &EntityState) -> Option<Sun> {
+    if is_unavailable(&e.state) {
+        return None;
+    }
+    let time = |k: &str| {
+        e.attributes
+            .get(k)
+            .and_then(Value::as_str)
+            .and_then(crate::usage::parse_time)
+    };
+    Some(Sun {
+        up: e.state == "above_horizon",
+        next_rising: time("next_rising"),
+        next_setting: time("next_setting"),
+    })
+}
+
 /// The date part of an ISO 8601 date-time.
 fn date_of(datetime: &str) -> String {
     datetime.get(..10).unwrap_or(datetime).to_string()
+}
+
+/// The hourly forecast; entries without a readable time are left out.
+pub fn parse_hours(v: &Value) -> Vec<ForecastHour> {
+    let Some(list) = v.as_array() else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|h| {
+            Some(ForecastHour {
+                at: crate::usage::parse_time(h.get("datetime")?.as_str()?)?,
+                condition: h
+                    .get("condition")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                temperature: number(h.get("temperature")),
+            })
+        })
+        .collect()
 }
 
 pub fn parse_forecast(v: &Value) -> Vec<ForecastDay> {
@@ -154,9 +310,48 @@ pub fn parse_forecast(v: &Value) -> Vec<ForecastDay> {
                 low: number(d.get("templow")),
                 precipitation: number(d.get("precipitation")),
                 precipitation_probability: number(d.get("precipitation_probability")),
+                wind_speed: number(d.get("wind_speed")),
+                wind_bearing: bearing(d.get("wind_bearing")),
             })
         })
         .collect()
+}
+
+/// One entity's part of a `subscribe_entities` event, applied to what is kept of it.
+fn apply_one(slot: &mut Option<EntityState>, id: &str, ev: &Value) {
+    if let Some(e) = ev.get("a").and_then(|a| a.get(id)) {
+        *slot = Some(EntityState {
+            state: e.get("s").and_then(Value::as_str).unwrap_or("").to_string(),
+            attributes: e
+                .get("a")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default(),
+        });
+    }
+    if let Some(c) = ev.get("c").and_then(|c| c.get(id)) {
+        let e = slot.get_or_insert_with(EntityState::default);
+        if let Some(plus) = c.get("+") {
+            if let Some(s) = plus.get("s").and_then(Value::as_str) {
+                e.state = s.to_string();
+            }
+            if let Some(a) = plus.get("a").and_then(Value::as_object) {
+                for (k, v) in a {
+                    e.attributes.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        if let Some(gone) = c.pointer("/-/a").and_then(Value::as_array) {
+            for k in gone.iter().filter_map(Value::as_str) {
+                e.attributes.remove(k);
+            }
+        }
+    }
+    if let Some(r) = ev.get("r").and_then(Value::as_array) {
+        if r.iter().any(|x| x.as_str() == Some(id)) {
+            *slot = None;
+        }
+    }
 }
 
 impl WeatherModel {
@@ -165,10 +360,20 @@ impl WeatherModel {
             entity_id: entity_id.to_string(),
             entities_id,
             forecast_id,
+            hourly_id: 0,
             entity: None,
+            sun: None,
             forecast: Vec::new(),
             forecast_failed: false,
+            hourly: Vec::new(),
+            hourly_failed: false,
         }
+    }
+
+    /// Also the hourly forecast, on subscription `id`.
+    pub fn with_hourly(mut self, id: u64) -> WeatherModel {
+        self.hourly_id = id;
+        self
     }
 
     fn available(&self) -> bool {
@@ -200,6 +405,14 @@ impl WeatherModel {
                         .and_then(Value::as_str)
                         .unwrap_or("refused")
                         .to_string();
+                    if id.is_some() && id == Some(self.hourly_id) {
+                        self.hourly_failed = true;
+                        if !self.hourly.is_empty() {
+                            self.hourly.clear();
+                            out.changed = true;
+                        }
+                        out.hourly_refused = Some(why.clone());
+                    }
                     if id == Some(self.forecast_id) {
                         self.forecast_failed = true;
                         if !self.forecast.is_empty() {
@@ -223,6 +436,20 @@ impl WeatherModel {
                     self.forecast_failed = false;
                     out.resubscribe_forecast = true;
                 }
+                if self.hourly_failed && !was_available && self.available() {
+                    self.hourly_failed = false;
+                    out.resubscribe_hourly = true;
+                }
+            }
+            Some("event") if id.is_some() && id == Some(self.hourly_id) => {
+                let hours = msg
+                    .pointer("/event/forecast")
+                    .map(parse_hours)
+                    .unwrap_or_default();
+                if hours != self.hourly {
+                    self.hourly = hours;
+                    out.changed = true;
+                }
             }
             Some("event") if id == Some(self.forecast_id) => {
                 let days = msg
@@ -239,45 +466,14 @@ impl WeatherModel {
         out
     }
 
-    /// A `subscribe_entities` event; true if something changed.
+    /// A `subscribe_entities` event; true if something on screen changed (the sun counts only
+    /// when it rises, sets or its next times move).
     fn apply_entities(&mut self, ev: &Value) -> bool {
         let before = self.entity.clone();
-        if let Some(e) = ev.get("a").and_then(|a| a.get(&self.entity_id)) {
-            self.entity = Some(EntityState {
-                state: e.get("s").and_then(Value::as_str).unwrap_or("").to_string(),
-                attributes: e
-                    .get("a")
-                    .and_then(Value::as_object)
-                    .cloned()
-                    .unwrap_or_default(),
-            });
-        }
-        if let Some(c) = ev.get("c").and_then(|c| c.get(&self.entity_id)) {
-            let e = self.entity.get_or_insert_with(EntityState::default);
-            if let Some(plus) = c.get("+") {
-                if let Some(s) = plus.get("s").and_then(Value::as_str) {
-                    e.state = s.to_string();
-                }
-                if let Some(a) = plus.get("a").and_then(Value::as_object) {
-                    for (k, v) in a {
-                        e.attributes.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-            if let Some(gone) = c.pointer("/-/a").and_then(Value::as_array) {
-                for k in gone.iter().filter_map(Value::as_str) {
-                    e.attributes.remove(k);
-                }
-            }
-        }
-        if let Some(r) = ev.get("r").and_then(Value::as_array) {
-            if r.iter()
-                .any(|x| x.as_str() == Some(self.entity_id.as_str()))
-            {
-                self.entity = None;
-            }
-        }
-        self.entity != before
+        let sun_before = self.sun.as_ref().and_then(sun_of);
+        apply_one(&mut self.entity, &self.entity_id, ev);
+        apply_one(&mut self.sun, SUN_ENTITY, ev);
+        self.entity != before || self.sun.as_ref().and_then(sun_of) != sun_before
     }
 
     /// What the screen shows; `today` is the local date ("2026-11-04"): forecast days before it
@@ -312,6 +508,16 @@ impl WeatherModel {
             unit,
             today: today_fc,
             next_days,
+            hours: self.hourly.clone(),
+            wind_speed: number(e.attributes.get("wind_speed")),
+            wind_bearing: bearing(e.attributes.get("wind_bearing")),
+            wind_unit: e
+                .attributes
+                .get("wind_speed_unit")
+                .and_then(Value::as_str)
+                .unwrap_or("km/h")
+                .to_string(),
+            sun: self.sun.as_ref().and_then(sun_of),
         })
     }
 }
@@ -400,6 +606,39 @@ mod tests {
         let w = m.view("2026-11-02").unwrap();
         assert!(w.today.is_none());
         assert_eq!(w.next_days.len(), 4);
+    }
+
+    #[test]
+    fn hourly_forecast_for_the_widget() {
+        let mut m = WeatherModel::new("weather.home", 1, 2).with_hourly(3);
+        let out = feed(&mut m, &fixture("weather-hourly.jsonl"));
+        assert!(
+            out.iter()
+                .all(|h| h.error.is_none() && h.hourly_refused.is_none())
+        );
+        let w = m.view("2026-11-04").unwrap();
+        // Six hours (the one without a readable time left out), with their times.
+        assert_eq!(w.hours.len(), 6);
+        assert_eq!(
+            w.hours[0].at,
+            crate::usage::parse_time("2026-11-04T14:00:00Z").unwrap()
+        );
+        assert_eq!(w.hours[1].condition, "rainy");
+        assert_eq!(w.hours[4].temperature, Some(10.4));
+        assert_eq!(w.today.as_ref().map(|d| d.high), Some(Some(15.2)));
+    }
+
+    #[test]
+    fn no_hourly_forecast_is_not_an_error() {
+        let mut m = WeatherModel::new("weather.home", 1, 2).with_hourly(3);
+        let out = feed(&mut m, &fixture("weather-no-hourly.jsonl"));
+        // Refused: said once, never an error (the weather stays on, with days).
+        assert!(out.iter().all(|h| h.error.is_none()));
+        assert_eq!(out.iter().filter(|h| h.hourly_refused.is_some()).count(), 1);
+        let w = m.view("2026-11-04").unwrap();
+        assert!(w.hours.is_empty());
+        assert_eq!(w.condition, "sunny");
+        assert_eq!(w.next_days.len(), 1);
     }
 
     #[test]
@@ -508,5 +747,60 @@ mod tests {
         }
         // Fourteen pictures: windy-variant shares windy's, unknown ones the exceptional one.
         assert_eq!(seen.len(), 14);
+    }
+
+    #[test]
+    fn bearings_in_degrees_or_compass_points() {
+        let b = |v: Value| bearing(Some(&v));
+        assert_eq!(b(serde_json::json!(225)), Some(225.0));
+        assert_eq!(b(serde_json::json!(-90.0)), Some(270.0));
+        assert_eq!(b(serde_json::json!("SW")), Some(225.0));
+        assert_eq!(b(serde_json::json!("nne")), Some(22.5));
+        assert_eq!(b(serde_json::json!("180")), Some(180.0));
+        assert_eq!(b(serde_json::json!("calm")), None);
+        assert_eq!(bearing(None), None);
+    }
+
+    #[test]
+    fn wind_and_the_sun() {
+        let mut m = WeatherModel::new("weather.home", 1, 2);
+        let ev: Value = serde_json::from_str(
+            r#"{"id":1,"type":"event","event":{"a":{
+                "weather.home":{"s":"sunny","a":{"temperature":9.5,"wind_speed":4.0,
+                    "wind_speed_unit":"m/s","wind_bearing":"NW"}},
+                "sun.sun":{"s":"above_horizon","a":{"next_rising":"2026-11-05T06:03:11.5+00:00",
+                    "next_setting":"2026-11-04T16:20:00+00:00","elevation":20.1}}}}}"#,
+        )
+        .unwrap();
+        assert!(m.handle(&ev).changed);
+        let w = m.view("2026-11-04").unwrap();
+        assert_eq!((w.wind_speed, w.wind_bearing), (Some(4.0), Some(315.0)));
+        assert_eq!(w.wind_unit, "m/s");
+        let sun = w.sun.unwrap();
+        assert!(sun.up);
+        assert_eq!(
+            sun.next_setting,
+            crate::usage::parse_time("2026-11-04T16:20:00Z")
+        );
+        // The sun's elevation moves every few minutes: nothing on screen changes.
+        let tick: Value = serde_json::from_str(
+            r#"{"id":1,"type":"event","event":{"c":{"sun.sun":{"+":{"a":{"elevation":19.4}}}}}}"#,
+        )
+        .unwrap();
+        assert!(!m.handle(&tick).changed);
+        // It sets: the state and the next setting move.
+        let set: Value = serde_json::from_str(
+            r#"{"id":1,"type":"event","event":{"c":{"sun.sun":{"+":{"s":"below_horizon",
+                "a":{"next_setting":"2026-11-05T16:19:00+00:00"}}}}}}"#,
+        )
+        .unwrap();
+        assert!(m.handle(&set).changed);
+        assert!(!m.view("2026-11-04").unwrap().sun.unwrap().up);
+        // Without sun.sun, and without wind: none.
+        let mut m = WeatherModel::new("weather.home", 1, 2);
+        feed(&mut m, &fixture("weather-available.jsonl"));
+        let w = m.view("2026-11-04").unwrap();
+        assert_eq!(w.sun, None);
+        assert_eq!(w.wind_unit, "km/h");
     }
 }
