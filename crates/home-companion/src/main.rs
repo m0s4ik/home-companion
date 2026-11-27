@@ -391,20 +391,34 @@ fn go<S: Screen>(
     };
 
     // Audio.
-    let tx = core_tx.clone();
-    let audio = match audio::Audio::start(
-        &cfg.audio_config(),
-        Box::new(move |e| {
-            let _ = tx.send(CoreEvent::Audio(e));
-        }),
-    ) {
+    let audio_cfg = cfg.audio_config();
+    let started = home_companion::audio_down::start_with_retries(
+        home_companion::audio_down::START_TRIES,
+        home_companion::audio_down::START_RETRY_AFTER,
+        || {
+            let tx = core_tx.clone();
+            audio::Audio::start(
+                &audio_cfg,
+                Box::new(move |e| {
+                    let _ = tx.send(CoreEvent::Audio(e));
+                }),
+            )
+        },
+        std::thread::sleep,
+        signals::stop_requested,
+    );
+    let audio = match started {
         Ok(a) => a,
         Err(e) => {
             log::error!(event = "audio_error", error = e.to_string().as_str(); "audio: {e}");
-            // The service reboots once for this exit (crate::audio_down). Already rebooted for
+            let code = home_companion::audio_down::exit_for(&e);
+            // The service reboots once for exit 6 (crate::audio_down). Already rebooted for
             // it: first a minute of the screen saying that the audio is not answering.
             let state_dir = cfg.state_dir();
-            if opts.demo.is_none() && home_companion::audio_down::rebooted(&state_dir) {
+            if code == exit::AUDIO
+                && opts.demo.is_none()
+                && home_companion::audio_down::rebooted(&state_dir)
+            {
                 log::warn!(
                     event = "audio_down";
                     "the audio does not start, also after the reboot for it: showing it on the screen"
@@ -433,8 +447,12 @@ fn go<S: Screen>(
                 // ui_tx lived until here: the screen did not take the closed channel for a
                 // stopped core.
                 drop(ui_tx);
+                // Stopped during that minute (systemctl stop, a shutdown): not a failure.
+                if signals::stop_requested() {
+                    return ExitCode::SUCCESS;
+                }
             }
-            return ExitCode::from(exit::AUDIO);
+            return ExitCode::from(code);
         }
     };
     if opts.demo.is_none() {

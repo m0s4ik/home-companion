@@ -62,6 +62,37 @@ pub enum Error {
     Unsupported(String),
     #[error("built without feature {0}")]
     Feature(&'static str),
+    /// A device could not be opened: `what` names it, the system's error says why
+    /// ([`Error::errno`]).
+    #[error("{what}: {source}")]
+    Open {
+        what: String,
+        source: std::io::Error,
+    },
+}
+
+impl Error {
+    /// The system's error number behind this error, when there is one (ALSA's code for a
+    /// device that could not be opened, or the OS error of an I/O error). Lets the caller
+    /// tell a wrong device name (`ENOENT`) or a busy one (`EBUSY`) from a device that does
+    /// not answer (`ETIMEDOUT`, `EIO`).
+    pub fn errno(&self) -> Option<i32> {
+        match self {
+            Error::Open { source, .. } | Error::Io(source) => io_errno(source),
+            _ => None,
+        }
+    }
+}
+
+fn io_errno(e: &std::io::Error) -> Option<i32> {
+    if let Some(n) = e.raw_os_error() {
+        return Some(n);
+    }
+    #[cfg(all(target_os = "linux", feature = "alsa"))]
+    if let Some(a) = e.get_ref().and_then(|r| r.downcast_ref::<::alsa::Error>()) {
+        return Some(a.errno());
+    }
+    None
 }
 
 #[derive(Debug, Clone)]
@@ -378,4 +409,46 @@ impl Drop for Audio {
 /// because another one panicked while holding a lock).
 pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::Error;
+    use std::io;
+
+    #[test]
+    fn errno_comes_out_of_an_open_error() {
+        let e = Error::Open {
+            what: "playback x".into(),
+            source: io::Error::from_raw_os_error(libc::ETIMEDOUT),
+        };
+        assert_eq!(e.errno(), Some(libc::ETIMEDOUT));
+        assert_eq!(
+            Error::Io(io::Error::from_raw_os_error(libc::EBUSY)).errno(),
+            Some(libc::EBUSY)
+        );
+        assert_eq!(Error::Device("x".into()).errno(), None);
+        assert_eq!(Error::Unsupported("x".into()).errno(), None);
+        assert_eq!(
+            Error::Open {
+                what: "x".into(),
+                source: io::Error::other("refused")
+            }
+            .errno(),
+            None
+        );
+    }
+
+    #[cfg(all(target_os = "linux", feature = "alsa"))]
+    #[test]
+    fn errno_comes_out_of_an_alsa_error() {
+        let e = Error::Open {
+            what: "capture x".into(),
+            source: super::backend::alsa::alsa_err(::alsa::Error::new(
+                "snd_pcm_hw_params",
+                libc::ETIMEDOUT,
+            )),
+        };
+        assert_eq!(e.errno(), Some(libc::ETIMEDOUT));
+    }
 }

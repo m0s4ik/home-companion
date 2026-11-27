@@ -115,7 +115,8 @@ pub mod exit {
     /// again (under systemd, `Restart=on-failure` does it and pulls in the units it wants, the
     /// web helper among them; elsewhere the program executes itself).
     pub const RESTART: u8 = 5;
-    /// The audio did not start (the sound card or its DSP not answering). The service reboots
+    /// The audio did not start, for a reason a reboot may cure (the sound card or its DSP not
+    /// answering: `audio_down::exit_for`), after a few tries over ~10 s. The service reboots
     /// the device once for it (packaging/home-companion.service, crate::audio_down); after that
     /// systemd restarts the body as for any other failure.
     pub const AUDIO: u8 = 6;

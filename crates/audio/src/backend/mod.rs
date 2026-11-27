@@ -132,10 +132,18 @@ pub(crate) fn open(cfg: &AudioConfig, stop: Arc<AtomicBool>) -> Result<Opened, E
 
 #[cfg(all(target_os = "linux", feature = "alsa"))]
 fn open_alsa(cfg: &AudioConfig) -> Result<Opened, Error> {
-    let p = alsa::AlsaPlayback::new(&cfg.playback_device, playback_spec(cfg), true)
-        .map_err(|e| Error::Device(format!("playback {}: {e}", cfg.playback_device)))?;
-    let c = alsa::AlsaCapture::new(&cfg.capture_device, capture_spec(cfg))
-        .map_err(|e| Error::Device(format!("capture {}: {e}", cfg.capture_device)))?;
+    let p = alsa::AlsaPlayback::new(&cfg.playback_device, playback_spec(cfg), true).map_err(
+        |source| Error::Open {
+            what: format!("playback {}", cfg.playback_device),
+            source,
+        },
+    )?;
+    let c = alsa::AlsaCapture::new(&cfg.capture_device, capture_spec(cfg)).map_err(|source| {
+        Error::Open {
+            what: format!("capture {}", cfg.capture_device),
+            source,
+        }
+    })?;
     let description = format!(
         "alsa {} period {} frames, {} period {} frames",
         cfg.playback_device,
