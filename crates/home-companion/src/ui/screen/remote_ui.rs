@@ -279,8 +279,12 @@ impl<S: Screen> Ui<S> {
         {
             let mut r = self.remote.borrow_mut();
             if started || c.is_none() {
-                // Touches still queued from before belong to no session now.
+                // Touches still queued from before belong to no session now: gone at once, so
+                // the next session's first requests find the queue empty.
                 r.epoch += 1;
+                if let Some(q) = &r.touches {
+                    q.clear();
+                }
             }
             r.sign = sign;
             if c.is_none() {

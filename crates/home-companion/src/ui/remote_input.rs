@@ -47,6 +47,11 @@ impl TouchQueue {
         true
     }
 
+    /// Drops what is queued (the session it belonged to ended).
+    pub fn clear(&self) {
+        self.0.borrow_mut().clear();
+    }
+
     pub fn pop(&self) -> Option<(u64, TouchEvent)> {
         self.0.borrow_mut().pop_front()
     }
@@ -416,6 +421,9 @@ mod tests {
         assert!(q.pop().is_some());
         assert!(q.push_all(&req(1)));
         while q.pop().is_some() {}
+        assert!(q.is_empty());
+        assert!(q.push_all(&req(5)));
+        q.clear();
         assert!(q.is_empty());
     }
 }

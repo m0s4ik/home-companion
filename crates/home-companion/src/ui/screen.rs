@@ -10484,6 +10484,11 @@ mod tests {
         assert!(ui.remote_accepts(epoch));
         w.set_page("home".into());
         assert!(ui.remote_accepts(epoch));
+        // Touches still queued when a session ends go with it (the next one starts empty).
+        let tap_ev =
+            json!({"events": [{"k": "d", "x": 0.5, "y": 0.5}, {"k": "u", "x": 0.5, "y": 0.5}]});
+        assert_eq!(call("screen.input", tap_ev)["ok"], true);
+        assert_eq!(rx.len(), 2);
         // Ended while the sessions were busy answering: no sign, no frame, then the tick ends it.
         {
             let _busy = ui.panel_sessions.borrow_mut();
@@ -10495,6 +10500,7 @@ mod tests {
             "touches of the old session dropped"
         );
         assert_eq!(ui.remote_hidden_now(), Some("ended"));
+        assert!(rx.is_empty(), "the ended session's touches are dropped");
         assert!(ui.panel_sessions.borrow().remote.active());
         ui.tick_remote();
         assert!(!ui.panel_sessions.borrow().remote.active());
