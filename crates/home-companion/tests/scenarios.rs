@@ -900,19 +900,6 @@ fn assert_window_closed_quietly(r: &Run) {
     assert_eq!(r.cues("not_understood"), 0, "{:?}", r.summary.cues);
 }
 
-/// A window nobody speaks in: Home Assistant's run opened, ended by the satellite, and its
-/// "nothing heard".
-fn unanswered() -> Vec<Step> {
-    vec![
-        Step::WaitDetection { timeout_ms: 9000 },
-        Step::ExpectAudioStop { timeout_ms: 4000 },
-        Step::SendError {
-            text: "No text recognized".into(),
-            code: "stt-no-text-recognized".into(),
-        },
-    ]
-}
-
 #[test]
 fn c26_conversation_mode_listens_again_after_a_plain_answer() {
     let r = conversing(
@@ -922,8 +909,7 @@ fn c26_conversation_mode_listens_again_after_a_plain_answer() {
         cat(vec![
             hear("e domani che giorno è", 800),
             answer("Sabato."),
-            unanswered(),
-            bye(500),
+            bye(2500),
         ]),
     );
     assert_clean(&r);
@@ -940,6 +926,29 @@ fn c26_conversation_mode_listens_again_after_a_plain_answer() {
     assert_eq!(r.cues("error"), 0, "{:?}", r.summary.cues);
     assert_eq!(r.cues("not_understood"), 0);
     assert!(!r.views.contains(&Phase::Error), "{:?}", r.views);
+    // Nor did Home Assistant hear it: no run for the third.
+    assert_eq!(r.record.run_pipelines.len(), 2);
+}
+
+#[test]
+fn c26_a_silent_window_without_reflexes_opens_no_run() {
+    // No reflex helper: the window holds its audio and opens Home Assistant's pipeline only
+    // when its detector hears speech. Nobody speaks: Home Assistant never transcribes the room.
+    let r = conversing(
+        "Sono le cinque.",
+        || UiEvent::ConversationMax(3),
+        vec![Utt::says(""), Utt::silent()],
+        bye(3000),
+    );
+    assert_clean(&r);
+    assert_eq!(
+        r.outcomes(),
+        vec![pair("talk", "played"), pair("follow_up", "stopped")]
+    );
+    assert_eq!(r.record.run_pipelines.len(), 1);
+    assert_eq!(r.summary.detections_sent, 1);
+    assert_eq!(r.cues("error"), 0, "{:?}", r.summary.cues);
+    assert_eq!(r.cues("not_understood"), 0);
 }
 
 #[test]
@@ -1002,8 +1011,7 @@ fn c26_conversation_mode_leaves_a_question_its_whole_turn() {
         cat(vec![
             hear("alle cinque", 4000),
             answer("Va bene."),
-            unanswered(),
-            bye(500),
+            bye(2500),
         ]),
     );
     assert_clean(&r);

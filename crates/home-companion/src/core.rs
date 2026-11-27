@@ -493,12 +493,14 @@ const ASK_VOICE_WAIT: Duration = Duration::from_millis(2500);
 /// An utterance held back: buffered and fed to the reflex helper while the user speaks, the
 /// helper's events judged by [`reflex::verdict`]; then either done locally or sent to Home
 /// Assistant in one burst (and live after it while the user still speaks). Also without a
-/// helper, while Home Assistant's previous run is still open (one run at a time).
+/// helper, while Home Assistant's previous run is still open (one run at a time), and for a
+/// conversation mode window until its detector hears speech.
 struct Gate {
     id: u64,
     buf: Vec<i16>,
     vad: Vad,
-    /// The verdict's memory (None: no helper, only waiting for the previous run).
+    /// The verdict's memory (None: no helper; waiting for the previous run, or for speech in a
+    /// window).
     st: Option<reflex::verdict::GateState>,
     /// The utterance is for Home Assistant (decided): it waits for the previous run to end.
     want: Option<Want>,
@@ -1380,6 +1382,13 @@ impl Core {
         let ok = if gated {
             self.gate = Some(Gate::new(id, true));
             true
+        } else if window {
+            // A conversation mode window without the reflexes: held until its own detector
+            // hears speech (`on_mic_gated`). Opening the pipeline at once would have Home
+            // Assistant transcribe the room, and run its agent on any words it finds there,
+            // for every window nobody speaks in.
+            self.gate = Some(Gate::new(id, false));
+            true
         } else if self.run.is_some() {
             // Home Assistant's previous run is still open: the speech is held until it ends.
             self.gate = Some(Gate::new(id, false));
@@ -1819,6 +1828,14 @@ impl Core {
         }
         g.buf.extend_from_slice(&f.samples);
         g.vad.push(&f.samples);
+        if g.st.is_none() {
+            // A conversation mode window held without the reflexes: to Home Assistant, live,
+            // once someone speaks; the window's end closes it quietly otherwise.
+            if g.vad.speech_ms() >= Vad::MIN_SPEECH_MS {
+                self.release(false, "speech in the window");
+            }
+            return;
+        }
         let fed = self
             .d
             .reflexes
