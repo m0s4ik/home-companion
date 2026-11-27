@@ -48,6 +48,10 @@ pub(in crate::ui::screen) struct RemoteUi {
     pub real_touch: Option<std::time::Instant>,
     /// The remote's last `screen.home`.
     pub home_at: Option<std::time::Instant>,
+    /// Settings → Access from the browser → Ask on the screen first.
+    pub confirm: bool,
+    /// Makes the question's buttons answer after a moment (as the access dialog's).
+    pub ask_timer: slint::Timer,
 }
 
 impl<S: Screen> Ui<S> {
@@ -64,6 +68,83 @@ impl<S: Screen> Ui<S> {
                 ui.remote_end(End::Screen);
             }
         });
+        // Off only through the warning dialog (companion.slint), on at once.
+        let ui = std::rc::Rc::downgrade(self);
+        self.screen.on_remote_confirm_toggled(move |on| {
+            if let Some(ui) = ui.upgrade() {
+                crate::settings_model::commit(&*ui, Change::PanelScreenConfirm(on));
+            }
+        });
+        let ui = std::rc::Rc::downgrade(self);
+        self.screen.on_remote_answered(move |yes| {
+            if let Some(ui) = ui.upgrade() {
+                ui.remote_answered(yes);
+            }
+        });
+    }
+
+    /// Ask on the screen first switched (settings_model::Change::PanelScreenConfirm). A session
+    /// already on goes on; the next start follows the new choice.
+    pub(super) fn remote_confirm_switched(&self, on: bool) {
+        self.remote.borrow_mut().confirm = on;
+        if on {
+            log::info!(event = "remote_screen", confirm = true; "remote screen: each start asked on the screen");
+        } else {
+            log::warn!(event = "remote_screen", confirm = false;
+                       "remote screen: starts are no longer asked on the screen");
+        }
+        self.refresh_remote();
+    }
+
+    /// The question «… wants to control the screen» for `c` (protocol::PanelHost::remote_ask):
+    /// over Home Assistant's view too (which is closed for it), its buttons answering after a
+    /// moment so a touch meant for what was there does not answer it.
+    pub(super) fn remote_ask_now(&self, c: &Controller) {
+        let line = {
+            let l = self.locale.borrow();
+            let agent = l
+                .text("panel_device_line")
+                .replace("{browser}", &c.agent.browser)
+                .replace("{os}", &c.agent.os);
+            if c.agent.browser.is_empty() {
+                c.peer.clone()
+            } else {
+                format!("{agent} · {}", c.peer)
+            }
+        };
+        if crate::ui::webview::visible() {
+            crate::ui::webview::request_home();
+        }
+        self.screen.set_control_open(false);
+        self.screen.set_remote_ask(&line);
+        self.screen.set_remote_ask_ready(false);
+        if let Some(me) = self.this.borrow().upgrade() {
+            let w = std::rc::Rc::downgrade(&me);
+            self.remote.borrow().ask_timer.start(
+                slint::TimerMode::SingleShot,
+                super::panel_ui::ASK_READY_AFTER,
+                move || {
+                    if let Some(ui) = w.upgrade() {
+                        ui.screen.set_remote_ask_ready(true);
+                    }
+                },
+            );
+        }
+        self.screen.set_dialog("remote-ask");
+        self.wake(WakeSource::Setup);
+        self.send(crate::core::UiEvent::Tap);
+    }
+
+    /// Deny or Allow on the question.
+    pub(super) fn remote_answered(&self, yes: bool) {
+        self.remote.borrow().ask_timer.stop();
+        match self.panel_sessions.try_borrow_mut() {
+            Ok(mut s) => protocol::remote_answer(self, &mut s, yes, Now::system()),
+            // Answering a request right now: a Deny ends it at the next tick; an Allow is not
+            // lost silently either, it is simply asked again by the browser's next start.
+            Err(_) if !yes => self.remote.borrow_mut().pending_end = Some(End::Denied),
+            Err(_) => {}
+        }
     }
 
     /// The renderer's capture and the way back for the remote's touches (renderer::run).
@@ -202,6 +283,9 @@ impl<S: Screen> Ui<S> {
                 r.epoch += 1;
             }
             r.sign = sign;
+            if c.is_none() {
+                r.ask_timer.stop();
+            }
             if let Some(cap) = &r.capture {
                 if c.is_some() {
                     cap.restart();
@@ -209,6 +293,10 @@ impl<S: Screen> Ui<S> {
                     cap.stop();
                 }
             }
+        }
+        // A session that ends while the screen asks takes its question with it.
+        if c.is_none() && self.screen.get_dialog() == "remote-ask" {
+            self.screen.set_dialog("");
         }
         if started {
             // Whoever is in the room sees the sign.
@@ -221,6 +309,7 @@ impl<S: Screen> Ui<S> {
     pub(super) fn refresh_remote(&self) {
         let r = self.remote.borrow();
         self.screen.set_remote(r.on, &r.sign);
+        self.screen.set_remote_confirm(r.confirm);
     }
 
     /// Why the screen must not be sent or touched now.
@@ -317,20 +406,26 @@ impl<S: Screen> Ui<S> {
         true
     }
 
-    /// The demos' sign (`--state remote-sign`) and switch (`settings-panel-remote`).
-    pub(super) fn demo_remote(&self, sign: bool) {
+    /// The demos' switch (`settings-panel-remote`, 4), sign (`remote-sign`, 5) and question
+    /// (`remote-ask`, 6).
+    pub(super) fn demo_remote(&self, which: u8) {
         self.remote.borrow_mut().on = true;
-        if sign {
-            let c = Controller {
-                hash: String::new(),
-                agent: crate::panel::sessions::Agent::clean("Chrome", "macOS"),
-                peer: "192.0.2.24".into(),
-                since: std::time::Instant::now(),
-                seen: std::time::Instant::now(),
-            };
-            self.remote_changed_now(Some(&c));
-        } else {
-            self.refresh_remote();
+        let c = Controller {
+            hash: String::new(),
+            agent: crate::panel::sessions::Agent::clean("Chrome", "macOS"),
+            peer: "192.0.2.24".into(),
+            since: std::time::Instant::now(),
+            seen: std::time::Instant::now(),
+            allowed: which == 5,
+        };
+        match which {
+            5 => self.remote_changed_now(Some(&c)),
+            6 => {
+                self.refresh_remote();
+                self.remote_ask_now(&c);
+                self.screen.set_remote_ask_ready(true);
+            }
+            _ => self.refresh_remote(),
         }
     }
 }

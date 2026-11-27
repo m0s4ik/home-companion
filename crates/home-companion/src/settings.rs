@@ -660,6 +660,18 @@ impl Settings {
         self.save_panel_key("screen", on);
     }
 
+    /// Settings → Access from the browser → Ask on the screen first (each remote start waits
+    /// for Allow on the screen): `[panel] screen_confirm`; ON by default.
+    pub fn panel_screen_confirm(&self) -> bool {
+        self.table()
+            .and_then(|t| t.get("panel")?.as_table()?.get("screen_confirm")?.as_bool())
+            .unwrap_or(true)
+    }
+
+    pub fn save_panel_screen_confirm(&self, on: bool) {
+        self.save_panel_key("screen_confirm", on);
+    }
+
     /// One key of `[panel]`, the others kept.
     fn save_panel_key(&self, key: &str, on: bool) {
         let mut t = self

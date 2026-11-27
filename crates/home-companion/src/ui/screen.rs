@@ -616,7 +616,8 @@ pub struct Demo {
     pub frame: Option<(&'static str, u32)>,
     /// `--state settings-panel` (1), `panel-ask` (2), `panel-blocked` (3): the browser panel's
     /// page, its access dialog, the home's card after too many requests; `settings-panel-remote`
-    /// (4), `remote-sign` (5): the remote screen's switch on, its sign.
+    /// (4), `remote-sign` (5), `remote-ask` (6): the remote screen's switch on, its sign, the
+    /// question at a start.
     pub panel: u8,
     /// `--state board` (1), `board-confirm` (2), `board-empty` (3), `widget-custom*` (4),
     /// `board-talk` (5), `board-swipe` (6), `board-opening` (7): the board on sample data
@@ -625,7 +626,7 @@ pub struct Demo {
 }
 
 /// The screens `--state` knows, for the golden screenshots (tools/shoot-golden.sh).
-pub const DEMO_STATES: [&str; 119] = [
+pub const DEMO_STATES: [&str; 120] = [
     "home",
     "cards",
     "cards-setup",
@@ -736,6 +737,7 @@ pub const DEMO_STATES: [&str; 119] = [
     "panel-blocked",
     "settings-panel-remote",
     "remote-sign",
+    "remote-ask",
     "poses",
     "board",
     "board-confirm",
@@ -1116,6 +1118,10 @@ impl Demo {
             },
             "remote-sign" => Demo {
                 panel: 5,
+                ..home.clone()
+            },
+            "remote-ask" => Demo {
+                panel: 6,
                 ..home.clone()
             },
             "update-confirm" => Demo {
@@ -2342,6 +2348,8 @@ impl<S: Screen> Ui<S> {
         let opts_panel = opts.panel.clone();
         let panel_on = settings.as_ref().is_some_and(Settings::panel_on);
         let remote_on = settings.as_ref().is_some_and(Settings::panel_screen);
+        // Asked on the screen first unless switched off there (no settings: asked).
+        let remote_confirm = settings.as_ref().is_none_or(Settings::panel_screen_confirm);
         let opts_first = opts.first_start;
         let has_camera = !demo && super::camera::present();
         // The switch on the Updates page wins over the configuration's `prerelease`.
@@ -2471,6 +2479,7 @@ impl<S: Screen> Ui<S> {
             panel: RefCell::new(panel_ui::PanelUi::new(opts_panel, panel_on)),
             remote: RefCell::new(remote_ui::RemoteUi {
                 on: remote_on,
+                confirm: remote_confirm,
                 ..Default::default()
             }),
             settings_pending: RefCell::new(Vec::new()),
@@ -4404,7 +4413,7 @@ impl<S: Screen> Ui<S> {
                 self.refresh_home();
             }
             if d.panel >= 4 {
-                self.demo_remote(d.panel == 5);
+                self.demo_remote(d.panel);
             }
         }
         if let Some((w, h)) = d.mirror {
@@ -7351,6 +7360,7 @@ impl<S: Screen> Ui<S> {
             }
             Change::Panel(on) => self.panel_switched(on),
             Change::PanelScreen(on) => self.remote_switched(on),
+            Change::PanelScreenConfirm(on) => self.remote_confirm_switched(on),
             Change::UpdatePrerelease(on) => {
                 if let Some(u) = &self.updater {
                     log::info!(event = "update", prerelease = on; "update: release candidates {}", if on { "offered" } else { "not offered" });
@@ -10312,8 +10322,24 @@ mod tests {
         assert!(w.get_remote_on());
         ui.flush_settings();
         assert!(Settings::in_dir(&dir).panel_screen());
+        // Asked on the screen first (on unless switched off): the question, no sign yet,
+        // nothing sent nor touched; the question itself is never sent.
+        assert!(w.get_remote_confirm());
+        assert_eq!(call("screen.start", json!({}))["waiting"], true);
+        assert_eq!(w.get_dialog(), "remote-ask");
+        assert_eq!(w.get_remote_ask_line(), "Chrome on macOS · 192.0.2.24");
+        assert_eq!(w.get_remote_sign(), "");
+        assert_eq!(call("screen.frame", json!({}))["waiting"], true);
+        // Deny: gone, and the browser is told.
+        w.invoke_remote_answered(false);
+        assert_eq!(call("screen.frame", json!({}))["error"], "screen_denied");
+        assert_eq!(call("screen.start", json!({}))["error"], "screen_denied");
+        ui.panel_sessions.borrow_mut().remote = Default::default();
+        // Allow: in control.
+        assert_eq!(call("screen.start", json!({}))["waiting"], true);
+        w.set_dialog("".into());
+        w.invoke_remote_answered(true);
         // The panel's page is never sent (its QR code lets in).
-        assert_eq!(call("screen.start", json!({}))["ok"], true);
         assert_eq!(w.get_remote_sign(), "Controlled by Chrome on macOS");
         // Where the sign is, for the real finger's Stop over Home Assistant's view.
         let (sx, sy, sw, sh) = w.remote_sign_rect().unwrap();
@@ -10460,6 +10486,32 @@ mod tests {
         crate::settings_model::commit(&*ui, Change::PanelScreen(false));
         assert_eq!(w.get_remote_sign(), "");
         assert!(!ui.panel_sessions.borrow().remote.active());
+        // Ask first: switched off only through the warning; then a start is in control at once.
+        crate::settings_model::commit(&*ui, Change::PanelScreen(true));
+        w.set_page("panel".into());
+        ui.refresh_settings();
+        w.set_dialog("".into());
+        tap(1172.0, 318.0);
+        assert_eq!(w.get_dialog(), "remote-confirm-off");
+        assert!(
+            w.get_remote_confirm(),
+            "not before the warning is confirmed"
+        );
+        // The warning is the screen's own: never sent, never touched.
+        assert!(!remote_ui::remote_dialog_allowed(&w.get_dialog()));
+        w.set_dialog("".into());
+        w.invoke_remote_confirm_toggled(false);
+        assert!(!w.get_remote_confirm());
+        ui.flush_settings();
+        assert!(!Settings::in_dir(&dir).panel_screen_confirm());
+        ui.panel_sessions.borrow_mut().remote = Default::default();
+        w.set_page("home".into());
+        assert_eq!(call("screen.start", json!({}))["ok"], true);
+        assert!(call("screen.start", json!({})).get("waiting").is_none());
+        assert_eq!(w.get_remote_sign(), "Controlled by Chrome on macOS");
+        // On again at once.
+        crate::settings_model::commit(&*ui, Change::PanelScreenConfirm(true));
+        assert!(w.get_remote_confirm());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

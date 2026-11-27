@@ -23,7 +23,7 @@ use crate::settings_model::Change;
 use crate::ui::lists::{self, ShopList};
 
 /// The access dialog's buttons answer only after it has been on screen this long.
-const ASK_READY_AFTER: Duration = Duration::from_millis(700);
+pub(super) const ASK_READY_AFTER: Duration = Duration::from_millis(700);
 /// A Revoke touched once waits this long for its second touch.
 const ARMED_FOR: Duration = Duration::from_secs(3);
 
@@ -395,6 +395,25 @@ impl<S: Screen> Ui<S> {
         self.refresh_panel();
     }
 
+    /// Whether a question for whoever is in front of the screen may open now: not at night,
+    /// with do not disturb, in a conversation, over a ringing timer, another dialog, mirroring,
+    /// nor (unless `over_view`) Home Assistant's view.
+    fn quiet_for_a_question(&self, over_view: bool) -> bool {
+        if self.panel.borrow().keys_asleep {
+            return false;
+        }
+        let d = self.desk.borrow();
+        let busy = !matches!(self.view.get(), Phase::Home | Phase::Offline);
+        !d.night_now
+            && !self.dnd_on()
+            && !busy
+            && d.ringing.is_empty()
+            && self.screen.get_dialog().is_empty()
+            && self.asking.get().is_none()
+            && (over_view || !super::super::webview::visible())
+            && !self.mirror_shown()
+    }
+
     /// The home's card while requests are stopped.
     pub(super) fn panel_card(&self) -> Option<(String, String)> {
         let l = self.locale.borrow();
@@ -437,20 +456,21 @@ impl<S: Screen> PanelHost for Ui<S> {
         self.remote_changed_now(c);
     }
 
+    fn remote_confirm(&self) -> bool {
+        self.remote.borrow().confirm
+    }
+
+    /// As for the access dialog, but over Home Assistant's view too: the question closes it.
+    fn remote_can_ask(&self) -> bool {
+        self.quiet_for_a_question(true)
+    }
+
+    fn remote_ask(&self, c: &crate::panel::remote::Controller) {
+        self.remote_ask_now(c);
+    }
+
     fn can_ask(&self) -> bool {
-        if self.panel.borrow().keys_asleep {
-            return false;
-        }
-        let d = self.desk.borrow();
-        let busy = !matches!(self.view.get(), Phase::Home | Phase::Offline);
-        !d.night_now
-            && !self.dnd_on()
-            && !busy
-            && d.ringing.is_empty()
-            && self.screen.get_dialog().is_empty()
-            && self.asking.get().is_none()
-            && !super::super::webview::visible()
-            && !self.mirror_shown()
+        self.quiet_for_a_question(false)
     }
 
     fn name(&self) -> String {

@@ -283,6 +283,13 @@ pub trait Screen: Sized + 'static + webview::CasaScreen {
     fn set_remote(&self, on: bool, sign: &str);
     fn on_remote_toggled(&self, f: impl Fn(bool) + 'static);
     fn on_remote_stop(&self, f: impl Fn() + 'static);
+    /// Ask on the screen first: the switch; the question «… wants to control the screen» (who,
+    /// whether its buttons answer yet) and its answer.
+    fn set_remote_confirm(&self, on: bool);
+    fn set_remote_ask(&self, line: &str);
+    fn set_remote_ask_ready(&self, ready: bool);
+    fn on_remote_confirm_toggled(&self, f: impl Fn(bool) + 'static);
+    fn on_remote_answered(&self, f: impl Fn(bool) + 'static);
     /// The sign's rectangle in logical pixels (x, y, width, height), while it is shown.
     fn remote_sign_rect(&self) -> Option<(f32, f32, f32, f32)>;
     fn set_offline(&self, offline: bool);
@@ -779,7 +786,14 @@ macro_rules! impl_screen {
                     panel_refuse,
                     panel_screen,
                     panel_screen_hint,
+                    panel_screen_confirm,
                     remote_stop,
+                    remote_ask_title,
+                    remote_ask_text,
+                    remote_deny,
+                    remote_confirm_off_title,
+                    remote_confirm_off_text,
+                    remote_confirm_off,
                     widget_next,
                     widget_weather,
                     widget_shopping,
@@ -1057,6 +1071,21 @@ macro_rules! impl_screen {
             }
             fn on_remote_stop(&self, f: impl Fn() + 'static) {
                 $m::CompanionWindow::on_remote_stop(self, f)
+            }
+            fn set_remote_confirm(&self, on: bool) {
+                $m::CompanionWindow::set_remote_confirm(self, on);
+            }
+            fn set_remote_ask(&self, line: &str) {
+                $m::CompanionWindow::set_remote_ask_line(self, line.into());
+            }
+            fn set_remote_ask_ready(&self, ready: bool) {
+                $m::CompanionWindow::set_remote_ask_ready(self, ready);
+            }
+            fn on_remote_confirm_toggled(&self, f: impl Fn(bool) + 'static) {
+                $m::CompanionWindow::on_remote_confirm_toggled(self, f)
+            }
+            fn on_remote_answered(&self, f: impl Fn(bool) + 'static) {
+                $m::CompanionWindow::on_remote_answered(self, f)
             }
             fn remote_sign_rect(&self) -> Option<(f32, f32, f32, f32)> {
                 if $m::CompanionWindow::get_remote_sign(self).is_empty() {

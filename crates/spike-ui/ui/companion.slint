@@ -266,7 +266,14 @@ export struct Words {
     panel_refuse: string,
     panel_screen: string,
     panel_screen_hint: string,
+    panel_screen_confirm: string,
     remote_stop: string,
+    remote_ask_title: string,
+    remote_ask_text: string,
+    remote_deny: string,
+    remote_confirm_off_title: string,
+    remote_confirm_off_text: string,
+    remote_confirm_off: string,
     widget_next: string,
     widget_weather: string,
     widget_shopping: string,
@@ -879,6 +886,13 @@ export component CompanionWindow inherits Window {
     in property <string> remote-sign: "";
     callback remote-toggled(bool);
     callback remote-stop();
+    // Ask on the screen at each start (on by default): the switch under the remote screen's,
+    // and the dialog «… wants to control the screen» (who, and whether its buttons answer yet).
+    in property <bool> remote-confirm: true;
+    in property <string> remote-ask-line: "";
+    in property <bool> remote-ask-ready: true;
+    callback remote-confirm-toggled(bool);
+    callback remote-answered(bool);
     // Where the sign is (the renderer's loop: a real touch there never reaches the screen under
     // it, Home Assistant's view included).
     out property <length> remote-sign-x: remote-sign-box.x;
@@ -4435,6 +4449,26 @@ export component CompanionWindow inherits Window {
                         }
                     }
                 }
+                // Ask first: off only after the warning (dialog "remote-confirm-off").
+                if root.panel-on && root.remote-on: Group {
+                    height: 76px;
+                    Row {
+                        y: 0;
+                        width: parent.width;
+                        first: true;
+                        kind: "toggle";
+                        icon: Icons.account-group-28;
+                        label: root.t.panel-screen-confirm;
+                        on: root.remote-confirm;
+                        toggled(v) => {
+                            if (v) {
+                                root.remote-confirm-toggled(true);
+                            } else {
+                                root.dialog = "remote-confirm-off";
+                            }
+                        }
+                    }
+                }
                 if root.panel-on: Text {
                     text: root.t.panel-screen-hint;
                     font-size: 22px;
@@ -5128,6 +5162,46 @@ export component CompanionWindow inherits Window {
         answered(yes) => {
             root.dialog = "";
             root.panel-answered(yes);
+        }
+    }
+    // A device let in asks to control the screen: who; Deny · Allow (nothing is sent before).
+    if root.dialog == "remote-ask": Dialog {
+        icon: Icons.monitor-cellphone-48;
+        title: root.t.remote-ask-title;
+        text: root.t.remote-ask-text;
+        cancel: root.t.remote-deny;
+        confirm: root.t.panel-allow;
+        touch-enabled: root.remote-ask-ready;
+        content-height: 32px;
+        Text {
+            x: 48px;
+            y: 0;
+            width: 672px - 96px;
+            text: root.remote-ask-line;
+            font-size: 24px;
+            color: Theme.text-2;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+        answered(yes) => {
+            root.dialog = "";
+            root.remote-answered(yes);
+        }
+    }
+    // Ask first switched off: what it means, before it is.
+    if root.dialog == "remote-confirm-off": Dialog {
+        icon: Icons.monitor-cellphone-48;
+        icon-color: Theme.danger;
+        border: Theme.danger;
+        title: root.t.remote-confirm-off-title;
+        text: root.t.remote-confirm-off-text;
+        cancel: root.t.cancel;
+        confirm: root.t.remote-confirm-off;
+        answered(yes) => {
+            root.dialog = "";
+            if (yes) {
+                root.remote-confirm-toggled(false);
+            }
         }
     }
     if root.dialog == "panel-revoke-all": Dialog {

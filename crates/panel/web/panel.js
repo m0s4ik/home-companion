@@ -1687,8 +1687,9 @@ addEventListener('scroll', () => {
 // ---- Screen: the device's screen, live, touched from here (crates/home-companion/src/panel/
 // remote.rs). Frames are asked one at a time (the panel waits for a new one), only while this
 // page is open and visible; touches go in small batches. The device shows who is in control.
-// The state is always written under the frame: ready (not shared), live, paused (a private
-// page), busy (another device), lost, off (switched off on the device), stopped (on the device).
+// The state is always written under the frame: ready (not shared), waiting (asked on the device),
+// live, paused (a private page), busy (another device), lost, off (switched off on the device),
+// stopped, denied, unanswered, cannotask (on the device).
 
 const R = { state: 'checking', why: '', by: '', live: false, seq: 0, run: 0, queue: [], flush: 0, down: false,
   since: 0, shots: [], box: null, glass: null, canvas: null, taps: null, cover: null, chip: null, bar: null,
@@ -1775,6 +1776,13 @@ function screenView() {
     inner.append(el('h2', null, t('panel_screen_ready_title')), el('p', 'why', t('panel_screen_ready_text')),
       button('btn primary big', t('panel_screen_start'), () => { R.hold = false; screenStart(); }, 'screen'),
       el('p', 'fine', me ? t('panel_screen_sign', { w: deviceName(me) }) : t('panel_screen_lead')));
+    if (D.screen && D.screen.confirm) inner.append(el('p', 'fine', t('panel_screen_will_ask')));
+  } else if (s === 'waiting') {
+    inner.append(el('h2', null, t('panel_screen_waiting_title')), el('p', null, t('panel_screen_waiting')),
+      button('btn', t('panel_cancel'), () => { screenStop(true); }));
+  } else if (['denied', 'unanswered', 'cannotask'].includes(s)) {
+    inner.append(el('h2', null, t('panel_screen_' + s + '_title')), el('p', null, t('panel_screen_' + s)));
+    if (s !== 'denied') inner.append(retry());
   } else if (s === 'off') {
     inner.append(ico('lock'), el('h2', null, t('panel_screen_off_title')), el('p', null, t('panel_screen_off')));
   } else if (s === 'paused') {
@@ -1836,6 +1844,9 @@ function ended(code) {
   if (code === 'screen_off') return 'off';
   if (code === 'screen_busy') return 'busy';
   if (code === 'screen_stopped') return 'stopped';
+  if (code === 'screen_denied') return 'denied';
+  if (code === 'screen_unanswered') return 'unanswered';
+  if (code === 'screen_cannot_ask') return 'cannotask';
   if (!code || code === 'screen_ended') return 'ready';
   return 'lost';
 }
@@ -1846,7 +1857,7 @@ async function screenFlush() {
   if (!R.queue.length || !R.live) { R.queue = []; return; }
   const events = R.queue.splice(0, 32);
   const r = await api('/api/screen/input', { events });
-  if (!r.ok && r.error !== 'screen_hidden' && r.error !== 'slow_down') screenEnded(r.error);
+  if (!r.ok && !['screen_hidden', 'slow_down', 'screen_waiting'].includes(r.error)) screenEnded(r.error);
   if (R.queue.length) screenFlush();
 }
 
@@ -1868,7 +1879,7 @@ async function screenStart() {
   R.live = true;
   R.seq = 0;
   R.since = Date.now();
-  setState('live');
+  setState(r.waiting ? 'waiting' : 'live');
   clearInterval(R.tick);
   R.tick = setInterval(() => {
     const e = document.getElementById('screen-time');
@@ -1932,6 +1943,7 @@ async function screenLoop(run) {
         R.shots.push(Date.now());
         // The first picture shows the canvas (drawn again even if the state is the same).
         if (!R.drawn) { R.drawn = true; R.shown = ''; }
+        if (R.state === 'waiting') R.since = Date.now();
         setState('live');
       } catch (e) { /* a broken frame: the next one */ }
       continue;
@@ -1939,6 +1951,7 @@ async function screenLoop(run) {
     let j = {};
     try { j = await r.json(); } catch (e) { j = { ok: false, error: 'network' }; }
     if (r.status === 401) { screenEnded(); login(); return; }
+    if (j.ok && j.waiting) { setState('waiting'); await new Promise(res => setTimeout(res, 700)); continue; }
     if (j.ok && j.hidden) {
       ctx.fillStyle = '#03050d';
       ctx.fillRect(0, 0, R.canvas.width, R.canvas.height);

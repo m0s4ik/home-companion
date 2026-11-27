@@ -169,6 +169,14 @@ pub const ITEMS: &[Item] = &[
     item("panel", "panel_access", "access", Kind::Bool),
     // So is the remote screen (crate::panel::remote): never from the panel itself.
     item("panel_screen", "panel_screen", "access", Kind::Bool),
+    // And whether each remote start is asked on the screen first: never from the panel either
+    // (a remote must not be able to stop being asked).
+    item(
+        "panel_screen_confirm",
+        "panel_screen_confirm",
+        "access",
+        Kind::Bool,
+    ),
 ];
 
 /// The keys the browser panel may read and set: the list the security review looked at. A test
@@ -228,6 +236,7 @@ pub enum Change {
     UpdatePrerelease(bool),
     Panel(bool),
     PanelScreen(bool),
+    PanelScreenConfirm(bool),
 }
 
 impl Change {
@@ -408,6 +417,7 @@ pub fn get(host: &dyn Host, key: &str) -> Option<Value> {
         "update_prerelease" => json!(s.update_prerelease().unwrap_or(false)),
         "panel" => json!(s.panel_on()),
         "panel_screen" => json!(s.panel_screen()),
+        "panel_screen_confirm" => json!(s.panel_screen_confirm()),
         _ => return None,
     })
 }
@@ -562,6 +572,7 @@ pub fn change_for(host: &dyn Host, key: &str, value: &Value) -> Result<Change, S
         "update_prerelease" => Change::UpdatePrerelease(v.as_bool().unwrap_or(false)),
         "panel" => Change::Panel(v.as_bool().unwrap_or(false)),
         "panel_screen" => Change::PanelScreen(v.as_bool().unwrap_or(false)),
+        "panel_screen_confirm" => Change::PanelScreenConfirm(v.as_bool().unwrap_or(true)),
         _ => return Err(SetError::Unknown),
     })
 }
@@ -592,6 +603,7 @@ pub fn save(s: &Settings, change: &Change) {
         Change::UpdatePrerelease(on) => s.save_update_prerelease(*on),
         Change::Panel(on) => s.save_panel_on(*on),
         Change::PanelScreen(on) => s.save_panel_screen(*on),
+        Change::PanelScreenConfirm(on) => s.save_panel_screen_confirm(*on),
     }
 }
 
@@ -850,6 +862,11 @@ pub(crate) mod tests {
             ),
             ("panel", json!(true), Change::Panel(true)),
             ("panel_screen", json!(true), Change::PanelScreen(true)),
+            (
+                "panel_screen_confirm",
+                json!(false),
+                Change::PanelScreenConfirm(false),
+            ),
         ];
         assert_eq!(cases.len(), ITEMS.len(), "a case for every item");
         for (key, value, change) in cases {
@@ -885,10 +902,14 @@ pub(crate) mod tests {
         assert!(s.calendars().is_empty());
         assert_eq!(s.update_prerelease(), Some(true));
         assert!(s.panel_on());
-        // The two keys of [panel] are kept apart.
+        // The keys of [panel] are kept apart.
         assert!(s.panel_screen());
+        assert!(!s.panel_screen_confirm());
         s.save_panel_on(false);
         assert!(s.panel_screen());
+        assert!(!s.panel_screen_confirm());
+        // Asking on the screen first is on unless switched off.
+        assert!(Settings::in_dir(&h.dir.join("none")).panel_screen_confirm());
     }
 
     #[test]
@@ -942,9 +963,19 @@ pub(crate) mod tests {
         }
         // Not on the panel: refused there, even though it exists.
         let h = FakeHost::new("panel");
-        for k in ["update_prerelease", "panel"] {
+        for k in [
+            "update_prerelease",
+            "panel",
+            "panel_screen",
+            "panel_screen_confirm",
+        ] {
             assert_eq!(panel_set(&h, k, &json!(true)), Err(SetError::Unknown));
         }
+        assert_eq!(
+            panel_set(&h, "panel_screen_confirm", &json!(false)),
+            Err(SetError::Unknown)
+        );
+        assert!(panel_state(&h).get("panel_screen_confirm").is_none());
         assert!(panel_set(&h, "home_compact", &json!(true)).is_ok());
         let state = panel_state(&h);
         assert!(state.get("update_prerelease").is_none());
