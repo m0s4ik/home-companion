@@ -41,7 +41,15 @@ impl Default for SafetyCfg {
 fn domain_words(domain: &str) -> &'static [&'static str] {
     match domain {
         "alarm_control_panel" => &["allarm", "antifurt", "alarm", "disarm"],
-        "lock" => &["serratur", "lucchett", "chiavistell", "lock", "unlock"],
+        "lock" => &[
+            "serratur",
+            "lucchett",
+            "chiavistell",
+            "lock",
+            "unlock",
+            "verriegel",
+            "entriegel",
+        ],
         // Beginnings only where no common word begins so: a short word ("tor", "tür",
         // "deur", "hek") is matched whole ([`DOOR_WORDS`]), its compounds here, so that
         // "motor", "kleiderschrank" or "deurbel" stay what they are.
@@ -73,6 +81,11 @@ fn domain_words(domain: &str) -> &'static [&'static str] {
             "eingangstuer",
             "türöffn",
             "tueroeffn",
+            "torantrieb",
+            "torsteuer",
+            "toreinfahrt",
+            "türsummer",
+            "tuersummer",
             // nl
             "tuinpoort",
             "garagedeur",
@@ -125,6 +138,34 @@ const DOOR_WORDS: &[&str] = &[
     "deuren", "hek", "hekken", "poort", "poorten",
 ];
 
+/// German and Dutch put the door or the gate at the end of a compound (Kellertür, Eingangstor,
+/// Buitendeur, Schuifpoort): words ending so are doors, but for the few common words that end
+/// the same ([`NOT_DOOR_ENDINGS`]).
+const DOOR_ENDINGS: &[&str] = &["tür", "tuer", "deur", "poort", "hek", "tor"];
+/// Motor, Monitor, Ventilator, Rotor, Detector, Transistor, Pastor; Bibliothek; Ambassadeur.
+/// ("Kontor", an office, and "Mentor" still read as a gate: rare in a home, on the safe side;
+/// "-entor" and "-stor" are Tiefgaragentor's and Eingangstor's endings too.)
+const NOT_DOOR_ENDINGS: &[&str] = &[
+    "ator", "itor", "otor", "ktor", "ctor", "utor", "ptor", "istor", "astor", "thek", "adeur",
+];
+
+/// A word of a door or a gate, in any of the languages.
+fn door_word(w: &str) -> bool {
+    DOOR_WORDS.contains(&w)
+        || domain_words("door")
+            .iter()
+            .filter(|p| **p != "porta" && **p != "door")
+            .any(|p| w.starts_with(p))
+        || (DOOR_ENDINGS.iter().any(|e| w.ends_with(e))
+            && !NOT_DOOR_ENDINGS.iter().any(|e| w.ends_with(e)))
+}
+
+/// A lock's word that is no beginning: «Schloss», «Türschloss», «slot», «deurslot», «nachtslot»
+/// (endings), «Riegel» (whole). A castle called «Schloss» reads as a lock: the safe side.
+fn lock_word(w: &str) -> bool {
+    w == "riegel" || w.ends_with("schloss") || w.ends_with("slot")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gate {
     Allow,
@@ -147,13 +188,7 @@ impl SafetyCfg {
             .filter(|w| !w.is_empty())
             .map(str::to_lowercase)
             .collect();
-        let named_door = words.iter().any(|w| {
-            DOOR_WORDS.contains(&w.as_str())
-                || domain_words("door")
-                    .iter()
-                    .filter(|p| **p != "porta" && **p != "door")
-                    .any(|p| w.starts_with(p))
-        });
+        let named_door = words.iter().any(|w| door_word(w));
         match domain {
             "cover" if self.never_cover_classes.iter().any(|c| c == device_class) => Gate::Never,
             "cover" if device_class.is_empty() && named_door => Gate::Never,
@@ -183,7 +218,8 @@ impl SafetyCfg {
             .iter()
             .flat_map(|d| domain_words(d).iter().copied())
             .chain(self.never_words.iter().map(String::as_str));
-        if hit(&mut never.into_iter()) {
+        let locks = self.never_domains.iter().any(|d| d == "lock");
+        if hit(&mut never.into_iter()) || (locks && words.iter().any(|w| lock_word(w))) {
             return Gate::Never;
         }
         let confirm = self
@@ -330,6 +366,81 @@ mod tests {
             assert_ne!(g, Gate::Never, "{name}");
         }
         assert_eq!(c.entity_gate("switch.motor", "", "Motor"), Gate::Allow);
+        // The door or the gate at the end of a compound, and the beginnings of their drives.
+        for name in [
+            "Tiefgaragentor",
+            "Carporttor",
+            "Eingangstor",
+            "Zufahrtstor",
+            "Seitentor",
+            "Gartentür",
+            "Kellertür",
+            "Terrassentür",
+            "Schiebetür",
+            "Nebentuer",
+            "Torantrieb",
+            "Torsteuerung",
+            "Türsummer",
+            "Schuifpoort",
+            "Oprijpoort",
+            "Buitendeur",
+            "Schuurdeur",
+            "Tuindeur",
+            "Kontor",
+        ] {
+            assert_eq!(
+                c.entity_gate("switch.relay", "", name),
+                Gate::Never,
+                "{name}"
+            );
+        }
+        for name in [
+            "Motor",
+            "Ventilator",
+            "Monitor",
+            "Rotor",
+            "Traktor",
+            "Projektor",
+            "Detector",
+            "Transistor",
+            "Pastor",
+            "Bibliothek",
+            "Ambassadeur",
+            "Deurbel",
+            "Heks",
+            "Torte",
+        ] {
+            assert_ne!(
+                c.entity_gate("switch.relay", "", name),
+                Gate::Never,
+                "{name}"
+            );
+        }
+        // German and Dutch locks.
+        for name in [
+            "Schloss",
+            "Türschloss",
+            "Riegel",
+            "Verriegelung",
+            "Entriegeln",
+            "Slot",
+            "Deurslot",
+            "Nachtslot",
+            "Voordeurslot",
+        ] {
+            assert_eq!(
+                c.entity_gate("switch.relay", "", name),
+                Gate::Never,
+                "{name}"
+            );
+        }
+        for name in ["Schokoriegel", "Schlosser", "Slotting", "Anschluss"] {
+            assert_ne!(
+                c.entity_gate("switch.relay", "", name),
+                Gate::Never,
+                "{name}"
+            );
+        }
         assert_eq!(c.entity_gate("light.tor", "", "Licht Tor"), Gate::Allow);
     }
 
