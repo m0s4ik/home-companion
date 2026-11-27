@@ -10326,8 +10326,20 @@ mod tests {
             )["error"],
             "screen_hidden"
         );
+        // Not off the access page (its Revoke waits for a second touch of whoever is there)...
+        assert_eq!(call("screen.home", json!({}))["error"], "screen_home_here");
+        assert_eq!(w.get_page(), "panel");
+        // ...nor over a finger on the device, nor twice in a row.
+        w.set_page("camera".into());
+        ui.remote_real_touch();
+        assert_eq!(call("screen.home", json!({}))["error"], "screen_in_use");
+        ui.remote.borrow_mut().real_touch = None;
         assert_eq!(call("screen.home", json!({}))["ok"], true);
         assert_eq!(w.get_page(), "home");
+        w.set_page("camera".into());
+        assert_eq!(call("screen.home", json!({}))["error"], "slow_down");
+        ui.remote.borrow_mut().home_at = None;
+        w.set_page("home".into());
         // Home: frames (none on this renderer), touches into the loop in logical pixels.
         assert_eq!(
             call("screen.frame", json!({}))["error"],

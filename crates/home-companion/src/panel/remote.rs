@@ -36,6 +36,31 @@ pub const IDLE: Duration = Duration::from_secs(10);
 pub const COOLDOWN: Duration = Duration::from_secs(60);
 pub const MAX_EVENTS: usize = 32;
 pub const EVENTS_PER_SECOND: u32 = 120;
+/// `screen.home` waits this long after a real touch on the device: someone is using it.
+pub const HOME_AFTER_REAL: Duration = Duration::from_secs(3);
+/// At most one `screen.home` in this long.
+pub const HOME_EVERY: Duration = Duration::from_secs(2);
+
+/// Whether the remote may send the screen home now: never off `page`s that are for whoever is
+/// in front of it (Settings → Access from the browser: pushed off it, a Revoke touched once
+/// would not get its second touch), not while someone is touching the device, not in a row.
+pub fn home_allowed(
+    page: &str,
+    real_touch: Option<Instant>,
+    last_home: Option<Instant>,
+    now: Instant,
+) -> Result<(), Refusal> {
+    if page == "panel" {
+        return Err(Refusal::HomeHere);
+    }
+    if real_touch.is_some_and(|t| now.saturating_duration_since(t) < HOME_AFTER_REAL) {
+        return Err(Refusal::InUse);
+    }
+    if last_home.is_some_and(|t| now.saturating_duration_since(t) < HOME_EVERY) {
+        return Err(Refusal::SlowDown);
+    }
+    Ok(())
+}
 
 /// The device in control.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,9 +86,13 @@ pub enum Refusal {
     Stopped,
     /// This device is not in control (start first, or it ended).
     NotController,
-    /// Too many touches.
+    /// Too many touches (or homes).
     SlowDown,
     Invalid,
+    /// `screen.home` on a page that is for whoever is in front of the device.
+    HomeHere,
+    /// Someone touched the device a moment ago.
+    InUse,
 }
 
 impl Refusal {
@@ -75,6 +104,8 @@ impl Refusal {
             Refusal::NotController => "screen_ended",
             Refusal::SlowDown => "slow_down",
             Refusal::Invalid => "invalid",
+            Refusal::HomeHere => "screen_home_here",
+            Refusal::InUse => "screen_in_use",
         }
     }
 }
@@ -377,6 +408,24 @@ mod tests {
         assert!(r.allow_events(20, t + Duration::from_millis(500)));
         assert!(!r.allow_events(1, t + Duration::from_millis(600)));
         assert!(r.allow_events(30, t + Duration::from_millis(1100)));
+    }
+
+    #[test]
+    fn home_not_off_the_access_page_nor_over_a_finger_nor_in_a_row() {
+        let t = Instant::now();
+        let s = |n: u64| Duration::from_millis(n);
+        assert_eq!(home_allowed("settings", None, None, t), Ok(()));
+        assert_eq!(home_allowed("panel", None, None, t), Err(Refusal::HomeHere));
+        assert_eq!(
+            home_allowed("camera", Some(t), None, t + s(2900)),
+            Err(Refusal::InUse)
+        );
+        assert_eq!(home_allowed("camera", Some(t), None, t + s(3000)), Ok(()));
+        assert_eq!(
+            home_allowed("camera", None, Some(t), t + s(1500)),
+            Err(Refusal::SlowDown)
+        );
+        assert_eq!(home_allowed("camera", None, Some(t), t + s(2000)), Ok(()));
     }
 
     #[test]

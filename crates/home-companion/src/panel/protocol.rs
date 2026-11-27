@@ -152,8 +152,10 @@ pub trait PanelHost: model::Host {
         let _ = touch;
     }
     /// The remote asks for the home (out of a page that is not sent, where it cannot see to
-    /// touch its way back).
-    fn remote_home(&self) {}
+    /// touch its way back); Err: not now (remote::home_allowed).
+    fn remote_home(&self) -> Result<(), super::remote::Refusal> {
+        Ok(())
+    }
     /// The session began (Some) or ended (None): the sign on the screen, the capture.
     fn remote_changed(&self, controller: Option<&super::remote::Controller>) {
         let _ = controller;
@@ -415,6 +417,9 @@ pub const STRING_KEYS: &[&str] = &[
     "panel_screen_state_lost",
     "panel_screen_fps",
     "panel_screen_home_done",
+    "panel_screen_home_here",
+    "panel_screen_in_use",
+    "panel_slow_down",
     "panel_screen_stopped_here",
     "panel_fact_tap",
     "panel_fact_tap_text",
@@ -810,8 +815,10 @@ fn screen_op(
             if let Err(r) = sessions.remote.check(me, t) {
                 return refused(r);
             }
-            host.remote_home();
-            ok(json!({}))
+            match host.remote_home() {
+                Ok(()) => ok(json!({})),
+                Err(r) => refused(r),
+            }
         }
         "screen.input" => {
             if let Err(r) = sessions.remote.check(me, t) {

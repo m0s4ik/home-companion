@@ -429,11 +429,8 @@ impl<S: Screen> PanelHost for Ui<S> {
         self.remote_touch_now(t);
     }
 
-    fn remote_home(&self) {
-        // The access dialog stays: it is for whoever is in front of the screen.
-        if self.screen.get_dialog() != "panel-ask" {
-            self.screen.set_page("home");
-        }
+    fn remote_home(&self) -> Result<(), crate::panel::remote::Refusal> {
+        self.remote_home_now()
     }
 
     fn remote_changed(&self, c: Option<&crate::panel::remote::Controller>) {

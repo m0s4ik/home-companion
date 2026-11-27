@@ -525,8 +525,9 @@ impl PanelHost for Demo {
         }
         self.taps.borrow_mut().push((t.x, t.y, Instant::now()));
     }
-    fn remote_home(&self) {
+    fn remote_home(&self) -> Result<(), home_companion::panel::remote::Refusal> {
         eprintln!("screen: back to the home");
+        Ok(())
     }
     fn remote_changed(&self, c: Option<&home_companion::panel::remote::Controller>) {
         match c {

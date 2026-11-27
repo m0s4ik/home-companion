@@ -45,6 +45,10 @@ pub(in crate::ui::screen) struct RemoteUi {
     pub pending_end: Option<End>,
     /// The system is suspending: nothing is read.
     pub suspended: bool,
+    /// The real finger's last touch (crate::panel::remote::home_allowed).
+    pub real_touch: Option<std::time::Instant>,
+    /// The remote's last `screen.home`.
+    pub home_at: Option<std::time::Instant>,
 }
 
 impl<S: Screen> Ui<S> {
@@ -136,6 +140,34 @@ impl<S: Screen> Ui<S> {
             drop(r);
             self.remote_hidden_now().is_none()
         }
+    }
+
+    /// The real finger touched the screen (the renderer's loop, at every touch of it).
+    pub fn remote_real_touch(&self) {
+        self.remote.borrow_mut().real_touch = Some(std::time::Instant::now());
+    }
+
+    /// `screen.home` from the remote: the home, when remote::home_allowed says so (the access
+    /// dialog stays: it is for whoever is in front of the screen).
+    pub(super) fn remote_home_now(&self) -> Result<(), crate::panel::remote::Refusal> {
+        let now = std::time::Instant::now();
+        {
+            let mut r = self.remote.borrow_mut();
+            crate::panel::remote::home_allowed(
+                &self.screen.get_page(),
+                r.real_touch,
+                r.home_at,
+                now,
+            )?;
+            r.home_at = Some(now);
+        }
+        if crate::ui::webview::visible() {
+            crate::ui::webview::request_home();
+        }
+        if self.screen.get_dialog() != "panel-ask" {
+            self.screen.set_page("home");
+        }
+        Ok(())
     }
 
     /// A session is on (its sign shown).

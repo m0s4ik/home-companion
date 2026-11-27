@@ -397,6 +397,7 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
                 let mut arb = arbiter.borrow_mut();
                 if let Some(t) = &touch {
                     for ev in t.try_iter() {
+                        ui.remote_real_touch();
                         let on_sign = ev.kind == TouchKind::Down && ui.remote_sign_hit(ev.x, ev.y);
                         outs.extend(arb.real(ev, on_sign, now));
                     }
