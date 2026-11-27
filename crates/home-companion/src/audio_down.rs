@@ -7,18 +7,18 @@
 //! command to it timed out (`-110`), the sound card could not be opened again, and only a
 //! reboot brought it back. The body cannot reboot by itself (no root, `NoNewPrivileges`), so
 //! it exits with [`crate::exit::AUDIO`] when the audio does not start for a reason a reboot
-//! may cure ([`exit_for`]; after [`START_TRIES`] tries), and the service's
-//! `ExecStopPost` (root) reboots the device for it, at most once: before rebooting it leaves
-//! the mark [`MARK`] in the state directory. While the mark is there, a start whose audio
-//! fails shows [`SHOWN_FOR`] of a screen saying that the audio is not answering, then exits
-//! again: systemd tries once more after that. The body removes the mark once the audio has
+//! may cure ([`exit_for`]; after [`START_TRIES`] tries), and the service's `ExecStopPost`
+//! (root, packaging/home-companion-audio-reboot.sh) reboots the device for it, at most once:
+//! before rebooting it leaves the mark [`MARK`] in the state directory. While the mark is
+//! there, a start whose audio fails shows [`SHOWN_FOR`] of a screen saying that the audio is
+//! not answering, then exits again: systemd tries once more after that. The body removes the mark once the audio has
 //! worked for [`KEEPS_WORKING`], so a later failure may reboot once again.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// The mark, in the state directory: the device was rebooted because the audio did not start.
-/// Written by the service (packaging/home-companion.service), removed by the body.
+/// Written by the service (packaging/home-companion-audio-reboot.sh), removed by the body.
 pub const MARK: &str = "audio-reboot";
 /// How long the audio must keep working before the mark goes.
 pub const KEEPS_WORKING: Duration = Duration::from_secs(10 * 60);
