@@ -830,6 +830,37 @@ fn c22_a_real_question_listens_again_over_a_reminder() {
 }
 
 #[test]
+fn c22_a_question_does_not_listen_with_the_microphone_off() {
+    // Muted while he asks: no Listening that hears nothing.
+    let r = run_setup(
+        Setup::new(
+            sc(cat(vec![
+                hello(),
+                hear("ricordami di chiamare", 800),
+                answer("A che ora?"),
+                bye(2500),
+            ])),
+            vec![
+                TALK_AT_HOME,
+                press(When::View(Phase::Speaking), 0, || {
+                    UiEvent::ControlTile("mic".into())
+                }),
+            ],
+        )
+        .mic(vec![Utt::says(""), Utt::says("")]),
+    );
+    assert_clean(&r);
+    assert_eq!(r.outcomes(), vec![pair("talk", "played")]);
+    assert_eq!(r.record.run_pipelines.len(), 1);
+    let speaking = r.views.iter().position(|p| *p == Phase::Speaking).unwrap();
+    assert!(
+        !r.views[speaking..].contains(&Phase::Listening),
+        "no listening: {:?}",
+        r.views
+    );
+}
+
+#[test]
 fn c22_a_courtesy_question_does_not() {
     let r = answered("Fatto. C'è altro?", bye(2000));
     assert_clean(&r);
@@ -1047,6 +1078,42 @@ fn c26_a_noise_the_reflexes_sent_on_ends_the_window_quietly() {
     );
     assert_window_closed_quietly(&r);
     assert_eq!(r.record.run_pipelines.len(), 2);
+}
+
+#[test]
+fn c26_a_window_kept_for_speech_with_no_end_heard_closes_quietly() {
+    // Someone (the television) keeps speaking in the window: it is kept open for a whole
+    // turn, Home Assistant never hears an end of speech, the listening time runs out. Nobody
+    // asked for the window: it closes without the error's sound or face. Short pauses keep
+    // the body's own detector hearing speech (a steady sound would stop counting).
+    let chatter: Vec<(f32, f32)> = (0..60).map(|i| (i as f32, i as f32 + 0.8)).collect();
+    let mut s = conversing_setup(
+        "Sono le cinque.",
+        || UiEvent::ConversationMax(3),
+        cat(vec![
+            vec![
+                Step::WaitDetection { timeout_ms: 9000 },
+                Step::ExpectAudioStop { timeout_ms: 9000 },
+                Step::SendError {
+                    text: "No text recognized".into(),
+                    code: "stt-no-text-recognized".into(),
+                },
+            ],
+            bye(1500),
+        ]),
+        &[],
+    )
+    .mic(vec![Utt::says(""), Utt::says("").speech(&chatter)]);
+    s.listen_timeout = Some(std::time::Duration::from_secs(3));
+    let r = run_setup(s);
+    assert_clean(&r);
+    assert_eq!(
+        r.outcomes(),
+        vec![pair("talk", "played"), pair("follow_up", "stopped")]
+    );
+    assert_eq!(r.record.run_pipelines.len(), 2);
+    assert_eq!(r.cues("error"), 0, "{:?}", r.summary.cues);
+    assert_eq!(r.cues("not_understood"), 0);
 }
 
 #[test]

@@ -3150,6 +3150,12 @@ impl Core {
                                 log::info!(event = "follow_up_skipped", ringing = true; "a timer rings: no listening after the answer");
                                 AfterAnswer::Nothing
                             }
+                            // The microphone off (switch or screen): no Listening that hears
+                            // nothing, not even for a question of his.
+                            _ if mic_off => {
+                                log::info!(event = "follow_up_skipped", mic_off = true; "the microphone is off: no listening after the answer");
+                                AfterAnswer::Nothing
+                            }
                             AfterAnswer::Window if self.noticing => {
                                 log::info!(event = "follow_up_skipped", reminder = true; "a reminder is shown: no conversation window");
                                 AfterAnswer::Nothing
@@ -4285,6 +4291,17 @@ impl Core {
             && self.listen_deadline.is_some_and(|t| now >= t)
         {
             self.release(false, "listening too long");
+        }
+        if self.phase == Phase::Listening
+            && self.gate.is_none()
+            && self.listen_deadline.is_some_and(|t| now >= t)
+            && self.conv.as_ref().is_some_and(|c| c.window)
+        {
+            // A conversation mode window kept open for speech in which Home Assistant then
+            // heard no end: nobody asked for the window, so it closes as one nobody spoke in
+            // (as Stop would, without a sound), not as a failed request.
+            log::info!(event = "follow_up_window_closed", timeout = true; "conversation mode: Home Assistant heard no end of speech, back to the wake word");
+            self.stop_conversation();
         }
         if self.phase == Phase::Listening
             && self.gate.is_none()
