@@ -96,6 +96,16 @@ pub struct Conversation {
     pub window: bool,
     /// The answer's audio stream, while it plays.
     pub stream: Option<audio::Stream>,
+    /// The audio sent to Home Assistant in this conversation's run, kept until its
+    /// speech-to-text starts (`transcribe`): the run may fail before it with
+    /// `stt-provider-missing` (an integration reloading) and is then tried once more with it.
+    pub sent: Vec<i16>,
+    /// Home Assistant's speech-to-text started (`sent` is no longer kept), or the run was
+    /// already tried again: no second try.
+    pub no_retry: bool,
+    /// The run is tried again then (`stt-provider-missing`); meanwhile the microphone's audio
+    /// is kept, not sent.
+    pub retry_at: Option<Instant>,
 }
 
 /// The fields of the `conversation` line, kept for tests.
@@ -147,6 +157,9 @@ impl Conversation {
             audio_stop_sent: false,
             window: false,
             stream: None,
+            sent: Vec::new(),
+            no_retry: false,
+            retry_at: None,
         }
     }
 

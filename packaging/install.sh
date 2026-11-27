@@ -359,6 +359,8 @@ done
 put "$HERE/opt/lib/libvosk.so" "$PREFIX/lib/libvosk.so" 0755
 # Updates from the screen (Settings -> Info): the root side (crates/home-companion/src/update.rs)
 put "$HERE/packaging/home-companion-update.sh" "$PREFIX/home-companion-update.sh" 0755
+# A reboot for an audio that does not start (crates/home-companion/src/audio_down.rs): home-companion.service
+put "$HERE/packaging/home-companion-audio-reboot.sh" "$PREFIX/home-companion-audio-reboot.sh" 0755
 put "$HERE/opt/airplay/uxplay" "$PREFIX/airplay/uxplay" 0755
 if [ "$WEB_AVAILABLE" = yes ]; then
     put "$HERE/opt/home-companion-web" "$PREFIX/home-companion-web" 0755

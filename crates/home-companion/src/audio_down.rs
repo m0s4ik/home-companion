@@ -7,22 +7,26 @@
 //! command to it timed out (`-110`), the sound card could not be opened again, and only a
 //! reboot brought it back. The body cannot reboot by itself (no root, `NoNewPrivileges`), so
 //! it exits with [`crate::exit::AUDIO`] when the audio does not start for a reason a reboot
-//! may cure ([`exit_for`]; after [`START_TRIES`] tries), and the service's
-//! `ExecStopPost` (root) reboots the device for it, at most once: before rebooting it leaves
-//! the mark [`MARK`] in the state directory. While the mark is there, a start whose audio
-//! fails shows [`SHOWN_FOR`] of a screen saying that the audio is not answering, then exits
-//! again: systemd tries once more after that. The body removes the mark once the audio has
+//! may cure ([`exit_for`]; after [`START_TRIES`] tries), and the service's `ExecStopPost`
+//! (root, packaging/home-companion-audio-reboot.sh) reboots the device for it, at most once:
+//! before rebooting it leaves the mark [`MARK`] in the state directory. While the mark is
+//! there, a start whose audio fails shows [`SHOWN_FOR`] of a screen saying that the audio is
+//! not answering, then exits again: systemd tries once more after that. The body removes the mark once the audio has
 //! worked for [`KEEPS_WORKING`], so a later failure may reboot once again.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// The mark, in the state directory: the device was rebooted because the audio did not start.
-/// Written by the service (packaging/home-companion.service), removed by the body.
+/// Written by the service (packaging/home-companion-audio-reboot.sh), removed by the body.
 pub const MARK: &str = "audio-reboot";
 /// How long the audio must keep working before the mark goes.
 pub const KEEPS_WORKING: Duration = Duration::from_secs(10 * 60);
-/// How long the screen says that the audio is not answering before the body exits.
+/// How long the screen says that the audio is not answering before the body exits. With the
+/// start's tries before it, the body lives longer than the updater watches a new version
+/// (`SETTLE` in packaging/home-companion-update.sh, tested): an update installed while the
+/// audio is down ends `done`, never in a race with `rolled-back`. A rollback would not bring the
+/// audio back, and after the watch the reboot rules apply again as before the update.
 pub const SHOWN_FOR: Duration = Duration::from_secs(60);
 /// Starts of the audio tried before giving up, and the wait between two: a card slow to come
 /// back (after a resume, or a restart of the body) is given ~10 s whatever the uptime.
@@ -249,6 +253,24 @@ mod tests {
         );
         assert!(r.is_err());
         assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn the_audio_down_body_outlives_the_updaters_watch() {
+        // The tries before the screen (their waits only: each failed open takes some time
+        // more) and the screen's minute, against the updater's watch from just after the
+        // restart: one answer, `done`, with a few seconds to spare.
+        let script = include_str!("../../../packaging/home-companion-update.sh");
+        let settle: u64 = script
+            .lines()
+            .find_map(|l| l.strip_prefix("SETTLE="))
+            .and_then(|v| v.trim().parse().ok())
+            .expect("SETTLE= in home-companion-update.sh");
+        let lives = START_RETRY_AFTER * (START_TRIES - 1) + SHOWN_FOR;
+        assert!(
+            lives >= Duration::from_secs(settle + 5),
+            "the audio-down body lives {lives:?}, the watch {settle} s"
+        );
     }
 
     #[test]

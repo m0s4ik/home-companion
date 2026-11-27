@@ -92,6 +92,7 @@ python3 -I tools/make-board-icons.py "$MDI_JS" --json "$STAGE/opt/icons/mdi.json
 cp packaging/home-companion.service packaging/home-companion-brain.service packaging/home-companion-web.service \
     packaging/home-companion.nft packaging/99-home-companion-backlight.rules \
     packaging/home-companion-update.sh packaging/home-companion-update.service packaging/home-companion-update.path \
+    packaging/home-companion-audio-reboot.sh \
     packaging/home-companion-panel.socket packaging/home-companion-panel.service \
     packaging/home-companion.toml.in packaging/brain.toml.in "$STAGE/packaging/"
 install -m 0755 packaging/install.sh "$STAGE/install.sh"

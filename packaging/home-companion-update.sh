@@ -24,7 +24,9 @@ UNITS=/etc/systemd/system
 KEEP=/var/lib/home-companion-update/previous
 WORK=/var/tmp/home-companion-update
 DEFAULT_REPO=m0s4ik/home-companion
-# The body must be up this long after the install, without systemd restarting it.
+# The body must be up this long after the install, without systemd restarting it. Shorter than
+# a body whose audio is down lives with its mark (audio_down.rs, SHOWN_FOR, tested): such an
+# update ends "done", not in a race with "rolled-back".
 SETTLE=60
 
 VERSION=

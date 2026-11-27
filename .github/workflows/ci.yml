@@ -29,6 +29,8 @@ jobs:
         run: tools/check-spdx.sh
       - name: no private data
         run: tools/check-private.sh
+      - name: shellcheck (packaging)
+        run: shellcheck packaging/*.sh tools/release/build-bundle.sh
 
   test-x86:
     runs-on: ubuntu-24.04

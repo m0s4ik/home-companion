@@ -493,12 +493,14 @@ const ASK_VOICE_WAIT: Duration = Duration::from_millis(2500);
 /// An utterance held back: buffered and fed to the reflex helper while the user speaks, the
 /// helper's events judged by [`reflex::verdict`]; then either done locally or sent to Home
 /// Assistant in one burst (and live after it while the user still speaks). Also without a
-/// helper, while Home Assistant's previous run is still open (one run at a time).
+/// helper, while Home Assistant's previous run is still open (one run at a time), and for a
+/// conversation mode window until its detector hears speech.
 struct Gate {
     id: u64,
     buf: Vec<i16>,
     vad: Vad,
-    /// The verdict's memory (None: no helper, only waiting for the previous run).
+    /// The verdict's memory (None: no helper; waiting for the previous run, or for speech in a
+    /// window).
     st: Option<reflex::verdict::GateState>,
     /// The utterance is for Home Assistant (decided): it waits for the previous run to end.
     want: Option<Want>,
@@ -586,6 +588,12 @@ const PREVIOUS_RUN_CAP: Duration = Duration::from_secs(3);
 
 /// Home Assistant's error code for speech-to-text that found no words in the audio.
 const NO_TEXT_RECOGNIZED: &str = "stt-no-text-recognized";
+/// Home Assistant's code for a pipeline whose speech-to-text entity is not there (yet).
+const STT_PROVIDER_MISSING: &str = "stt-provider-missing";
+/// How long after an `stt-provider-missing` the run is tried again (an integration reload).
+const PROVIDER_RETRY_AFTER: Duration = Duration::from_secs(3);
+/// At most this much audio (samples, 30 s) is kept for that retry.
+const RETRY_KEEP_MAX: usize = 16_000 * 30;
 /// After its question, a run quiet this long is over (Home Assistant ends it in about 2 s, the
 /// model's empty answer, without a word to the satellite).
 const ASKED_QUIET: Duration = Duration::from_secs(6);
@@ -1380,6 +1388,13 @@ impl Core {
         let ok = if gated {
             self.gate = Some(Gate::new(id, true));
             true
+        } else if window {
+            // A conversation mode window without the reflexes: held until its own detector
+            // hears speech (`on_mic_gated`). Opening the pipeline at once would have Home
+            // Assistant transcribe the room, and run its agent on any words it finds there,
+            // for every window nobody speaks in.
+            self.gate = Some(Gate::new(id, false));
+            true
         } else if self.run.is_some() {
             // Home Assistant's previous run is still open: the speech is held until it ends.
             self.gate = Some(Gate::new(id, false));
@@ -1433,6 +1448,63 @@ impl Core {
         }
         self.summary.detections_sent += 1;
         ok
+    }
+
+    /// The run that failed with `stt-provider-missing`, once more: the pipeline again, the audio
+    /// so far in one burst, then `audio-stop` if the speech is over or the live stream.
+    fn retry_run(&mut self) {
+        let Some(c) = self.conv.as_mut() else { return };
+        c.retry_at = None;
+        let sent = std::mem::take(&mut c.sent);
+        if c.policy.swallows() || !matches!(self.phase, Phase::Listening | Phase::Thinking) {
+            // Stopped meanwhile: nothing to try again.
+            return;
+        }
+        if self.run.is_some() || !self.ha_ready() {
+            log::warn!(event = "pipeline_retry_failed", run_open = self.run.is_some(); "the run cannot be tried again");
+            self.fail("error:stt-provider-missing");
+            return;
+        }
+        let t = Instant::now();
+        let mut ok = self.open_pipeline();
+        let mut frames = 0u64;
+        for (i, chunk) in sent.chunks(reflex::vad::FRAME).enumerate() {
+            if !ok {
+                break;
+            }
+            self.chunk_buf.clear();
+            for s in chunk {
+                self.chunk_buf.extend_from_slice(&s.to_le_bytes());
+            }
+            let ts = (i * audio::FRAME_MS as usize) as i64;
+            ok = self
+                .d
+                .sender
+                .send_chunk(&AudioFormat::MIC, Some(ts), &self.chunk_buf)
+                .is_ok();
+            frames += 1;
+        }
+        log::info!(event = "pipeline_retry_sent", audio_s = sent.len() as f64 / 16_000.0, over = self.phase == Phase::Thinking, burst_ms = t.elapsed().as_secs_f64() * 1000.0; "the run again: {:.1} s of audio", sent.len() as f64 / 16_000.0);
+        if let Some(c) = &mut self.conv {
+            c.frames_sent += frames;
+            c.first_frame = None;
+            c.live_offset = frames;
+        }
+        if !ok {
+            self.mic_idle();
+            self.stop_recorder();
+            self.close("disconnected");
+            self.go_idle();
+            return;
+        }
+        if self.phase == Phase::Thinking {
+            // The speech ended while waiting.
+            self.send(&Message::AudioStop { timestamp: None });
+            if let Some(c) = &mut self.conv {
+                c.audio_stop_sent = true;
+            }
+            self.think_deadline = Some(Instant::now() + self.cfg.think_timeout);
+        }
     }
 
     /// End of the user's speech (voice-stopped or transcript): stop streaming.
@@ -1762,20 +1834,33 @@ impl Core {
             return;
         }
         let Some(c) = &mut self.conv else { return };
-        let first = *c.first_frame.get_or_insert(f.index);
-        let ts = ((f.index.saturating_sub(first) + c.live_offset) * audio::FRAME_MS as u64) as i64;
-        self.chunk_buf.clear();
-        for s in f.samples.iter() {
-            self.chunk_buf.extend_from_slice(&s.to_le_bytes());
+        // Waiting to try the run again (`stt-provider-missing`): kept, sent with the retry.
+        let waiting = c.retry_at.is_some();
+        if waiting || !c.no_retry {
+            c.sent.extend_from_slice(&f.samples);
+            if c.sent.len() > RETRY_KEEP_MAX && !waiting {
+                // Its speech-to-text never said it started: no retry rather than more memory.
+                c.no_retry = true;
+                c.sent = Vec::new();
+            }
         }
-        if self
-            .d
-            .sender
-            .send_chunk(&AudioFormat::MIC, Some(ts), &self.chunk_buf)
-            .is_ok()
-        {
-            c.frames_sent += 1;
-            c.first_chunk_at.get_or_insert_with(Instant::now);
+        if !waiting {
+            let first = *c.first_frame.get_or_insert(f.index);
+            let ts =
+                ((f.index.saturating_sub(first) + c.live_offset) * audio::FRAME_MS as u64) as i64;
+            self.chunk_buf.clear();
+            for s in f.samples.iter() {
+                self.chunk_buf.extend_from_slice(&s.to_le_bytes());
+            }
+            if self
+                .d
+                .sender
+                .send_chunk(&AudioFormat::MIC, Some(ts), &self.chunk_buf)
+                .is_ok()
+            {
+                c.frames_sent += 1;
+                c.first_chunk_at.get_or_insert_with(Instant::now);
+            }
         }
         if self.wave.len() == BARS / 2 {
             self.wave.pop_back();
@@ -1790,10 +1875,15 @@ impl Core {
         });
         if over {
             self.live_vad = None;
-            log::info!(event = "live_end"; "end of speech heard by the body: audio-stop to Home Assistant");
-            self.send(&Message::AudioStop { timestamp: None });
-            if let Some(c) = &mut self.conv {
-                c.audio_stop_sent = true;
+            if waiting {
+                // The retry sends the speech and its end.
+                log::info!(event = "live_end", retry = true; "end of speech heard by the body: audio-stop with the retry");
+            } else {
+                log::info!(event = "live_end"; "end of speech heard by the body: audio-stop to Home Assistant");
+                self.send(&Message::AudioStop { timestamp: None });
+                if let Some(c) = &mut self.conv {
+                    c.audio_stop_sent = true;
+                }
             }
             self.end_listening();
         }
@@ -1819,6 +1909,14 @@ impl Core {
         }
         g.buf.extend_from_slice(&f.samples);
         g.vad.push(&f.samples);
+        if g.st.is_none() {
+            // A conversation mode window held without the reflexes: to Home Assistant, live,
+            // once someone speaks; the window's end closes it quietly otherwise.
+            if g.vad.speech_ms() >= Vad::MIN_SPEECH_MS {
+                self.release(false, "speech in the window");
+            }
+            return;
+        }
         let fed = self
             .d
             .reflexes
@@ -2123,6 +2221,9 @@ impl Core {
             frames += 1;
         }
         if let Some(c) = &mut self.conv {
+            if !c.no_retry {
+                c.sent.extend_from_slice(&g.buf);
+            }
             c.frames_sent += frames;
             c.first_chunk_at.get_or_insert(t);
             // The live frames go on from the buffer's end (timestamps from 0, as without it).
@@ -2749,6 +2850,13 @@ impl Core {
                 self.go_idle();
             }
             Message::Transcribe { language } => {
+                // Its speech-to-text started: no retry for a missing provider any more, the
+                // audio kept for one is not needed.
+                let current = self.run.as_ref().map(|r| r.conv);
+                if let Some(c) = self.conv.as_mut().filter(|c| Some(c.id) == current) {
+                    c.no_retry = true;
+                    c.sent = Vec::new();
+                }
                 log::info!(event = "transcribe", language = language.as_deref().unwrap_or(""); "pipeline language {}", language.as_deref().unwrap_or("?"))
             }
             Message::VoiceStarted { .. } => log::debug!("voice-started"),
@@ -3048,6 +3156,24 @@ impl Core {
         log::warn!(event = "pipeline_error", code = code.as_str(), text = text.as_str(); "Home Assistant: {text} ({code})");
         match &self.conv {
             Some(c) if c.policy.swallows() => self.close("stopped"),
+            Some(c)
+                if code == STT_PROVIDER_MISSING
+                    && !c.no_retry
+                    && matches!(self.phase, Phase::Listening | Phase::Thinking) =>
+            {
+                // Its speech-to-text is not there for a moment: the setup has just written the
+                // agent's instructions, and the AI integration (which often gives the
+                // speech-to-text too) reloads. Once more in a moment, with the same audio.
+                log::warn!(event = "pipeline_retry", code = code.as_str(), after_s = PROVIDER_RETRY_AFTER.as_secs_f64(); "speech-to-text missing: trying the run again in {:.0} s", PROVIDER_RETRY_AFTER.as_secs_f32());
+                let at = Instant::now() + PROVIDER_RETRY_AFTER;
+                if let Some(c) = &mut self.conv {
+                    c.no_retry = true;
+                    c.retry_at = Some(at);
+                }
+                if self.phase == Phase::Thinking {
+                    self.think_deadline = Some(at + self.cfg.think_timeout);
+                }
+            }
             Some(c) if c.window && code == NO_TEXT_RECOGNIZED && self.phase.in_conversation() => {
                 // A cough or the television in a conversation mode window: Home Assistant
                 // found no words in it. Nobody asked for the window, so it ends as one nobody
@@ -3131,6 +3257,12 @@ impl Core {
                             AfterAnswer::Nothing => after,
                             _ if ringing => {
                                 log::info!(event = "follow_up_skipped", ringing = true; "a timer rings: no listening after the answer");
+                                AfterAnswer::Nothing
+                            }
+                            // The microphone off (switch or screen): no Listening that hears
+                            // nothing, not even for a question of his.
+                            _ if mic_off => {
+                                log::info!(event = "follow_up_skipped", mic_off = true; "the microphone is off: no listening after the answer");
                                 AfterAnswer::Nothing
                             }
                             AfterAnswer::Window if self.noticing => {
@@ -4222,6 +4354,14 @@ impl Core {
             self.flash_until = None;
             self.ui(UiCommand::View(self.phase));
         }
+        if self
+            .conv
+            .as_ref()
+            .and_then(|c| c.retry_at)
+            .is_some_and(|t| now >= t)
+        {
+            self.retry_run();
+        }
         if let Some(q) = self
             .asking_voice
             .as_ref()
@@ -4268,6 +4408,17 @@ impl Core {
             && self.listen_deadline.is_some_and(|t| now >= t)
         {
             self.release(false, "listening too long");
+        }
+        if self.phase == Phase::Listening
+            && self.gate.is_none()
+            && self.listen_deadline.is_some_and(|t| now >= t)
+            && self.conv.as_ref().is_some_and(|c| c.window)
+        {
+            // A conversation mode window kept open for speech in which Home Assistant then
+            // heard no end: nobody asked for the window, so it closes as one nobody spoke in
+            // (as Stop would, without a sound), not as a failed request.
+            log::info!(event = "follow_up_window_closed", timeout = true; "conversation mode: Home Assistant heard no end of speech, back to the wake word");
+            self.stop_conversation();
         }
         if self.phase == Phase::Listening
             && self.gate.is_none()
