@@ -147,9 +147,11 @@ pub trait PanelHost: model::Host {
     fn remote_frame(&self) -> Result<Option<crate::ui::capture::Frame>, &'static str> {
         Err("renderer")
     }
-    /// A touch of the remote, in the picture's 0-1 coordinates.
-    fn remote_touch(&self, touch: super::remote::Touch) {
-        let _ = touch;
+    /// The remote's touches, in the picture's 0-1 coordinates: all queued, or none (false: the
+    /// screen's queue is full).
+    fn remote_touches(&self, touches: &[super::remote::Touch]) -> bool {
+        let _ = touches;
+        true
     }
     /// The remote asks for the home (out of a page that is not sent, where it cannot see to
     /// touch its way back); Err: not now (remote::home_allowed).
@@ -833,8 +835,8 @@ fn screen_op(
             if !sessions.remote.allow_events(events.len(), t) {
                 return refused(RemoteRefusal::SlowDown);
             }
-            for e in events {
-                host.remote_touch(e);
+            if !host.remote_touches(&events) {
+                return refused(RemoteRefusal::SlowDown);
             }
             ok(json!({}))
         }
@@ -937,8 +939,9 @@ mod tests {
                 b64: std::sync::Arc::new("anBlZw==".into()),
             }))
         }
-        fn remote_touch(&self, t: crate::panel::remote::Touch) {
-            self.touches.borrow_mut().push(t);
+        fn remote_touches(&self, t: &[crate::panel::remote::Touch]) -> bool {
+            self.touches.borrow_mut().extend_from_slice(t);
+            true
         }
         fn remote_changed(&self, c: Option<&crate::panel::remote::Controller>) {
             self.signs

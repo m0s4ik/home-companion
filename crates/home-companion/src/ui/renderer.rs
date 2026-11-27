@@ -339,7 +339,7 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
     let ui = Ui::new(screen, ctx.character.clone(), ctx.opts, ctx.core.clone())?;
     // The remote screen (crate::panel::remote): its frames read from the display's buffer (GPU
     // only: crate::ui::capture says why), its touches back into this loop as the panel's own.
-    let (remote_tx, remote_rx) = std::sync::mpsc::channel::<(u64, super::touch::TouchEvent)>();
+    let remote_queue = super::remote_input::TouchQueue::default();
     let capture = if kind == Kind::Gpu {
         super::capture::Capture::new(rotation, || {
             super::capture::drm::Drm::open().map(|d| Box::new(d) as Box<dyn super::capture::Source>)
@@ -347,7 +347,7 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
     } else {
         super::capture::Capture::unavailable("renderer")
     };
-    ui.set_remote_io(capture, remote_tx);
+    ui.set_remote_io(capture, remote_queue.clone());
     // The Home Assistant button opens "Casa" instead of telling the core.
     let casa = ctx.web.map(|mut w| {
         w.gpu = kind == Kind::Gpu;
@@ -416,7 +416,7 @@ pub fn run<S: Screen>(p: Prepared<S>, ctx: UiContext) -> Result<(), String> {
                             // meanwhile or the screen gone private.
                             // A press that starts on the sign is nobody's: the sign's Stop
                             // is for the room, and under it may be Home Assistant's view.
-                            remote_rx.try_recv().ok().map(|(epoch, ev)| {
+                            remote_queue.pop().map(|(epoch, ev)| {
                                 let on_sign =
                                     ev.kind == TouchKind::Down && ui.remote_sign_hit(ev.x, ev.y);
                                 (ev, ui.remote_accepts(epoch) && !on_sign)

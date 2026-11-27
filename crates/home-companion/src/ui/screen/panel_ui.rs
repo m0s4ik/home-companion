@@ -425,8 +425,8 @@ impl<S: Screen> PanelHost for Ui<S> {
         self.remote_frame_now()
     }
 
-    fn remote_touch(&self, t: crate::panel::remote::Touch) {
-        self.remote_touch_now(t);
+    fn remote_touches(&self, t: &[crate::panel::remote::Touch]) -> bool {
+        self.remote_touches_now(t)
     }
 
     fn remote_home(&self) -> Result<(), crate::panel::remote::Refusal> {

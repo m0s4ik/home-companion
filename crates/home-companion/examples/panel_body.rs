@@ -519,11 +519,14 @@ impl PanelHost for Demo {
     fn remote_frame(&self) -> Result<Option<Frame>, &'static str> {
         Ok(Some(self.draw()))
     }
-    fn remote_touch(&self, t: home_companion::panel::remote::Touch) {
-        if t.kind == home_companion::panel::remote::TouchKind::Down {
-            eprintln!("screen: touch at {:.3} {:.3}", t.x, t.y);
+    fn remote_touches(&self, touches: &[home_companion::panel::remote::Touch]) -> bool {
+        for t in touches {
+            if t.kind == home_companion::panel::remote::TouchKind::Down {
+                eprintln!("screen: touch at {:.3} {:.3}", t.x, t.y);
+            }
+            self.taps.borrow_mut().push((t.x, t.y, Instant::now()));
         }
-        self.taps.borrow_mut().push((t.x, t.y, Instant::now()));
+        true
     }
     fn remote_home(&self) -> Result<(), home_companion::panel::remote::Refusal> {
         eprintln!("screen: back to the home");

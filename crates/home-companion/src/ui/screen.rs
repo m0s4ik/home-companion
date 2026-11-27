@@ -10280,8 +10280,11 @@ mod tests {
             w.window()
                 .dispatch_event(WindowEvent::PointerReleased { position, button });
         };
-        let (tx, rx) = std::sync::mpsc::channel();
-        ui.set_remote_io(crate::ui::capture::Capture::unavailable("renderer"), tx);
+        let rx = crate::ui::remote_input::TouchQueue::default();
+        ui.set_remote_io(
+            crate::ui::capture::Capture::unavailable("renderer"),
+            rx.clone(),
+        );
         crate::settings_model::commit(&*ui, Change::Panel(true));
         ui.panel_sessions.borrow_mut().skip_pause();
         let r = ui.panel_call(&json!({"op": "pair.request", "peer": "192.0.2.24",
@@ -10352,9 +10355,16 @@ mod tests {
             )["ok"],
             true
         );
-        let (epoch, t) = rx.try_recv().unwrap();
+        let (epoch, t) = rx.pop().unwrap();
         assert_eq!((t.x, t.y), (640.0, 200.0));
         assert!(ui.remote_accepts(epoch));
+        // The queue toward the loop is bounded: a request that does not fit is refused whole.
+        let moves = json!({"events": vec![json!({"k": "m", "x": 0.5, "y": 0.5}); 32]});
+        assert_eq!(call("screen.input", moves.clone())["ok"], true);
+        assert_eq!(call("screen.input", moves.clone())["ok"], true);
+        assert_eq!(call("screen.input", moves)["error"], "slow_down");
+        assert_eq!(rx.len(), 64);
+        while rx.pop().is_some() {}
         // The confirmations of an update and of Home Assistant's unlink: not sent, not touched,
         // and a touch queued before the dialog opened is not dispatched.
         // So are the other confirmations (forget, clear, suspend, a photo, revoking every

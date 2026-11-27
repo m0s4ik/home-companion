@@ -18,14 +18,13 @@
 //! carry the session's number: the renderer checks it, and whether the screen may be touched,
 //! when it dispatches them (crate::ui::remote_input).
 
-use std::sync::mpsc::Sender;
-
 use super::{Screen, Ui, WakeSource, word};
 use crate::panel::protocol;
 use crate::panel::remote::{Controller, End, Touch, TouchKind};
 use crate::panel::sessions::Now;
 use crate::settings_model::Change;
 use crate::ui::capture::Capture;
+use crate::ui::remote_input::TouchQueue;
 use crate::ui::touch::{TouchEvent, TouchKind as ScreenTouch};
 
 /// What the screen keeps of the remote screen.
@@ -38,7 +37,7 @@ pub(in crate::ui::screen) struct RemoteUi {
     /// The frames; None: this renderer cannot be read (the demos, the tests).
     pub capture: Option<Capture>,
     /// Where the remote's touches go: the renderer's loop, with the session's number.
-    pub touches: Option<Sender<(u64, TouchEvent)>>,
+    pub touches: Option<TouchQueue>,
     /// The session's number: a new one at every start and end (touches of another are dropped).
     pub epoch: u64,
     /// Ended while the sessions were busy answering: the next tick ends it for good.
@@ -68,7 +67,7 @@ impl<S: Screen> Ui<S> {
     }
 
     /// The renderer's capture and the way back for the remote's touches (renderer::run).
-    pub fn set_remote_io(&self, capture: Capture, touches: Sender<(u64, TouchEvent)>) {
+    pub fn set_remote_io(&self, capture: Capture, touches: TouchQueue) {
         let mut r = self.remote.borrow_mut();
         r.capture = Some(capture);
         r.touches = Some(touches);
@@ -277,31 +276,45 @@ impl<S: Screen> Ui<S> {
         }
     }
 
-    /// A touch of the remote → a touch of the screen, in the window's logical pixels.
-    pub(super) fn remote_touch_now(&self, t: Touch) {
+    /// The remote's touches → touches of the screen, in the window's logical pixels: queued all
+    /// or none (false: the queue is full, crate::ui::remote_input::TouchQueue).
+    pub(super) fn remote_touches_now(&self, touches: &[Touch]) -> bool {
         let r = self.remote.borrow();
-        let Some(tx) = &r.touches else { return };
+        let Some(queue) = &r.touches else {
+            return true;
+        };
         let size = self
             .screen
             .window()
             .size()
             .to_logical(self.screen.window().scale_factor());
-        let kind = match t.kind {
-            TouchKind::Down => ScreenTouch::Down,
-            TouchKind::Move => ScreenTouch::Move,
-            TouchKind::Up => ScreenTouch::Up,
-        };
-        let _ = tx.send((
-            r.epoch,
-            TouchEvent {
-                kind,
-                x: (t.x * size.width).clamp(0.0, size.width - 1.0),
-                y: (t.y * size.height).clamp(0.0, size.height - 1.0),
-            },
-        ));
+        let events: Vec<(u64, TouchEvent)> = touches
+            .iter()
+            .map(|t| {
+                let kind = match t.kind {
+                    TouchKind::Down => ScreenTouch::Down,
+                    TouchKind::Move => ScreenTouch::Move,
+                    TouchKind::Up => ScreenTouch::Up,
+                };
+                (
+                    r.epoch,
+                    TouchEvent {
+                        kind,
+                        x: (t.x * size.width).clamp(0.0, size.width - 1.0),
+                        y: (t.y * size.height).clamp(0.0, size.height - 1.0),
+                    },
+                )
+            })
+            .collect();
+        if !queue.push_all(&events) {
+            log::info!(event = "remote_screen", action = "queue_full", queued = queue.len();
+                       "remote screen: touches refused, {} still queued", queue.len());
+            return false;
+        }
         if let Some(cap) = &r.capture {
             cap.poke();
         }
+        true
     }
 
     /// The demos' sign (`--state remote-sign`) and switch (`settings-panel-remote`).
