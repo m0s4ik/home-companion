@@ -68,6 +68,8 @@ port = 8125
 socket = "/run/home-companion/panel/panel.sock"
 
 [paths]
+# The service (home-companion.service) assumes this directory for the audio reboot's mark
+# (audio-reboot): change both together.
 state_dir = "/var/lib/home-companion"
 locales_dir = "/opt/home-companion/locales"
 

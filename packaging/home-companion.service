@@ -28,7 +28,9 @@ ExecStopPost=-/opt/home-companion/home-companion --reset-console
 # within 5 minutes of booting (the sound card may still be coming up), not again while the mark is there (the
 # body removes it after 10 minutes of working audio), and never while an update runs: the updater is watching
 # the new version and puts the one before back if it does not stay up. Otherwise Restart= as for any failure.
-ExecStopPost=+/bin/sh -c 'm=/var/lib/home-companion/audio-reboot; case "$(systemctl show -p ActiveState --value home-companion-update.service)" in activating|active|deactivating|reloading) exit 0 ;; esac; if [ "$EXIT_STATUS" = 6 ] && [ ! -e "$m" ] && [ "$(cut -d. -f1 /proc/uptime)" -ge 300 ]; then echo "audio did not start: rebooting once for it"; touch "$m" && systemctl --no-block reboot; fi; exit 0'
+# The mark is never followed if it is a link (the directory belongs to the body's user): it is made as a new
+# file and renamed into place. It goes again if the reboot is refused. The path assumes [paths] state_dir = /var/lib/home-companion.
+ExecStopPost=+/bin/sh -c 'm=/var/lib/home-companion/audio-reboot; case "$(systemctl show -p ActiveState --value home-companion-update.service)" in activating|active|deactivating|reloading) exit 0 ;; esac; if [ "$EXIT_STATUS" = 6 ] && [ ! -L "$m" ] && [ ! -e "$m" ] && [ "$(cut -d. -f1 /proc/uptime)" -ge 300 ]; then echo "audio did not start: rebooting once for it"; t=$(mktemp "$m.XXXXXX") && mv -fT "$t" "$m" && { systemctl --no-block reboot || rm -f "$m"; }; fi; exit 0'
 # KDSETMODE on /dev/tty0 (graphics mode while drawing) needs CAP_SYS_TTY_CONFIG
 AmbientCapabilities=CAP_SYS_TTY_CONFIG
 CapabilityBoundingSet=CAP_SYS_TTY_CONFIG
