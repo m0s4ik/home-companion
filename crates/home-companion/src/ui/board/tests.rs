@@ -524,41 +524,13 @@ fn a_question_binds_the_action_it_asked() {
 }
 
 #[test]
-fn icons_and_labels_by_domain_and_class() {
+fn icons_by_domain_and_class() {
     assert_eq!(default_icon("light", ""), "lightbulb");
     assert_eq!(default_icon("cover", "shutter"), "window-shutter");
     assert_eq!(default_icon("cover", "blind"), "blinds");
     assert_eq!(default_icon("sensor", "temperature"), "thermometer");
     assert_eq!(default_icon("binary_sensor", "window"), "window-closed");
     assert_eq!(default_icon("vacuum", ""), "help-circle-outline");
-    // Every label is a key of the English words, and Italian has it too.
-    let (en, it) = (locale("en"), locale("it"));
-    for (d, c) in [
-        ("light", ""),
-        ("switch", ""),
-        ("fan", ""),
-        ("cover", "shutter"),
-        ("valve", ""),
-        ("media_player", ""),
-        ("scene", ""),
-        ("script", ""),
-        ("automation", ""),
-        ("button", ""),
-        ("sensor", "temperature"),
-        ("sensor", "humidity"),
-        ("sensor", "power"),
-        ("sensor", "energy"),
-        ("sensor", "battery"),
-        ("sensor", "pressure"),
-        ("binary_sensor", "door"),
-        ("binary_sensor", "window"),
-        ("binary_sensor", "motion"),
-        ("number", ""),
-    ] {
-        let k = default_label(d, c);
-        assert_ne!(en.text(k), k, "{k}");
-        assert!(!it.missing.contains(&format!("text.{k}")), "{k}");
-    }
 }
 
 #[test]
@@ -837,45 +809,6 @@ fn a_tap_waits_for_its_state_at_most_four_seconds_and_a_failure_shows_three() {
     assert_eq!(look(&s, &p, t0 + FAILED_FOR), TileState::Off);
     p.prune(&s, t0 + FAILED_FOR);
     assert!(p.marks.is_empty());
-}
-
-#[test]
-fn the_one_line_form_is_row_zero() {
-    use TileKind::*;
-    let canvas = Canvas {
-        id: "custom".into(),
-        name: String::new(),
-        tiles: vec![
-            tile(Button, "light.b", 2, 0, 2, 1),
-            tile(Sensor, "sensor.t", 0, 0, 2, 1),
-            tile(Button, "light.c", 0, 1, 1, 1),
-        ],
-    };
-    let s = states(&[
-        (
-            "sensor.t",
-            State {
-                unit: "°C".into(),
-                ..st("12.5")
-            },
-        ),
-        ("light.b", st("off")),
-        ("light.c", st("on")),
-    ]);
-    let v = view(
-        &canvas,
-        &s,
-        &HashMap::new(),
-        &Pending::default(),
-        &words(),
-        Instant::now(),
-    );
-    let l = line(&v);
-    let got: Vec<(u8, &str, &str)> = l
-        .iter()
-        .map(|i| (i.x, i.icon.as_str(), i.text.as_str()))
-        .collect();
-    assert_eq!(got, [(0, "eye", "12.5°C"), (2, "lightbulb", "Off")]);
 }
 
 #[test]

@@ -14,9 +14,6 @@
 //!   off or on.
 //! - A bad tile is dropped with a reason, never the whole file.
 
-// Wired in the screen phase (the page, the custom widget) and the panel phase (the editor).
-#![allow(dead_code)]
-
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -26,7 +23,8 @@ use serde_json::Value;
 use crate::ha::widgets::{Curve, Entity, State, States};
 
 pub mod draw;
-mod icon_table;
+/// The icons' table (written by tools/make-board-icons.py) and the MDI version it holds.
+pub mod icon_table;
 pub mod icons;
 
 /// The file's format.
@@ -889,33 +887,6 @@ pub fn default_icon(domain: &str, class: &str) -> &'static str {
     }
 }
 
-/// The locale key of a default label for a domain and a device class (what the editor proposes
-/// before Home Assistant's name is known).
-pub fn default_label(domain: &str, class: &str) -> &'static str {
-    match (domain, class) {
-        ("light", _) => "board_label_light",
-        ("switch" | "input_boolean", _) => "board_label_switch",
-        ("fan", _) => "board_label_fan",
-        ("cover", _) => "board_label_cover",
-        ("valve", _) => "board_label_valve",
-        ("media_player", _) => "board_label_player",
-        ("scene", _) => "board_label_scene",
-        ("script", _) => "board_label_script",
-        ("automation", _) => "board_label_automation",
-        ("button" | "input_button", _) => "board_label_button",
-        ("sensor", "temperature") => "board_label_temperature",
-        ("sensor", "humidity") => "board_label_humidity",
-        ("sensor", "power") => "board_label_power",
-        ("sensor", "energy") => "board_label_energy",
-        ("sensor", "battery") => "board_label_battery",
-        ("binary_sensor", "door" | "garage_door") => "board_label_door",
-        ("binary_sensor", "window") => "board_label_window",
-        ("binary_sensor", "motion" | "occupancy" | "presence") => "board_label_motion",
-        ("input_number" | "number", _) => "board_label_number",
-        _ => "board_label_sensor",
-    }
-}
-
 /// The words of the tiles' states (locales: `board_*`) and the number separators.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoardWords {
@@ -1329,39 +1300,6 @@ pub fn view(
             }
         })
         .collect()
-}
-
-/// One item of the widget's one-line form.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LineItem {
-    pub x: u8,
-    pub w: u8,
-    pub icon: String,
-    /// The value, else the state in words, else the name.
-    pub text: String,
-    pub state: TileState,
-}
-
-/// The one-line form of a widget (when the cards leave little room): row 0 only, left to
-/// right, each tile an icon and its value or state.
-pub fn line(view: &[TileView]) -> Vec<LineItem> {
-    let mut out: Vec<LineItem> = view
-        .iter()
-        .filter(|t| t.y == 0)
-        .map(|t| LineItem {
-            x: t.x,
-            w: t.w,
-            icon: t.icon.clone(),
-            text: [&t.value, &t.status, &t.name]
-                .into_iter()
-                .find(|s| !s.is_empty())
-                .cloned()
-                .unwrap_or_default(),
-            state: t.state,
-        })
-        .collect();
-    out.sort_by_key(|i| i.x);
-    out
 }
 
 #[cfg(test)]
