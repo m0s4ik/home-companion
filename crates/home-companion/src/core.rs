@@ -3099,8 +3099,12 @@ impl Core {
                     // Not with the microphone off (its switch moved while he spoke, or muted on
                     // the screen): the window would show Listening and hear nothing.
                     let mic_off = self.mic_muted || self.mic_switch_off;
+                    // Nor while AirPlay music plays: it is only ducked, and a window would
+                    // hear it as speech.
+                    let music = self.now_playing.as_ref().is_some_and(|n| n.playing);
                     let windows = (self.conversation_mode
                         && !mic_off
+                        && !music
                         && self.follow_ups < self.follow_up_max)
                         .then_some(self.cfg.follow_up_window);
                     let after = self.conv.as_ref().map_or(AfterAnswer::Nothing, |c| {
@@ -3117,6 +3121,17 @@ impl Core {
                     self.close("played");
                     if self.phase == Phase::Speaking {
                         self.go_idle();
+                        // go_idle may have started the bell of a timer that came due meanwhile,
+                        // or a reminder may be full screen: no listening over them (a window
+                        // would send the bell to Home Assistant as a turn).
+                        let after = if self.phase == Phase::Ringing || self.noticing {
+                            if after != AfterAnswer::Nothing {
+                                log::info!(event = "follow_up_skipped", ringing = self.phase == Phase::Ringing, reminder = self.noticing; "a timer rings or a reminder is shown: no listening after the answer");
+                            }
+                            AfterAnswer::Nothing
+                        } else {
+                            after
+                        };
                         match after {
                             // Within conversation mode's windows a question of his counts as one
                             // of them: noise heard in a window and answered "Can you repeat?"

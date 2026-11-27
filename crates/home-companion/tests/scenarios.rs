@@ -1048,6 +1048,64 @@ fn c26_no_window_with_the_microphone_off() {
 }
 
 #[test]
+fn c26_no_window_over_a_ringing_timer() {
+    // A timer comes due while Alfred thinks (it waits for the conversation's end): after the
+    // answer the bell rings, and no window opens over it to send the bell to Home Assistant.
+    let mut s = Setup::new(
+        sc(cat(vec![
+            hello(),
+            hear("che ore sono", 800),
+            vec![Step::Sleep { ms: 2500 }],
+            answer("Sono le cinque."),
+            bye(2500),
+        ])),
+        vec![
+            press(When::View(Phase::Home), 50, || {
+                UiEvent::ConversationMode(true)
+            }),
+            press(When::Ms(50), 0, || UiEvent::ConversationMax(3)),
+            press(When::Ms(0), 0, || UiEvent::TimerStart(1, None)),
+            press(When::Ms(50), 0, talk),
+        ],
+    )
+    .mic(vec![Utt::says(""), Utt::says("")]);
+    s.follow_up = Some(std::time::Duration::from_millis(1500));
+    let r = run_setup(s);
+    assert_clean(&r);
+    assert_eq!(r.summary.rung.len(), 1);
+    assert_eq!(r.outcomes(), vec![pair("talk", "played")]);
+    assert_eq!(r.record.run_pipelines.len(), 1);
+    let speaking = r.views.iter().position(|p| *p == Phase::Speaking).unwrap();
+    assert!(
+        r.views[speaking..].contains(&Phase::Ringing),
+        "the bell after the answer: {:?}",
+        r.views
+    );
+    assert!(
+        !r.views[speaking..].contains(&Phase::Listening),
+        "no window: {:?}",
+        r.views
+    );
+}
+
+#[test]
+fn c26_no_window_while_music_plays() {
+    // AirPlay music is only ducked: a window would hear it as speech.
+    let mut s = conversing_setup(
+        "Sono le cinque.",
+        || UiEvent::ConversationMax(3),
+        bye(2500),
+        &[],
+    )
+    .mic(vec![Utt::says(""), Utt::says("")]);
+    s.music = true;
+    let r = run_setup(s);
+    assert_clean(&r);
+    assert_eq!(r.outcomes(), vec![pair("talk", "played")]);
+    assert_eq!(r.record.run_pipelines.len(), 1);
+}
+
+#[test]
 fn c26_without_conversation_mode_a_plain_answer_ends_it() {
     let r = answered("Sono le cinque.", bye(2500));
     assert_clean(&r);

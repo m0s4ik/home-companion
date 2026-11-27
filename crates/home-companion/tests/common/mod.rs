@@ -334,6 +334,8 @@ pub struct Setup {
     pub think_timeout: Option<Duration>,
     /// Conversation mode's window (None: the core's own).
     pub follow_up: Option<Duration>,
+    /// AirPlay music plays from the start (its "now playing" sent to the core).
+    pub music: bool,
 }
 
 impl Setup {
@@ -345,6 +347,7 @@ impl Setup {
             scripted_mic: None,
             think_timeout: None,
             follow_up: None,
+            music: false,
         }
     }
     /// The reflexes play `utts`, and the microphone speaks them.
@@ -562,6 +565,22 @@ pub fn run_setup(setup: Setup) -> Run {
         core_cfg.follow_up_window = window;
     }
     let core = std::thread::spawn(move || Core::new(core_cfg, deps).run(core_rx));
+    if setup.music {
+        let now = home_companion::airplay::NowPlaying {
+            title: "Song".into(),
+            artist: "Band".into(),
+            album: String::new(),
+            source: "Phone".into(),
+            cover: None,
+            cover_at: None,
+            playing: true,
+        };
+        core_tx
+            .send(CoreEvent::Music(home_companion::airplay::MusicEvent::Now(
+                now,
+            )))
+            .unwrap();
+    }
     let scenario = setup.scenario;
     let t0 = Instant::now();
     let ha = std::thread::spawn(move || fake_ha::run(addr, &scenario).unwrap());
