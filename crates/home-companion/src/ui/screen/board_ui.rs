@@ -667,14 +667,7 @@ impl<S: Screen> Ui<S> {
                 .by_id
                 .get(&call.entity_id)
                 .map_or("", |s| s.state.as_str());
-            let pct = call
-                .data
-                .as_object()
-                .and_then(|o| {
-                    ["brightness_pct", "position", "percentage"]
-                        .iter()
-                        .find_map(|k| o.get(*k).and_then(|x| x.as_f64()))
-                })
+            let pct = board::ask_percent(&call, t.states.by_id.get(&call.entity_id))
                 .map_or_else(String::new, |p| format!("{p:.0}"));
             let title = l
                 .text(board::ask_key(&call, state))

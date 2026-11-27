@@ -582,6 +582,64 @@ fn state_words_in_the_screen_language() {
     );
     assert_eq!(state_words("light", "", "unavailable", &w), "Unavailable");
     assert_eq!(state_words("climate", "", "heat_cool", &w), "heat_cool");
+    // A shutter, a valve: their own words (in Italian feminine, «Aperta»).
+    assert_eq!(state_words("cover", "shutter", "open", &w), "Open");
+    assert_eq!(state_words("cover", "shutter", "open", &it), "Aperta");
+    assert_eq!(state_words("valve", "", "closed", &it), "Chiusa");
+    assert_eq!(state_words("binary_sensor", "door", "on", &it), "Aperto");
+    assert_eq!(state_words("cover", "", "closed", &de), "Geschlossen");
+}
+
+#[test]
+fn a_level_question_says_the_percent_of_any_bar() {
+    use TileKind::*;
+    let on = st("on");
+    let pct = |id: &str, s: &State, p: u8| {
+        let c = set_level(&tile(Level, id, 0, 0, 2, 1), Some(s), p).unwrap();
+        ask_percent(&c, Some(s)).map(|p| p.round())
+    };
+    assert_eq!(pct("light.a", &on, 40), Some(40.0));
+    assert_eq!(pct("cover.a", &st("open"), 30), Some(30.0));
+    assert_eq!(pct("fan.a", &on, 70), Some(70.0));
+    assert_eq!(pct("media_player.a", &on, 25), Some(25.0));
+    let n = State {
+        min: Some(10.0),
+        max: Some(30.0),
+        step: Some(1.0),
+        ..st("20")
+    };
+    assert_eq!(pct("input_number.a", &n, 50), Some(50.0));
+    let scene = action_for(&tile(Button, "scene.a", 0, 0, 1, 1), Some(&st("x"))).unwrap();
+    assert_eq!(ask_percent(&scene, None), None);
+}
+
+#[test]
+fn a_numbers_digits_come_from_its_step() {
+    let w = words();
+    let n = |state: &str, step: Option<f64>| State {
+        state: state.into(),
+        step,
+        unit: "%".into(),
+        ..Default::default()
+    };
+    assert_eq!(number_text(&n("30.0", Some(1.0)), &w).unwrap(), "30%");
+    assert_eq!(number_text(&n("30.0", Some(0.5)), &w).unwrap(), "30.0%");
+    assert_eq!(number_text(&n("21.25", Some(0.05)), &w).unwrap(), "21.25%");
+    // A sensor (no step): the digits of its state, as before.
+    assert_eq!(number_text(&n("30.0", None), &w).unwrap(), "30.0%");
+    let it = BoardWords::from_locale(&locale("it"));
+    assert_eq!(number_text(&n("30.0", Some(1.0)), &it).unwrap(), "30%");
+    // On a level tile the value is in the bar only: no raw "30.0" beside the name.
+    let bar = tile(TileKind::Level, "input_number.x", 0, 0, 2, 1);
+    let v = view(
+        &page(vec![bar]),
+        &states(&[("input_number.x", n("30.0", Some(1.0)))]),
+        &HashMap::new(),
+        &Pending::default(),
+        &w,
+        Instant::now(),
+    );
+    assert_eq!((v[0].value.as_str(), v[0].status.as_str()), ("30%", ""));
 }
 
 #[test]

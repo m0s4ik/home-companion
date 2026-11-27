@@ -754,6 +754,25 @@ pub fn bound_to_state(call: Call, state: &str) -> Call {
     }
 }
 
+/// The percent a level call sets, as the bar showed it while dragging (`board_ask_level`'s
+/// "{pct}"): a light's brightness, a cover's position, a fan's speed, a player's volume, a
+/// number's place between its `min` and `max`. None for a call that sets no level.
+pub fn ask_percent(call: &Call, st: Option<&State>) -> Option<f64> {
+    let o = call.data.as_object()?;
+    let num = |k: &str| o.get(k).and_then(Value::as_f64);
+    let p = num("brightness_pct")
+        .or_else(|| num("position"))
+        .or_else(|| num("percentage"))
+        .or_else(|| num("volume_level").map(|v| v * 100.0))
+        .or_else(|| {
+            let v = num("value")?;
+            let s = st?;
+            let (min, max) = (s.min.unwrap_or(0.0), s.max.unwrap_or(100.0));
+            (max > min).then(|| (v - min) / (max - min) * 100.0)
+        })?;
+    Some(p.clamp(0.0, 100.0))
+}
+
 /// Why a tile's "Advanced" service cannot be (None: it can): only a service of the tile's own
 /// domain or of `homeassistant` (both act on the tile's entity, whose gate was looked at), and
 /// of `script` only turning the tile's script on, off or over: `script.<name>` runs that
@@ -904,6 +923,9 @@ pub struct BoardWords {
     pub off: String,
     pub open: String,
     pub closed: String,
+    /// A cover's or a valve's (in Italian a tapparella, a valvola: «Aperta»).
+    pub cover_open: String,
+    pub cover_closed: String,
     pub opening: String,
     pub closing: String,
     pub playing: String,
@@ -938,6 +960,8 @@ impl BoardWords {
             off: text("board_off"),
             open: text("board_open"),
             closed: text("board_closed"),
+            cover_open: text("board_cover_open"),
+            cover_closed: text("board_cover_closed"),
             opening: text("board_opening"),
             closing: text("board_closing"),
             playing: text("board_playing"),
@@ -981,8 +1005,8 @@ pub fn state_words(domain: &str, class: &str, state: &str, w: &BoardWords) -> St
         }
         (_, "on") => pick(&w.on),
         (_, "off") => pick(&w.off),
-        ("cover" | "valve", "open") => pick(&w.open),
-        ("cover" | "valve", "closed") => pick(&w.closed),
+        ("cover" | "valve", "open") => pick(&w.cover_open),
+        ("cover" | "valve", "closed") => pick(&w.cover_closed),
         ("cover" | "valve", "opening") => pick(&w.opening),
         ("cover" | "valve", "closing") => pick(&w.closing),
         ("media_player", "playing") => pick(&w.playing),
@@ -1006,10 +1030,16 @@ fn with_unit(n: String, unit: &str) -> String {
 
 /// The digits after the separator of a state that is a number.
 fn decimals_of(st: &State) -> u8 {
-    st.state
-        .trim()
-        .split_once('.')
-        .map_or(0, |(_, f)| f.len().min(4) as u8)
+    let digits = |t: &str| t.split_once('.').map_or(0, |(_, f)| f.len().min(4) as u8);
+    // A number's step says how fine it is ("30.0" on a step of 1 is 30); a sensor's state
+    // has the digits Home Assistant gives it.
+    match st.step.filter(|s| s.is_finite() && *s > 0.0) {
+        Some(step) => {
+            let t = format!("{:.4}", step);
+            digits(t.trim_end_matches('0').trim_end_matches('.'))
+        }
+        None => digits(st.state.trim()),
+    }
 }
 
 /// A state that is a number, in the screen's words, with its unit.
@@ -1224,6 +1254,10 @@ pub fn view(
             );
             if domain == "scene" && !gone {
                 status = w.scene.clone();
+            }
+            // A number's value is in its bar; its raw state beside the name said it twice.
+            if t.kind == TileKind::Level && matches!(domain, "input_number" | "number") && !gone {
+                status = String::new();
             }
             // A light on at less than full: how much ("On · 60%"); a level tile has its bar.
             if t.kind == TileKind::Button
