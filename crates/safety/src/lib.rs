@@ -42,6 +42,9 @@ fn domain_words(domain: &str) -> &'static [&'static str] {
     match domain {
         "alarm_control_panel" => &["allarm", "antifurt", "alarm", "disarm"],
         "lock" => &["serratur", "lucchett", "chiavistell", "lock", "unlock"],
+        // Beginnings only where no common word begins so: a short word ("tor", "tür",
+        // "deur", "hek") is matched whole ([`DOOR_WORDS`]), its compounds here, so that
+        // "motor", "kleiderschrank" or "deurbel" stay what they are.
         "door" => &[
             "garage",
             "cancell",
@@ -52,6 +55,33 @@ fn domain_words(domain: &str) -> &'static [&'static str] {
             "porta",
             "door",
             "gate",
+            // de
+            "garagentor",
+            "hoftor",
+            "gartentor",
+            "einfahrtstor",
+            "rolltor",
+            "schiebetor",
+            "toröffn",
+            "toroeffn",
+            "pforte",
+            "gartenpfort",
+            "schranke",
+            "haustür",
+            "haustuer",
+            "eingangstür",
+            "eingangstuer",
+            "türöffn",
+            "tueroeffn",
+            // nl
+            "tuinpoort",
+            "garagedeur",
+            "voordeur",
+            "achterdeur",
+            "deuropen",
+            "tuinhek",
+            "toegangshek",
+            "slagboom",
         ],
         "cover" => &[
             "tapparell",
@@ -67,10 +97,33 @@ fn domain_words(domain: &str) -> &'static [&'static str] {
             "blind",
             "gate",
             "awning",
+            // de
+            "rollladen",
+            "rolladen",
+            "jalousie",
+            "markise",
+            "garagentor",
+            "hoftor",
+            "gartentor",
+            "einfahrtstor",
+            "rolltor",
+            "schiebetor",
+            "schranke",
+            // nl
+            "rolluik",
+            "zonnescherm",
+            "tuinpoort",
+            "slagboom",
         ],
         _ => &[],
     }
 }
+
+/// Door and gate words matched whole (too short to be beginnings): it, en, de, nl.
+const DOOR_WORDS: &[&str] = &[
+    "porta", "porte", "door", "doors", "tor", "tore", "tür", "türe", "türen", "tuer", "deur",
+    "deuren", "hek", "hekken", "poort", "poorten",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gate {
@@ -95,7 +148,7 @@ impl SafetyCfg {
             .map(str::to_lowercase)
             .collect();
         let named_door = words.iter().any(|w| {
-            matches!(w.as_str(), "porta" | "porte" | "door" | "doors")
+            DOOR_WORDS.contains(&w.as_str())
                 || domain_words("door")
                     .iter()
                     .filter(|p| **p != "porta" && **p != "door")
@@ -104,13 +157,12 @@ impl SafetyCfg {
         match domain {
             "cover" if self.never_cover_classes.iter().any(|c| c == device_class) => Gate::Never,
             "cover" if device_class.is_empty() && named_door => Gate::Never,
-            "switch" | "button" | "input_boolean" | "input_button" | "script" => {
-                match self.classify(&words.join(" ")) {
-                    Gate::Never => Gate::Never,
-                    _ if named_door => Gate::Never,
-                    g => g,
-                }
-            }
+            "switch" | "button" | "input_boolean" | "input_button" | "script" | "scene"
+            | "automation" => match self.classify(&words.join(" ")) {
+                Gate::Never => Gate::Never,
+                _ if named_door => Gate::Never,
+                g => g,
+            },
             d if self.confirm_domains.iter().any(|c| c == d) => Gate::Confirm,
             _ => Gate::Allow,
         }
@@ -218,6 +270,86 @@ mod tests {
         );
         assert_eq!(c.entity_gate("light.cucina", "", "Cucina"), Gate::Allow);
         assert_eq!(c.entity_gate("climate.casa", "", "Termostato"), Gate::Allow);
+    }
+
+    #[test]
+    fn german_and_dutch_doors_and_gates() {
+        let c = SafetyCfg::default();
+        for name in [
+            "Tor",
+            "Garagentor",
+            "Garage links",
+            "Hoftor",
+            "Einfahrtstor",
+            "Rolltor",
+            "Tür",
+            "Haustür",
+            "Haustuer",
+            "Türöffner",
+            "Pforte",
+            "Gartenpforte",
+            "Schranke",
+            "Toröffner",
+            "Poort",
+            "Tuinpoort",
+            "Garagedeur",
+            "Deur",
+            "Voordeur",
+            "Hek",
+            "Tuinhek",
+            "Slagboom",
+        ] {
+            assert_eq!(
+                c.entity_gate("switch.relay", "", name),
+                Gate::Never,
+                "{name}"
+            );
+            assert_eq!(c.entity_gate("cover.x", "", name), Gate::Never, "{name}");
+            assert_eq!(c.entity_gate("scene.x", "", name), Gate::Never, "{name}");
+        }
+        for name in ["Rollladen", "Jalousie", "Markise", "Rolluik", "Zonnescherm"] {
+            assert_eq!(
+                c.entity_gate("switch.relay", "", name),
+                Gate::Confirm,
+                "{name}"
+            );
+        }
+        // Words that only look like them.
+        for name in [
+            "Motor",
+            "Ventilator",
+            "Monitor",
+            "Torte",
+            "Kleiderschrank",
+            "Deurbel",
+            "Heks",
+            "Poortwachter lamp",
+            "Tortuga",
+        ] {
+            let g = c.entity_gate("switch.relay", "", name);
+            assert_ne!(g, Gate::Never, "{name}");
+        }
+        assert_eq!(c.entity_gate("switch.motor", "", "Motor"), Gate::Allow);
+        assert_eq!(c.entity_gate("light.tor", "", "Licht Tor"), Gate::Allow);
+    }
+
+    #[test]
+    fn scenes_and_automations_are_read_by_name() {
+        let c = SafetyCfg::default();
+        assert_eq!(c.entity_gate("scene.open_gate", "", ""), Gate::Never);
+        assert_eq!(
+            c.entity_gate("automation.x", "", "Apri cancello"),
+            Gate::Never
+        );
+        assert_eq!(
+            c.entity_gate("scene.x", "", "Tapparelle giù"),
+            Gate::Confirm
+        );
+        assert_eq!(c.entity_gate("scene.movie", "", "Movie"), Gate::Allow);
+        assert_eq!(
+            c.entity_gate("automation.lights", "", "Lights at dusk"),
+            Gate::Allow
+        );
     }
 
     #[test]
