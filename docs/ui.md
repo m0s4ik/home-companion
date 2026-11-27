@@ -370,6 +370,13 @@ browser panel. Named "Board" ("Plancia" in Italian).
   scrolls, when its content is long (the icons, Advanced). On a phone the inspector goes under the grid. Drag and
   resize snap to the sizes a tile may have (gridstack.js, `crates/panel/web/vendor/`); without a pointer, the size
   buttons and Move. Every change saves the whole canvas; the body keeps what `board::validate` allows.
+- **Advanced** (closed by default under a button's form): a service and its data (JSON) typed by hand instead of the
+  kind's action. `board::advanced_problem` allows only a service of the tile's own domain (for `script`, turning the
+  tile's own script on, off or over) or `homeassistant.turn_on`/`turn_off`/`toggle`/`update_entity`; the data may not
+  name another entity (`entity_id`, `area_id`, `device_id`, `entities`…). The call always targets the tile's entity,
+  and its gate is looked at again when it is sent (`hub.rs`). A tile that breaks these is left out, with its reason.
+  The gates read scenes and automations by name as they read switches: a door, gate or lock word in the name keeps
+  the tile off the board (on the safe side).
 
 ## 8. Home Assistant's view
 
