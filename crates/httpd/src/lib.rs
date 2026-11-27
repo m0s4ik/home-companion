@@ -151,6 +151,33 @@ impl Read for Timed<'_> {
     }
 }
 
+/// The same deadline for an answer: every write waits at most what is left, and none starts
+/// after it (a client reading a few bytes every few seconds does not keep a connection, nor a
+/// big answer, for ever). `response.write_to(&mut Timed::new(&s, d), ..)`.
+impl Write for Timed<'_> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        let left = self
+            .deadline
+            .saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "answer too slow"));
+        }
+        self.stream.set_write_timeout(Some(left))?;
+        (&mut &*self.stream)
+            .write(data)
+            .map_err(|e| match e.kind() {
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
+                    io::Error::new(io::ErrorKind::TimedOut, "answer too slow")
+                }
+                _ => e,
+            })
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        (&mut &*self.stream).flush()
+    }
+}
+
 /// Bytes read past what was asked for: the head's read may take some of the body.
 struct Buffered<'a, R: Read> {
     r: &'a mut R,
@@ -721,5 +748,40 @@ mod tests {
         let t = Instant::now();
         let _ = read_request(&mut Trickle(&head), big);
         assert!(t.elapsed() < Duration::from_secs(1));
+    }
+
+    /// A client that reads slowly is cut at the answer's deadline, not after a timeout per
+    /// write (each of its small reads would start a new one).
+    #[test]
+    fn slow_readers_are_cut() {
+        use std::net::{TcpListener, TcpStream};
+        use std::time::{Duration, Instant};
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let slow = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(addr).unwrap();
+            let mut buf = [0u8; 4096];
+            for _ in 0..60 {
+                if matches!(c.read(&mut buf), Ok(0) | Err(_)) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let (s, _) = l.accept().unwrap();
+        let big = Response::new(200).body("image/jpeg", vec![0u8; 64 << 20]);
+        let t = Instant::now();
+        let r = big.write_to(&mut Timed::new(&s, Duration::from_millis(500)), false);
+        assert!(
+            matches!(r, Err(ref e) if e.kind() == io::ErrorKind::TimedOut),
+            "{r:?}"
+        );
+        assert!(
+            t.elapsed() < Duration::from_millis(1500),
+            "{:?}",
+            t.elapsed()
+        );
+        drop(s);
+        slow.join().unwrap();
     }
 }

@@ -92,12 +92,18 @@ ticks and deletes items of Home Assistant's lists; **Settings** has the device's
 German and Dutch.
 
 **Screen** shows the device's screen live and turns taps and drags in the browser into real touches. It is off until
-switched on **on the device** (Settings → Access from the browser → Remote screen); one device controls it at a
-time, a sign above Alfred says which, and **Stop** on it ends the session at once (a real finger always wins) and keeps
-that device out until the switch is turned off and on again. The camera, the photos, the memories, the conversations,
-the codes that let devices in, AirPlay mirroring and every confirmation but a new timer or alarm are never sent nor
-touched. A remote finger can do what a finger can, the Home Assistant view included: switch it on only on a home
-network you trust. Frames are made only while someone watches.
+switched on **on the device** (Settings → Access from the browser → Remote screen). Each start is then asked **on the
+device** first: «Chrome on macOS wants to control the screen», **Deny** or **Allow**, and nothing is shown or touched
+until someone there allows it; Deny keeps that device out, and nobody answering refuses it after 30 seconds. The
+browser says which happened. *Ask on the screen first* can be switched off on the device, after a warning (any device
+let in could then watch and control the screen with nobody there agreeing); never from the browser. One device
+controls it at a time, a sign above Alfred says which, and **Stop** on it ends the session at once (a real finger
+always wins) and keeps that device out until the switch is turned off and on again. The camera, the photos, the
+memories, the conversations, Home Assistant's own view, the update and Home Assistant link pages, the codes that let
+devices in, AirPlay mirroring and every confirmation but a new timer or alarm are never sent nor touched (every page
+is classified as shown or hidden, and a page added later is hidden until it is). **Home** from the browser waits
+while someone is touching the device and never leaves Access from the browser. Switch it on only on a home network
+you trust. Frames are made only while someone watches.
 
 ### 🗣️ Talk to it
 

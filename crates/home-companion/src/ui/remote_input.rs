@@ -24,6 +24,42 @@ pub const REAL_WINS_FOR: Duration = Duration::from_millis(500);
 /// was lost (a batch the panel refused, the network), and the next click's Down would be dropped.
 pub const REMOTE_LONGEST_PRESS: Duration = Duration::from_secs(10);
 
+/// The remote's touches waiting for the renderer's loop: two full requests of the panel. The
+/// loop takes one tap per round, the browser may send faster: beyond this a request is refused
+/// whole (the panel answers `slow_down`), never cut in the middle of a press.
+pub const REMOTE_QUEUE: usize = 2 * crate::panel::remote::MAX_EVENTS;
+
+/// The queue between the panel's requests and the renderer's loop (both on the screen's
+/// thread), each touch with its session's number.
+#[derive(Clone, Default)]
+pub struct TouchQueue(
+    std::rc::Rc<std::cell::RefCell<std::collections::VecDeque<(u64, TouchEvent)>>>,
+);
+
+impl TouchQueue {
+    /// Queues all of `events`, or none when they do not fit in [`REMOTE_QUEUE`].
+    pub fn push_all(&self, events: &[(u64, TouchEvent)]) -> bool {
+        let mut q = self.0.borrow_mut();
+        if q.len() + events.len() > REMOTE_QUEUE {
+            return false;
+        }
+        q.extend(events.iter().copied());
+        true
+    }
+
+    pub fn pop(&self) -> Option<(u64, TouchEvent)> {
+        self.0.borrow_mut().pop_front()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.borrow().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.borrow().is_empty()
+    }
+}
+
 /// What the loop does.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Out {
@@ -362,5 +398,24 @@ mod tests {
         // Ended with nothing queued: idle releases it.
         a.remote(t(TouchKind::Down, 2.0), true, now);
         assert_eq!(touches(&a.idle()), [(TouchKind::Up, 2.0)]);
+    }
+
+    #[test]
+    fn the_queue_takes_whole_requests_up_to_its_size() {
+        let q = TouchQueue::default();
+        let req = |n: usize| vec![(1u64, t(TouchKind::Move, 0.0)); n];
+        assert!(q.push_all(&req(32)));
+        assert!(q.push_all(&req(30)));
+        // Three more do not fit: none of them is queued.
+        assert!(!q.push_all(&req(3)));
+        assert_eq!(q.len(), 62);
+        assert!(q.push_all(&req(2)));
+        assert_eq!(q.len(), REMOTE_QUEUE);
+        assert!(!q.push_all(&req(1)));
+        // The loop takes them in order; room again.
+        assert!(q.pop().is_some());
+        assert!(q.push_all(&req(1)));
+        while q.pop().is_some() {}
+        assert!(q.is_empty());
     }
 }

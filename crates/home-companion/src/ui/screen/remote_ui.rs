@@ -18,14 +18,13 @@
 //! carry the session's number: the renderer checks it, and whether the screen may be touched,
 //! when it dispatches them (crate::ui::remote_input).
 
-use std::sync::mpsc::Sender;
-
 use super::{Screen, Ui, WakeSource, word};
 use crate::panel::protocol;
 use crate::panel::remote::{Controller, End, Touch, TouchKind};
 use crate::panel::sessions::Now;
 use crate::settings_model::Change;
 use crate::ui::capture::Capture;
+use crate::ui::remote_input::TouchQueue;
 use crate::ui::touch::{TouchEvent, TouchKind as ScreenTouch};
 
 /// What the screen keeps of the remote screen.
@@ -38,13 +37,21 @@ pub(in crate::ui::screen) struct RemoteUi {
     /// The frames; None: this renderer cannot be read (the demos, the tests).
     pub capture: Option<Capture>,
     /// Where the remote's touches go: the renderer's loop, with the session's number.
-    pub touches: Option<Sender<(u64, TouchEvent)>>,
+    pub touches: Option<TouchQueue>,
     /// The session's number: a new one at every start and end (touches of another are dropped).
     pub epoch: u64,
     /// Ended while the sessions were busy answering: the next tick ends it for good.
     pub pending_end: Option<End>,
     /// The system is suspending: nothing is read.
     pub suspended: bool,
+    /// The real finger's last touch (crate::panel::remote::home_allowed).
+    pub real_touch: Option<std::time::Instant>,
+    /// The remote's last `screen.home`.
+    pub home_at: Option<std::time::Instant>,
+    /// Settings → Access from the browser → Ask on the screen first.
+    pub confirm: bool,
+    /// Makes the question's buttons answer after a moment (as the access dialog's).
+    pub ask_timer: slint::Timer,
 }
 
 impl<S: Screen> Ui<S> {
@@ -61,10 +68,87 @@ impl<S: Screen> Ui<S> {
                 ui.remote_end(End::Screen);
             }
         });
+        // Off only through the warning dialog (companion.slint), on at once.
+        let ui = std::rc::Rc::downgrade(self);
+        self.screen.on_remote_confirm_toggled(move |on| {
+            if let Some(ui) = ui.upgrade() {
+                crate::settings_model::commit(&*ui, Change::PanelScreenConfirm(on));
+            }
+        });
+        let ui = std::rc::Rc::downgrade(self);
+        self.screen.on_remote_answered(move |yes| {
+            if let Some(ui) = ui.upgrade() {
+                ui.remote_answered(yes);
+            }
+        });
+    }
+
+    /// Ask on the screen first switched (settings_model::Change::PanelScreenConfirm). A session
+    /// already on goes on; the next start follows the new choice.
+    pub(super) fn remote_confirm_switched(&self, on: bool) {
+        self.remote.borrow_mut().confirm = on;
+        if on {
+            log::info!(event = "remote_screen", confirm = true; "remote screen: each start asked on the screen");
+        } else {
+            log::warn!(event = "remote_screen", confirm = false;
+                       "remote screen: starts are no longer asked on the screen");
+        }
+        self.refresh_remote();
+    }
+
+    /// The question «… wants to control the screen» for `c` (protocol::PanelHost::remote_ask):
+    /// over Home Assistant's view too (which is closed for it), its buttons answering after a
+    /// moment so a touch meant for what was there does not answer it.
+    pub(super) fn remote_ask_now(&self, c: &Controller) {
+        let line = {
+            let l = self.locale.borrow();
+            let agent = l
+                .text("panel_device_line")
+                .replace("{browser}", &c.agent.browser)
+                .replace("{os}", &c.agent.os);
+            if c.agent.browser.is_empty() {
+                c.peer.clone()
+            } else {
+                format!("{agent} · {}", c.peer)
+            }
+        };
+        if crate::ui::webview::visible() {
+            crate::ui::webview::request_home();
+        }
+        self.screen.set_control_open(false);
+        self.screen.set_remote_ask(&line);
+        self.screen.set_remote_ask_ready(false);
+        if let Some(me) = self.this.borrow().upgrade() {
+            let w = std::rc::Rc::downgrade(&me);
+            self.remote.borrow().ask_timer.start(
+                slint::TimerMode::SingleShot,
+                super::panel_ui::ASK_READY_AFTER,
+                move || {
+                    if let Some(ui) = w.upgrade() {
+                        ui.screen.set_remote_ask_ready(true);
+                    }
+                },
+            );
+        }
+        self.screen.set_dialog("remote-ask");
+        self.wake(WakeSource::Setup);
+        self.send(crate::core::UiEvent::Tap);
+    }
+
+    /// Deny or Allow on the question.
+    pub(super) fn remote_answered(&self, yes: bool) {
+        self.remote.borrow().ask_timer.stop();
+        match self.panel_sessions.try_borrow_mut() {
+            Ok(mut s) => protocol::remote_answer(self, &mut s, yes, Now::system()),
+            // Answering a request right now: a Deny ends it at the next tick; an Allow is not
+            // lost silently either, it is simply asked again by the browser's next start.
+            Err(_) if !yes => self.remote.borrow_mut().pending_end = Some(End::Denied),
+            Err(_) => {}
+        }
     }
 
     /// The renderer's capture and the way back for the remote's touches (renderer::run).
-    pub fn set_remote_io(&self, capture: Capture, touches: Sender<(u64, TouchEvent)>) {
+    pub fn set_remote_io(&self, capture: Capture, touches: TouchQueue) {
         let mut r = self.remote.borrow_mut();
         r.capture = Some(capture);
         r.touches = Some(touches);
@@ -138,6 +222,34 @@ impl<S: Screen> Ui<S> {
         }
     }
 
+    /// The real finger touched the screen (the renderer's loop, at every touch of it).
+    pub fn remote_real_touch(&self) {
+        self.remote.borrow_mut().real_touch = Some(std::time::Instant::now());
+    }
+
+    /// `screen.home` from the remote: the home, when remote::home_allowed says so (the access
+    /// dialog stays: it is for whoever is in front of the screen).
+    pub(super) fn remote_home_now(&self) -> Result<(), crate::panel::remote::Refusal> {
+        let now = std::time::Instant::now();
+        {
+            let mut r = self.remote.borrow_mut();
+            crate::panel::remote::home_allowed(
+                &self.screen.get_page(),
+                r.real_touch,
+                r.home_at,
+                now,
+            )?;
+            r.home_at = Some(now);
+        }
+        if crate::ui::webview::visible() {
+            crate::ui::webview::request_home();
+        }
+        if self.screen.get_dialog() != "panel-ask" {
+            self.screen.set_page("home");
+        }
+        Ok(())
+    }
+
     /// A session is on (its sign shown).
     pub fn remote_on_now(&self) -> bool {
         !self.remote.borrow().sign.is_empty()
@@ -171,6 +283,9 @@ impl<S: Screen> Ui<S> {
                 r.epoch += 1;
             }
             r.sign = sign;
+            if c.is_none() {
+                r.ask_timer.stop();
+            }
             if let Some(cap) = &r.capture {
                 if c.is_some() {
                     cap.restart();
@@ -178,6 +293,10 @@ impl<S: Screen> Ui<S> {
                     cap.stop();
                 }
             }
+        }
+        // A session that ends while the screen asks takes its question with it.
+        if c.is_none() && self.screen.get_dialog() == "remote-ask" {
+            self.screen.set_dialog("");
         }
         if started {
             // Whoever is in the room sees the sign.
@@ -190,6 +309,7 @@ impl<S: Screen> Ui<S> {
     pub(super) fn refresh_remote(&self) {
         let r = self.remote.borrow();
         self.screen.set_remote(r.on, &r.sign);
+        self.screen.set_remote_confirm(r.confirm);
     }
 
     /// Why the screen must not be sent or touched now.
@@ -223,14 +343,12 @@ impl<S: Screen> Ui<S> {
         if self.mirror_shown() {
             return Some("mirror");
         }
-        match self.screen.get_page().as_str() {
-            "camera" | "photo" | "photos" => Some("camera"),
-            // What he remembers and what was said: read only on the device.
-            "memories" | "chat" => Some("private"),
-            "panel" | "setup" => Some("code"),
-            "mirror" => Some("mirror"),
-            _ => None,
+        // Home Assistant's own view: logged in as whoever linked the device, with every
+        // control Home Assistant has (locks and alarms too), outside the device's gates.
+        if crate::ui::webview::visible() {
+            return Some("ha_view");
         }
+        remote_page(&self.screen.get_page())
     }
 
     pub(super) fn remote_frame_now(
@@ -247,47 +365,67 @@ impl<S: Screen> Ui<S> {
         }
     }
 
-    /// A touch of the remote → a touch of the screen, in the window's logical pixels.
-    pub(super) fn remote_touch_now(&self, t: Touch) {
+    /// The remote's touches → touches of the screen, in the window's logical pixels: queued all
+    /// or none (false: the queue is full, crate::ui::remote_input::TouchQueue).
+    pub(super) fn remote_touches_now(&self, touches: &[Touch]) -> bool {
         let r = self.remote.borrow();
-        let Some(tx) = &r.touches else { return };
+        let Some(queue) = &r.touches else {
+            return true;
+        };
         let size = self
             .screen
             .window()
             .size()
             .to_logical(self.screen.window().scale_factor());
-        let kind = match t.kind {
-            TouchKind::Down => ScreenTouch::Down,
-            TouchKind::Move => ScreenTouch::Move,
-            TouchKind::Up => ScreenTouch::Up,
-        };
-        let _ = tx.send((
-            r.epoch,
-            TouchEvent {
-                kind,
-                x: (t.x * size.width).clamp(0.0, size.width - 1.0),
-                y: (t.y * size.height).clamp(0.0, size.height - 1.0),
-            },
-        ));
+        let events: Vec<(u64, TouchEvent)> = touches
+            .iter()
+            .map(|t| {
+                let kind = match t.kind {
+                    TouchKind::Down => ScreenTouch::Down,
+                    TouchKind::Move => ScreenTouch::Move,
+                    TouchKind::Up => ScreenTouch::Up,
+                };
+                (
+                    r.epoch,
+                    TouchEvent {
+                        kind,
+                        x: (t.x * size.width).clamp(0.0, size.width - 1.0),
+                        y: (t.y * size.height).clamp(0.0, size.height - 1.0),
+                    },
+                )
+            })
+            .collect();
+        if !queue.push_all(&events) {
+            log::info!(event = "remote_screen", action = "queue_full", queued = queue.len();
+                       "remote screen: touches refused, {} still queued", queue.len());
+            return false;
+        }
         if let Some(cap) = &r.capture {
             cap.poke();
         }
+        true
     }
 
-    /// The demos' sign (`--state remote-sign`) and switch (`settings-panel-remote`).
-    pub(super) fn demo_remote(&self, sign: bool) {
+    /// The demos' switch (`settings-panel-remote`, 4), sign (`remote-sign`, 5) and question
+    /// (`remote-ask`, 6).
+    pub(super) fn demo_remote(&self, which: u8) {
         self.remote.borrow_mut().on = true;
-        if sign {
-            let c = Controller {
-                hash: String::new(),
-                agent: crate::panel::sessions::Agent::clean("Chrome", "macOS"),
-                peer: "192.0.2.24".into(),
-                since: std::time::Instant::now(),
-                seen: std::time::Instant::now(),
-            };
-            self.remote_changed_now(Some(&c));
-        } else {
-            self.refresh_remote();
+        let c = Controller {
+            hash: String::new(),
+            agent: crate::panel::sessions::Agent::clean("Chrome", "macOS"),
+            peer: "192.0.2.24".into(),
+            since: std::time::Instant::now(),
+            seen: std::time::Instant::now(),
+            allowed: which == 5,
+        };
+        match which {
+            5 => self.remote_changed_now(Some(&c)),
+            6 => {
+                self.refresh_remote();
+                self.remote_ask_now(&c);
+                self.screen.set_remote_ask_ready(true);
+            }
+            _ => self.refresh_remote(),
         }
     }
 }
@@ -296,4 +434,116 @@ impl<S: Screen> Ui<S> {
 /// or alarm, the result of an update. Everything else is hidden from it.
 pub(crate) fn remote_dialog_allowed(dialog: &str) -> bool {
     matches!(dialog, "" | "new-timer" | "new-alarm" | "update-result")
+}
+
+/// Every page of the screen (companion.slint) and whether the remote screen may see and touch
+/// it: None shown, Some(why) hidden. A page missing here is hidden ([`remote_page`]) and fails
+/// a test, so a page added later is decided, not born visible.
+const REMOTE_PAGES: &[(&str, Option<&str>)] = &[
+    ("home", None),
+    ("altro", None),
+    // The board: its Yes/No questions are never sent nor touched (remote_hidden_now) and a
+    // remote tap is one per round (renderer.rs), so a gated tile still asks the room.
+    ("board", None),
+    ("timers", None),
+    ("reminders", None),
+    ("shopping", None),
+    ("notes", None),
+    ("weather", None),
+    ("city", None),
+    ("trends", None),
+    ("music", None),
+    ("what", None),
+    ("settings", None),
+    ("language", None),
+    ("screen", None),
+    ("widgets", None),
+    ("poses", None),
+    ("usage", None),
+    ("ha-lists", None),
+    ("camera", Some("camera")),
+    ("photo", Some("camera")),
+    ("photos", Some("camera")),
+    // What he remembers and what was said: read only on the device.
+    ("memories", Some("private")),
+    ("chat", Some("private")),
+    // Settings → Access from the browser (the devices, the QR code that lets in, the remote
+    // screen's own switches) and Home Assistant's linking QR code.
+    ("panel", Some("code")),
+    ("setup", Some("code")),
+    // Home Assistant's link (Configure, Repair, Unlink) and its choices: in front of it.
+    ("ha", Some("ha_setup")),
+    ("ha-pick", Some("ha_setup")),
+    // The first start: finding Home Assistant restarts the body with it.
+    ("welcome", Some("setup")),
+    ("find-ha", Some("setup")),
+    // What runs on the device is chosen in front of it.
+    ("update", Some("update")),
+    ("mirror", Some("mirror")),
+];
+
+/// Why `page` must not be sent or touched (None: it may). A page not in [`REMOTE_PAGES`] is
+/// hidden.
+pub(crate) fn remote_page(page: &str) -> Option<&'static str> {
+    match REMOTE_PAGES.iter().find(|(p, _)| *p == page) {
+        Some((_, why)) => *why,
+        None => Some("unclassified"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every page companion.slint draws, by the names it compares the page with.
+    fn slint_pages() -> std::collections::BTreeSet<String> {
+        let src = include_str!("../../../../spike-ui/ui/companion.slint");
+        let mut pages = std::collections::BTreeSet::new();
+        for pat in ["page == \"", "page = \""] {
+            for (i, _) in src.match_indices(pat) {
+                let rest = &src[i + pat.len()..];
+                if let Some(end) = rest.find('"') {
+                    pages.insert(rest[..end].to_string());
+                }
+            }
+        }
+        pages
+    }
+
+    #[test]
+    fn every_page_is_classified_for_the_remote_screen() {
+        let pages = slint_pages();
+        assert!(pages.len() > 20, "{pages:?}");
+        let missing: Vec<_> = pages
+            .iter()
+            .filter(|p| !REMOTE_PAGES.iter().any(|(q, _)| q == p))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "pages not classified in REMOTE_PAGES: {missing:?}"
+        );
+        let stale: Vec<_> = REMOTE_PAGES
+            .iter()
+            .filter(|(p, _)| !pages.contains(*p))
+            .map(|(p, _)| p)
+            .collect();
+        assert!(stale.is_empty(), "no such page any more: {stale:?}");
+    }
+
+    #[test]
+    fn the_pages_shown_and_hidden() {
+        for p in ["home", "board", "settings", "timers"] {
+            assert_eq!(remote_page(p), None, "{p}");
+        }
+        for (p, why) in [
+            ("update", "update"),
+            ("panel", "code"),
+            ("ha", "ha_setup"),
+            ("camera", "camera"),
+            ("chat", "private"),
+            ("a-page-added-later", "unclassified"),
+        ] {
+            assert_eq!(remote_page(p), Some(why), "{p}");
+        }
+    }
 }

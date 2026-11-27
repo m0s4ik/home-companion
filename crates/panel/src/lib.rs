@@ -39,6 +39,9 @@ use serde_json::{Value, json};
 pub const LIMITS: Limits = Limits::new(16 << 10, 64 << 10);
 /// A whole request (head and body) within this.
 pub const REQUEST_WITHIN: Duration = Duration::from_secs(5);
+/// The whole answer within this (the biggest is a frame of [`MAX_FRAME`] or the script), however
+/// the client reads it: a connection is never kept by a slow reader.
+pub const ANSWER_WITHIN: Duration = Duration::from_secs(10);
 pub const MAX_CONNECTIONS: usize = 8;
 /// From one address at once: one browser cannot take all of them. Four, not fewer: a page load
 /// asks for its stylesheet and script together (the page itself fetches one thing at a time).
@@ -695,9 +698,8 @@ impl<B: Body> Panel<B> {
     }
 
     /// Serves one connection: one request, one answer.
-    pub fn serve(&self, mut s: TcpStream, peer: IpAddr) {
+    pub fn serve(&self, s: TcpStream, peer: IpAddr) {
         let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
-        let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
         let r = match httpd::read_request(&mut httpd::Timed::new(&s, REQUEST_WITHIN), LIMITS) {
             Ok(req) => {
                 let head = req.method == "HEAD";
@@ -708,7 +710,7 @@ impl<B: Body> Panel<B> {
                 None => return,
             },
         };
-        let _ = r.0.write_to(&mut s, r.1);
+        let _ = r.0.write_to(&mut httpd::Timed::new(&s, ANSWER_WITHIN), r.1);
     }
 }
 
