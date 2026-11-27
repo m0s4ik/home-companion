@@ -79,6 +79,9 @@ pub(in crate::ui::screen) struct BoardUi {
     pub level_wait: Option<(Place, usize, u8)>,
     /// What is on screen changed while it was not seen: drawn when it comes back.
     pub dirty: bool,
+    /// The hub lost Home Assistant (`HubMsg::Link`): the tiles are what was last known,
+    /// dimmed and not tappable ([`board::away`]).
+    pub away: bool,
 }
 
 impl BoardUi {
@@ -112,7 +115,11 @@ fn views(
     w: &BoardWords,
     now: Instant,
 ) -> Vec<TileView> {
-    board::view(canvas, &b.states, curves, &b.pending, w, now)
+    let mut v = board::view(canvas, &b.states, curves, &b.pending, w, now);
+    if b.away {
+        board::away(&mut v, w);
+    }
+    v
 }
 
 /// The rows of a custom widget for the turn (and the browser panel's preview): a tile each, its
@@ -484,6 +491,28 @@ impl<S: Screen> Ui<S> {
         // The panel's preview and the one-line rows: when the widget's turn takes them.
     }
 
+    /// The hub's link to Home Assistant came up or went: the tiles show it.
+    pub(super) fn board_link(&self, up: bool) {
+        {
+            let mut t = self.tile_board.borrow_mut();
+            if t.away == !up {
+                return;
+            }
+            t.away = !up;
+        }
+        log::info!(event = "board_link", up = up; "board: Home Assistant {}", if up { "back" } else { "away" });
+        self.render_board(false);
+    }
+
+    /// Home Assistant is away: a touch on a tile does nothing but say so (the error sound).
+    fn board_away(&self) -> bool {
+        let away = self.tile_board.borrow().away;
+        if away {
+            self.send(UiEvent::Failed);
+        }
+        away
+    }
+
     /// Home Assistant's answer to a call.
     pub(super) fn board_called(&self, id: u64, ok: bool, error: Option<String>) {
         let entity = self.tile_board.borrow_mut().calls.remove(&id);
@@ -535,7 +564,10 @@ impl<S: Screen> Ui<S> {
             let id = t.next_id;
             t.calls.insert(id, entity.clone());
             let states = t.states.clone();
-            t.pending.tapped(&entity, &states, Instant::now());
+            // A level call waits at its level (the bar does not jump back meanwhile).
+            let level = board::ask_percent(&call, states.by_id.get(&entity))
+                .map(|p| p.round().clamp(0.0, 100.0) as u8);
+            t.pending.sent(&entity, &states, level, Instant::now());
             id
         };
         log::info!(event = "board_call", entity = entity.as_str(), service = call.service.as_str();
@@ -555,6 +587,9 @@ impl<S: Screen> Ui<S> {
 
     /// A tap on tile `index` of `place`: its action, or its question first.
     pub(super) fn board_tap(&self, place: Place, index: usize) {
+        if self.board_away() {
+            return;
+        }
         let (tile, st) = {
             let t = self.tile_board.borrow();
             let Some(tile) = t.canvas(place).and_then(|c| c.tiles.get(index)).cloned() else {
@@ -577,6 +612,12 @@ impl<S: Screen> Ui<S> {
 
     /// A level dragged on tile `index` of `place` (`done`: the finger lifted).
     pub(super) fn board_level(&self, place: Place, index: usize, value: u8, done: bool) {
+        if self.tile_board.borrow().away {
+            if done {
+                self.send(UiEvent::Failed);
+            }
+            return;
+        }
         let (tile, st) = {
             let t = self.tile_board.borrow();
             let Some(tile) = t.canvas(place).and_then(|c| c.tiles.get(index)).cloned() else {

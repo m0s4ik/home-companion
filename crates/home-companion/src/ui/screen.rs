@@ -8204,7 +8204,10 @@ impl<S: Screen> Ui<S> {
                     self.refresh_home();
                 }
             }
-            HubMsg::Link { up, last_seen } => super::webview::set_ha_link(up, last_seen),
+            HubMsg::Link { up, last_seen } => {
+                super::webview::set_ha_link(up, last_seen);
+                self.board_link(up);
+            }
             HubMsg::Screen(true) => self.wake(WakeSource::HomeAssistant),
             HubMsg::Screen(false) => self.screen_off_by("Home Assistant"),
             HubMsg::Entities(e) => {

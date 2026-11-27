@@ -908,3 +908,91 @@ fn a_widgets_id_is_its_number() {
     assert_eq!(b.widget(1).map(|w| w.id.as_str()), Some("w1"));
     assert!(b.widget(5).is_none());
 }
+
+#[test]
+fn a_level_let_go_shows_where_it_was_let_go_until_home_assistant_is_there() {
+    let canvas = page(vec![
+        tile(TileKind::Level, "light.a", 0, 0, 2, 1),
+        tile(TileKind::Level, "input_number.t", 2, 0, 2, 1),
+    ]);
+    let light = |b: f64| State {
+        brightness: Some(b),
+        ..st("on")
+    };
+    let num = |v: &str| State {
+        min: Some(10.0),
+        max: Some(30.0),
+        step: Some(0.5),
+        unit: "°C".into(),
+        ..st(v)
+    };
+    let mut s = states(&[("light.a", light(51.0)), ("input_number.t", num("20.0"))]);
+    let curves = HashMap::new();
+    let t0 = Instant::now();
+    let mut p = Pending::default();
+    p.sent("light.a", &s, Some(80), t0);
+    p.sent("input_number.t", &s, Some(75), t0);
+    let look = |s: &States, p: &Pending, at| view(&canvas, s, &curves, p, &words(), at);
+    let v = look(&s, &p, t0);
+    assert_eq!(
+        (v[0].state, v[0].level, v[0].value.as_str()),
+        (TileState::Pending, Some(80), "80%")
+    );
+    assert_eq!((v[1].level, v[1].value.as_str()), (Some(75), "25.0°C"));
+    // A state on the way (an earlier value of the drag) does not move the bar back.
+    s.by_id.insert("light.a".into(), light(128.0));
+    assert_eq!(look(&s, &p, t0 + Duration::from_secs(1))[0].level, Some(80));
+    // There (204 of 255 is 80%): the state's own level.
+    s.by_id.insert("light.a".into(), light(204.0));
+    let v = look(&s, &p, t0 + Duration::from_secs(1));
+    assert_eq!((v[0].state, v[0].level), (TileState::On, Some(80)));
+    // Never there: the bar goes back to the state after the wait.
+    let v = look(&s, &p, t0 + PENDING_FOR);
+    assert_eq!((v[1].level, v[1].value.as_str()), (Some(50), "20.0°C"));
+    p.prune(&s, t0 + PENDING_FOR);
+    assert!(p.marks.is_empty());
+    // A tap (no level) still waits for any new state.
+    p.tapped("light.a", &s, t0);
+    assert_eq!(p.held_level("light.a", &s, t0), None);
+}
+
+#[test]
+fn with_home_assistant_away_the_tiles_are_dimmed_and_not_tappable() {
+    let canvas = page(vec![
+        tile(TileKind::Button, "light.a", 0, 0, 1, 1),
+        tile(TileKind::Sensor, "sensor.t", 1, 0, 1, 1),
+        tile(TileKind::Button, "switch.gone", 2, 0, 1, 1),
+    ]);
+    let s = states(&[
+        ("light.a", st("on")),
+        (
+            "sensor.t",
+            State {
+                unit: "°C".into(),
+                ..st("21.5")
+            },
+        ),
+        ("switch.gone", st("unavailable")),
+    ]);
+    let w = words();
+    let mut v = view(
+        &canvas,
+        &s,
+        &HashMap::new(),
+        &Pending::default(),
+        &w,
+        Instant::now(),
+    );
+    away(&mut v, &w);
+    assert_eq!(
+        (v[0].state, v[0].tappable, v[0].status.as_str()),
+        (TileState::Stale, false, "Not answering")
+    );
+    // A sensor keeps its last value, dimmed.
+    assert_eq!(
+        (v[1].state, v[1].value.as_str()),
+        (TileState::Stale, "21.5°C")
+    );
+    assert_eq!(v[2].state, TileState::Unavailable);
+    assert_eq!(draw::state_key(TileState::Stale), "stale");
+}

@@ -915,6 +915,8 @@ pub struct BoardWords {
     pub detected: String,
     pub clear: String,
     pub unavailable: String,
+    /// Home Assistant not reachable ([`away`]).
+    pub away: String,
     /// A scene's tile ("Scene"), a call that failed ("Didn't work").
     pub scene: String,
     pub failed: String,
@@ -951,6 +953,7 @@ impl BoardWords {
             detected: text("board_detected"),
             clear: text("board_clear"),
             unavailable: text("board_unavailable"),
+            away: text("board_away"),
             scene: text("board_label_scene"),
             failed: text("board_failed"),
             range: text("board_range"),
@@ -1054,6 +1057,48 @@ fn range_text(st: &State, c: &Curve, w: &BoardWords) -> String {
         .replace("{high}", &n(c.high))
 }
 
+/// A `level` tile's value at `percent` of its range, as its bar writes it: "40%", or a
+/// number's own value ("21.5 °C") on its `step` between `min` and `max`.
+fn level_text(domain: &str, st: &State, percent: u8, w: &BoardWords) -> Option<String> {
+    match domain {
+        "input_number" | "number" => {
+            let (min, max) = (st.min.unwrap_or(0.0), st.max.unwrap_or(100.0));
+            if max <= min {
+                return None;
+            }
+            let mut v = min + f64::from(percent.min(100)) / 100.0 * (max - min);
+            if let Some(step) = st.step.filter(|x| *x > 0.0) {
+                v = min + ((v - min) / step).round() * step;
+            }
+            let v = (v.clamp(min, max) * 1e6).round() / 1e6;
+            number_text(
+                &State {
+                    state: v.to_string(),
+                    ..st.clone()
+                },
+                w,
+            )
+        }
+        _ => Some(format!("{percent}%")),
+    }
+}
+
+/// The tiles while Home Assistant is not reachable: what was last known, dimmed
+/// ([`TileState::Stale`]) and not tappable; a button's or a level's state says it is not
+/// answering (a sensor keeps its last value). Unavailable ones stay so.
+pub fn away(views: &mut [TileView], w: &BoardWords) {
+    for v in views {
+        if v.state == TileState::Unavailable {
+            continue;
+        }
+        v.state = TileState::Stale;
+        v.tappable = false;
+        if v.kind != TileKind::Sensor {
+            v.status = w.away.clone();
+        }
+    }
+}
+
 /// A `level` tile's position, 0-100 (None when unknown).
 pub fn level_of(domain: &str, st: &State) -> Option<u8> {
     let pct = |x: f64| Some(x.clamp(0.0, 100.0).round() as u8);
@@ -1088,6 +1133,8 @@ pub enum TileState {
     Unavailable,
     /// The call failed ([`FAILED_FOR`]).
     Failed,
+    /// Home Assistant is not reachable: the last state known, dimmed, not tappable ([`away`]).
+    Stale,
 }
 
 /// Taps waiting for their new state, and calls that failed.
@@ -1102,17 +1149,27 @@ struct Mark {
     /// The state when tapped: another one is the answer.
     before: Option<State>,
     failed: bool,
+    /// A level sent (0-100): the bar stays there until the entity reaches it (or the time is
+    /// over), instead of going back to the old level while Home Assistant answers.
+    level: Option<u8>,
 }
 
 impl Pending {
     /// A tap on the tile of `entity` sent its call.
     pub fn tapped(&mut self, entity: &str, states: &States, now: Instant) {
+        self.sent(entity, states, None, now);
+    }
+
+    /// A call sent for the tile of `entity`; `level`: the level it sets (a level released, or
+    /// its question answered Yes), shown until the entity is there.
+    pub fn sent(&mut self, entity: &str, states: &States, level: Option<u8>, now: Instant) {
         self.marks.insert(
             entity.to_string(),
             Mark {
                 at: now,
                 before: states.by_id.get(entity).cloned(),
                 failed: false,
+                level,
             },
         );
     }
@@ -1125,6 +1182,7 @@ impl Pending {
                 at: now,
                 before: None,
                 failed: true,
+                level: None,
             },
         );
     }
@@ -1136,8 +1194,23 @@ impl Pending {
         if m.failed {
             return (age < FAILED_FOR).then_some(TileState::Failed);
         }
-        (age < PENDING_FOR && states.by_id.get(entity) == m.before.as_ref())
-            .then_some(TileState::Pending)
+        let waits = match m.level {
+            // A level: until the entity is there (one step off is there: Home Assistant's
+            // brightness is 0-255).
+            Some(l) => !states
+                .by_id
+                .get(entity)
+                .and_then(|s| level_of(entity.split('.').next().unwrap_or(""), s))
+                .is_some_and(|now| now.abs_diff(l) <= 1),
+            None => states.by_id.get(entity) == m.before.as_ref(),
+        };
+        (age < PENDING_FOR && waits).then_some(TileState::Pending)
+    }
+
+    /// The level a waiting level call set (the bar shows it while it waits), else None.
+    pub fn held_level(&self, entity: &str, states: &States, now: Instant) -> Option<u8> {
+        let l = self.marks.get(entity)?.level?;
+        (self.state_of(entity, states, now) == Some(TileState::Pending)).then_some(l)
     }
 
     /// Marks that no longer show go.
@@ -1282,6 +1355,13 @@ pub fn view(
             if state == TileState::Failed {
                 status = w.failed.clone();
             }
+            // A level released waits at the level it was let go, not the old one.
+            let (value, level) = match (t.kind, st, pending.held_level(&t.entity_id, states, now)) {
+                (TileKind::Level, Some(s), Some(h)) if state == TileState::Pending => {
+                    (level_text(domain, s, h, w).unwrap_or(value), Some(h))
+                }
+                _ => (value, level),
+            };
             let curve = (t.kind == TileKind::Sensor && t.w >= 2)
                 .then(|| curves.get(&t.entity_id).cloned())
                 .flatten();

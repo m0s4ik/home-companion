@@ -334,13 +334,17 @@ browser panel. Named "Board" ("Plancia" in Italian).
 - **States**: off (`surface`, the icon `text-2`); **on** (`accent-deep`, a border of `accent` at 35 %, the icon and
   the state in gold; a level shows it with its bar); **waiting** after a tap until Home Assistant's new state (at
   most 4 s: the icon dims to 55 % once, in 180 ms, and stays so); **unavailable** (the icon `#4a4740`, the name
-  `text-3`, no touch); **failed** (a `danger` border and "Didn't work" for 3 s, with the error sound). Nothing moves
+  `text-3`, no touch); **failed** (a `danger` border and "Didn't work" for 3 s, with the error sound); **stale**
+  while the hub has lost Home Assistant (`HubMsg::Link`): the last state known, the whole tile at 45 %, a button's
+  or a level's state "Not answering", no touch. Nothing moves
   at rest; a tile is redrawn only when its data changes, and only while it is seen (the page on screen, or the
   custom widget on the home, the screen on): what changed meanwhile is drawn when it comes back.
 - **Icons** are MDI glyphs drawn from their path data (`Path`, 24 x 24 view box), the defaults by domain and device
   class built into the binary, any other read from the bundle's `icons/mdi.json` beside `locales/` (only the ones in
   use stay in memory).
-- **A level** is sent when the finger lifts and at most every 300 ms while it drags.
+- **A level** is sent when the finger lifts and at most every 300 ms while it drags. Let go, the bar stays where the
+  finger left it (the tile waiting) until the entity's level is there or the 4 s are over, then shows the state; a
+  touch taken away ends the drag where it was sent last.
 - **The question**: a cover, a valve (or a tile with "Ask first") asks before its call, in the house question's
   window (§5): the tile's icon in gold instead of the question mark, "Close Shutter?" (the verb from what the call
   does to the state it finds: open/close, turn on/off, play/pause, run, "Set … to 40%?" for a level), the page's
