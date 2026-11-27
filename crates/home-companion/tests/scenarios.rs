@@ -802,6 +802,34 @@ fn c22_a_real_question_listens_again() {
 }
 
 #[test]
+fn c22_a_real_question_listens_again_over_a_reminder() {
+    // A reminder left full screen (until OK, maybe for hours) does not keep a question of
+    // Alfred's from being answered.
+    let r = run_setup(
+        Setup::new(
+            sc(cat(vec![
+                hello(),
+                hear("ricordami di chiamare", 800),
+                answer("A che ora?"),
+                hear("alle cinque", 800),
+                answer("Va bene."),
+                bye(500),
+            ])),
+            vec![
+                press(When::View(Phase::Home), 50, || UiEvent::Notice(true)),
+                press(When::Ms(50), 0, talk),
+            ],
+        )
+        .mic(vec![Utt::says(""), Utt::says("")]),
+    );
+    assert_clean(&r);
+    assert_eq!(
+        r.outcomes(),
+        vec![pair("talk", "played"), pair("follow_up", "played")]
+    );
+}
+
+#[test]
 fn c22_a_courtesy_question_does_not() {
     let r = answered("Fatto. C'è altro?", bye(2000));
     assert_clean(&r);
@@ -1086,6 +1114,23 @@ fn c26_no_window_over_a_ringing_timer() {
         "no window: {:?}",
         r.views
     );
+}
+
+#[test]
+fn c26_no_window_over_a_reminder() {
+    // Its chime every 15 s would be heard in the window.
+    let r = run_setup(
+        conversing_setup(
+            "Sono le cinque.",
+            || UiEvent::ConversationMax(3),
+            bye(2500),
+            &[press(When::Ms(0), 0, || UiEvent::Notice(true))],
+        )
+        .mic(vec![Utt::says(""), Utt::says("")]),
+    );
+    assert_clean(&r);
+    assert_eq!(r.outcomes(), vec![pair("talk", "played")]);
+    assert_eq!(r.record.run_pipelines.len(), 1);
 }
 
 #[test]

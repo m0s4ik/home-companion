@@ -3121,16 +3121,23 @@ impl Core {
                     self.close("played");
                     if self.phase == Phase::Speaking {
                         self.go_idle();
-                        // go_idle may have started the bell of a timer that came due meanwhile,
-                        // or a reminder may be full screen: no listening over them (a window
-                        // would send the bell to Home Assistant as a turn).
-                        let after = if self.phase == Phase::Ringing || self.noticing {
-                            if after != AfterAnswer::Nothing {
-                                log::info!(event = "follow_up_skipped", ringing = self.phase == Phase::Ringing, reminder = self.noticing; "a timer rings or a reminder is shown: no listening after the answer");
+                        // go_idle may have started the bell of a timer that came due meanwhile:
+                        // no listening over it (a window would send the bell to Home Assistant
+                        // as a turn). A reminder full screen (maybe for hours, its chime every
+                        // 15 s) holds back conversation mode's windows only: a question of
+                        // Alfred's is still answered.
+                        let ringing = self.phase == Phase::Ringing;
+                        let after = match after {
+                            AfterAnswer::Nothing => after,
+                            _ if ringing => {
+                                log::info!(event = "follow_up_skipped", ringing = true; "a timer rings: no listening after the answer");
+                                AfterAnswer::Nothing
                             }
-                            AfterAnswer::Nothing
-                        } else {
-                            after
+                            AfterAnswer::Window if self.noticing => {
+                                log::info!(event = "follow_up_skipped", reminder = true; "a reminder is shown: no conversation window");
+                                AfterAnswer::Nothing
+                            }
+                            _ => after,
                         };
                         match after {
                             // Within conversation mode's windows a question of his counts as one
