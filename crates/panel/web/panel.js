@@ -424,7 +424,8 @@ function row(label, helpText, ctl, cls) {
 // ---- The widget's card as the screen draws it: header (icon, title, the right side), then
 // the rows of one window (curve rows, timed rows, plain rows) or the weather's own drawing.
 
-function drawCard(kind, model, win, emptyText, label) {
+function drawCard(kind, model, win, emptyText, label, p) {
+  if (kind === 'custom') { const g = customCard(p); if (g) return g; }
   const c = el('div', 'wc');
   const hd = el('div', 'hd');
   const w = model && model.windows && model.windows.length ? model.windows[(win || 0) % model.windows.length] : null;
@@ -494,6 +495,22 @@ function drawWeather(c, w) {
 
 function wrapCard(c) { const p = el('div', 'wp'); p.append(c); return p; }
 
+// A custom widget as the device draws it: page `p`'s board tiles on 4 × 2 cells (none: no tiles).
+function customCard(p) {
+  const cv = p && canvases().find(x => x.page === p.id);
+  if (!cv || !cv.tiles.length) return null;
+  const g = el('div', 'bmini');
+  for (const x of cv.tiles) {
+    const tl = x.tile;
+    const cell = el('div', 'x' + tl.x + ' y' + tl.y + ' w' + tl.w + ' h' + tl.h);
+    cell.append(tileFace(x));
+    g.append(cell);
+  }
+  const w = el('div', 'wp');
+  w.append(g);
+  return w;
+}
+
 // ---- The device's screen as it looks now: Alfred, the clock, the date (with the weather of
 // the house when there is one), the widget `kind` in its slot, the turn's dots, the dock.
 
@@ -524,7 +541,7 @@ function deviceScreen(p, model, win) {
   const on = onPages();
   const turns = on.length > 1 && !!p && on.some(q => q.id === p.id);
   if (kind) {
-    const card = drawCard(kind, model, win, t('panel_empty_' + kind), p.label);
+    const card = drawCard(kind, model, win, t('panel_empty_' + kind), p.label, p);
     // The same height for every page (the CSS of .slot, widgets::size); the form only places
     // its content: the weather's block, its columns, or its rows.
     const w = model && model.windows && model.windows.length ? model.windows[(win || 0) % model.windows.length] : null;
@@ -696,7 +713,8 @@ function homePage(r) {
   const p = page(k);
   if (!p) return frag(pagehead(t('panel_tab_home')), el('p', 'lead', t('panel_error')));
   const { model, example } = shownModel(p);
-  const n = model && model.windows ? model.windows.length : 1;
+  // A custom widget shows all its tiles at once.
+  const n = model && model.windows && p.kind !== 'custom' ? model.windows.length : 1;
   const win = Math.min(S.win[k] || 0, Math.max(0, n - 1));
 
   const stage = el('div', 'stagecol');
@@ -705,7 +723,7 @@ function homePage(r) {
   fit.append(deviceFrame(deviceScreen(p, model, win), t('panel_device_preview')).device);
   stage.append(fit);
   const only = el('div', 'cardonly');
-  only.append(drawCard(p.kind, model, win, t('panel_empty_' + p.kind), p.label));
+  only.append(drawCard(p.kind, model, win, t('panel_empty_' + p.kind), p.label, p));
   stage.append(only);
   const note = el('p', 'preview-note');
   if (!p.on) note.append(el('span', 'tag', t('panel_not_on_home')), el('span', 'grow', t('panel_would_look')));

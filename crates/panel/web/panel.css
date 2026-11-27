@@ -430,6 +430,13 @@ body.out .toast { left: 50%; max-width: calc(100vw - 32px); }
 .bt .bl .bv { font: 400 max(11px, calc(var(--u) * 24))/1 InterW, sans-serif; }
 .bt .bq { position: absolute; top: calc(var(--u) * 14); right: calc(var(--u) * 14); width: calc(var(--u) * 12); height: calc(var(--u) * 12); border-radius: 50%; border: 2px solid var(--accent); }
 .bl i.lv0 { width: 0%; } .bl i.lv1 { width: 5%; } .bl i.lv2 { width: 10%; } .bl i.lv3 { width: 15%; } .bl i.lv4 { width: 20%; } .bl i.lv5 { width: 25%; } .bl i.lv6 { width: 30%; } .bl i.lv7 { width: 35%; } .bl i.lv8 { width: 40%; } .bl i.lv9 { width: 45%; } .bl i.lv10 { width: 50%; } .bl i.lv11 { width: 55%; } .bl i.lv12 { width: 60%; } .bl i.lv13 { width: 65%; } .bl i.lv14 { width: 70%; } .bl i.lv15 { width: 75%; } .bl i.lv16 { width: 80%; } .bl i.lv17 { width: 85%; } .bl i.lv18 { width: 90%; } .bl i.lv19 { width: 95%; } .bl i.lv20 { width: 100%; } 
+.bt.s-stale { opacity: .45; }
+/* A custom widget in Home's preview as on the device: 4 × 2 cells of 193 × 130, 12 apart (808 across). */
+.bmini { --u: calc(100cqw / 808); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: repeat(2, calc(var(--u) * 130)); gap: calc(var(--u) * 12); }
+.bmini > div { min-width: 0; min-height: 0; }
+.bmini .x0{grid-column-start:1}.bmini .x1{grid-column-start:2}.bmini .x2{grid-column-start:3}.bmini .x3{grid-column-start:4}.bmini .y1{grid-row-start:2}
+.bmini .w2{grid-column-end:span 2}.bmini .w3{grid-column-end:span 3}.bmini .w4{grid-column-end:span 4}.bmini .h2{grid-row-end:span 2}
+.bmini .bt { padding: calc(var(--u) * 14) calc(var(--u) * 18); }
 /* The inspector with no tile chosen: the canvas itself (name, order, removing it), then how to begin. */
 .cvbar { display: grid; gap: 10px; padding-bottom: 18px; border-bottom: 1px solid var(--line-soft); }
 .cvname { display: grid; }
